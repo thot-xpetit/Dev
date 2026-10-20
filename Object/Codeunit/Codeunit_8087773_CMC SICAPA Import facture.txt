@@ -1,0 +1,2576 @@
+OBJECT Codeunit 8087773 CMC SICAPA Import facture
+{
+  OBJECT-PROPERTIES
+  {
+    Date=03/03/26;
+    Heure=14:06:28;
+    Modifi'=Oui;
+    Liste versions=CMC02.02.00,ADV18.06.01;
+  }
+  PROPERTIES
+  {
+    TableNo=8061230;
+    OnRun=VAR
+            "<-- 3LI LOCALS -->"@1000000000 : Integer;
+          BEGIN
+            CodeUnit_G := Processing;
+            UseReplicaDatabase := "Use Replica Database";
+            MoteurInterface_G.GetParameter(CodeUnit_G, ConnectorName_G, ImpExpFolder_G, LogFolder_G, ExtensionFile_G, PrefixFile_G);
+            MoteurInterface_G.GetTemplatesCode(ConnectorName_G, ItemTemplateCode_G, CustomerTemplateCode_G, VendorTemplateCode_G,
+              ContactTemplateCode_G, AccountTemplateCode_G, GlobalTemplateCode_G);
+            ToolsFile_G.LogInit(LogFolder_G, 'SICAPA');
+            ToolsFile_G.LogInitCodeUnit(CodeUnit_G);
+
+            //ToolsFile_G.LogWriteInfo('');
+
+            IF ("File in use" <> '') THEN BEGIN
+              // Traitement d'un fichier en attente sur disque local vers Sas Bdd.
+              ImportTexte("File in use");
+            END ELSE BEGIN
+              // Mise . jour correspondance
+              ImportRecordMajCorr();
+              //--> 19/07/2017 - YPR : Rapprochement automatique des factures et des Bons de r'ception
+              RapprochementAutomatiqueBons();
+              //--< 19/07/2017 - YPR : Rapprochement automatique des factures et des Bons de r'ception
+              //--> 08/03/2019 - XPE : Rapprochement automatique des avoirs et des retours
+              RapprochementAutomatiqueAvoir();
+              //--< 08/03/2019 - XPE : Rapprochement automatique des avoirs et des retours
+
+              // A la fin Appel . Vide : Traitement Sas Bdd non int'gr' vers Bdd NavAgri.
+              ImportRecord();
+            END;
+
+            //ToolsFile_G.LogWriteInfo('Fin du traitement');
+            SetToLog(TypeLog::Info, TEndProcess, 0, '');
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      "<-- 3LI TEXT GLOBALS -->"@1000000000 : TextConst;
+      Text0001@1000000008 : TextConst 'ENU=Error then Table "%1" doesn''t exist \Company : %2;FRA=Erreur la table "%1" n''existe pas \Societe : %2';
+      Text0002@1000000001 : TextConst 'ENU=Error the file %1 doesn''t exist.;FRA=Erreur le fichier "%1" n''existe pas.';
+      Text0003@1000000002 : TextConst 'ENU=Error open file %1 : %2;FRA=Erreur ouverture fichier %1 : %2';
+      Text0004@1000000003 : TextConst 'ENU=Error backup copy "%1".;FRA=Erreur copie de sauvegarde "%1".';
+      Text0005@1000000004 : TextConst 'FRA=Erreur "%1" existe d'j. dans table "%2".';
+      Text0006@1000000005 : TextConst 'ENU="Error field %1 = %2 For Record %3";FRA="Erreur zone %1=%2 pour Enregistrement : %3"';
+      Text0008@1000000007 : TextConst 'ENU=See the log please;FRA=Veuillez consulter le log';
+      Text0009@1000000011 : TextConst 'ENU=Error field %1 : Record %2;FRA="Erreur zone ""%1""=""%2"" : Enregistrement ""%3-%4""."';
+      Text0010@1000000010 : TextConst 'ENU=Error INSERT table %1 : %2;FRA=Erreur INSERT table %1 : %2';
+      Text0014@1000000014 : TextConst 'FRA=Erreur MODIFY table %1 : %2-%3';
+      "<-- 3LI GLOBALS -->"@1000000016 : Integer;
+      ToolsFile_G@1000000015 : Codeunit 8053405;
+      MoteurInterface_G@1000000022 : Codeunit 8061230;
+      ConnectorName_G@1000000021 : Code[20];
+      ImpExpFolder_G@1000000020 : Text[256];
+      LogFolder_G@1000000019 : Text[256];
+      ExtensionFile_G@1000000018 : Text[10];
+      PrefixFile_G@1000000017 : Text[30];
+      CodeUnit_G@1000000023 : Integer;
+      ItemTemplateCode_G@1000000033 : Code[20];
+      CustomerTemplateCode_G@1000000032 : Code[20];
+      VendorTemplateCode_G@1000000031 : Code[20];
+      ContactTemplateCode_G@1000000030 : Code[20];
+      AccountTemplateCode_G@1000000029 : Code[20];
+      GlobalTemplateCode_G@1000000028 : Code[20];
+      Text0016@1000000013 : TextConst 'FRA=Produit "%1-%2" unit' sicapa "%3" non convertible unit' Nav "%4" pour "%5-%6".';
+      Text0020@1000000034 : TextConst 'ENU=Error Corresponding "%1" : "%2" Doesn''t exist for Contract : "%3", Sub-Contract : "%4";FRA=Erreur correspondance "%1" : "%2" non param'tr'e pour Contrat : "%3", sous-contrat : %4.';
+      Text0021@1000000009 : TextConst 'FRA=Erreur int'gration "%1".';
+      Text0022@1000000006 : TextConst 'FRA=Facture "%1" int'gr'e dans "%2".';
+      Text0025@1000000012 : TextConst 'ENU=Error Corresponding "%1" : "%2" Doesn''t exist for Order : "%3", Line : "%4";FRA=Erreur correspondance "%1" : "%2" non param'tr'e pour : "%3", ligne : "%4".';
+      TableAdvitam_G@1000000024 : Record 8053450;
+      ERR001@1000000025 : TextConst 'FRA=ERR001: Erreur lors de la r'cup'ration de la table de paramStre';
+      ErrLineNo@1000000026 : TextConst 'ENU=The error occured on file : %1 at Line : %2;FRA=L''erreur est survenu dans le fichier : %1 . la ligne : %2';
+      TypeLog@1000000027 : 'Info,Error';
+      TEndProcess@1000000035 : TextConst 'ENU=End of process;FRA=Fin de traitement';
+      TImportFile@1000000036 : TextConst 'ENU=Import file : %1;FRA=Importation du fichier : %1';
+      TImportInvoice@1000000037 : TextConst 'ENU=Import Invoice : %1;FRA=Importation de la facture : %1';
+      TReadingFile@1000000038 : TextConst 'ENU=Reading File : %1;FRA=Lecture du fichier : %1';
+      UseReplicaDatabase@1000000039 : Boolean;
+      TErrEANNotExists@1000000040 : TextConst 'ENU=The Ean Code : %1  not exist;FRA=The code Ean : %1 n''existe pas';
+      TErrVendorItemCodeNotExists@1000000041 : TextConst 'ENU=The Vendor Item Code %1 not Exists;FRA=Le code article fournisseur %1 n''existe pas';
+      TErrItemNotExists@1000000042 : TextConst 'ENU=the Item %1 not Exists;FRA=L''article %1 n''existe pas';
+      TErrNoVendor@1000000043 : TextConst 'ENU=No vendor found;FRA=Pas de fournisseur trouv'';
+      TErrMultiVendor@1000000044 : TextConst 'ENU=here are more vendor for %1;FRA=Il y a plusieurs fournisseurs pour %1';
+
+    PROCEDURE "<-- 3LI Functions -->"@1000000000();
+    BEGIN
+    END;
+
+    PROCEDURE ImportTexte@1000000001(FileName_P@1000000000 : Text[256]) Result_L : Text[256];
+    VAR
+      "<-- 3LI LOCALS -->"@1000000001 : Integer;
+      FileImport_L@1000000003 : File;
+      FileInStream_L@1000000004 : InStream;
+      NbCarLu_L@1000000005 : Integer;
+      Pos_L@1000000011 : Integer;
+      TexteLu_L@1000000006 : Text[1024];
+      Texte_L@1000000012 : Text[256];
+      ZoneTemp_L@1000000014 : Text[256];
+      TableSetup_L@1000000013 : Record 8053408;
+      TableImportHead_L@1000000007 : Record 8087767;
+      TableImportLine_L@1000000022 : Record 8087768;
+      MajRecord_L@1000000010 : Boolean;
+      FileLogName_L@1000000016 : Text[256];
+      FormatFieldsManage_L@1000000002 : Codeunit 8060985;
+      TypeEnr_L@1000000008 : Text[2];
+      NumFacture_L@1000000015 : Text[17];
+      Emetteur_L@1000000017 : Text[17];
+      EmetteurType_L@1000000018 : Text[3];
+      Destinataire_L@1000000019 : Text[17];
+      DestinataireType_L@1000000020 : Text[3];
+      Signe_L@1000000009 : Text[1];
+      ErreurEnt_L@1000000021 : Boolean;
+      ErreurLig_L@1000000023 : Boolean;
+      TypeAdr_L@1000000024 : Text[3];
+      EAEan13_L@1000000025 : Text[17];
+      EAAdresse_L@1000000026 : Text[250];
+      EAPostCode_L@1000000027 : Text[5];
+      "-- ADV - XPE --"@1000000028 : Integer;
+      NoLineFile@1000000029 : Integer;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Importation des contrats CEREMIS : copie vers SAS Import Ceremis (8053407)
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - FileName_P             : Nom du fichier PC . int'grer
+      // Sorties:
+      //   - Result_L               : Erreur Retourn'e, Vide si Ok
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // <-- 20180606-ADV-XPE
+      NoLineFile := 0;
+      // --> 20180606-ADV-XPE
+      ToolsFile_G.LogInitFileExecute(FileName_P);
+
+      //ToolsFile_G.LogWriteInfo('Import : ' + FileName_P);
+      SetToLog(TypeLog::Info, STRSUBSTNO(TImportFile, FileName_P), 0, '');
+
+      IF NOT TableSetup_L.FINDFIRST THEN BEGIN
+        //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0001, TableSetup_L.TABLECAPTION ,COMPANYNAME),1,MAXSTRLEN(Result_L)));
+        SetToLog(TypeLog::Error, COPYSTR(STRSUBSTNO(Text0001, TableSetup_L.TABLECAPTION ,COMPANYNAME),1,MAXSTRLEN(Result_L)), 0, '');
+      END ELSE BEGIN
+        //ToolsFile_G.LogWriteInfo('Import Facture ' + FORMAT(TableSetup_L."Import Invoice"));
+        SetToLog(TypeLog::Info, STRSUBSTNO(TImportInvoice, FORMAT(TableSetup_L."Import Invoice")), 0, '');
+        IF TableSetup_L."Import Invoice" THEN BEGIN
+          FileName_P := UPPERCASE(FileName_P);
+          IF NOT EXISTS(FileName_P) THEN BEGIN
+            //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0002, FileName_P), 1, MAXSTRLEN(Result_L)));
+            SetToLog(TypeLog::Error, COPYSTR(STRSUBSTNO(Text0002, FileName_P), 1, MAXSTRLEN(Result_L)), 0, '');
+          END ELSE BEGIN
+            IF NOT FileImport_L.OPEN(FileName_P) THEN BEGIN
+              //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0003, FileName_P, GETLASTERRORTEXT), 1, MAXSTRLEN(Result_L)));
+              SetToLog(TypeLog::Error, COPYSTR(STRSUBSTNO(Text0003, FileName_P, GETLASTERRORTEXT), 1, MAXSTRLEN(Result_L)), 0, '');
+              CLEARLASTERROR;
+            END ELSE BEGIN
+              //ToolsFile_G.LogWriteInfo('Lecture fichier : ' + FileName_P);
+              SetToLog(TypeLog::Info, STRSUBSTNO(TReadingFile, FileName_P), 0, '');
+              FileImport_L.CREATEINSTREAM(FileInStream_L);
+              WHILE NOT (FileInStream_L.EOS) DO BEGIN
+                // <-- 20180606-ADV-XPE
+                NoLineFile += 1;
+                // --> 20180606-ADV-XPE
+                NbCarLu_L := FileInStream_L.READTEXT(TexteLu_L);
+                Pos_L := 1;
+                // Type enregistrement
+                TypeEnr_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 2);
+                //ToolsFile_G.LogWriteInfo('TypeEnr_L : ' + TypeEnr_L);
+                SetToLog(TypeLog::Info, 'TypeEnr_L : ' + TypeEnr_L, NoLineFile, FileName_P);
+                CASE TypeEnr_L OF
+                  'DI': BEGIN // D'but interchange
+                    CLEAR(TableImportHead_L);
+                    Emetteur_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 17);
+                    //ToolsFile_G.LogWriteInfo('TypeEnr_L : ' + TypeEnr_L);
+                    SetToLog(TypeLog::Info, 'TypeEnr_L : ' + TypeEnr_L, NoLineFile, FileName_P);
+                    EmetteurType_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+                    Destinataire_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 17);
+                    DestinataireType_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+                    ErreurEnt_L := FALSE;
+                  END;
+                  'ED': BEGIN // Ent^te
+                    CLEAR(TableImportHead_L);
+                    TableImportHead_L.SETRANGE(Emetteur, Emetteur_L);
+                    TableImportHead_L.SETRANGE("Emetteur Type", EmetteurType_L);
+                    TableImportHead_L.SETRANGE(Destinataire, Destinataire_L);
+                    TableImportHead_L.SETRANGE("Destinataire Type", DestinataireType_L);
+                    NumFacture_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 17);
+                    //ToolsFile_G.LogWriteInfo('NumFacture_L : ' + NumFacture_L);
+                    SetToLog(TypeLog::Info, 'NumFacture_L : ' + NumFacture_L, NoLineFile, FileName_P);
+                    // N› facture non d'j. int'gr'.
+                    TableImportHead_L.SETRANGE("Num Facture", NumFacture_L);
+                    IF NOT TableImportHead_L.ISEMPTY THEN BEGIN
+                      //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0005, NumFacture_L, TableImportHead_L.TABLECAPTION), 1,
+                      //  MAXSTRLEN(Result_L)));
+                      // <-- 20180606-ADV-XPE
+                      //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                      // --> 20180606-ADV-XPE
+                      SetToLog(TypeLog::Error,
+                               COPYSTR(STRSUBSTNO(Text0005, NumFacture_L, TableImportHead_L.TABLECAPTION), 1,MAXSTRLEN(Result_L))
+                               , NoLineFile, FileName_P);
+                      ErreurEnt_L := TRUE;
+                      //ToolsFile_G.LogWriteInfo('Erreur Entete : ' + NumFacture_L);
+                      SetToLog(TypeLog::Info, 'Erreur Entete : ' + NumFacture_L, NoLineFile, FileName_P);
+                    END ELSE BEGIN
+                      //ToolsFile_G.LogWriteInfo('TableImportHead_L OK : ' + NumFacture_L);
+                      SetToLog(TypeLog::Info, 'TableImportHead_L OK : ' + NumFacture_L, NoLineFile, FileName_P);
+                      TableImportHead_L.VALIDATE("Source Type", TableImportHead_L."Source Type"::EDI);
+                      TableImportHead_L.Emetteur := Emetteur_L;
+                      TableImportHead_L."Emetteur Type" := EmetteurType_L;
+                      SetVendor(TableImportHead_L);
+                      TableImportHead_L.Destinataire := Destinataire_L;
+                      TableImportHead_L."Destinataire Type" := DestinataireType_L;
+                      TableImportHead_L."Num Facture" := NumFacture_L;
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 4);
+                      //TableImportHead_L."Type Facture" := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+                      TableImportHead_L.VALIDATE("Type Facture", ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3));
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 35);
+
+                      ZoneTemp_L := ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 4) + '-' +
+                        ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 2) + '-' + ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 2);
+                      IF (COPYSTR(ZoneTemp_L, 1, 10) = '0000-00-00') OR (COPYSTR(ZoneTemp_L, 1, 10) = '    -  -  ') THEN BEGIN
+                        TableImportHead_L."Date facture" := 0D;
+                      END ELSE BEGIN
+                        IF NOT EVALUATE(TableImportHead_L."Date facture", ZoneTemp_L, 9) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                          //  TableImportHead_L.FIELDCAPTION("Date facture"), ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>1', 1,
+                          //  MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                   COPYSTR(STRSUBSTNO(Text0006,
+                                   TableImportHead_L.FIELDCAPTION("Date facture"), ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>1', 1,
+                                   MAXSTRLEN(Result_L))
+                                   , NoLineFile, FileName_P);
+                          ErreurEnt_L := TRUE;
+                        END;
+                      END;
+
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+                      TableImportHead_L."Type Facture2" := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+                      TableImportHead_L.OrderNo := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 17);
+                      SetSourceDocument(TableImportHead_L);
+
+                      ZoneTemp_L := ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 4) + '-' +
+                        ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 2) + '-' + ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 2);
+                      IF (COPYSTR(ZoneTemp_L, 1, 10) = '0000-00-00') OR (COPYSTR(ZoneTemp_L, 1, 10) = '    -  -  ') THEN BEGIN
+                        TableImportHead_L."Date commande Client" := 0D;
+                      END ELSE BEGIN
+                        IF NOT EVALUATE(TableImportHead_L."Date commande Client", ZoneTemp_L, 9) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                          //  TableImportHead_L.FIELDCAPTION("Date commande Client"), ZoneTemp_L,
+                          //  COPYSTR(TexteLu_L, 1, 20))+'>2', 1, MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                   COPYSTR(STRSUBSTNO(Text0006,
+                                   TableImportHead_L.FIELDCAPTION("Date commande Client"), ZoneTemp_L,
+                                   COPYSTR(TexteLu_L, 1, 20))+'>2', 1, MAXSTRLEN(Result_L))
+                                   , NoLineFile, FileName_P);
+
+                          ErreurEnt_L := TRUE;
+                        END;
+                      END;
+                      TableImportHead_L."Num BL" := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 17);
+                      ZoneTemp_L := ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 4) + '-' +
+                        ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 2) + '-' + ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 2);
+
+                      IF (COPYSTR(ZoneTemp_L, 1, 10) = '0000-00-00') OR (COPYSTR(ZoneTemp_L, 1, 10) = '    -  -  ') THEN BEGIN
+                        TableImportHead_L."Date BL" := 0D;
+                      END ELSE BEGIN
+                        IF NOT EVALUATE(TableImportHead_L."Date BL", ZoneTemp_L, 9) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                          //  TableImportHead_L.FIELDCAPTION("Date BL"), ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>3', 1,
+                          //  MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                   COPYSTR(STRSUBSTNO(Text0006,
+                                   TableImportHead_L.FIELDCAPTION("Date BL"), ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>3', 1,
+                                   MAXSTRLEN(Result_L))
+                                   , NoLineFile, FileName_P);
+
+                          ErreurEnt_L := TRUE;
+                        END;
+                      END;
+                      TableImportHead_L."Num Contrat" := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 17);
+                      ZoneTemp_L := ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 4) + '-' +
+                        ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 2) + '-' + ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 2);
+
+                      IF (COPYSTR(ZoneTemp_L, 1, 10) = '0000-00-00') OR (COPYSTR(ZoneTemp_L, 1, 10) = '    -  -  ') THEN BEGIN
+                        TableImportHead_L."Date Contrat" := 0D;
+                      END ELSE BEGIN
+                        IF NOT EVALUATE(TableImportHead_L."Date Contrat", ZoneTemp_L, 9) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                          //  TableImportHead_L.FIELDCAPTION("Date Contrat"), ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>4', 1,
+                          //  MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                   COPYSTR(STRSUBSTNO(Text0006,
+                                   TableImportHead_L.FIELDCAPTION("Date Contrat"), ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>4', 1,
+                                   MAXSTRLEN(Result_L))
+                                   , NoLineFile, FileName_P);
+
+                          ErreurEnt_L := TRUE;
+                        END;
+                      END;
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 17);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 8);
+
+                      TableImportHead_L.Devise := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+                    ToolsFile_G.LogWriteInfo('INSERT : ');
+                      IF NOT ErreurEnt_L THEN BEGIN
+                        IF NOT TableImportHead_L.INSERT(TRUE) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0010, TableImportHead_L.TABLECAPTION,
+                          //  COPYSTR(TexteLu_L, 1, 20)), 1, MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                   COPYSTR(STRSUBSTNO(Text0010, TableImportHead_L.TABLECAPTION,
+                                   COPYSTR(TexteLu_L, 1, 20)), 1, MAXSTRLEN(Result_L))
+                                   , NoLineFile, FileName_P);
+
+                          ErreurEnt_L := TRUE;
+                        END;
+                      END;
+                    END;
+                  END;
+                  'EA': BEGIN // Ent^te adresse
+                    ToolsFile_G.LogWriteInfo('Adresse : ');
+                    IF NOT ErreurEnt_L THEN BEGIN
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 17);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+                      TypeAdr_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+                      IF (TypeAdr_L = 'DP') OR (TypeAdr_L = 'SU') THEN BEGIN
+                        EAEan13_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 17);
+                        ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+                        EAAdresse_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 35);
+                        IF EAAdresse_L <> '' THEN BEGIN
+                          EAAdresse_L += ' ' + ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 35);;
+                        END ELSE BEGIN
+                          EAAdresse_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 35);
+                        END;
+                        IF EAAdresse_L <> '' THEN BEGIN
+                          EAAdresse_L += ' ' + ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 35);;
+                        END ELSE BEGIN
+                          EAAdresse_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 35);
+                        END;
+                        IF EAAdresse_L <> '' THEN BEGIN
+                          EAAdresse_L += ' ' + ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 35);;
+                        END ELSE BEGIN
+                          EAAdresse_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 35);
+                        END;
+                        IF EAAdresse_L <> '' THEN BEGIN
+                          EAAdresse_L += ' ' + ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 35);;
+                        END ELSE BEGIN
+                          EAAdresse_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 35);
+                        END;
+                        EAPostCode_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 5);
+
+                        CASE TypeAdr_L OF
+                          'DP': BEGIN // Livr' .
+                            TableImportHead_L.DPEan13 := EAEan13_L;
+                            TableImportHead_L.DPAdresse := COPYSTR(EAAdresse_L, 1, MAXSTRLEN(TableImportHead_L.DPAdresse));
+                            TableImportHead_L.DPPostCode := EAPostCode_L;
+                          END;
+                          'SU': BEGIN // Exp'di' de
+                            TableImportHead_L.SUEan13 := EAEan13_L;
+                            TableImportHead_L.SUAdresse := COPYSTR(EAAdresse_L, 1, MAXSTRLEN(TableImportHead_L.SUAdresse));
+                            TableImportHead_L.SUPostCode := EAPostCode_L;
+                          END;
+                        END;
+
+                        IF NOT ErreurEnt_L THEN BEGIN
+                          IF NOT TableImportHead_L.MODIFY(TRUE) THEN BEGIN
+                            //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0014, TableImportHead_L.TABLECAPTION,
+                            //  COPYSTR(TexteLu_L, 1, 20)), 1, MAXSTRLEN(Result_L)));
+                            // <-- 20180606-ADV-XPE
+                            //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                            // --> 20180606-ADV-XPE
+                            SetToLog(TypeLog::Error,
+                                   COPYSTR(STRSUBSTNO(Text0014, TableImportHead_L.TABLECAPTION,
+                                   COPYSTR(TexteLu_L, 1, 20)), 1, MAXSTRLEN(Result_L))
+                                   , NoLineFile, FileName_P);
+
+                            ErreurEnt_L := TRUE;
+                          END;
+                        END;
+                      END;
+                    END;
+                  END;
+                  'EE': BEGIN // Ent^te 'ch'ance
+                    ToolsFile_G.LogWriteInfo('Echeance : ');
+                    IF NOT ErreurEnt_L THEN BEGIN
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 17);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+                      ZoneTemp_L := ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 4) + '-' +
+                        ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 2) + '-' + ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 2);
+                      IF (COPYSTR(ZoneTemp_L, 1, 10) = '0000-00-00') OR (COPYSTR(ZoneTemp_L, 1, 10) = '    -  -  ') THEN BEGIN
+                        TableImportHead_L."Date 'ch'ance" := 0D;
+                      END ELSE BEGIN
+                        IF NOT EVALUATE(TableImportHead_L."Date 'ch'ance", ZoneTemp_L, 9) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                          //  TableImportHead_L.FIELDCAPTION(TableImportHead_L."Date 'ch'ance"),
+                          //      ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>5',
+                          //    1, MAXSTRLEN(Result_L)));
+                            // <-- 20180606-ADV-XPE
+                          //  ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                            // --> 20180606-ADV-XPE
+                            SetToLog(TypeLog::Error,
+                                   COPYSTR(STRSUBSTNO(Text0006, TableImportHead_L.FIELDCAPTION(TableImportHead_L."Date 'ch'ance"),
+                                   ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>5', 1, MAXSTRLEN(Result_L))
+                                   , NoLineFile, FileName_P);
+
+                          ErreurEnt_L := TRUE;
+                        END;
+                      END;
+                      IF NOT ErreurEnt_L THEN BEGIN
+                        IF NOT TableImportHead_L.MODIFY(TRUE) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0014, TableImportHead_L.TABLECAPTION,
+                          //  TableImportLine_L."Num Facture", TableImportLine_L."Num Ligne"), 1, MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                   COPYSTR(STRSUBSTNO(Text0014, TableImportHead_L.TABLECAPTION,
+                                   TableImportLine_L."Num Facture", TableImportLine_L."Num Ligne"), 1, MAXSTRLEN(Result_L))
+                                   , NoLineFile, FileName_P);
+
+                          ErreurEnt_L := TRUE;
+                        END;
+                      END;
+                    END;
+                  END;
+                  'EC': BEGIN // Ent^te Commentaire
+                  END;
+                  'EM': BEGIN // Montant
+                    //ToolsFile_G.LogWriteInfo('Montant : ');
+                    SetToLog(TypeLog::Info, 'Montant : ', NoLineFile, FileName_P);
+
+                    IF NOT ErreurEnt_L THEN BEGIN
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 17);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+                      Signe_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 1);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 11);
+                      IF NOT EVALUATE(TableImportHead_L."Net a payer", ZoneTemp_L) THEN BEGIN
+                        //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                        //  TableImportHead_L.FIELDCAPTION(TableImportHead_L."Net a payer"),
+                        //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>6', 1,
+                        //  MAXSTRLEN(Result_L)));
+                        // <-- 20180606-ADV-XPE
+                        //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                        // --> 20180606-ADV-XPE
+                        SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006,TableImportHead_L.FIELDCAPTION(TableImportHead_L."Net a payer"),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>6', 1, MAXSTRLEN(Result_L))
+                                   , NoLineFile, FileName_P);
+
+                        ErreurEnt_L := TRUE;
+                      END;
+                      TableImportHead_L."Net a payer" /= 1000;
+                      IF Signe_L = '-' THEN BEGIN
+                        TableImportHead_L."Net a payer" *= -1;
+                      END;
+
+                      Signe_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 1);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 11);
+                      IF NOT EVALUATE(TableImportHead_L."Total Tva", ZoneTemp_L) THEN BEGIN
+                        //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                        //  TableImportHead_L.FIELDCAPTION(TableImportHead_L."Net a payer"),
+                        //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>7', 1,
+                        //  MAXSTRLEN(Result_L)));
+                        // <-- 20180606-ADV-XPE
+                        //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                        SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportHead_L.FIELDCAPTION(TableImportHead_L."Net a payer"),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>7', 1, MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                        // --> 20180606-ADV-XPE
+                        ErreurEnt_L := TRUE;
+                      END;
+                      TableImportHead_L."Total Tva" /= 1000;
+                      IF Signe_L = '-' THEN BEGIN
+                        TableImportHead_L."Total Tva" *= -1;
+                      END;
+
+                      Signe_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 1);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 11);
+                      IF NOT EVALUATE(TableImportHead_L."Total Ht", ZoneTemp_L) THEN BEGIN
+                        //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                        //  TableImportHead_L.FIELDCAPTION(TableImportHead_L."Net a payer"),
+                        //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>8', 1,
+                        //  MAXSTRLEN(Result_L)));
+                        // <-- 20180606-ADV-XPE
+                        //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                        // --> 20180606-ADV-XPE
+                        SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportHead_L.FIELDCAPTION(TableImportHead_L."Net a payer"),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>8', 1, MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                        ErreurEnt_L := TRUE;
+                      END;
+                      TableImportHead_L."Total Ht" /= 1000;
+                      IF Signe_L = '-' THEN BEGIN
+                        TableImportHead_L."Total Ht" *= -1;
+                      END;
+
+                      Signe_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 1);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 11);
+                      IF NOT EVALUATE(TableImportHead_L."Total Frais", ZoneTemp_L) THEN BEGIN
+                        //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                        //  TableImportHead_L.FIELDCAPTION(TableImportHead_L."Total Frais"),
+                        //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>9', 1,
+                        //  MAXSTRLEN(Result_L)));
+                        // <-- 20180606-ADV-XPE
+                        //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                        // --> 20180606-ADV-XPE
+                        SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportHead_L.FIELDCAPTION(TableImportHead_L."Total Frais"),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>9', 1, MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                        ErreurEnt_L := TRUE;
+                      END;
+                      TableImportHead_L."Total Frais" /= 1000;
+                      IF Signe_L = '-' THEN BEGIN
+                        TableImportHead_L."Total Frais" *= -1;
+                      END;
+
+                      Signe_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 1);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 11);
+                      Signe_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 1);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 11);
+                      // Tva 1
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 4);
+                      IF ZoneTemp_L <> '' THEN BEGIN
+                        IF NOT EVALUATE(TableImportHead_L.TauxTva1, ZoneTemp_L) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                          //  TableImportHead_L.FIELDCAPTION(TableImportHead_L.TauxTva1),
+                          //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>10', 1,
+                          //  MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportHead_L.FIELDCAPTION(TableImportHead_L.TauxTva1),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>10', 1, MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                          ErreurEnt_L := TRUE;
+                        END;
+                        TableImportHead_L.TauxTva1 /= 100;
+                      END;
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 11);
+                      IF ZoneTemp_L <> '' THEN BEGIN
+                        IF NOT EVALUATE(TableImportHead_L."HT Tva1", ZoneTemp_L) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                          //  TableImportHead_L.FIELDCAPTION(TableImportHead_L."HT Tva1"),
+                          //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>11', 1,
+                          //  MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportHead_L.FIELDCAPTION(TableImportHead_L."Net a payer"),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>11', 1, MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                          ErreurEnt_L := TRUE;
+                        END;
+                        TableImportHead_L."HT Tva1" /= 1000;
+                      END;
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 11);
+                      IF ZoneTemp_L <> '' THEN BEGIN
+                        IF NOT EVALUATE(TableImportHead_L."Montant Tva1", ZoneTemp_L) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                          //  TableImportHead_L.FIELDCAPTION(TableImportHead_L."Montant Tva1"),
+                          //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>12', 1,
+                          //  MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportHead_L.FIELDCAPTION(TableImportHead_L."Montant Tva1"),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>12', 1, MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                          ErreurEnt_L := TRUE;
+                        END;
+                        TableImportHead_L."Montant Tva1" /= 1000;
+                      END;
+                      // Tva 2
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 4);
+                      IF ZoneTemp_L <> '' THEN BEGIN
+                        IF NOT EVALUATE(TableImportHead_L.TauxTva2, ZoneTemp_L) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                          //  TableImportHead_L.FIELDCAPTION(TableImportHead_L.TauxTva2),
+                          //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>13', 1,
+                          //  MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportHead_L.FIELDCAPTION(TableImportHead_L.TauxTva2),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>13', 1, MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                          // --> 20180606-ADV-XPE
+                          ErreurEnt_L := TRUE;
+                        END;
+                        TableImportHead_L.TauxTva2 /= 100;
+                      END;
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 11);
+                      IF ZoneTemp_L <> '' THEN BEGIN
+                        IF NOT EVALUATE(TableImportHead_L."HT Tva2", ZoneTemp_L) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                          //  TableImportHead_L.FIELDCAPTION(TableImportHead_L."HT Tva2"),
+                          //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>14', 1,
+                          //  MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportHead_L.FIELDCAPTION(TableImportHead_L."HT Tva2"),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>14', 1, MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                          ErreurEnt_L := TRUE;
+                        END;
+                        TableImportHead_L."HT Tva2" /= 100;
+                      END;
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 11);
+                      IF ZoneTemp_L <> '' THEN BEGIN
+                        IF NOT EVALUATE(TableImportHead_L."Montant Tva2", ZoneTemp_L) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                          //  TableImportHead_L.FIELDCAPTION(TableImportHead_L."Montant Tva2"),
+                          //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>15', 1,
+                          //  MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportHead_L.FIELDCAPTION(TableImportHead_L."Montant Tva2"),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>15', 1, MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                          ErreurEnt_L := TRUE;
+                        END;
+                        TableImportHead_L."Montant Tva2" /= 100;
+                      END;
+                      // Tva 3
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 4);
+                      IF ZoneTemp_L <> '' THEN BEGIN
+                        IF NOT EVALUATE(TableImportHead_L.TauxTva3, ZoneTemp_L) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                          //  TableImportHead_L.FIELDCAPTION(TableImportHead_L.TauxTva3),
+                          //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>16', 1,
+                          //  MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportHead_L.FIELDCAPTION(TableImportHead_L.TauxTva3),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>16', 1, MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                          ErreurEnt_L := TRUE;
+                        END;
+                        TableImportHead_L.TauxTva3 /= 100;
+                      END;
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 11);
+                      IF ZoneTemp_L <> '' THEN BEGIN
+                        IF NOT EVALUATE(TableImportHead_L."HT Tva3", ZoneTemp_L) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                          //  TableImportHead_L.FIELDCAPTION(TableImportHead_L."HT Tva3"),
+                          //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>17', 1,
+                          //  MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportHead_L.FIELDCAPTION(TableImportHead_L."HT Tva3"),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>17', 1, MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                          ErreurEnt_L := TRUE;
+                        END;
+                        TableImportHead_L."HT Tva3" /= 100;
+                      END;
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 11);
+                      IF ZoneTemp_L <> '' THEN BEGIN
+                        IF NOT EVALUATE(TableImportHead_L."Montant Tva3", ZoneTemp_L) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                          //  TableImportHead_L.FIELDCAPTION(TableImportHead_L."Montant Tva3"),
+                          //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>18', 1,
+                          //  MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportHead_L.FIELDCAPTION(TableImportHead_L."Montant Tva3"),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>18', 1, MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                          ErreurEnt_L := TRUE;
+                        END;
+                        TableImportHead_L."Montant Tva3" /= 100;
+                      END;
+                      IF NOT ErreurEnt_L THEN BEGIN
+                        IF NOT TableImportHead_L.MODIFY(TRUE) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0014, TableImportHead_L.TABLECAPTION,
+                          //  COPYSTR(TexteLu_L, 1, 20)), 1, MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0014, TableImportHead_L.TABLECAPTION,
+                                 COPYSTR(TexteLu_L, 1, 20)), 1, MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                          ErreurEnt_L := TRUE;
+                        END;
+                      END;
+                    END;
+                  END;
+                  'ER': BEGIN // Remise (Rien)
+                  END;
+                  'LP': BEGIN // Ligne produit
+                    //ToolsFile_G.LogWriteInfo('Produit : ');
+                    SetToLog(TypeLog::Info,'Produit : ', NoLineFile, FileName_P);
+                    IF NOT ErreurEnt_L THEN BEGIN
+                      ErreurLig_L := FALSE;
+                      CLEAR(TableImportLine_L);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 17);
+                      TableImportLine_L."Emetteur Type" := TableImportHead_L."Emetteur Type";
+                      TableImportLine_L.Emetteur := TableImportHead_L.Emetteur;
+                      TableImportLine_L."Destinataire Type" := TableImportHead_L."Destinataire Type";
+                      TableImportLine_L.Destinataire := TableImportHead_L.Destinataire;
+                      TableImportLine_L."Type Facture" := TableImportHead_L."Type Facture";
+                      TableImportLine_L."Num Facture" := TableImportHead_L."Num Facture";
+
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+                      IF ZoneTemp_L <> '' THEN BEGIN
+                        IF NOT EVALUATE(TableImportLine_L."Num Ligne", ZoneTemp_L) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                          //  TableImportLine_L.FIELDCAPTION(TableImportLine_L."Num Ligne"),
+                          //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>19', 1,
+                          //  MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportLine_L.FIELDCAPTION(TableImportLine_L."Num Ligne"),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>19', 1,  MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                          ErreurLig_L := TRUE;
+                        END;
+                      END;
+
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 13);
+                      IF ZoneTemp_L <> '' THEN BEGIN
+                        IF NOT EVALUATE(TableImportLine_L.Ean13, ZoneTemp_L) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                          //  TableImportLine_L.FIELDCAPTION(TableImportLine_L.Ean13),
+                          //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>20', 1,
+                          //  MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportLine_L.FIELDCAPTION(TableImportLine_L.Ean13),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>20', 1,  MAXSTRLEN(Result_L))
+                                 , 0, '');
+
+                          ErreurLig_L := TRUE;
+                        END;
+                      END;
+                      TableImportLine_L."Code Produit" := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 16);
+                      TableImportLine_L."Code Produit fournisseur" := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 17);
+                      //ToolsFile_G.LogWriteInfo('Produit : ' + TableImportLine_L."Code Produit");
+                      //ToolsFile_G.LogWriteInfo('Produit Fourn : ' + TableImportLine_L."Code Produit fournisseur");
+                      SetToLog(TypeLog::Info,'Produit : ' + TableImportLine_L."Code Produit", NoLineFile, FileName_P);
+                      SetToLog(TypeLog::Info,'Produit Fourn : ' + TableImportLine_L."Code Produit fournisseur", NoLineFile, FileName_P);
+                      Signe_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 1);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 11);
+                      IF NOT EVALUATE(TableImportLine_L."Prix net", ZoneTemp_L) THEN BEGIN
+                        //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                        //  TableImportLine_L.FIELDCAPTION(TableImportLine_L."Prix net"),
+                        //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>21', 1,
+                        //  MAXSTRLEN(Result_L)));
+                        // <-- 20180606-ADV-XPE
+                        //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                        // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportLine_L.FIELDCAPTION(TableImportLine_L."Prix net"),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>21', 1,  MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                        ErreurLig_L := TRUE;
+                      END;
+                      TableImportLine_L."Prix net" /= 1000;
+                      IF Signe_L = '-' THEN BEGIN
+                        TableImportLine_L."Prix net" *= -1;
+                      END;
+                      TableImportLine_L.Unite := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+                      //ToolsFile_G.LogWriteInfo('Unite : ' + TableImportLine_L.Unite);
+                      SetToLog(TypeLog::Info,'Unite : ' + TableImportLine_L.Unite, NoLineFile, FileName_P);
+                      Signe_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 1);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 9);
+                      IF NOT EVALUATE(TableImportLine_L."Quantite facture", ZoneTemp_L) THEN BEGIN
+                        //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                        //  TableImportLine_L.FIELDCAPTION(TableImportLine_L."Quantite facture"),
+                         //   ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>22',
+                        //  1, MAXSTRLEN(Result_L)));
+                        // <-- 20180606-ADV-XPE
+                        //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                        // --> 20180606-ADV-XPE
+                        SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportLine_L.FIELDCAPTION(TableImportLine_L."Quantite facture"),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>22', 1,  MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                        ErreurLig_L := TRUE;
+                      END;
+                      TableImportLine_L."Quantite facture" /= 1000;
+                      IF Signe_L = '-' THEN BEGIN
+                        TableImportLine_L."Quantite facture" *= -1;
+                      END;
+
+                      Signe_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 1);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 11);
+                      IF NOT EVALUATE(TableImportLine_L.Montant, ZoneTemp_L) THEN BEGIN
+                        //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                        //  TableImportLine_L.FIELDCAPTION(TableImportLine_L.Montant),
+                        //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>23',
+                        //  1, MAXSTRLEN(Result_L)));
+                        // <-- 20180606-ADV-XPE
+                        //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                        // --> 20180606-ADV-XPE
+                        SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportLine_L.FIELDCAPTION(TableImportLine_L.Montant),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>23', 1,  MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                        ErreurLig_L := TRUE;
+                      END;
+                      TableImportLine_L.Montant /= 1000;
+                      IF Signe_L = '-' THEN BEGIN
+                        TableImportLine_L.Montant *= -1;
+                      END;
+
+                      Signe_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 1);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 11);
+                      IF NOT EVALUATE(TableImportLine_L."Prix brut", ZoneTemp_L) THEN BEGIN
+                        //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                        //  TableImportLine_L.FIELDCAPTION(TableImportLine_L."Prix brut"),
+                        //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>24', 1,
+                        //  MAXSTRLEN(Result_L)));
+                        // <-- 20180606-ADV-XPE
+                        //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                        // --> 20180606-ADV-XPE
+                        SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportLine_L.FIELDCAPTION(TableImportLine_L."Prix brut"),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>24', 1,  MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                        ErreurLig_L := TRUE;
+                      END;
+                      TableImportLine_L."Prix brut" /= 1000;
+                      IF Signe_L = '-' THEN BEGIN
+                        TableImportLine_L."Prix brut" *= -1;
+                      END;
+
+                      TableImportLine_L."Code Tva" := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 4);
+                      IF NOT EVALUATE(TableImportLine_L."Taux Tva", ZoneTemp_L) THEN BEGIN
+                        //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                        //  TableImportLine_L.FIELDCAPTION(TableImportLine_L."Taux Tva"),
+                        //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>25', 1,
+                        //  MAXSTRLEN(Result_L)));
+                        // <-- 20180606-ADV-XPE
+                        //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                        // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportLine_L.FIELDCAPTION(TableImportLine_L."Taux Tva"),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>25', 1,  MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                        ErreurLig_L := TRUE;
+                      END;
+                      TableImportLine_L."Taux Tva" /= 100;
+
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 1);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 11);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+                      TableImportLine_L."Num BL" := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 17);
+                      ZoneTemp_L := ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 4) + '-' +
+                        ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 2) + '-' + ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 2);
+                      IF (COPYSTR(ZoneTemp_L, 1, 10) = '0000-00-00') OR (COPYSTR(ZoneTemp_L, 1, 10) = '    -  -  ') THEN BEGIN
+                        TableImportLine_L."Date BL" := 0D;
+                      END ELSE BEGIN
+                        IF NOT EVALUATE(TableImportLine_L."Date BL", ZoneTemp_L, 9) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                          //  TableImportLine_L.FIELDCAPTION(TableImportLine_L."Date BL"),
+                          //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>26', 1,
+                          //  MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportLine_L.FIELDCAPTION(TableImportLine_L."Date BL"),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>26', 1,  MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                          ErreurLig_L := TRUE;
+                        END;
+                      END;
+
+                      TableImportLine_L.RefCde := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 17);
+                      SetSourceDocumentLine(TableImportLine_L);
+                      ZoneTemp_L := ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 4) + '-' +
+                        ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 2) + '-' + ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 2);
+                      IF (COPYSTR(ZoneTemp_L, 1, 10) = '0000-00-00') OR (COPYSTR(ZoneTemp_L, 1, 10) = '    -  -  ') THEN BEGIN
+                        TableImportLine_L."Date commande" := 0D;
+                      END ELSE BEGIN
+                        IF NOT EVALUATE(TableImportLine_L."Date commande", ZoneTemp_L, 9) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                          //  TableImportLine_L.FIELDCAPTION(TableImportLine_L."Date commande"),
+                          //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>27',
+                          //  1, MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportLine_L.FIELDCAPTION(TableImportLine_L."Date commande"),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>27', 1,  MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                          ErreurLig_L := TRUE;
+                        END;
+                      END;
+
+                      TableImportLine_L."Num Contrat" := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 17);
+                      //ToolsFile_G.LogWriteInfo('Num Contrat : ' + TableImportLine_L."Num Contrat");
+                      SetToLog(TypeLog::Info, 'Num Contrat : ' + TableImportLine_L."Num Contrat", NoLineFile, FileName_P);
+
+                      ZoneTemp_L := ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 4) + '-' +
+                        ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 2) + '-' + ToolsFile_G.ExtractText(TexteLu_L, Pos_L, 2);
+                      IF (COPYSTR(ZoneTemp_L, 1, 10) = '0000-00-00') OR (COPYSTR(ZoneTemp_L, 1, 10) = '    -  -  ') THEN BEGIN
+                        TableImportLine_L."Date contrat" := 0D;
+                      END ELSE BEGIN
+                        IF NOT EVALUATE(TableImportLine_L."Date contrat", ZoneTemp_L, 9) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0006,
+                          //  TableImportLine_L.FIELDCAPTION(TableImportLine_L."Date contrat"),
+                          //    ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>28', 1,
+                          //  MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0006, TableImportLine_L.FIELDCAPTION(TableImportLine_L."Date contrat"),
+                                 ZoneTemp_L, COPYSTR(TexteLu_L, 1, 20))+'>28', 1,  MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                          ErreurLig_L := TRUE;
+                        END;
+                      END;
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 6);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 8);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 11);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+
+                      TableImportLine_L.NumTrsp := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 17);
+                      //ToolsFile_G.LogWriteInfo('Insert Ligne : ');
+                      SetToLog(TypeLog::Info, 'Insert Ligne : ', NoLineFile, FileName_P);
+                      IF NOT ErreurEnt_L THEN BEGIN
+                        IF NOT TableImportLine_L.INSERT(TRUE) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0014, TableImportLine_L.TABLECAPTION,
+                          //  COPYSTR(TexteLu_L, 1, 20)), 1, MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0014, TableImportLine_L.TABLECAPTION,
+                                 COPYSTR(TexteLu_L, 1, 20)), 1, MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                          ErreurLig_L := TRUE;
+                        END;
+                      END;
+                    END;
+                  END;
+                  'LL': BEGIN // Ligne libell'  produit
+                    //ToolsFile_G.LogWriteInfo('Libelle produit : ');
+                    SetToLog(TypeLog::Info, 'Libelle produit : ', NoLineFile, FileName_P);
+                    IF NOT ErreurEnt_L THEN BEGIN
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 17);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+                      ZoneTemp_L := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 3);
+                      TableImportLine_L.Libelle := ToolsFile_G.ExtractTextTrim(TexteLu_L, Pos_L, 35);
+
+                      IF NOT ErreurEnt_L THEN BEGIN
+                        //ToolsFile_G.LogWriteInfo('Modify : ');
+                        SetToLog(TypeLog::Info, 'Modify : ', NoLineFile, FileName_P);
+                        IF NOT TableImportLine_L.MODIFY(TRUE) THEN BEGIN
+                          //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0014, TableImportLine_L.TABLECAPTION,
+                          //  COPYSTR(TexteLu_L, 1, 20)), 1, MAXSTRLEN(Result_L)));
+                          // <-- 20180606-ADV-XPE
+                          //ToolsFile_G.LogWriteErreur(STRSUBSTNO(ErrLineNo, FileName_P, NoLineFile));
+                          // --> 20180606-ADV-XPE
+                          SetToLog(TypeLog::Error,
+                                 COPYSTR(STRSUBSTNO(Text0014, TableImportLine_L.TABLECAPTION,
+                                 COPYSTR(TexteLu_L, 1, 20)), 1, MAXSTRLEN(Result_L))
+                                 , NoLineFile, FileName_P);
+
+                          ErreurLig_L := TRUE;
+                        END;
+                      END;
+                    END;
+
+                  END;
+                  'LR': BEGIN // Ligne remise (Rien)
+                  END;
+                  'LA': BEGIN // Ligne adresse livraison
+                  END ELSE BEGIN
+                  END;
+                END;
+              END;
+
+              FileImport_L.CLOSE();
+            END;
+          END;
+          // Pour g'rer le ROLLBACK.
+          CLEAR(Result_L);
+          FileLogName_L := ToolsFile_G.LogName;
+          ToolsFile_G.LogClose();
+
+          IF ToolsFile_G.LogErreurType() = 'E' THEN BEGIN
+            Result_L := 'ERREUR ' + FileLogName_L;
+            ERROR(Result_L);
+          END ELSE BEGIN
+            IF NOT ToolsFile_G.FileRenameSav(FileName_P, 'Sav', TRUE) THEN BEGIN
+              ToolsFile_G.LogWriteErreur(STRSUBSTNO(Text0004, FileName_P));
+            END;
+            IF ToolsFile_G.LogErreurType() = 'I' THEN BEGIN
+              Result_L := Text0008;
+              MoteurInterface_G.InsertLog(CodeUnit_G, FileLogName_L);
+            END ELSE BEGIN
+              MoteurInterface_G.InsertOk(CodeUnit_G);
+            END;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE ImportRecordMajCorr@1000000009() Result_L : Text[256];
+    VAR
+      "<-- 3LI LOCALS -->"@1000000000 : Integer;
+      TableSetup_L@1000000015 : Record 8053408;
+      TableImportHead_L@1000000002 : Record 8087767;
+      TableImportLine_L@1000000001 : Record 8087768;
+      TableItemCrossRef_L@1000000013 : Record 5717;
+      FileLogName_L@1000000003 : Text[256];
+      CodeUnitConnecteur_L@1000000009 : Integer;
+      ConnectorName_L@1000000008 : Code[20];
+      ImpExpFolder_L@1000000007 : Text[250];
+      LogFolder_L@1000000006 : Text[250];
+      ExtensionFile_L@1000000005 : Text[10];
+      PrefixFile_L@1000000004 : Text[30];
+      ModifLigne_L@1000000012 : Boolean;
+      Magasin_L@1000000011 : Text[30];
+      Fourn_L@1000000010 : Text[30];
+      FraisAnnexe_L@1000000014 : Code[20];
+      TextTemp_L@1000000016 : Text[255];
+      intPos1_L@1000000017 : Integer;
+      UniteSicapa_L@1000000018 : Text[30];
+      UniteEdi_L@1000000022 : Text[30];
+      ConvUnite_L@1000000019 : Decimal;
+      TableItem_L@1000000020 : Record 27;
+      ModifEntete_L@1000000021 : Boolean;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Importation des factures dans Nav : copie du SAS vers Table
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //
+      // Sorties:
+      //   - Result_L               : Erreur Retourn'e, Vide si Ok
+      //----------------------------------------------------------------------------------------------------------------------------------
+      IF (TableSetup_L.FINDFIRST) AND (TableSetup_L."Import Invoice") THEN BEGIN
+        TableImportHead_L.SETRANGE(HoroIntegration, 0DT, 0DT);
+
+        IF TableImportHead_L.FINDSET THEN BEGIN
+          CodeUnitConnecteur_L := TableSetup_L.CodeUnitIntegInvoiceConn;
+          MoteurInterface_G.GetParameter(CodeUnitConnecteur_L, ConnectorName_L, ImpExpFolder_L, LogFolder_L, ExtensionFile_L,
+            PrefixFile_L);
+          MoteurInterface_G.GetTemplatesCode (ConnectorName_L, ItemTemplateCode_G, CustomerTemplateCode_G, VendorTemplateCode_G,
+            ContactTemplateCode_G, AccountTemplateCode_G, GlobalTemplateCode_G);
+
+          REPEAT
+            //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+            ModifEntete_L := FALSE;
+            //ToolsFile_G.LogWriteInfo('No Facture : ' + TableImportHead_L."Num Facture");
+            SetToLog(TypeLog::Info, 'No Facture : ' + TableImportHead_L."Num Facture", 0, '');
+
+            ModifEntete_L := ReconciliationHeader(TableImportHead_L);
+            {
+            ///----XPE
+            // Contr"le correspondance Magasin r'ception.
+            IF TableImportHead_L.DPNavAgri = '' THEN BEGIN
+              TextTemp_L := MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G, 'Location', 'Code',
+                TableImportHead_L.DPEan13, TRUE, TRUE);
+
+              //ToolsFile_G.LogWriteInfo('TextTemp_L : ' + TextTemp_L);
+              intPos1_L := 1;
+              // --> 20201109-CLA87065-ADVITAM-XPE001
+              intPos1_L := STRPOS(TextTemp_L, 'Ø');
+              IF (intPos1_L = 0) THEN BEGIN
+                  TableImportHead_L.DPNavAgri := TextTemp_L;
+                  ModifEntete_L := TRUE;
+              END ELSE BEGIN
+              // <-- 20201109-CLA87065-ADVITAM-XPE001
+                intPos1_L := 1;
+                // <-- 20201109-CLA87065-ADVITAM-XPE001
+                Magasin_L := ToolsFile_G.ExtractTextCsv(TextTemp_L, intPos1_L, 'Ø', 30);
+                //ToolsFile_G.LogWriteInfo('Magasin_L : ' + Magasin_L);
+
+                IF Magasin_L = '' THEN BEGIN
+                  TextTemp_L := MoteurInterface_G.Getcorrespondance('SICAPA_DIVERS_EDI', 'Location', 'Code',
+                    TableImportHead_L.DPEan13, TRUE, TRUE);
+
+                  //ToolsFile_G.LogWriteInfo('TextTemp_L 2 : ' + TextTemp_L);
+                  // --> 20201109-CLA87065-ADVITAM-XPE001
+                  intPos1_L := STRPOS(TextTemp_L, 'Ø');
+                  IF (intPos1_L = 0) THEN BEGIN
+                    TableImportHead_L.DPNavAgri := TextTemp_L;
+                    ModifEntete_L := TRUE;
+                  END ELSE BEGIN
+                    // <-- 20201109-CLA87065-ADVITAM-XPE001
+                    intPos1_L := 1;
+                    Magasin_L := ToolsFile_G.ExtractTextCsv(TextTemp_L, intPos1_L, 'Ø', 30);
+                    //ToolsFile_G.LogWriteInfo('Magasin_L : ' + Magasin_L);
+                    IF Magasin_L = '' THEN BEGIN
+                      //ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text0009, TableImportHead_L.FIELDCAPTION(DPNavAgri),
+                      //  TableImportHead_L.DPEan13, TableImportLine_L."Num Facture", 0)+'>1',
+                      //  1, MAXSTRLEN(Result_L)));
+                      SetToLog(TypeLog::Info,
+                               COPYSTR(STRSUBSTNO(Text0009, TableImportHead_L.FIELDCAPTION(DPNavAgri),
+                               TableImportHead_L.DPEan13, TableImportLine_L."Num Facture", 0)+'>1',
+                               1, MAXSTRLEN(Result_L))
+                              , 0, '');
+                    END ELSE BEGIN
+                      //ToolsFile_G.LogWriteInfo('Magasin_L : ' + Magasin_L);
+                      TableImportHead_L.DPNavAgri := Magasin_L;
+                      ModifEntete_L := TRUE;
+                    END;
+                  // --> 20201109-CLA87065-ADVITAM-XPE001
+                  END;
+                  // <-- 20201109-CLA87065-ADVITAM-XPE001
+                END ELSE BEGIN
+                  //ToolsFile_G.LogWriteInfo('Magasin_L : ' + Magasin_L);
+                  TableImportHead_L.DPNavAgri := Magasin_L;
+                  ModifEntete_L := TRUE;
+                END;
+              // --> 20201109-CLA87065-ADVITAM-XPE001
+              END;
+              // <-- 20201109-CLA87065-ADVITAM-XPE001
+            END;
+
+            // Contr"le correspondance tiers livraison.
+            IF TableImportHead_L.SUNavAgri = '' THEN BEGIN
+
+              //ToolsFile_G.LogWriteInfo('TableImportHead_L.SUNavAgri : ' + TableImportHead_L.SUNavAgri + ' -- '
+              //+ VendorTemplateCode_G);
+              SetToLog(TypeLog::Info,
+                       'TableImportHead_L.SUNavAgri : ' + TableImportHead_L.SUNavAgri + ' -- ' + VendorTemplateCode_G
+                       , 0, '');
+
+
+              Fourn_L := MoteurInterface_G.GetReferentialCorrespondance(VendorTemplateCode_G, TRUE,
+                TableImportHead_L.SUEan13, TRUE);
+
+              //ToolsFile_G.LogWriteInfo('Fourn_L : ' + Fourn_L);
+
+              IF (Fourn_L = '') THEN BEGIN
+                Fourn_L := MoteurInterface_G.GetReferentialCorrespondance('SICAPA_FOU', TRUE,
+                  TableImportHead_L.SUEan13, TRUE);
+
+                //--> 20180406-ADV ToolsFile_G.LogWriteInfo('Fourn_L : ' + Fourn_L);
+                //ToolsFile_G.LogWriteInfo('Fourn_L : ' + Fourn_L + ' - valeur init. : '+TableImportHead_L.SUEan13);
+                SetToLog(TypeLog::Info,
+                       'Fourn_L : ' + Fourn_L + ' - valeur init. : '+TableImportHead_L.SUEan13
+                       , 0, '');
+
+                //<-- 20180406-ADV
+
+                IF (Fourn_L = '') THEN BEGIN
+
+                  //ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text0009, TableImportHead_L.FIELDCAPTION(SUNavAgri),
+                  //  TableImportHead_L.SUEan13 + ':' +  TableImportHead_L.SUAdresse + ':' + TableImportHead_L.SUPostCode,
+                  //  TableImportHead_L."Num Facture", 0)+'>2',
+                  //  1, MAXSTRLEN(Result_L)));
+                SetToLog(TypeLog::Info,
+                       COPYSTR(STRSUBSTNO(Text0009, TableImportHead_L.FIELDCAPTION(SUNavAgri),
+                       TableImportHead_L.SUEan13 + ':' +  TableImportHead_L.SUAdresse + ':' + TableImportHead_L.SUPostCode,
+                       TableImportHead_L."Num Facture", 0)+'>2', 1, MAXSTRLEN(Result_L))
+                       , 0, '');
+
+                END ELSE BEGIN
+                  TableImportHead_L.SUNavAgri := Fourn_L;
+                  ModifEntete_L := TRUE;
+                END;
+
+              END ELSE BEGIN
+                TableImportHead_L.SUNavAgri := Fourn_L;
+                ModifEntete_L := TRUE;
+              END;
+            END;
+            //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+            // ------ XPE
+            }
+            // Contr"ler que tous les produits ont un BR associ'
+            TableImportLine_L.SETRANGE("Emetteur Type", TableImportHead_L."Emetteur Type");
+            TableImportLine_L.SETRANGE(Emetteur, TableImportHead_L.Emetteur);
+            TableImportLine_L.SETRANGE("Destinataire Type", TableImportHead_L."Destinataire Type");
+            TableImportLine_L.SETRANGE(Destinataire, TableImportHead_L.Destinataire);
+            TableImportLine_L.SETRANGE("Type Facture", TableImportHead_L."Type Facture");
+            TableImportLine_L.SETRANGE("Num Facture", TableImportHead_L."Num Facture");
+            TableImportLine_L.SETRANGE("Num Ligne");
+
+            IF TableImportLine_L.FINDSET THEN BEGIN
+              REPEAT
+                ModifLigne_L := FALSE;
+                ModifLigne_L := ReconciliationLine(TableImportHead_L, TableImportLine_L);
+                // Contr"le correspondance de l'article : dans "Item cross..."
+                {
+                IF TableImportLine_L."Item No. NavAgri" = '' THEN BEGIN
+                  //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                  IF ((TableImportLine_L.Type = TableImportLine_L.Type::" ") OR
+                     (TableImportLine_L.Type = TableImportLine_L.Type::Item)) THEN BEGIN
+                    //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                    // Recherche si article ?
+                    IF TableImportLine_L.Ean13 <> 0 THEN BEGIN
+                      //-->20151117-INT08-CMC02.02.00-ADVITAM-CDL011
+                      CLEAR(TableItemCrossRef_L);
+                      //<--20151117-INT08-CMC02.02.00-ADVITAM-CDL011
+                      TableItemCrossRef_L.SETRANGE("Cross-Reference Type", TableItemCrossRef_L."Cross-Reference Type"::"Bar Code");
+                      TableItemCrossRef_L.SETRANGE("Cross-Reference No.", FORMAT(TableImportLine_L.Ean13));
+                      IF TableItemCrossRef_L.FINDFIRST() THEN BEGIN
+                        TableImportLine_L.Type := TableImportLine_L.Type::Item;
+                        TableImportLine_L."Item No. NavAgri" := TableItemCrossRef_L."Item No.";
+                        TableImportLine_L."Variant Code NavAgri" := TableItemCrossRef_L."Variant Code";
+                        ModifLigne_L := TRUE;
+                      //-->20151117-INT08-CMC02.02.00-ADVITAM-CDL011
+                      // BEFORE
+                      {
+                      END ELSE BEGIN
+                      }
+                      // AFTER
+                      END;
+                    END;
+                    IF TableImportLine_L."Item No. NavAgri" = '' THEN BEGIN
+                    //<--20151117-INT08-CMC02.02.00-ADVITAM-CDL011
+                      IF TableImportLine_L."Code Produit fournisseur" <> '' THEN BEGIN
+                        //-->20151117-INT08-CMC02.02.00-ADVITAM-CDL011
+                        CLEAR(TableItemCrossRef_L);
+                        //<--20151117-INT08-CMC02.02.00-ADVITAM-CDL011
+                        TableItemCrossRef_L.SETRANGE("Cross-Reference Type", TableItemCrossRef_L."Cross-Reference Type"::Vendor);
+                        TableItemCrossRef_L.SETRANGE("Cross-Reference Type No.", TableSetup_L.Vendor);
+                        TableItemCrossRef_L.SETRANGE("Cross-Reference No.", TableImportLine_L."Code Produit fournisseur");
+                        IF TableItemCrossRef_L.FINDFIRST THEN BEGIN
+                          TableImportLine_L.Type := TableImportLine_L.Type::Item;
+                          TableImportLine_L."Item No. NavAgri" := TableItemCrossRef_L."Item No.";
+                          TableImportLine_L."Variant Code NavAgri" := TableItemCrossRef_L."Variant Code";
+                          ModifLigne_L := TRUE;
+                        END;
+                      END;
+                    END;
+                    //-->20151117-INT08-CMC02.02.00-ADVITAM-CDL011
+                    // BEFORE
+                    {
+                    END;
+                    }
+                    //<--20151117-INT08-CMC02.02.00-ADVITAM-CDL011
+                  //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                  END;
+                  IF ((TableImportLine_L.Type = TableImportLine_L.Type::" ") OR
+                     (TableImportLine_L.Type = TableImportLine_L.Type::"Charge (Item)")) THEN BEGIN
+                    //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                    // Recherche si frais Anexes ?
+                    IF TableImportLine_L."Item No. NavAgri" = '' THEN BEGIN
+                      FraisAnnexe_L := MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G, 'Item Charge', 'No.',
+                        FORMAT(TableImportLine_L.Ean13), TRUE, TRUE);
+                      IF FraisAnnexe_L <> '' THEN BEGIN
+                        TableImportLine_L.Type := TableImportLine_L.Type::"Charge (Item)";
+                        TableImportLine_L."Item No. NavAgri" := FraisAnnexe_L;
+                        CLEAR(TableImportLine_L."Variant Code NavAgri");
+                        ModifLigne_L := TRUE;
+                      END;
+                    END;
+                  //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                  END;
+                  //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                END;
+
+                //-->20151110-INT08-CMC02.02.00-ADVITAM-CDL009
+                IF TableImportLine_L.Type = TableImportLine_L.Type::Item THEN BEGIN
+                  UniteSicapa_L := TableImportLine_L.Unite;
+                  IF TableItem_L.GET(TableImportLine_L."Item No. NavAgri") THEN BEGIN
+                    UniteEdi_L := MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G, 'Unit of Measure', 'Code',
+                      TableItem_L."Sales Unit of Measure", FALSE, TRUE);
+                    IF UniteEdi_L = '' THEN BEGIN
+                      //ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text0025, TableItem_L.FIELDCAPTION("Sales Unit of Measure"),
+                      //  TableItem_L."Sales Unit of Measure", TableImportLine_L."Num Facture", TableImportLine_L."Num Ligne"),
+                      //  1, MAXSTRLEN(Result_L)));
+                      SetToLog(TypeLog::Info,
+                       COPYSTR(STRSUBSTNO(Text0025, TableItem_L.FIELDCAPTION("Sales Unit of Measure"),
+                       TableItem_L."Sales Unit of Measure", TableImportLine_L."Num Facture", TableImportLine_L."Num Ligne"),
+                       1, MAXSTRLEN(Result_L))
+                       , 0, '');
+
+                    END;
+                    // <-- 20220202-ADV-CLA109965-XPE1
+                    //ConvUnite_L := ToolsFile_G.CoefConvUnite(UniteSicapa_L, UniteEdi_L, TableItem_L.Capacity, TRUE);
+                    ConvUnite_L := ToolsFile_G.CoefConvUniteItem(UniteSicapa_L, UniteEdi_L, TableItem_L.Capacity, TRUE,
+                                                                 TableItem_L."No.");
+                    // --> 20220202-ADV-CLA109965-XPE1
+                    IF ConvUnite_L = 0 THEN BEGIN
+                      //ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text0016, TableImportLine_L."Item No. NavAgri",
+                      //  TableImportLine_L."Code Produit fournisseur", UniteSicapa_L, UniteEdi_L,
+                      //  TableImportLine_L."Num Facture", TableImportLine_L."Num Ligne"),
+                      //  1, MAXSTRLEN(Result_L)));
+                      SetToLog(TypeLog::Info,
+                       COPYSTR(STRSUBSTNO(Text0016, TableImportLine_L."Item No. NavAgri",
+                       TableImportLine_L."Code Produit fournisseur", UniteSicapa_L, UniteEdi_L,
+                       TableImportLine_L."Num Facture", TableImportLine_L."Num Ligne"),1, MAXSTRLEN(Result_L))
+                       , 0, '');
+
+                    END;
+                  END;
+                  IF ((ConvUnite_L <> 0) AND (ConvUnite_L <> TableImportLine_L."Coefficient Unit")) THEN BEGIN
+                    TableImportLine_L."Coefficient Unit" := ConvUnite_L;
+                    ModifLigne_L := TRUE;
+                  END;
+                END;
+                //<--20151110-INT08-CMC02.02.00-ADVITAM-CDL009 : - Modification Conversion unit' : utilisation fonction
+                }
+                //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                // BEFORE
+                {
+                // Contr"le correspondance Magasin r'ception.
+                IF TableImportHead_L.DPNavAgri = '' THEN BEGIN
+                  TextTemp_L := MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G, 'Location', 'Code',
+                    TableImportHead_L.DPEan13, TRUE, TRUE);
+                  intPos1_L := 1;
+                  Magasin_L := ToolsFile_G.ExtractTextCsv(TextTemp_L, intPos1_L, 'Ø', 30);
+                  IF Magasin_L = '' THEN BEGIN
+                    TextTemp_L := MoteurInterface_G.Getcorrespondance('SICAPA_DIVERS_EDI', 'Location', 'Code',
+                      TableImportHead_L.DPEan13, TRUE, TRUE);
+
+                    Magasin_L := ToolsFile_G.ExtractTextCsv(TextTemp_L, intPos1_L, 'Ø', 30);
+                    IF Magasin_L = '' THEN BEGIN
+
+                      ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text0009, TableImportHead_L.FIELDCAPTION(DPNavAgri),
+                        TableImportHead_L.DPEan13, TableImportLine_L."Num Facture", TableImportLine_L."Num Ligne")+'>3',
+                        1, MAXSTRLEN(Result_L)));
+                    END;
+                  END ELSE BEGIN
+                    TableImportHead_L.DPNavAgri := Magasin_L;
+                    ModifLigne_L := TRUE;
+                  END;
+                END;
+
+                // Contr"le correspondance tiers livraison.
+                IF TableImportHead_L.SUNavAgri = '' THEN BEGIN
+                  Fourn_L := MoteurInterface_G.GetReferentialCorrespondance(VendorTemplateCode_G, TRUE,
+                    TableImportHead_L.SUEan13, TRUE);
+                  IF (Fourn_L = '') THEN BEGIN
+                    ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text0009, TableImportHead_L.FIELDCAPTION(SUNavAgri),
+                      TableImportHead_L.SUEan13 + ':' +  TableImportHead_L.SUAdresse + ':' + TableImportHead_L.SUPostCode,
+                      TableImportLine_L."Num Facture", TableImportLine_L."Num Ligne")+'>4',
+                      1, MAXSTRLEN(Result_L)));
+                  END ELSE BEGIN
+                    TableImportHead_L.SUNavAgri := Fourn_L;
+                    ModifLigne_L := TRUE;
+                  END;
+                END;
+                }
+                //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+
+                IF ModifLigne_L THEN BEGIN
+                  IF NOT TableImportLine_L.MODIFY(TRUE) THEN BEGIN
+                    //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0014, TableImportLine_L.TABLECAPTION,
+                    //  TableImportLine_L."Num Facture", TableImportLine_L."Num Ligne"), 1, MAXSTRLEN(Result_L)));
+                    SetToLog(TypeLog::Error,
+                       COPYSTR(STRSUBSTNO(Text0014, TableImportLine_L.TABLECAPTION,
+                       TableImportLine_L."Num Facture", TableImportLine_L."Num Ligne"), 1, MAXSTRLEN(Result_L))
+                       , 0, '');
+
+                  END;
+                END;
+              UNTIL TableImportLine_L.NEXT = 0;
+            END;
+
+            //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+            IF ModifEntete_L THEN BEGIN
+              IF NOT TableImportHead_L.MODIFY(TRUE) THEN BEGIN
+                //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0014, TableImportHead_L.TABLECAPTION,
+                //  TableImportHead_L."Num Facture", 0), 1, MAXSTRLEN(Result_L)));
+                SetToLog(TypeLog::Error,
+                       COPYSTR(STRSUBSTNO(Text0014, TableImportHead_L.TABLECAPTION,
+                       TableImportHead_L."Num Facture", 0), 1, MAXSTRLEN(Result_L))
+                       , 0, '');
+
+              END;
+            END;
+            //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+          UNTIL TableImportHead_L.NEXT = 0;
+
+          IF ToolsFile_G.LogErreurType() <> 'E' THEN BEGIN
+            COMMIT;
+          END;
+
+          // Pour g'rer le ROLLBACK.
+          CLEAR(Result_L);
+        END;
+      END;
+    END;
+
+    PROCEDURE ImportRecord@1000000002() Result_L : Text[256];
+    VAR
+      "<-- 3LI LOCALS -->"@1000000000 : Integer;
+      TableSetup_L@1000000015 : Record 8053408;
+      TableImportHead_L@1000000002 : Record 8087767;
+      TableImportHead2_L@1000000004 : Record 8087767;
+      TableImportLine_L@1000000001 : Record 8087768;
+      FileLogName_L@1000000003 : Text[256];
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Importation des factures dans Nav : copie du SAS vers Table
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //
+      // Sorties:
+      //   - Result_L               : Erreur Retourn'e, Vide si Ok
+      //----------------------------------------------------------------------------------------------------------------------------------
+      IF (TableSetup_L.FINDFIRST) AND (TableSetup_L."Import Invoice") THEN BEGIN
+        TableImportHead_L.SETRANGE(HoroIntegration, 0DT, 0DT);
+
+        IF TableImportHead_L.FINDSET THEN BEGIN
+          REPEAT
+            // Pour traiter avec COMMIT et ROLLBACK par Exp'dition
+            CLEAR(TableImportLine_L);
+            TableImportLine_L."Emetteur Type" := TableImportHead_L."Emetteur Type";
+            TableImportLine_L.Emetteur := TableImportHead_L.Emetteur;
+            TableImportLine_L."Destinataire Type" := TableImportHead_L."Destinataire Type";
+            TableImportLine_L.Destinataire := TableImportHead_L.Destinataire;
+            TableImportLine_L."Type Facture" := TableImportHead_L."Type Facture";
+            TableImportLine_L."Num Facture" := TableImportHead_L."Num Facture";
+            IF NOT CODEUNIT.RUN(TableSetup_L.CodeUnitIntegInvoice, TableImportLine_L) THEN BEGIN
+              //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0021, TableImportHead_L."Num Facture"),
+              //  1, MAXSTRLEN(Result_L)));
+              //ToolsFile_G.LogWriteErreur(COPYSTR(GETLASTERRORTEXT, 1, MAXSTRLEN(Result_L)))0;
+              SetToLog(TypeLog::Error,
+                       COPYSTR(STRSUBSTNO(Text0021, TableImportHead_L."Num Facture"),1, MAXSTRLEN(Result_L))
+                       , 0, '');
+              SetToLog(TypeLog::Error,
+                       COPYSTR(GETLASTERRORTEXT, 1, MAXSTRLEN(Result_L))
+                       , 0, '');
+            END ELSE BEGIN
+              COMMIT;
+              IF NOT TableImportHead2_L.GET(TableImportHead_L."No.") THEN BEGIN
+                CLEAR(TableImportHead2_L);
+              END;
+              //ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text0022, TableImportHead_L."Num Facture",
+              //  TableImportHead2_L."Invoice No."), 1, MAXSTRLEN(Result_L)));
+              SetToLog(TypeLog::Info,
+                       COPYSTR(STRSUBSTNO(Text0022, TableImportHead_L."Num Facture",
+                       TableImportHead2_L."Invoice No."), 1, MAXSTRLEN(Result_L))
+                       , 0, '');
+
+            END;
+          UNTIL TableImportHead_L.NEXT = 0;
+          // Pour g'rer le ROLLBACK.
+          CLEAR(Result_L);
+          FileLogName_L := ToolsFile_G.LogName;
+          ToolsFile_G.LogClose();
+
+          IF ToolsFile_G.LogErreurType() = 'E' THEN BEGIN
+            Result_L := 'ERREUR ' + FileLogName_L;
+            ERROR(Result_L);
+          END ELSE BEGIN
+            IF ToolsFile_G.LogErreurType() = 'I' THEN BEGIN
+              Result_L := Text0008;
+              MoteurInterface_G.InsertLog(CodeUnit_G, FileLogName_L);
+            END ELSE BEGIN
+              MoteurInterface_G.InsertOk(CodeUnit_G);
+            END;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE RapprochementAutomatiqueBons@1000000003();
+    VAR
+      SQLConnection_L@1000000009 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      SQLCommand_L@1000000008 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlCommand";
+      CmdType_L@1000000007 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.CommandType";
+      SqlDbType_L@1000000006 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlDbType";
+      Direction_L@1000000005 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.ParameterDirection";
+      SQLParameter1_L@1000000004 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlParameter";
+      SQLParameter2_L@1000000003 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlParameter";
+      SQLParameter3_L@1000000002 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlParameter";
+      SQLParameter4_L@1000000001 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlParameter";
+      Session_L@1000000000 : Record 2000000009;
+      SQLDbReader_L@1000000011 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader";
+      NoFacture_L@1000000010 : Text[20];
+      Result_L@1000000012 : Text[256];
+      NoLigneFacture_L@1000000013 : Text[20];
+      Ean13_L@1000000014 : Text[20];
+      CodeArticle_L@1000000015 : Text[20];
+      CodeVariante_L@1000000016 : Text[20];
+      Libelle_L@1000000017 : Text[100];
+      Quantite_L@1000000018 : Text[20];
+      NoCommande_L@1000000019 : Text[20];
+      NoBon_L@1000000020 : Text[20];
+      NoLigneBon_L@1000000021 : Text[20];
+      NoStep_L@1000000022 : Text[20];
+    BEGIN
+      //ToolsFile_G.LogWriteInfo('D'but - Rapprochement des factures et des bons de r'ception ' + USERID);
+      SetToLog(TypeLog::Info,
+               'D'but - Rapprochement des factures et des bons de r'ception ' + USERID
+               , 0, '');
+
+      IF NOT TableAdvitam_G.FINDFIRST THEN BEGIN
+        //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(ERR001), 1, MAXSTRLEN(Result_L)));
+        SetToLog(TypeLog::Error,
+               COPYSTR(STRSUBSTNO(ERR001), 1, MAXSTRLEN(Result_L))
+               , 0, '');
+
+      END ELSE BEGIN
+
+        Session_L.SETRANGE("Ma session",TRUE);
+        IF Session_L.FINDFIRST THEN;
+
+        SQLConnection_L := SQLConnection_L.SqlConnection(
+                                                           ToolsFile_G.GetSQLConnectionString(
+                                                            Session_L."Nom de la base de donn'es",
+                                                            '',
+                                                            '',
+                                                            TableAdvitam_G."Replica Database",
+                                                            UseReplicaDatabase)
+                                                          );
+
+        //ToolsFile_G.GetConnectionString2(TableAdvitam_G.BddNavision,
+        //Session_L."Database Name" , '','', TableAdvitam_G."Replica Database"));
+        SQLConnection_L.Open;
+
+
+        // Calcul du capital statutaire
+        SQLCommand_L := SQLCommand_L.SqlCommand(); //Constructor
+
+        SQLCommand_L.Connection := SQLConnection_L;
+        CmdType_L := SQLCommand_L.CommandType;
+
+        SQLCommand_L.CommandText := TableAdvitam_G."Nom Base Externe" + '.dbo.SP_SICAPA_RAPPROCHEMENT_BONS_FACTURES';
+        SQLCommand_L.Connection := SQLConnection_L;
+        SQLCommand_L.CommandType := CmdType_L.Parse(CmdType_L.GetType(),'StoredProcedure');
+        SQLCommand_L.CommandTimeout := 0;
+
+        SQLParameter1_L := SQLParameter1_L.SqlParameter;
+        SQLParameter1_L.ParameterName := '@W_SOCIETE'; //Company
+        SqlDbType_L := SQLParameter1_L.SqlDbType;
+        SQLParameter1_L.SqlDbType := SqlDbType_L.Parse(SqlDbType_L.GetType(),'VarChar');
+        Direction_L := SQLParameter1_L.Direction;
+        SQLParameter1_L.Direction := Direction_L.Parse(Direction_L.GetType(),'Input');
+        SQLParameter1_L.Size := 50; //50 characters
+        SQLParameter1_L.Value:=COMPANYNAME;
+
+        SQLCommand_L.Parameters.Add(SQLParameter1_L);
+
+        SQLParameter2_L := SQLParameter2_L.SqlParameter;
+        SQLParameter2_L.ParameterName := '@W_INSTANCE'; //Base de donn'es Nav
+        SqlDbType_L := SQLParameter2_L.SqlDbType;
+        SQLParameter2_L.SqlDbType := SqlDbType_L.Parse(SqlDbType_L.GetType(),'VarChar');
+        Direction_L := SQLParameter2_L.Direction;
+        SQLParameter2_L.Direction := Direction_L.Parse(Direction_L.GetType(),'Input');
+        SQLParameter2_L.Size := 50; //50 characters
+        SQLParameter2_L.Value:=Session_L."Nom de la base de donn'es";
+
+        SQLCommand_L.Parameters.Add(SQLParameter2_L);
+
+        SQLParameter3_L := SQLParameter3_L.SqlParameter;
+        SQLParameter3_L.ParameterName := '@W_USER'; //User
+        SqlDbType_L := SQLParameter3_L.SqlDbType;
+        SQLParameter3_L.SqlDbType := SqlDbType_L.Parse(SqlDbType_L.GetType(),'VarChar');
+        Direction_L := SQLParameter3_L.Direction;
+        SQLParameter3_L.Direction := Direction_L.Parse(Direction_L.GetType(),'Input');
+        SQLParameter3_L.Size := 50; //50 characters
+        SQLParameter3_L.Value:=USERID;
+
+        SQLCommand_L.Parameters.Add(SQLParameter3_L);
+
+        //SQLCommand_L.ExecuteNonQuery;
+
+        SQLDbReader_L := SQLCommand_L.ExecuteReader();
+          ToolsFile_G.LogWriteInfo('NO_FACTURE;NO_LIGNE;EAN13;CODE_ARTICLE;VARIANTE;LIBELLE;QUANTITE;NO_COMMANDE;NO_BON;' +
+          'NO_LIGNE_BON;NO_STEP');
+
+        WHILE SQLDbReader_L.Read() DO BEGIN
+          NoFacture_L := FORMAT(SQLDbReader_L.GetSqlString(SQLDbReader_L.GetOrdinal('NO_FACTURE')));
+          NoLigneFacture_L := FORMAT(SQLDbReader_L.GetSqlInt32(SQLDbReader_L.GetOrdinal('NO_LIGNE_FACTURE')));
+          Ean13_L := FORMAT(SQLDbReader_L.GetSqlString(SQLDbReader_L.GetOrdinal('CODE_EAN13')));
+          CodeArticle_L := FORMAT(SQLDbReader_L.GetSqlString(SQLDbReader_L.GetOrdinal('CODE_ARTICLE')));
+          CodeVariante_L := FORMAT(SQLDbReader_L.GetSqlString(SQLDbReader_L.GetOrdinal('CODE_VARIANTE')));
+          Libelle_L := FORMAT(SQLDbReader_L.GetSqlString(SQLDbReader_L.GetOrdinal('LIBELLE')));
+          Quantite_L := FORMAT(SQLDbReader_L.GetSqlDecimal(SQLDbReader_L.GetOrdinal('QUANTITE')));
+          NoCommande_L := FORMAT(SQLDbReader_L.GetSqlString(SQLDbReader_L.GetOrdinal('NO_COMMANDE')));
+          NoBon_L := FORMAT(SQLDbReader_L.GetSqlString(SQLDbReader_L.GetOrdinal('NO_BON')));
+          NoLigneBon_L := FORMAT(SQLDbReader_L.GetSqlInt32(SQLDbReader_L.GetOrdinal('NO_LIGNE_BON')));
+          NoStep_L := FORMAT(SQLDbReader_L.GetSqlString(SQLDbReader_L.GetOrdinal('NO_STEP')));
+
+          ToolsFile_G.LogWriteInfo(NoFacture_L + ';' +
+          NoLigneFacture_L + ';' +
+          Ean13_L + ';' +
+          CodeArticle_L + ';' +
+          CodeVariante_L + ';' +
+          Libelle_L + ';' +
+          Quantite_L + ';' +
+          NoCommande_L + ';' +
+          NoBon_L + ';' +
+          NoLigneBon_L + ';' +
+          NoStep_L + ';');
+        END;
+
+
+        SQLCommand_L.Dispose;
+
+        SQLConnection_L.Close;
+        SQLConnection_L.Dispose;
+      END;
+
+      //ToolsFile_G.LogWriteInfo('Fin - Rapprochement des factures et des bons de r'ception');
+      SetToLog(TypeLog::Info,
+               'Fin - Rapprochement des factures et des bons de r'ception'
+               , 0, '');
+    END;
+
+    PROCEDURE "--FCT.20180606-ADV-XPE --"@1000000004();
+    BEGIN
+    END;
+
+    PROCEDURE SetToLog@1000000005(LogType@1000000000 : 'Info,Error';ErrMessage@1000000001 : Text[256];LineInFile@1000000002 : Integer;FileName@1000000003 : Text[256]);
+    VAR
+      tErrInFile@1000000004 : TextConst 'ENU=In file %1 At Line : %2;FRA=Dans le fichier : %1 . la ligne : %2';
+      ErrorMessage@1000000005 : Text[256];
+    BEGIN
+      IF (NOT GUIALLOWED) THEN BEGIN
+        ErrorMessage := ErrMessage;
+        IF (FileName <> '') AND (LineInFile <> 0) THEN
+          ErrorMessage := ErrorMessage + ' ' + STRSUBSTNO(tErrInFile, FileName, LineInFile);
+        CASE (LogType) OF
+          LogType::Info : BEGIN
+            ToolsFile_G.LogWriteInfo(ErrorMessage);
+          END;
+          LogType::Error : BEGIN
+            ToolsFile_G.LogWriteErreur(ErrorMessage);
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE RapprochementAutomatiqueAvoir@1000000006();
+    VAR
+      SQLConnection_L@1000000009 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      SQLCommand_L@1000000008 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlCommand";
+      CmdType_L@1000000007 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.CommandType";
+      SqlDbType_L@1000000006 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlDbType";
+      Direction_L@1000000005 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.ParameterDirection";
+      SQLParameter1_L@1000000004 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlParameter";
+      SQLParameter2_L@1000000003 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlParameter";
+      SQLParameter3_L@1000000002 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlParameter";
+      SQLParameter4_L@1000000001 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlParameter";
+      Session_L@1000000000 : Record 2000000009;
+      SQLDbReader_L@1000000011 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader";
+      NoFacture_L@1000000010 : Text[20];
+      Result_L@1000000012 : Text[256];
+      NoLigneFacture_L@1000000013 : Text[20];
+      Ean13_L@1000000014 : Text[20];
+      CodeArticle_L@1000000015 : Text[20];
+      CodeVariante_L@1000000016 : Text[20];
+      Libelle_L@1000000017 : Text[100];
+      Quantite_L@1000000018 : Text[20];
+      NoCommande_L@1000000019 : Text[20];
+      NoBon_L@1000000020 : Text[20];
+      NoLigneBon_L@1000000021 : Text[20];
+      NoStep_L@1000000022 : Text[20];
+    BEGIN
+      //ToolsFile_G.LogWriteInfo('D'but - Rapprochement des factures et des bons de r'ception ' + USERID);
+      SetToLog(TypeLog::Info,
+               'D'but - Rapprochement des avoirs et des retours ' + USERID
+               , 0, '');
+
+      IF NOT TableAdvitam_G.FINDFIRST THEN BEGIN
+        //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(ERR001), 1, MAXSTRLEN(Result_L)));
+        SetToLog(TypeLog::Error,
+               COPYSTR(STRSUBSTNO(ERR001), 1, MAXSTRLEN(Result_L))
+               , 0, '');
+
+      END ELSE BEGIN
+
+        Session_L.SETRANGE("Ma session",TRUE);
+        IF Session_L.FINDFIRST THEN;
+
+        SQLConnection_L := SQLConnection_L.SqlConnection(
+                                                           ToolsFile_G.GetSQLConnectionString(
+                                                            Session_L."Nom de la base de donn'es",
+                                                            '',
+                                                            '',
+                                                            TableAdvitam_G."Replica Database",
+                                                            UseReplicaDatabase)
+                                                          );
+
+        //ToolsFile_G.GetConnectionString2(TableAdvitam_G.BddNavision,
+        //Session_L."Database Name" , '','',TableAdvitam_G."Replica Database"));
+        SQLConnection_L.Open;
+
+
+        // Calcul du capital statutaire
+        SQLCommand_L := SQLCommand_L.SqlCommand(); //Constructor
+
+        SQLCommand_L.Connection := SQLConnection_L;
+        CmdType_L := SQLCommand_L.CommandType;
+
+        SQLCommand_L.CommandText := TableAdvitam_G."Nom Base Externe" + '.dbo.SP_SICAPA_RAPPROCHEMENT_BONS_AVOIRS';
+        SQLCommand_L.Connection := SQLConnection_L;
+        SQLCommand_L.CommandType := CmdType_L.Parse(CmdType_L.GetType(),'StoredProcedure');
+        SQLCommand_L.CommandTimeout := 0;
+
+        SQLParameter1_L := SQLParameter1_L.SqlParameter;
+        SQLParameter1_L.ParameterName := '@W_SOCIETE'; //Company
+        SqlDbType_L := SQLParameter1_L.SqlDbType;
+        SQLParameter1_L.SqlDbType := SqlDbType_L.Parse(SqlDbType_L.GetType(),'VarChar');
+        Direction_L := SQLParameter1_L.Direction;
+        SQLParameter1_L.Direction := Direction_L.Parse(Direction_L.GetType(),'Input');
+        SQLParameter1_L.Size := 50; //50 characters
+        SQLParameter1_L.Value:=COMPANYNAME;
+
+        SQLCommand_L.Parameters.Add(SQLParameter1_L);
+
+        SQLParameter2_L := SQLParameter2_L.SqlParameter;
+        SQLParameter2_L.ParameterName := '@W_INSTANCE'; //Base de donn'es Nav
+        SqlDbType_L := SQLParameter2_L.SqlDbType;
+        SQLParameter2_L.SqlDbType := SqlDbType_L.Parse(SqlDbType_L.GetType(),'VarChar');
+        Direction_L := SQLParameter2_L.Direction;
+        SQLParameter2_L.Direction := Direction_L.Parse(Direction_L.GetType(),'Input');
+        SQLParameter2_L.Size := 50; //50 characters
+        SQLParameter2_L.Value:=Session_L."Nom de la base de donn'es";
+
+        SQLCommand_L.Parameters.Add(SQLParameter2_L);
+
+        SQLParameter3_L := SQLParameter3_L.SqlParameter;
+        SQLParameter3_L.ParameterName := '@W_USER'; //User
+        SqlDbType_L := SQLParameter3_L.SqlDbType;
+        SQLParameter3_L.SqlDbType := SqlDbType_L.Parse(SqlDbType_L.GetType(),'VarChar');
+        Direction_L := SQLParameter3_L.Direction;
+        SQLParameter3_L.Direction := Direction_L.Parse(Direction_L.GetType(),'Input');
+        SQLParameter3_L.Size := 50; //50 characters
+        SQLParameter3_L.Value:=USERID;
+
+        SQLCommand_L.Parameters.Add(SQLParameter3_L);
+
+        //SQLCommand_L.ExecuteNonQuery;
+
+        SQLDbReader_L := SQLCommand_L.ExecuteReader();
+          ToolsFile_G.LogWriteInfo('NO_AVOIR;NO_LIGNE;EAN13;CODE_ARTICLE;VARIANTE;LIBELLE;QUANTITE;NO_COMMANDE;NO_BON;' +
+          'NO_LIGNE_BON;NO_STEP');
+
+        WHILE SQLDbReader_L.Read() DO BEGIN
+          NoFacture_L := FORMAT(SQLDbReader_L.GetSqlString(SQLDbReader_L.GetOrdinal('NO_AVOIR')));
+          NoLigneFacture_L := FORMAT(SQLDbReader_L.GetSqlInt32(SQLDbReader_L.GetOrdinal('NO_LIGNE_AVOIR')));
+          Ean13_L := FORMAT(SQLDbReader_L.GetSqlString(SQLDbReader_L.GetOrdinal('CODE_EAN13')));
+          CodeArticle_L := FORMAT(SQLDbReader_L.GetSqlString(SQLDbReader_L.GetOrdinal('CODE_ARTICLE')));
+          CodeVariante_L := FORMAT(SQLDbReader_L.GetSqlString(SQLDbReader_L.GetOrdinal('CODE_VARIANTE')));
+          Libelle_L := FORMAT(SQLDbReader_L.GetSqlString(SQLDbReader_L.GetOrdinal('LIBELLE')));
+          Quantite_L := FORMAT(SQLDbReader_L.GetSqlDecimal(SQLDbReader_L.GetOrdinal('QUANTITE')));
+          NoCommande_L := FORMAT(SQLDbReader_L.GetSqlString(SQLDbReader_L.GetOrdinal('NO_COMMANDE')));
+          NoBon_L := FORMAT(SQLDbReader_L.GetSqlString(SQLDbReader_L.GetOrdinal('NO_BON')));
+          NoLigneBon_L := FORMAT(SQLDbReader_L.GetSqlInt32(SQLDbReader_L.GetOrdinal('NO_LIGNE_BON')));
+          NoStep_L := FORMAT(SQLDbReader_L.GetSqlString(SQLDbReader_L.GetOrdinal('NO_STEP')));
+
+          ToolsFile_G.LogWriteInfo(NoFacture_L + ';' +
+          NoLigneFacture_L + ';' +
+          Ean13_L + ';' +
+          CodeArticle_L + ';' +
+          CodeVariante_L + ';' +
+          Libelle_L + ';' +
+          Quantite_L + ';' +
+          NoCommande_L + ';' +
+          NoBon_L + ';' +
+          NoLigneBon_L + ';' +
+          NoStep_L + ';');
+        END;
+
+
+        SQLCommand_L.Dispose;
+
+        SQLConnection_L.Close;
+        SQLConnection_L.Dispose;
+      END;
+
+      //ToolsFile_G.LogWriteInfo('Fin - Rapprochement des factures et des bons de r'ception');
+      SetToLog(TypeLog::Info,
+               'Fin - Rapprochement des avoirs et des retours'
+               , 0, '');
+    END;
+
+    PROCEDURE SetVendor@1000000007(VAR ImportInvHeader@1000000000 : Record 8087767);
+    VAR
+      VendorNo@1000000001 : Code[20];
+      Vendor@1000000002 : Record 23;
+      SicapaSetup@1000000003 : Record 8053408;
+    BEGIN
+      VendorNo := '';
+      IF (ImportInvHeader."Source Type" = ImportInvHeader."Source Type"::EDI) THEN BEGIN
+        IF (SicapaSetup.GET()) THEN BEGIN
+          IF (SicapaSetup.Vendor <> '') THEN BEGIN
+            VendorNo := SicapaSetup.Vendor;
+          END ELSE BEGIN
+            VendorNo := MoteurInterface_G.GetReferentialCorrespondance(VendorTemplateCode_G, TRUE,
+                          ImportInvHeader.Emetteur, TRUE);
+          END;
+        END ELSE BEGIN
+          VendorNo := MoteurInterface_G.GetReferentialCorrespondance(VendorTemplateCode_G, TRUE,
+                        ImportInvHeader.Emetteur, TRUE);
+        END;
+      END ELSE BEGIN
+        IF ((ImportInvHeader.Emetteur = '') AND (ImportInvHeader."Registration No."  = '')) THEN BEGIN
+          VendorNo := '';
+          ImportInvHeader.Status := ImportInvHeader.Status::Warning;
+          ImportInvHeader."Status Message" := TErrNoVendor;
+        END ELSE BEGIN
+          Vendor.RESET();
+          IF ((ImportInvHeader.Emetteur <> '') AND (ImportInvHeader."Registration No."  <> '')) THEN BEGIN
+            Vendor.SETRANGE(Vendor."Registration No.", ImportInvHeader.Emetteur);
+            IF (Vendor.COUNT > 1) THEN BEGIN
+              ImportInvHeader.Status := ImportInvHeader.Status::Warning;
+              ImportInvHeader."Status Message" := STRSUBSTNO(TErrMultiVendor, ImportInvHeader.Emetteur);
+            END ELSE BEGIN
+              IF (Vendor.FINDFIRST()) THEN BEGIN
+                VendorNo := Vendor."No.";
+              END ELSE BEGIN
+                ImportInvHeader.Status := ImportInvHeader.Status::Warning;
+                ImportInvHeader."Status Message" := TErrNoVendor;
+              END;
+            END;
+          END ELSE BEGIN
+            IF ((ImportInvHeader.Emetteur <> '') AND (ImportInvHeader."Registration No."  = '')) THEN BEGIN
+              Vendor.SETRANGE(Vendor."Registration No.", ImportInvHeader.Emetteur);
+              IF (Vendor.COUNT > 1) THEN BEGIN
+                ImportInvHeader.Status := ImportInvHeader.Status::Warning;
+                ImportInvHeader."Status Message" := STRSUBSTNO(TErrMultiVendor, ImportInvHeader.Emetteur);
+              END ELSE BEGIN
+                IF (Vendor.FINDFIRST()) THEN BEGIN
+                  VendorNo := Vendor."No.";
+                END ELSE BEGIN
+                  ImportInvHeader.Status := ImportInvHeader.Status::Warning;
+                  ImportInvHeader."Status Message" := TErrNoVendor;
+                END;
+              END;
+            END ELSE BEGIN
+              IF ((ImportInvHeader.Emetteur = '') AND (ImportInvHeader."Registration No."  <> '')) THEN BEGIN
+                Vendor.SETFILTER(Vendor."Registration No.", '%1*',ImportInvHeader."Registration No.");
+                IF (Vendor.COUNT > 1) THEN BEGIN
+                  ImportInvHeader.Status := ImportInvHeader.Status::Warning;
+                  ImportInvHeader."Status Message" := STRSUBSTNO(TErrMultiVendor, ImportInvHeader.Emetteur);
+                END ELSE BEGIN
+                  IF (Vendor.FINDFIRST()) THEN BEGIN
+                    VendorNo := Vendor."No.";
+                  END ELSE BEGIN
+                    ImportInvHeader.Status := ImportInvHeader.Status::Warning;
+                    ImportInvHeader."Status Message" := TErrNoVendor;
+                  END;
+                END;
+              END ELSE BEGIN
+                VendorNo := '';
+                ImportInvHeader.Status := ImportInvHeader.Status::Warning;
+                ImportInvHeader."Status Message" := TErrNoVendor;
+              END;
+            END;
+          END
+        END
+      END;
+      Vendor.RESET();
+      IF (ImportInvHeader."Vendor No." = '') THEN BEGIN
+        IF (VendorNo <> '') THEN BEGIN
+          IF (Vendor.GET(VendorNo)) THEN BEGIN
+            ImportInvHeader.VALIDATE("Vendor No.", Vendor."No.");
+            ImportInvHeader.VALIDATE("VAT Registration No.", Vendor."VAT Registration No.");
+          END;
+        END;
+      END;
+      //ImportInvHeader.MODIFY();
+    END;
+
+    PROCEDURE SetMarket@1000000011(VAR InvoiceLine@1000000000 : Record 8087768;Itm@1000000001 : Record 27);
+    VAR
+      Family@1000000002 : Record 8052986;
+    BEGIN
+      IF (Family.GET(Itm."Family Code")) THEN BEGIN
+        InvoiceLine."Market Code" := Family.Code;
+        InvoiceLine."Market Description" := Family.Name;
+      END;
+    END;
+
+    PROCEDURE SetUnitOfMeasure@1000000019(VAR InvoiceLine@1000000001 : Record 8087768;Itm@1000000000 : Record 27);
+    BEGIN
+    END;
+
+    PROCEDURE ReconciliationHeader@1000000008(VAR InvoiceHeader@1000000000 : Record 8087767) ReturnValue : Boolean;
+    BEGIN
+      CASE (InvoiceHeader."Source Type") OF
+        InvoiceHeader."Source Type"::PA : BEGIN
+          ReturnValue := ReconciliationHeaderPA(InvoiceHeader);
+        END;
+        InvoiceHeader."Source Type"::EDI : BEGIN
+          ReturnValue := ReconciliationHeaderEDI(InvoiceHeader);
+        END;
+      END;
+      SetSourceDocument(InvoiceHeader);
+    END;
+
+    PROCEDURE ReconciliationHeaderPA@1000000013(VAR InvoiceHeader@1000000000 : Record 8087767) ReturnVlue : Boolean;
+    BEGIN
+      ReturnVlue := TRUE;
+      InvoiceHeader.Status := InvoiceHeader.Status::Success;
+      InvoiceHeader."Status Message" := '';
+      SetVendor(InvoiceHeader);
+    END;
+
+    PROCEDURE ReconciliationHeaderEDI@1000000014(VAR InvoiceHeader@1000000000 : Record 8087767) ReturnValue : Boolean;
+    VAR
+      "<-- 3LI LOCALS -->"@1000000023 : Integer;
+      TableSetup_L@1000000022 : Record 8053408;
+      TableItemCrossRef_L@1000000019 : Record 5717;
+      FileLogName_L@1000000018 : Text[256];
+      CodeUnitConnecteur_L@1000000017 : Integer;
+      ConnectorName_L@1000000016 : Code[20];
+      ImpExpFolder_L@1000000015 : Text[250];
+      LogFolder_L@1000000014 : Text[250];
+      ExtensionFile_L@1000000013 : Text[10];
+      PrefixFile_L@1000000012 : Text[30];
+      ModifLigne_L@1000000011 : Boolean;
+      Magasin_L@1000000010 : Text[30];
+      Fourn_L@1000000009 : Text[30];
+      FraisAnnexe_L@1000000008 : Code[20];
+      TextTemp_L@1000000007 : Text[255];
+      intPos1_L@1000000006 : Integer;
+      UniteSicapa_L@1000000005 : Text[30];
+      UniteEdi_L@1000000004 : Text[30];
+      ConvUnite_L@1000000003 : Decimal;
+      TableItem_L@1000000002 : Record 27;
+      TErrEmptyField@1000000024 : TextConst 'ENU=The Field %1 is empty;FRA=Le champ %1 est vide';
+      Result_L@1000000001 : Text[256];
+    BEGIN
+      // Contr"le correspondance Magasin r'ception.
+      ReturnValue := TRUE;
+      InvoiceHeader.Status := InvoiceHeader.Status::Success;
+      InvoiceHeader."Status Message" := '';
+      IF (InvoiceHeader.DPNavAgri = '') THEN BEGIN
+        IF (InvoiceHeader.DPEan13 = '') THEN BEGIN
+          // ERROR
+          InvoiceHeader.Status := InvoiceHeader.Status::Error;
+          InvoiceHeader."Status Message" := STRSUBSTNO(TErrEmptyField,
+                                                       InvoiceHeader.FIELDCAPTION(InvoiceHeader.DPEan13));
+          ReturnValue := FALSE;
+        END ELSE BEGIN
+          TextTemp_L := MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G, 'Location', 'Code',
+                InvoiceHeader.DPEan13, TRUE, TRUE);
+          intPos1_L := 1;
+          // --> 20201109-CLA87065-ADVITAM-XPE001
+          intPos1_L := STRPOS(TextTemp_L, 'Ø');
+          IF (intPos1_L = 0) THEN BEGIN
+            InvoiceHeader.DPNavAgri := TextTemp_L;
+            ReturnValue := TRUE;
+          END ELSE BEGIN
+            // <-- 20201109-CLA87065-ADVITAM-XPE001
+            intPos1_L := 1;
+            // <-- 20201109-CLA87065-ADVITAM-XPE001
+            Magasin_L := ToolsFile_G.ExtractTextCsv(TextTemp_L, intPos1_L, 'Ø', 30);
+            IF Magasin_L = '' THEN BEGIN
+              TextTemp_L := MoteurInterface_G.Getcorrespondance('SICAPA_DIVERS_EDI', 'Location', 'Code',
+                    InvoiceHeader.DPEan13, TRUE, TRUE);
+
+              intPos1_L := STRPOS(TextTemp_L, 'Ø');
+              IF (intPos1_L = 0) THEN BEGIN
+                InvoiceHeader.DPNavAgri := TextTemp_L;
+                ReturnValue := TRUE;
+              END ELSE BEGIN
+                // <-- 20201109-CLA87065-ADVITAM-XPE001
+                intPos1_L := 1;
+                Magasin_L := ToolsFile_G.ExtractTextCsv(TextTemp_L, intPos1_L, 'Ø', 30);
+                IF Magasin_L = '' THEN BEGIN
+                  SetToLog(TypeLog::Info,
+                                       COPYSTR(STRSUBSTNO(Text0009, InvoiceHeader.FIELDCAPTION(DPNavAgri),
+                                       InvoiceHeader.DPEan13, InvoiceHeader."Num Facture", 0)+'>1',
+                                       1, MAXSTRLEN(Result_L))
+                                       , 0, '');
+                  InvoiceHeader.Status := InvoiceHeader.Status::Error;
+                  InvoiceHeader."Status Message" := COPYSTR(STRSUBSTNO(Text0009, InvoiceHeader.FIELDCAPTION(DPNavAgri),
+                                                    InvoiceHeader.DPEan13, InvoiceHeader."Num Facture", 0)+'>1',
+                                                    1, MAXSTRLEN(Result_L));
+                  ReturnValue := FALSE;
+                END ELSE BEGIN
+                  InvoiceHeader.DPNavAgri := Magasin_L;
+                  ReturnValue := TRUE;
+                END;
+                // --> 20201109-CLA87065-ADVITAM-XPE001
+              END;
+              // <-- 20201109-CLA87065-ADVITAM-XPE001
+            END ELSE BEGIN
+              InvoiceHeader.DPNavAgri := Magasin_L;
+              ReturnValue := TRUE;
+            END;
+          // --> 20201109-CLA87065-ADVITAM-XPE001
+          END;
+          // <-- 20201109-CLA87065-ADVITAM-XPE001
+          // Contr"le correspondance tiers livraison.
+          IF InvoiceHeader.SUNavAgri = '' THEN BEGIN
+            IF (NOT GUIALLOWED) THEN BEGIN
+              SetToLog(TypeLog::Info,
+                         'SUNavAgri : ' + InvoiceHeader.SUNavAgri + ' -- ' + VendorTemplateCode_G
+                         , 0, '');
+            END;
+
+            Fourn_L := MoteurInterface_G.GetReferentialCorrespondance(VendorTemplateCode_G, TRUE,
+                InvoiceHeader.SUEan13, TRUE);
+
+            IF (Fourn_L = '') THEN BEGIN
+              Fourn_L := MoteurInterface_G.GetReferentialCorrespondance('SICAPA_FOU', TRUE,
+                  InvoiceHeader.SUEan13, TRUE);
+
+              SetToLog(TypeLog::Info,
+                     'Fourn_L : ' + Fourn_L + ' - valeur init. : '+InvoiceHeader.SUEan13
+                     , 0, '');
+              IF (Fourn_L = '') THEN BEGIN
+                SetToLog(TypeLog::Info,
+                       COPYSTR(STRSUBSTNO(Text0009, InvoiceHeader.FIELDCAPTION(SUNavAgri),
+                       InvoiceHeader.SUEan13 + ':' +  InvoiceHeader.SUAdresse + ':' + InvoiceHeader.SUPostCode,
+                       InvoiceHeader."Num Facture", 0)+'>2', 1, MAXSTRLEN(Result_L))
+                       , 0, '');
+                InvoiceHeader.Status := InvoiceHeader.Status::Error;
+                InvoiceHeader."Status Message" := COPYSTR(STRSUBSTNO(Text0009, InvoiceHeader.FIELDCAPTION(SUNavAgri),
+                                                  InvoiceHeader.SUEan13 + ':' +  InvoiceHeader.SUAdresse + ':' + InvoiceHeader.
+      SUPostCode,
+                                                  InvoiceHeader."Num Facture", 0)+'>2', 1, MAXSTRLEN(Result_L));
+                ReturnValue := FALSE;
+              END ELSE BEGIN
+                InvoiceHeader.SUNavAgri := Fourn_L;
+                ReturnValue := TRUE;
+              END;
+
+            END ELSE BEGIN
+              InvoiceHeader.SUNavAgri := Fourn_L;
+              ReturnValue := TRUE;
+            END;
+          END;
+        END;
+      END;
+      SetVendor(InvoiceHeader);
+    END;
+
+    PROCEDURE ReconciliationLine@1000000010(VAR InvoiceHeader@1000000000 : Record 8087767;VAR InvoiceLine@1000000001 : Record 8087768) ReturnValue : Boolean;
+    BEGIN
+      CASE (InvoiceHeader."Source Type") OF
+        InvoiceHeader."Source Type"::PA : BEGIN
+          ReturnValue := ReconciliationLinePA(InvoiceHeader, InvoiceLine);
+        END;
+        InvoiceHeader."Source Type"::EDI : BEGIN
+          ReturnValue := ReconciliationLineEDI(InvoiceHeader, InvoiceLine);
+        END;
+      END;
+      SetSourceDocumentLine(InvoiceLine);
+    END;
+
+    PROCEDURE ReconciliationLinePA@1000000021(VAR InvHeader@1000000001 : Record 8087767;VAR InvLine@1000000000 : Record 8087768) ReturnValue : Boolean;
+    VAR
+      "<-- 3LI LOCALS -->"@1000000022 : Integer;
+      TableSetup_L@1000000021 : Record 8053408;
+      TableItemCrossRef_L@1000000020 : Record 5717;
+      FileLogName_L@1000000019 : Text[256];
+      CodeUnitConnecteur_L@1000000018 : Integer;
+      ConnectorName_L@1000000017 : Code[20];
+      ImpExpFolder_L@1000000016 : Text[250];
+      LogFolder_L@1000000015 : Text[250];
+      ExtensionFile_L@1000000014 : Text[10];
+      PrefixFile_L@1000000013 : Text[30];
+      ModifLigne_L@1000000012 : Boolean;
+      Magasin_L@1000000011 : Text[30];
+      Fourn_L@1000000010 : Text[30];
+      FraisAnnexe_L@1000000009 : Code[20];
+      TextTemp_L@1000000008 : Text[255];
+      intPos1_L@1000000007 : Integer;
+      UniteSicapa_L@1000000006 : Text[30];
+      UniteEdi_L@1000000005 : Text[30];
+      ConvUnite_L@1000000004 : Decimal;
+      TableItem_L@1000000003 : Record 27;
+      Result_L@1000000002 : Text[256];
+    BEGIN
+      ReturnValue := FALSE;
+      InvLine.Status := InvLine.Status::" ";
+      InvLine."Status Message":= '';
+      IF InvLine."Item No. NavAgri" = '' THEN BEGIN
+        //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+        IF ((InvLine.Type = InvLine.Type::" ") OR
+            (InvLine.Type = InvLine.Type::Item)) THEN BEGIN
+          //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010                                                                 (
+          // Recherche si article ?
+          IF (InvLine.Ean13 <> 0) THEN BEGIN
+            //-->20151117-INT08-CMC02.02.00-ADVITAM-CDL011
+            CLEAR(TableItemCrossRef_L);
+            //<--20151117-INT08-CMC02.02.00-ADVITAM-CDL011
+            TableItemCrossRef_L.SETRANGE("Cross-Reference Type", TableItemCrossRef_L."Cross-Reference Type"::"Bar Code");
+            TableItemCrossRef_L.SETRANGE("Cross-Reference No.", FORMAT(InvLine.Ean13));
+            IF TableItemCrossRef_L.FINDFIRST() THEN BEGIN
+              InvLine.Type := InvLine.Type::Item;
+              InvLine."Item No. NavAgri" := TableItemCrossRef_L."Item No.";
+              InvLine."Variant Code NavAgri" := TableItemCrossRef_L."Variant Code";
+              ReturnValue := TRUE;
+            END ELSE BEGIN
+              InvLine.Status := InvLine.Status::Warning;
+              InvLine."Status Message" := STRSUBSTNO(TErrEANNotExists, InvLine.Ean13);
+            END;
+          END ELSE BEGIN
+            InvLine.Status := InvLine.Status::Warning;
+            InvLine."Status Message" := STRSUBSTNO(TErrEANNotExists, InvLine.Ean13);
+          END;
+          IF (InvLine."Item No. NavAgri" = '') THEN BEGIN
+            //<--20151117-INT08-CMC02.02.00-ADVITAM-CDL011
+            IF InvLine."Code Produit fournisseur" <> '' THEN BEGIN
+              //-->20151117-INT08-CMC02.02.00-ADVITAM-CDL011
+              CLEAR(TableItemCrossRef_L);
+              //<--20151117-INT08-CMC02.02.00-ADVITAM-CDL011
+              TableItemCrossRef_L.SETRANGE("Cross-Reference Type", TableItemCrossRef_L."Cross-Reference Type"::Vendor);
+              TableItemCrossRef_L.SETRANGE("Cross-Reference Type No.", InvHeader."Vendor No.");
+              TableItemCrossRef_L.SETRANGE("Cross-Reference No.", InvLine."Code Produit fournisseur");
+              IF TableItemCrossRef_L.FINDFIRST THEN BEGIN
+                InvLine.Status := InvLine.Status::" ";
+                InvLine."Status Message":= '';
+                InvLine.Type := InvLine.Type::Item;
+                InvLine."Item No. NavAgri" := TableItemCrossRef_L."Item No.";
+                InvLine."Variant Code NavAgri" := TableItemCrossRef_L."Variant Code";
+                ReturnValue := TRUE;
+              END ELSE BEGIN
+                TableItemCrossRef_L.SETRANGE("Cross-Reference Type No.");
+                IF TableItemCrossRef_L.FINDFIRST THEN BEGIN
+                  InvLine.Status := InvLine.Status::" ";
+                  InvLine."Status Message":= '';
+                  InvLine.Type := InvLine.Type::Item;
+                  InvLine."Item No. NavAgri" := TableItemCrossRef_L."Item No.";
+                  InvLine."Variant Code NavAgri" := TableItemCrossRef_L."Variant Code";
+                  ReturnValue := TRUE;
+                END ELSE BEGIN
+                  InvLine.Status := InvLine.Status::Warning;
+                  InvLine."Status Message" := STRSUBSTNO(TErrVendorItemCodeNotExists, InvLine."Code Produit fournisseur");
+                END;
+              END;
+            END ELSE BEGIN
+              InvLine.Status := InvLine.Status::Warning;
+              InvLine."Status Message" := STRSUBSTNO(TErrVendorItemCodeNotExists, InvLine."Code Produit fournisseur");
+            END;
+          END;
+        END;
+        IF ((InvLine.Type = InvLine.Type::" ") OR
+            (InvLine.Type = InvLine.Type::"Charge (Item)")) THEN BEGIN
+          //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+          // Recherche si frais Anexes ?
+          IF InvLine."Item No. NavAgri" = '' THEN BEGIN
+            FraisAnnexe_L := MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G, 'Item Charge', 'No.',
+                        FORMAT(InvLine.Ean13), TRUE, TRUE);
+            IF FraisAnnexe_L <> '' THEN BEGIN
+              InvLine.Type := InvLine.Type::"Charge (Item)";
+              InvLine."Item No. NavAgri" := FraisAnnexe_L;
+              CLEAR(InvLine."Variant Code NavAgri");
+              ReturnValue := TRUE;
+            END ELSE BEGIN
+            END;
+          END;
+          //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+        END;
+        //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+      END ELSE BEGIN
+        // Chekc if Item No is a real item in NaVagri
+        IF (NOT TableItem_L.GET(InvLine."Item No. NavAgri")) THEN BEGIN
+              InvLine.Status := InvLine.Status::Warning;
+              InvLine."Status Message" := STRSUBSTNO(TErrItemNotExists, InvLine."Item No. NavAgri");
+        END;
+      END;
+
+      //-->20151110-INT08-CMC02.02.00-ADVITAM-CDL009
+      IF InvLine.Type = InvLine.Type::Item THEN BEGIN
+        UniteSicapa_L := InvLine.Unite;
+        IF TableItem_L.GET(InvLine."Item No. NavAgri") THEN BEGIN
+          SetMarket(InvLine, TableItem_L);
+          UniteEdi_L := MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G, 'Unit of Measure', 'Code',
+                      TableItem_L."Sales Unit of Measure", FALSE, TRUE);
+          IF UniteEdi_L = '' THEN BEGIN
+            SetToLog(TypeLog::Info,
+                       COPYSTR(STRSUBSTNO(Text0025, TableItem_L.FIELDCAPTION("Sales Unit of Measure"),
+                       TableItem_L."Sales Unit of Measure", InvLine."Num Facture", InvLine."Num Ligne"),
+                       1, MAXSTRLEN(Result_L))
+                       , 0, '');
+
+          END;
+          // <-- 20220202-ADV-CLA109965-XPE1
+          ConvUnite_L := ToolsFile_G.CoefConvUniteItem(UniteSicapa_L, UniteEdi_L, TableItem_L.Capacity, TRUE,
+                                                       TableItem_L."No.");
+          // --> 20220202-ADV-CLA109965-XPE1
+          IF ConvUnite_L = 0 THEN BEGIN
+            SetToLog(TypeLog::Info,
+                     COPYSTR(STRSUBSTNO(Text0016, InvLine."Item No. NavAgri",
+                     InvLine."Code Produit fournisseur", UniteSicapa_L, UniteEdi_L,
+                     InvLine."Num Facture", InvLine."Num Ligne"),1, MAXSTRLEN(Result_L))
+                       , 0, '');
+
+          END;
+        END;
+        IF ((ConvUnite_L <> 0) AND (ConvUnite_L <> InvLine."Coefficient Unit")) THEN BEGIN
+          InvLine."Coefficient Unit" := ConvUnite_L;
+          ReturnValue := TRUE;
+        END;
+      END;
+      //<--20151110-INT08-CMC02.02.00-ADVITAM-CDL009 : - Modification Conversion unit' : utilisation fonction
+    END;
+
+    PROCEDURE ReconciliationLineEDI@1000000022(VAR InvHeader@1000000000 : Record 8087767;VAR InvLine@1000000001 : Record 8087768) ReturnValue : Boolean;
+    VAR
+      "<-- 3LI LOCALS -->"@1000000022 : Integer;
+      TableSetup_L@1000000021 : Record 8053408;
+      TableItemCrossRef_L@1000000020 : Record 5717;
+      FileLogName_L@1000000019 : Text[256];
+      CodeUnitConnecteur_L@1000000018 : Integer;
+      ConnectorName_L@1000000017 : Code[20];
+      ImpExpFolder_L@1000000016 : Text[250];
+      LogFolder_L@1000000015 : Text[250];
+      ExtensionFile_L@1000000014 : Text[10];
+      PrefixFile_L@1000000013 : Text[30];
+      ModifLigne_L@1000000012 : Boolean;
+      Magasin_L@1000000011 : Text[30];
+      Fourn_L@1000000010 : Text[30];
+      FraisAnnexe_L@1000000009 : Code[20];
+      TextTemp_L@1000000008 : Text[255];
+      intPos1_L@1000000007 : Integer;
+      UniteSicapa_L@1000000006 : Text[30];
+      UniteEdi_L@1000000005 : Text[30];
+      ConvUnite_L@1000000004 : Decimal;
+      TableItem_L@1000000003 : Record 27;
+      Result_L@1000000002 : Text[256];
+    BEGIN
+      // Contr"le correspondance de l'article : dans "Item cross..."
+      ReturnValue := FALSE;
+      InvLine.Status := InvLine.Status::" ";
+      InvLine."Status Message" := '';
+      TableSetup_L.GET();
+
+      IF InvLine."Item No. NavAgri" = '' THEN BEGIN
+        //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+        IF ((InvLine.Type = InvLine.Type::" ") OR
+            (InvLine.Type = InvLine.Type::Item)) THEN BEGIN
+          //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+          // Recherche si article ?
+          IF (InvLine.Ean13 <> 0) THEN BEGIN
+            //-->20151117-INT08-CMC02.02.00-ADVITAM-CDL011
+            CLEAR(TableItemCrossRef_L);
+            //<--20151117-INT08-CMC02.02.00-ADVITAM-CDL011
+            TableItemCrossRef_L.SETRANGE("Cross-Reference Type", TableItemCrossRef_L."Cross-Reference Type"::"Bar Code");
+            TableItemCrossRef_L.SETRANGE("Cross-Reference No.", FORMAT(InvLine.Ean13));
+            IF TableItemCrossRef_L.FINDFIRST() THEN BEGIN
+              InvLine.Type := InvLine.Type::Item;
+              InvLine."Item No. NavAgri" := TableItemCrossRef_L."Item No.";
+              InvLine."Variant Code NavAgri" := TableItemCrossRef_L."Variant Code";
+              ReturnValue := TRUE;
+            END;
+          END;
+          IF (InvLine."Item No. NavAgri" = '') THEN BEGIN
+            //<--20151117-INT08-CMC02.02.00-ADVITAM-CDL011
+            IF InvLine."Code Produit fournisseur" <> '' THEN BEGIN
+              //-->20151117-INT08-CMC02.02.00-ADVITAM-CDL011
+              CLEAR(TableItemCrossRef_L);
+              //<--20151117-INT08-CMC02.02.00-ADVITAM-CDL011
+              TableItemCrossRef_L.SETRANGE("Cross-Reference Type", TableItemCrossRef_L."Cross-Reference Type"::Vendor);
+              TableItemCrossRef_L.SETRANGE("Cross-Reference Type No.", TableSetup_L.Vendor);
+              TableItemCrossRef_L.SETRANGE("Cross-Reference No.", InvLine."Code Produit fournisseur");
+              IF TableItemCrossRef_L.FINDFIRST THEN BEGIN
+                MESSAGE('OK');
+                InvLine.Type := InvLine.Type::Item;
+                InvLine."Item No. NavAgri" := TableItemCrossRef_L."Item No.";
+                InvLine."Variant Code NavAgri" := TableItemCrossRef_L."Variant Code";
+                ReturnValue := TRUE;
+              END;
+            END;
+          END;
+        END;
+        IF ((InvLine.Type = InvLine.Type::" ") OR
+            (InvLine.Type = InvLine.Type::"Charge (Item)")) THEN BEGIN
+          //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+          // Recherche si frais Anexes ?
+          IF InvLine."Item No. NavAgri" = '' THEN BEGIN
+            FraisAnnexe_L := MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G, 'Item Charge', 'No.',
+                        FORMAT(InvLine.Ean13), TRUE, TRUE);
+            IF FraisAnnexe_L <> '' THEN BEGIN
+              InvLine.Type := InvLine.Type::"Charge (Item)";
+              InvLine."Item No. NavAgri" := FraisAnnexe_L;
+              CLEAR(InvLine."Variant Code NavAgri");
+              ReturnValue := TRUE;
+            END;
+          END;
+          //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+        END;
+        //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+      END;
+
+      //-->20151110-INT08-CMC02.02.00-ADVITAM-CDL009
+      IF InvLine.Type = InvLine.Type::Item THEN BEGIN
+        UniteSicapa_L := InvLine.Unite;
+        IF TableItem_L.GET(InvLine."Item No. NavAgri") THEN BEGIN
+          SetMarket(InvLine, TableItem_L);
+          UniteEdi_L := MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G, 'Unit of Measure', 'Code',
+
+                      TableItem_L."Sales Unit of Measure", FALSE, TRUE);
+          IF UniteEdi_L = '' THEN BEGIN
+            SetToLog(TypeLog::Info,
+                       COPYSTR(STRSUBSTNO(Text0025, TableItem_L.FIELDCAPTION("Sales Unit of Measure"),
+                       TableItem_L."Sales Unit of Measure", InvLine."Num Facture", InvLine."Num Ligne"),
+                       1, MAXSTRLEN(Result_L))
+                       , 0, '');
+
+          END;
+          // <-- 20220202-ADV-CLA109965-XPE1
+          ConvUnite_L := ToolsFile_G.CoefConvUniteItem(UniteSicapa_L, UniteEdi_L, TableItem_L.Capacity, TRUE,
+                                                       TableItem_L."No.");
+          // --> 20220202-ADV-CLA109965-XPE1
+          IF ConvUnite_L = 0 THEN BEGIN
+            SetToLog(TypeLog::Info,
+                     COPYSTR(STRSUBSTNO(Text0016, InvLine."Item No. NavAgri",
+                     InvLine."Code Produit fournisseur", UniteSicapa_L, UniteEdi_L,
+                     InvLine."Num Facture", InvLine."Num Ligne"),1, MAXSTRLEN(Result_L))
+                       , 0, '');
+
+          END;
+        END;
+        IF ((ConvUnite_L <> 0) AND (ConvUnite_L <> InvLine."Coefficient Unit")) THEN BEGIN
+          InvLine."Coefficient Unit" := ConvUnite_L;
+          ReturnValue := TRUE;
+        END;
+      END;
+      //<--20151110-INT08-CMC02.02.00-ADVITAM-CDL009 : - Modification Conversion unit' : utilisation fonction
+    END;
+
+    PROCEDURE ImportManualInvoice@1000000012(InvoiceHeader@1000000000 : Record 8087767);
+    VAR
+      "<-- 3LI LOCALS -->"@1000000023 : Integer;
+      ModifLigne_L@1000000011 : Boolean;
+      ModifEntete_L@1000000001 : Boolean;
+      InvoiceLine@1000000002 : Record 8087768;
+      Result_L@1000000003 : Text[255];
+    BEGIN
+      ModifEntete_L := FALSE;
+      SetToLog(TypeLog::Info, 'No Facture : ' + InvoiceHeader."Num Facture", 0, '');
+      ModifEntete_L := ReconciliationHeader(InvoiceHeader);
+
+      // Contr"ler que tous les produits ont un BR associ'
+      InvoiceLine.SETRANGE("Emetteur Type", InvoiceHeader."Emetteur Type");
+      InvoiceLine.SETRANGE(Emetteur, InvoiceHeader.Emetteur);
+      InvoiceLine.SETRANGE("Destinataire Type", InvoiceHeader."Destinataire Type");
+      InvoiceLine.SETRANGE(Destinataire, InvoiceHeader.Destinataire);
+      InvoiceLine.SETRANGE("Type Facture", InvoiceHeader."Type Facture");
+      InvoiceLine.SETRANGE("Num Facture", InvoiceHeader."Num Facture");
+      InvoiceLine.SETRANGE("Num Ligne");
+
+      IF InvoiceLine.FINDSET THEN BEGIN
+        REPEAT
+          ModifLigne_L := FALSE;
+          ModifLigne_L := ReconciliationLine(InvoiceHeader, InvoiceLine);
+
+          //IF ModifLigne_L THEN BEGIN
+            IF NOT InvoiceLine.MODIFY(TRUE) THEN BEGIN
+              SetToLog(TypeLog::Error,
+                         COPYSTR(STRSUBSTNO(Text0014,InvoiceLine.TABLECAPTION,
+                           InvoiceLine."Num Facture", InvoiceLine."Num Ligne"), 1, MAXSTRLEN(Result_L))
+                           , 0, '');
+            END;
+          //END;
+        UNTIL InvoiceLine.NEXT = 0;
+      END;
+      //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+      //IF ModifEntete_L THEN BEGIN
+        IF NOT InvoiceHeader.MODIFY(TRUE) THEN BEGIN
+          SetToLog(TypeLog::Error,
+                       COPYSTR(STRSUBSTNO(Text0014, InvoiceHeader.TABLECAPTION,
+                       InvoiceHeader."Num Facture", 0), 1, MAXSTRLEN(Result_L))
+                       , 0, '');
+        END;
+      //END;
+    END;
+
+    PROCEDURE InitConnector@1000000016();
+    VAR
+      "<-- 3LI LOCALS -->"@1000000022 : Integer;
+      TableSetup_L@1000000021 : Record 8053408;
+      FileLogName_L@1000000017 : Text[256];
+      CodeUnitConnecteur_L@1000000016 : Integer;
+      ConnectorName_L@1000000015 : Code[20];
+      ImpExpFolder_L@1000000014 : Text[250];
+      LogFolder_L@1000000013 : Text[250];
+      ExtensionFile_L@1000000012 : Text[10];
+      PrefixFile_L@1000000011 : Text[30];
+    BEGIN
+      IF (TableSetup_L.FINDFIRST) AND (TableSetup_L."Import Invoice") THEN BEGIN
+        CodeUnitConnecteur_L := TableSetup_L.CodeUnitIntegInvoiceConn;
+        MoteurInterface_G.GetParameter(CodeUnitConnecteur_L, ConnectorName_L, ImpExpFolder_L, LogFolder_L, ExtensionFile_L,
+            PrefixFile_L);
+        MoteurInterface_G.GetTemplatesCode (ConnectorName_L, ItemTemplateCode_G, CustomerTemplateCode_G, VendorTemplateCode_G,
+            ContactTemplateCode_G, AccountTemplateCode_G, GlobalTemplateCode_G);
+        IF (NOT GUIALLOWED) THEN BEGIN
+          ToolsFile_G.LogInit(LogFolder_L, 'SICAPA');
+          ToolsFile_G.LogInitCodeUnit(CodeUnitConnecteur_L);
+        END;
+
+      END;
+    END;
+
+    PROCEDURE CreateInvoice@1000000015(InvoiceHeader@1000000000 : Record 8087767);
+    VAR
+      "<-- 3LI LOCALS -->"@1000000006 : Integer;
+      TableSetup_L@1000000005 : Record 8053408;
+      TableImportHead_L@1000000004 : Record 8087767;
+      TableImportHead2_L@1000000003 : Record 8087767;
+      TableImportLine_L@1000000002 : Record 8087768;
+      FileLogName_L@1000000001 : Text[256];
+      Result_L@1000000007 : Text[256];
+    BEGIN
+      IF (TableSetup_L.FINDFIRST) AND (TableSetup_L."Import Invoice") THEN BEGIN
+        IF (InvoiceHeader.HoroIntegration = 0DT) THEN BEGIN
+            // Pour traiter avec COMMIT et ROLLBACK par Exp'dition
+            CLEAR(TableImportLine_L);
+            TableImportLine_L."Emetteur Type" := InvoiceHeader."Emetteur Type";
+            TableImportLine_L.Emetteur := InvoiceHeader.Emetteur;
+            TableImportLine_L."Destinataire Type" := InvoiceHeader."Destinataire Type";
+            TableImportLine_L.Destinataire := InvoiceHeader.Destinataire;
+            TableImportLine_L."Type Facture" := InvoiceHeader."Type Facture";
+            TableImportLine_L."Num Facture" := InvoiceHeader."Num Facture";
+            IF NOT CODEUNIT.RUN(TableSetup_L.CodeUnitIntegInvoice, TableImportLine_L) THEN BEGIN
+              SetToLog(TypeLog::Error,
+                       COPYSTR(STRSUBSTNO(Text0021, InvoiceHeader."Num Facture"),1, MAXSTRLEN(Result_L))
+                       , 0, '');
+              SetToLog(TypeLog::Error,
+                       COPYSTR(GETLASTERRORTEXT, 1, MAXSTRLEN(Result_L))
+                       , 0, '');
+            END ELSE BEGIN
+              COMMIT;
+              IF NOT TableImportHead2_L.GET(InvoiceHeader."No.") THEN BEGIN
+                CLEAR(TableImportHead2_L);
+              END;
+              SetToLog(TypeLog::Info,
+                       COPYSTR(STRSUBSTNO(Text0022, InvoiceHeader."Num Facture",
+                       TableImportHead2_L."Invoice No."), 1, MAXSTRLEN(Result_L))
+                       , 0, '');
+
+            END;
+          // Pour g'rer le ROLLBACK.
+          CLEAR(Result_L);
+          FileLogName_L := ToolsFile_G.LogName;
+          ToolsFile_G.LogClose();
+
+          IF ToolsFile_G.LogErreurType() = 'E' THEN BEGIN
+            Result_L := 'ERREUR ' + FileLogName_L;
+            ERROR(Result_L);
+          END ELSE BEGIN
+            IF ToolsFile_G.LogErreurType() = 'I' THEN BEGIN
+              Result_L := Text0008;
+              MoteurInterface_G.InsertLog(CodeUnit_G, FileLogName_L);
+            END ELSE BEGIN
+              MoteurInterface_G.InsertOk(CodeUnit_G);
+            END;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE SetStatusMessageHdr@1000000023(Status@1000000000 : ' ,Success,Warning,Error';Message@1000000001 : Text[256];VAR InvoiceHeader@1000000002 : Record 8087767);
+    BEGIN
+    END;
+
+    PROCEDURE SetStatusMessageLine@1000000024();
+    BEGIN
+    END;
+
+    PROCEDURE SetSourceDocument@1000000017(VAR ImpInvHead@1000000000 : Record 8087767);
+    VAR
+      OrderNo@1000000001 : Text[50];
+      Position@1000000002 : Integer;
+    BEGIN
+      OrderNo := ImpInvHead.OrderNo;
+      IF (OrderNo <> '') THEN BEGIN
+        Position := STRPOS(OrderNo, ' ');
+        IF (Position > 0) THEN BEGIN
+          ImpInvHead."Source Document No." := COPYSTR(OrderNo, 1, Position - 1);
+          ImpInvHead."Location Code" := COPYSTR(OrderNo, Position + 1);
+        END ELSE BEGIN
+          ImpInvHead."Source Document No." := OrderNo;
+          ImpInvHead."Location Code" := '';
+        END;
+      END;
+    END;
+
+    PROCEDURE SetSourceDocumentLine@1000000020(VAR ImpInvLine@1000000000 : Record 8087768);
+    VAR
+      OrderNo@1000000002 : Text[50];
+      Position@1000000001 : Integer;
+    BEGIN
+      OrderNo := ImpInvLine.RefCde;
+      IF (OrderNo <> '') THEN BEGIN
+        Position := STRPOS(OrderNo, ' ');
+        IF (Position > 0) THEN BEGIN
+          ImpInvLine."Source Document No." := COPYSTR(OrderNo, 1, Position - 1);
+          ImpInvLine."Location Code" := COPYSTR(OrderNo, Position + 1);
+        END ELSE BEGIN
+          ImpInvLine."Source Document No." := OrderNo;
+          ImpInvLine."Location Code" := '';
+        END;
+      END;
+    END;
+
+    BEGIN
+    {
+      //--> 3LI BEGIN
+      20140203-Int08-CMC02.02.00-ADVITAM-CDL : - Importation des factures Sicapa.
+      20151110-INT08-CMC02.02.00-ADVITAM-CDL009 : - Modification Conversion unit' : Utilisation fonction
+                                                    + Ici Import D'part (Sicapa) vers Arriv' (Nav) : Calcul toujours Qt' * Coef.
+      20151116-INT08-CMC02.02.00-ADVITAM-CDL010 : - Recherche correspondance article que si type article non renseign', type article ou
+                                                  - Recherche correspondance frais annexe si type article non renseign', type
+                                                    frais annexes.
+                                                  - Mise . jour ent^te pour r'f'rence d'p"t
+      20151117-INT08-CMC02.02.00-ADVITAM-CDL011 : - Pb recherche correspondance produit.
+      20180406-ADV-OFT01 : Message plus explicite + '>1..n' au Text 0006 et 0009
+      ADV18.06.01-ADV-XPE : Add Number line file on Error Occured during the process
+                         Added new function SetToLog
+      20201109-CLA87065-ADVITAM-XPE001 : Change to Catch Error Message when find the NavAgri Location Code
+      20220202-ADV-CLA109965-XPE1 : Manage the convertion entre Tonne and Liters
+      //<-- 3LI END
+    }
+    END.
+  }
+}
+

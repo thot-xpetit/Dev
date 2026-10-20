@@ -1,0 +1,315 @@
+OBJECT Codeunit 8061391 CMB VLE Apply Posted Entries
+{
+  OBJECT-PROPERTIES
+  {
+    Date=15/03/16;
+    Heure=00:00:00;
+    Liste versions=CMB6.00.10.09,CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    TableNo=25;
+    Permissions=TableData 25=rimd;
+    OnRun=VAR
+            EntriesToApply@1000 : Record 25;
+            ApplicationDate@1001 : Date;
+            ApplicationDocNo@1000000000 : Code[20];
+            UpdateAnalysisView@1002 : Codeunit 410;
+            Vend_L@1000000001 : Record 23;
+          BEGIN
+            WITH Rec DO BEGIN
+              IF NOT PaymentToleranceMgt.PmtTolVend(Rec) THEN
+                EXIT;
+              GET("Entry No.");
+
+              ApplicationDate := 0D;
+              EntriesToApply.SETCURRENTKEY("Vendor No.","Applies-to ID");
+              EntriesToApply.SETRANGE("Vendor No.","Vendor No.");
+              EntriesToApply.SETRANGE("Applies-to ID","Applies-to ID");
+              EntriesToApply.FIND('-');
+              REPEAT
+                IF EntriesToApply."Posting Date" > ApplicationDate THEN BEGIN
+                  ApplicationDate := EntriesToApply."Posting Date";
+                  ApplicationDocNo := EntriesToApply."Document No.";
+                END;
+              UNTIL EntriesToApply.NEXT = 0;
+
+              GenJnlLine.INIT;
+              GenJnlLine."Document No." := ApplicationDocNo;
+              GenJnlLine."Posting Date" := ApplicationDate;
+
+              SourceCodeSetup.GET;
+
+              GenJnlLine."Document Date" := GenJnlLine."Posting Date";
+              GenJnlLine."Account Type" := GenJnlLine."Account Type"::Vendor;
+              GenJnlLine."Account No." := "Vendor No.";
+              CALCFIELDS("Debit Amount","Credit Amount","Debit Amount (LCY)","Credit Amount (LCY)");
+              GenJnlLine.Correction :=
+                ("Debit Amount" < 0) OR ("Credit Amount" < 0) OR
+                ("Debit Amount (LCY)" < 0) OR ("Credit Amount (LCY)" < 0);
+              GenJnlLine."Document Type" := "Document Type";
+              GenJnlLine.Description := Description;
+              GenJnlLine."Shortcut Dimension 1 Code" := "Global Dimension 1 Code";
+              GenJnlLine."Shortcut Dimension 2 Code" := "Global Dimension 2 Code";
+              GenJnlLine."Posting Group" := "Vendor Posting Group";
+              GenJnlLine."Source Type" := GenJnlLine."Source Type"::Vendor;
+              GenJnlLine."Source No." := "Vendor No.";
+              GenJnlLine."Source Code" := SourceCodeSetup."Purchase Entry Application";
+              GenJnlLine."System-Created Entry" := TRUE;
+              // --> 20160224-FINA08-ADV01.01.00-2848-JCD01
+              IF Vend_L.GET("Vendor No.") THEN
+                GenJnlLine."Intra Group Code" := Vend_L."Intra Group Code";
+              // <-- 20160224-FINA08-ADV01.01.00-2848-JCD01
+
+              GenJnlPostLine.VendPostApplyVendLedgEntry(GenJnlLine,Rec);
+
+              COMMIT;
+
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      SourceCodeSetup@1004 : Record 242;
+      GenJnlLine@1005 : Record 81;
+      VendLedgEntryTMP_G@1000000000 : TEMPORARY Record 25;
+      PostApplication@1006 : Form 579;
+      GenJnlCheckLine@1022 : Codeunit 11;
+      GenJnlPostLine@1007 : Codeunit 12;
+      PaymentToleranceMgt@1011 : Codeunit 426;
+      ApplyAuto_G@1000000001 : Codeunit 8053055;
+      Window@1008 : Dialog;
+      EntryNoBeforeApplication@1009 : Integer;
+      EntryNoAfterApplication@1010 : Integer;
+      MaxPostingDate@1024 : Date;
+
+    PROCEDURE ApplyAutoVendLedgEntryAmt@1000000000(VendNo_P@1000000001 : Code[20];PostApply_P@1000000000 : Boolean;VGrAccFilter_P@1000000009 : Text[250]);
+    VAR
+      SourceCodeSetup_L@1000000004 : Record 242;
+      VendLedgEntry_L@1000000002 : Record 25;
+      VendLedgEntryTA_L@1000000003 : Record 25;
+      VendDetLedgEntry_L@1000000007 : Record 380;
+      VendDetLedgEntryTA_L@1000000008 : Record 380;
+      GenJnlLine_L@1000000006 : Record 81;
+      GenJnlPostLine_L@1000000005 : Codeunit 12;
+      Vend_L@1000000010 : Record 23;
+    BEGIN
+      SourceCodeSetup_L.GET;
+
+      VendLedgEntry_L.RESET;
+      VendLedgEntry_L.SETCURRENTKEY("Vendor No.",Open,Positive,"Due Date","Currency Code");
+      VendLedgEntry_L.SETRANGE("Vendor No.",VendNo_P);
+      VendLedgEntry_L.SETRANGE(Open,TRUE);
+      VendLedgEntry_L.SETRANGE(Positive,FALSE);
+      IF VGrAccFilter_P <> '' THEN
+        VendLedgEntry_L.SETFILTER("Vendor Posting Group",VGrAccFilter_P);
+
+      //-->20140515-FINA13-CMC02.02.00-2044-BDN01
+      VendLedgEntry_L.SETRANGE("Applies-to ID",'');
+      //<--20140515-FINA13-CMC02.02.00-2044-BDN01
+
+      IF VendLedgEntry_L.FINDFIRST THEN BEGIN
+        REPEAT
+          //Search only one document to apply
+          VendLedgEntry_L.CALCFIELDS("Remaining Amount");
+          VendLedgEntryTA_L.RESET;
+          VendLedgEntryTA_L.SETCURRENTKEY("Vendor No.",Open,Positive,"Due Date","Currency Code");
+          VendLedgEntryTA_L.SETRANGE("Vendor No.",VendNo_P);
+          VendLedgEntryTA_L.SETRANGE(Open,TRUE);
+          VendLedgEntryTA_L.SETRANGE(Positive,TRUE);
+          VendLedgEntryTA_L.SETRANGE("Remaining Amount",-VendLedgEntry_L."Remaining Amount");
+          VendLedgEntryTA_L.SETRANGE("GLAccountNo.",VendLedgEntry_L."GLAccountNo.");
+
+          //-->20140515-FINA13-CMC02.02.00-2044-BDN01
+          VendLedgEntryTA_L.SETRANGE("Applies-to ID",'');
+          //<--20140515-FINA13-CMC02.02.00-2044-BDN01
+
+          IF VendLedgEntryTA_L.FINDFIRST AND (VendLedgEntryTA_L.COUNT = 1) THEN BEGIN
+            //Save values on entry en entry to apply
+            VendLedgEntryTA_L.CALCFIELDS("Remaining Amount");
+            VendLedgEntry_L."Applies-to ID":=FORMAT(VendLedgEntry_L."Entry No.");
+            VendLedgEntry_L.VALIDATE("Amount to Apply",VendLedgEntry_L."Remaining Amount");
+            VendLedgEntry_L."Applying Entry":=TRUE;
+            VendLedgEntry_L.MODIFY;
+
+            VendLedgEntryTA_L."Applies-to ID" := FORMAT(VendLedgEntry_L."Entry No.");
+            VendLedgEntryTA_L.VALIDATE("Amount to Apply",VendLedgEntryTA_L."Remaining Amount");
+            VendLedgEntryTA_L.MODIFY;
+
+            // --> 20140903-FINA23/CMC02.02.00-2478-BDN01
+            IF PostApply_P THEN BEGIN
+              ApplyAuto_G.CreateAppliedEntriesHist(2,VendLedgEntry_L."Entry No.");
+              ApplyAuto_G.CreateAppliedEntriesHist(2,VendLedgEntryTA_L."Entry No.");
+            END;
+            // <-- 20140903-FINA23/CMC02.02.00-2478-BDN01
+
+            //To post ?
+            IF PostApply_P THEN BEGIN
+              GenJnlLine_L.INIT;
+              CLEAR(GenJnlLine_L);
+              CLEAR(GenJnlPostLine_L);
+              CLEAR(GenJnlPostLine);
+              GenJnlLine_L."Account Type" := GenJnlLine_L."Account Type"::Vendor;
+              GenJnlLine_L."Account No." := VendLedgEntry_L."Vendor No.";
+              VendLedgEntry_L.CALCFIELDS("Debit Amount","Credit Amount","Debit Amount (LCY)","Credit Amount (LCY)");
+              GenJnlLine_L.Correction :=
+                           (VendLedgEntry_L."Debit Amount" < 0) OR (VendLedgEntry_L."Credit Amount" < 0) OR
+                           (VendLedgEntry_L."Debit Amount (LCY)" < 0) OR (VendLedgEntry_L."Credit Amount (LCY)" < 0);
+              GenJnlLine_L."Document Type" := VendLedgEntry_L."Document Type";
+              GenJnlLine_L.Description := VendLedgEntry_L.Description;
+              GenJnlLine_L."Shortcut Dimension 1 Code" := VendLedgEntry_L."Global Dimension 1 Code";
+              GenJnlLine_L."Shortcut Dimension 2 Code" := VendLedgEntry_L."Global Dimension 2 Code";
+              GenJnlLine_L."Posting Group" := VendLedgEntry_L."Vendor Posting Group";
+              GenJnlLine_L."Source Type" := GenJnlLine_L."Source Type"::Vendor;
+              GenJnlLine_L."Source No." := VendLedgEntry_L."Vendor No.";
+              GenJnlLine_L."Source Code" := SourceCodeSetup_L."Purchase Entry Application";
+              GenJnlLine_L."System-Created Entry" := TRUE;
+              GenJnlLine_L."Posting Date":=TODAY;
+              GenJnlLine_L."Document No.":= VendLedgEntry_L."Document No.";
+              // --> 20160224-FINA08-ADV01.01.00-2848-JCD01
+              IF Vend_L.GET(VendLedgEntry_L."Vendor No.") THEN
+                GenJnlLine_L."Intra Group Code" := Vend_L."Intra Group Code";
+              // <-- 20160224-FINA08-ADV01.01.00-2848-JCD01
+              GenJnlPostLine.VendPostApplyVendLedgEntry(GenJnlLine_L,VendLedgEntry_L);
+            END;
+          END;
+        UNTIL VendLedgEntry_L.NEXT=0;
+      END;
+    END;
+
+    PROCEDURE ApplyAutoVendLedgEntryBal@1000000001(VendNo_P@1000000001 : Code[20];PostApply_P@1000000000 : Boolean;DatePostDue_P@1000000009 : 'Posting Date,Due Date';VGrAccFilter_P@1000000005 : Text[250]);
+    VAR
+      VendPostingGroup_L@1000000004 : Record 93;
+      VendLedgEntry_L@1000000002 : Record 25;
+      VendLedgEntryTA_L@1000000003 : Record 25;
+      Balance_L@1000000010 : Decimal;
+      EntryQty_L@1000000011 : Integer;
+    BEGIN
+      VendPostingGroup_L.RESET;
+      VendPostingGroup_L.SETFILTER("Payables Account",'<>%1','');
+      IF VendPostingGroup_L.FINDFIRST THEN
+        REPEAT
+          VendLedgEntry_L.RESET;
+          CASE DatePostDue_P OF
+            DatePostDue_P::"Posting Date" : VendLedgEntry_L.SETCURRENTKEY("Vendor No.",Open,"GLAccountNo.","Posting Date");
+            DatePostDue_P::"Due Date" : VendLedgEntry_L.SETCURRENTKEY("Vendor No.",Open,"GLAccountNo.","Due Date");
+          END;
+          VendLedgEntry_L.SETRANGE("Vendor No.",VendNo_P);
+          VendLedgEntry_L.SETRANGE(Open,TRUE);
+          VendLedgEntry_L.SETRANGE("GLAccountNo.",VendPostingGroup_L."Payables Account");
+          IF VGrAccFilter_P <> '' THEN
+            VendLedgEntry_L.SETFILTER("Vendor Posting Group",VGrAccFilter_P);
+
+          //-->20140515-FINA13-CMC02.02.00-2044-BDN01
+          VendLedgEntry_L.SETRANGE("Applies-to ID",'');
+          //<--20140515-FINA13-CMC02.02.00-2044-BDN01
+
+          IF VendLedgEntry_L.FINDFIRST THEN BEGIN
+            Balance_L := 0;
+            EntryQty_L := 0;
+            VendLedgEntryTMP_G.DELETEALL;
+            REPEAT
+              VendLedgEntry_L.CALCFIELDS("Remaining Amount");
+              Balance_L := Balance_L + VendLedgEntry_L."Remaining Amount";
+              EntryQty_L := EntryQty_L + 1;
+              VendLedgEntryTMP_G.INIT;
+              VendLedgEntryTMP_G.TRANSFERFIELDS(VendLedgEntry_L);
+              VendLedgEntryTMP_G.INSERT;
+              IF (Balance_L = 0) AND (EntryQty_L > 1) THEN BEGIN
+                ApplyGroup(PostApply_P);
+                EntryQty_L := 0;
+                VendLedgEntryTMP_G.DELETEALL;
+              END;
+            UNTIL VendLedgEntry_L.NEXT=0;
+          END;
+        UNTIL VendPostingGroup_L.NEXT=0;
+    END;
+
+    PROCEDURE ApplyGroup@1000000004(PostApply_P@1000000007 : Boolean);
+    VAR
+      SourceCodeSetup_L@1000000010 : Record 242;
+      VendLedgEntryTA_L@1000000003 : Record 25;
+      GenJnlLine_L@1000000009 : Record 81;
+      GenJnlPostLine_L@1000000008 : Codeunit 12;
+      PostingGroup_L@1000000005 : Code[10];
+      ApplyID_L@1000000004 : Code[20];
+      FirstRecord_L@1000000001 : Boolean;
+      Vend_L@1000000000 : Record 23;
+    BEGIN
+      SourceCodeSetup_L.GET;
+      VendLedgEntryTMP_G.RESET;
+      VendLedgEntryTMP_G.FINDFIRST;
+      FirstRecord_L := TRUE;
+      REPEAT
+        VendLedgEntryTA_L.GET(VendLedgEntryTMP_G."Entry No.");
+        VendLedgEntryTA_L.CALCFIELDS("Remaining Amount");
+        IF FirstRecord_L THEN BEGIN
+          FirstRecord_L := FALSE;
+          ApplyID_L := FORMAT(VendLedgEntryTA_L."Entry No.");
+          VendLedgEntryTA_L."Applies-to ID" := ApplyID_L;
+          VendLedgEntryTA_L.VALIDATE("Amount to Apply",VendLedgEntryTA_L."Remaining Amount");
+          VendLedgEntryTA_L."Applying Entry":=TRUE;
+          VendLedgEntryTA_L.MODIFY;
+        END
+        ELSE BEGIN
+          VendLedgEntryTA_L."Applies-to ID" := ApplyID_L;
+          VendLedgEntryTA_L.VALIDATE("Amount to Apply",VendLedgEntryTA_L."Remaining Amount");
+          VendLedgEntryTA_L.MODIFY;
+        END;
+
+        // --> 20140903-FINA23/CMC02.02.00-2478-BDN01
+        IF PostApply_P THEN
+          ApplyAuto_G.CreateAppliedEntriesHist(2,VendLedgEntryTA_L."Entry No.");
+        // <-- 20140903-FINA23/CMC02.02.00-2478-BDN01
+
+      UNTIL VendLedgEntryTMP_G.NEXT=0;
+      VendLedgEntryTMP_G.RESET;
+      VendLedgEntryTMP_G.FINDFIRST;
+      VendLedgEntryTA_L.GET(VendLedgEntryTMP_G."Entry No.");
+
+      //To post ?
+      IF PostApply_P THEN BEGIN
+
+        GenJnlLine_L.INIT;
+        CLEAR(GenJnlLine_L);
+        CLEAR(GenJnlPostLine_L);
+        CLEAR(GenJnlPostLine);
+        GenJnlLine_L."Account Type" := GenJnlLine_L."Account Type"::Vendor;
+        GenJnlLine_L."Account No." := VendLedgEntryTA_L."Vendor No.";
+        GenJnlLine_L."Document Type" := VendLedgEntryTA_L."Document Type";
+        GenJnlLine_L.Description := VendLedgEntryTA_L.Description;
+        GenJnlLine_L."Shortcut Dimension 1 Code" := VendLedgEntryTA_L."Global Dimension 1 Code";
+        GenJnlLine_L."Shortcut Dimension 2 Code" := VendLedgEntryTA_L."Global Dimension 2 Code";
+        GenJnlLine_L."Posting Group" := VendLedgEntryTA_L."Vendor Posting Group";
+        GenJnlLine_L."Source Type" := GenJnlLine_L."Source Type"::Vendor;
+        GenJnlLine_L."Source No." := VendLedgEntryTA_L."Vendor No.";
+        GenJnlLine_L."Source Code" := SourceCodeSetup_L."Purchase Entry Application";
+        GenJnlLine_L."System-Created Entry" := TRUE;
+        GenJnlLine_L."Posting Date":=TODAY;
+        GenJnlLine_L."Document No.":= VendLedgEntryTA_L."Document No.";
+        // --> 20160224-FINA08-ADV01.01.00-2848-JCD01
+        IF Vend_L.GET(VendLedgEntryTA_L."Vendor No.") THEN
+          GenJnlLine_L."Intra Group Code" := Vend_L."Intra Group Code";
+        // <-- 20160224-FINA08-ADV01.01.00-2848-JCD01
+
+        GenJnlPostLine.VendPostApplyVendLedgEntry(GenJnlLine_L,VendLedgEntryTA_L);
+      END;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20130528-8060990/111-CMB6.00.10.09-FEC01 : NEWOBJ (Traitement des 'critures fournisseur).
+      20140108-FINA23/001-CMC02.02.00-BDN : ADDFCT (ApplyAutoVendLedgEntryAmt,ApplyAutoVendLedgEntryBal,ApplyGroup).
+      20140112-FINA23/001-CMC02.02.00-BDN02 : Add filter on Customer and Vendor Posting Group
+      20140515-FINA13-CMC02.02.00-2044-BDN01 : ADDCODE (Select unapplied entries to apply)
+      20140903-FINA23/001-CMC02.02.00-2478-BDN01 : ADDCODE (Call CreateAppliedEntriesHist when apply and post)
+      20160224-FINA08-ADV01.01.00-2848-JCD01 : ADDCODE (Ajout code intragroupe lors des lettrages)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

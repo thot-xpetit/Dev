@@ -1,0 +1,483 @@
+OBJECT Codeunit 10821 Export DEB DTI
+{
+  OBJECT-PROPERTIES
+  {
+    Date=15/01/16;
+    Heure=00:00:00;
+    Liste versions=DEBDTI,CMB6.00.10.06;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      CompanyInfo@1120008 : Record 79;
+      TempIntrastatJnlBatch@1120005 : TEMPORARY Record 262;
+      TempIntrastatJnlLine@1120006 : TEMPORARY Record 263;
+      FileObject@1120003 : Automation "{F935DC20-1CF0-11D0-ADB9-00C04FD58A0B} 1.0:{0D43FE01-F093-11CF-8940-00A0C9054228}:'Windows Script Host Object Model'.FileSystemObject";
+      OutputFile@1120002 : File;
+      TempFileName@1120000 : Text[250];
+      ClientFileName@1120001 : Text[250];
+      Text001@1120004 : TextConst 'ENU=There is nothing to export.;FRA=Il n''y a rien . exporter.';
+      Text002@1120009 : TextConst 'ENU=must be positive;FRA=doit ^tre de signe positif';
+      Text003@1120007 : TextConst 'ENU=must not start with zero;FRA=ne doit pas commencer par z'ro';
+      ItemCounter_G@8060982 : Integer;
+
+    PROCEDURE ExportToXML@1120000(VAR IntrastatJnlLine@1120004 : Record 263;ObligationLevel@1120002 : Integer;FileName@1120001 : Text[250]) : Boolean;
+    VAR
+      OutputStream@1120003 : OutStream;
+      LastDeclarationId@1120006 : Integer;
+    BEGIN
+      CompanyInfo.GET;
+      CheckMandatoryCompanyInfo;
+
+      CheckJnlLines(IntrastatJnlLine);
+      InsertTempJnlLines(IntrastatJnlLine);
+
+      ClientFileName := FileName;
+      CreateFile(OutputStream);
+
+      LastDeclarationId := CompanyInfo."Last Intrastat Declaration ID";
+      GenerateXML(OutputStream,LastDeclarationId,ObligationLevel);
+      UpdateLastDeclarationId(LastDeclarationId);
+
+      UpdateBatchReported(IntrastatJnlLine);
+
+      CloseFile;
+
+      EXIT(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateFile@1220007(VAR OutputStream@1120000 : OutStream);
+    VAR
+      TierAutoMgt@1120001 : Codeunit 419;
+    BEGIN
+      OutputFile.TEXTMODE(TRUE);
+      OutputFile.WRITEMODE(TRUE);
+      IF NOT ISSERVICETIER THEN BEGIN
+        TempFileName := ClientFileName;
+        OutputFile.QUERYREPLACE(TRUE)
+      END ELSE
+        TempFileName := TierAutoMgt.ServerTempFileName('','.xml');
+      OutputFile.CREATE(TempFileName);
+      OutputFile.CREATEOUTSTREAM(OutputStream);
+    END;
+
+    LOCAL PROCEDURE CloseFile@1220006();
+    BEGIN
+      OutputFile.CLOSE;
+      IF ISSERVICETIER THEN
+        DownloadToFile(TempFileName,ClientFileName);
+    END;
+
+    LOCAL PROCEDURE DownloadToFile@1010000(TempFileName@1010000 : Text[1024];FileName@1010001 : Text[1024]);
+    VAR
+      TierAutoMgt@1120000 : Codeunit 419;
+    BEGIN
+      TempFileName := TierAutoMgt.DownloadTempFile(TempFileName);
+      IF ISCLEAR(FileObject) THEN
+        CREATE(FileObject,TRUE,TRUE);
+      IF FileObject.FileExists(FileName) THEN
+        FileObject.DeleteFile(FileName,TRUE);
+      FileObject.MoveFile(TempFileName,FileName);
+    END;
+
+    LOCAL PROCEDURE CheckMandatoryCompanyInfo@1120001();
+    BEGIN
+      CompanyInfo.TESTFIELD(CISD);
+      CompanyInfo.TESTFIELD("Registration No.");
+      CompanyInfo.TESTFIELD("VAT Registration No.");
+      CompanyInfo.TESTFIELD(Name);
+    END;
+
+    LOCAL PROCEDURE UpdateLastDeclarationId@1120003(LastDeclarationId@1120001 : Integer);
+    BEGIN
+      CompanyInfo.GET;
+      CompanyInfo."Last Intrastat Declaration ID" := LastDeclarationId;
+      CompanyInfo.MODIFY;
+    END;
+
+    LOCAL PROCEDURE CheckJnlLines@1120034(VAR IntrastatJnlLine@1120000 : Record 263);
+    BEGIN
+      IF IntrastatJnlLine.ISEMPTY THEN
+        ERROR(Text001);
+
+      IntrastatJnlLine.FINDFIRST;
+      ValidateJnlBatch(IntrastatJnlLine);
+
+      IntrastatJnlLine.SETCURRENTKEY(Type);
+      IF IntrastatJnlLine.FINDSET THEN
+        REPEAT
+          ValidateJnlLine(IntrastatJnlLine);
+        UNTIL IntrastatJnlLine.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE ValidateJnlBatch@1120004(IntrastatJnlLine@1120000 : Record 263);
+    VAR
+      IntrastatJnlBatch@1120001 : Record 262;
+    BEGIN
+      IntrastatJnlBatch.GET(IntrastatJnlLine."Journal Template Name",IntrastatJnlLine."Journal Batch Name");
+      IntrastatJnlBatch.TESTFIELD("Statistics Period");
+      IntrastatJnlBatch.TESTFIELD(Reported,FALSE);
+    END;
+
+    LOCAL PROCEDURE ValidateJnlLine@1120023(IntrastatJnlLine@1120000 : Record 263);
+    BEGIN
+      IntrastatJnlLine.TESTFIELD("Journal Template Name");
+      IntrastatJnlLine.TESTFIELD("Journal Batch Name");
+      IntrastatJnlLine.TESTFIELD("Transaction Specification");
+      IF IntrastatJnlLine."Transaction Type" <> '' THEN
+        IF COPYSTR(IntrastatJnlLine."Transaction Type",1,1) = '0' THEN
+          IntrastatJnlLine.FIELDERROR("Transaction Type",Text003);
+      // --> 20140610-DEBDTI-CMB6.00.10.06-DRN01
+      //BEFORE
+      {
+      IF IntrastatJnlLine."Statistical Value" <= 0 THEN
+        IntrastatJnlLine.FIELDERROR("Statistical Value",Text002);
+      IF IntrastatJnlLine.Quantity <= 0 THEN
+        IntrastatJnlLine.FIELDERROR(Quantity,Text002);
+      }
+      // <-- 20140610-DEBDTI-CMB6.00.10.06-DRN01
+    END;
+
+    LOCAL PROCEDURE InsertTempJnlLines@1120021(VAR IntrastatJnlLine@1220002 : Record 263);
+    VAR
+      Type@1120000 : Integer;
+      FlowCode@1120002 : Text[1];
+    BEGIN
+      Type := -1;
+      IntrastatJnlLine.SETCURRENTKEY(Type);
+      IF IntrastatJnlLine.FINDSET THEN
+        REPEAT
+          IF Type <> IntrastatJnlLine.Type THEN BEGIN
+            FlowCode := GetFlowCode(IntrastatJnlLine.Type);
+            InsertTempJnlBatch(IntrastatJnlLine,FlowCode);
+            Type := IntrastatJnlLine.Type;
+          END;
+          InsertTempJnlLine(IntrastatJnlLine,FlowCode);
+        UNTIL IntrastatJnlLine.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE InsertTempJnlBatch@1120028(IntrastatJnlLine@1120001 : Record 263;FlowCode@1120000 : Text[1]);
+    VAR
+      IntrastatJnlBatch@1120002 : Record 262;
+    BEGIN
+      IntrastatJnlBatch.GET(IntrastatJnlLine."Journal Template Name",IntrastatJnlLine."Journal Batch Name");
+      TempIntrastatJnlBatch := IntrastatJnlBatch;
+      TempIntrastatJnlBatch."Journal Template Name" := FlowCode;
+      TempIntrastatJnlBatch.INSERT;
+    END;
+
+    LOCAL PROCEDURE InsertTempJnlLine@1120027(IntrastatJnlLine@1120000 : Record 263;FlowCode@1120002 : Text[1]);
+    BEGIN
+      TempIntrastatJnlLine := IntrastatJnlLine;
+      TempIntrastatJnlLine.Quantity := GetQtyInSU(IntrastatJnlLine);
+      TempIntrastatJnlLine."Tariff No." := DELCHR(IntrastatJnlLine."Tariff No.");
+      TempIntrastatJnlLine."Total Weight" := RoundValue(IntrastatJnlLine."Total Weight");
+      TempIntrastatJnlLine."Statistical Value" := RoundValue(IntrastatJnlLine."Statistical Value");
+      TempIntrastatJnlLine."Journal Template Name" := FlowCode;
+      TempIntrastatJnlLine.INSERT;
+    END;
+
+    LOCAL PROCEDURE UpdateBatchReported@1120002(IntrastatJnlLine@1120001 : Record 263);
+    VAR
+      IntrastatJnlBatch@1120000 : Record 262;
+    BEGIN
+      IntrastatJnlLine.FINDFIRST;
+      IntrastatJnlBatch.GET(IntrastatJnlLine."Journal Template Name",IntrastatJnlLine."Journal Batch Name");
+      IntrastatJnlBatch.Reported := TRUE;
+      IntrastatJnlBatch.MODIFY;
+    END;
+
+    LOCAL PROCEDURE GetReferencePeriod@1220015(StatisticsPeriod@1120000 : Code[10]) : Text[30];
+    BEGIN
+      EXIT('20' + COPYSTR(StatisticsPeriod,1,2) + '-' + COPYSTR(StatisticsPeriod,3,2));
+    END;
+
+    LOCAL PROCEDURE GetFlowCode@1220041(IntrastatJnlLineType@1220000 : Integer) : Text[1];
+    VAR
+      IntrastatJnlLine@1120000 : Record 263;
+    BEGIN
+      IF IntrastatJnlLineType = IntrastatJnlLine.Type::Receipt THEN
+        EXIT('A');
+      EXIT('D');
+    END;
+
+    LOCAL PROCEDURE RoundValue@1220002(Value@1220000 : Decimal) : Integer;
+    VAR
+      IntValue@1120000 : Integer;
+    BEGIN
+      IF Value >= 1 THEN
+        IntValue := ROUND(Value,1)
+      ELSE
+        IF Value = 0 THEN
+          IntValue := 0
+        ELSE
+          IntValue := 1;
+      EXIT(IntValue);
+    END;
+
+    LOCAL PROCEDURE FormatToXML@1120008(Number@1120000 : Decimal) : Text[30];
+    BEGIN
+      EXIT(FORMAT(Number,0,9));
+    END;
+
+    LOCAL PROCEDURE GetQtyInSU@1120022(IntrastatJnlLine@1120000 : Record 263) : Integer;
+    VAR
+      TariffNo@1120001 : Record 260;
+    BEGIN
+      IF TariffNo.GET(IntrastatJnlLine."Tariff No.") THEN BEGIN
+        IF TariffNo."Supplementary Units" THEN
+        // --> 20151103-WI00-CMC02.02.00-2416-JCD01
+        {BEFORE
+          EXIT(ROUND(IntrastatJnlLine.Quantity,1))
+        }//AFTER
+          EXIT(ROUND(IntrastatJnlLine."Supplementary Quantity",1))
+        // <-- 20151103-WI00-CMC02.02.00-2416-JCD01
+      END;
+      EXIT(0);
+    END;
+
+    LOCAL PROCEDURE GenerateXML@1120005(OutputStream@1120003 : OutStream;VAR DeclarationId@1120002 : Integer;ObligationLevel@1120004 : Integer);
+    VAR
+      XMLCurrNode@1120001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";
+      XMLDoc@1120000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60";
+    BEGIN
+      IF ISCLEAR(XMLDoc) THEN
+        CREATE(XMLDoc);
+
+      XMLDoc.loadXML := '<INSTAT/>';
+      XMLCurrNode := XMLDoc.documentElement;
+      AddProcessingInstruction(XMLDoc,XMLCurrNode);
+
+      AddHeader(XMLCurrNode);
+      AddDeclarations(XMLCurrNode,DeclarationId,ObligationLevel);
+
+      XMLDoc.save(OutputStream);
+    END;
+
+    LOCAL PROCEDURE AddProcessingInstruction@1010011(VAR XMLDoc@1010003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{88D96A05-F192-11D4-A65F-0040963251E5}:'Microsoft XML, v6.0'.DOMDocument60";XMLFirstNode@1010000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode");
+    VAR
+      ProcessingInstruction@1010002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF89-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMProcessingInstruction";
+      Attribute@1010004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF85-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMAttribute";
+    BEGIN
+      ProcessingInstruction := XMLDoc.createProcessingInstruction('xml','version="1.0"');
+      Attribute := XMLDoc.createAttribute('encoding');
+      Attribute.value := 'UTF-8';
+      ProcessingInstruction.attributes.setNamedItem(Attribute);
+      XMLDoc.insertBefore(ProcessingInstruction,XMLFirstNode);
+    END;
+
+    LOCAL PROCEDURE AddHeader@1120010(VAR XMLNode@1120000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode");
+    BEGIN
+      AddGroupNode(XMLNode,'Envelope');
+      AddNode(XMLNode,'envelopeId',CompanyInfo.CISD);
+
+      AddGroupNode(XMLNode,'DateTime');
+      AddNode(XMLNode,'date',FORMAT(TODAY,0,9));
+      AddLastNode(XMLNode,'time',COPYSTR(FORMAT(TIME,0,9),1,8));
+
+      AddGroupNode(XMLNode,'Party');
+      AddAttribute(XMLNode,'partyType','PSI');
+      AddAttribute(XMLNode,'partyRole','sender');
+      AddNode(XMLNode,'partyId',CompanyInfo.GetPartyID);
+      AddLastNode(XMLNode,'partyName',CompanyInfo.Name);
+
+      AddNode(XMLNode,'softwareUsed','DynamicsNAV');
+    END;
+
+    LOCAL PROCEDURE AddDeclarations@1120051(VAR XMLNode@1120001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";VAR DeclarationId@1120000 : Integer;ObligationLevel@1120002 : Integer);
+    BEGIN
+      IF TempIntrastatJnlBatch.FINDSET THEN
+        REPEAT
+          DeclarationId := DeclarationId + 1;
+          AddDeclaration(XMLNode,TempIntrastatJnlBatch,DeclarationId,ObligationLevel);
+          AddItems(XMLNode,TempIntrastatJnlBatch);
+          XMLNode := XMLNode.parentNode;
+        UNTIL TempIntrastatJnlBatch.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE AddDeclaration@1120024(VAR XMLNode@1120000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";IntrastatJnlBatch@1120002 : Record 262;DeclarationId@1120001 : Integer;ObligationLevel@1120004 : Integer);
+    BEGIN
+      AddGroupNode(XMLNode,'Declaration');
+      AddNode(XMLNode,'declarationId',FORMAT(DeclarationId,0,'<Integer,6><Filler Character,0>'));
+      AddNode(XMLNode,'referencePeriod',GetReferencePeriod(IntrastatJnlBatch."Statistics Period"));
+      AddNode(XMLNode,'PSIId',CompanyInfo.GetPartyID);
+
+      AddGroupNode(XMLNode,'Function');
+      AddLastNode(XMLNode,'functionCode','O');
+
+      AddNode(XMLNode,'declarationTypeCode',FORMAT(ObligationLevel));
+      AddNode(XMLNode,'flowCode',IntrastatJnlBatch."Journal Template Name");
+      AddNode(XMLNode,'currencyCode','EUR');
+    END;
+
+    LOCAL PROCEDURE AddItems@1120052(VAR XMLNode@1120002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";IntrastatJnlBatch@1120000 : Record 262);
+    BEGIN
+      TempIntrastatJnlLine.SETCURRENTKEY(Type);
+      TempIntrastatJnlLine.SETRANGE("Journal Template Name",IntrastatJnlBatch."Journal Template Name");
+      TempIntrastatJnlLine.SETRANGE("Journal Batch Name",IntrastatJnlBatch.Name);
+      // --> 20140610-DEBDTI-CMB6.00.10.06-DRN01
+      ItemCounter_G := 0;
+      // <-- 20140610-DEBDTI-CMB6.00.10.06-DRN01
+      IF TempIntrastatJnlLine.FINDSET THEN
+        REPEAT
+          AddItem(XMLNode,TempIntrastatJnlLine);
+          XMLNode := XMLNode.parentNode;
+        UNTIL TempIntrastatJnlLine.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE AddItem@1120053(VAR XMLNode@1120001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";IntrastatJnlLine@1120000 : Record 263);
+    VAR
+      Text8060982@8060984 : TextConst 'FRA=Le pays de provenance ne doit pas ^tre vide dans Ligne %1 Feuille %2';
+      Text8060983@8060983 : TextConst 'FRA=Departement ne doit pas ^tre vide dans Ligne %1 Feuille %2';
+      Text8060984@8060982 : TextConst 'FRA=Mode de transport ne doit pas ^tre vide dans Ligne %1 Feuille %2';
+    BEGIN
+      AddGroupNode(XMLNode,'Item');
+      // --> 20140610-DEBDTI-CMB6.00.10.06-DRN01
+      //BEFORE
+      //AddNode(XMLNode,'itemNumber',FormatToXML(IntrastatJnlLine."Line No."));
+      //AFTER
+      ItemCounter_G += 1;
+      AddNode(XMLNode,'itemNumber',FormatToXML(ItemCounter_G));
+      // <-- 20140610-DEBDTI-CMB6.00.10.06-DRN01
+      IF IntrastatJnlLine."Tariff No." <> '' THEN BEGIN
+        AddGroupNode(XMLNode,'CN8');
+        AddLastNode(XMLNode,'CN8Code',IntrastatJnlLine."Tariff No.");
+      END;
+      // --> 20140610-DEBDTI-CMB6.00.10.06-DRN01
+      IF IntrastatJnlLine."Entry/Exit Point" <> '' THEN   // Pays de provenance /destination
+        AddNode(XMLNode,'MSConsDestCode',IntrastatJnlLine."Entry/Exit Point");
+      // <-- 20140610-DEBDTI-CMB6.00.10.06-DRN01
+      IF IntrastatJnlLine."Country/Region of Origin Code" <> '' THEN
+        AddNode(XMLNode,'countryOfOriginCode',IntrastatJnlLine."Country/Region of Origin Code");
+      IF IntrastatJnlLine."Total Weight" <> 0 THEN
+        AddNode(XMLNode,'netMass',FormatToXML(IntrastatJnlLine."Total Weight"));
+      // --> 20140610-DEBDTI-CMB6.00.10.06-DRN01
+      //BEFORE
+      {
+      IF IntrastatJnlLine.Quantity <> 0 THEN
+        AddNode(XMLNode,'quantityInSU',FormatToXML(IntrastatJnlLine.Quantity));
+      }
+      //AFTER
+      // --> 20151103-WI00-CMC02.02.00-2416-JCD01
+      {BEFORE
+      AddNode(XMLNode,'quantityInSU',FormatToXML(IntrastatJnlLine.Quantity));
+      }//AFTER
+      // --> 20160116-WI00-ADV01.01.00-2663-JCD01
+      IntrastatJnlLine."Supplementary Quantity" := ROUND(IntrastatJnlLine."Supplementary Quantity",1);
+      IntrastatJnlLine.Quantity := ROUND(IntrastatJnlLine.Quantity,1);
+      // <-- 20160116-WI00-ADV01.01.00-2663-JCD01
+      IF IntrastatJnlLine."Supplementary Units" OR IntrastatJnlLine."Animal Trading" THEN
+        AddNode(XMLNode,'quantityInSU',FormatToXML(IntrastatJnlLine."Supplementary Quantity"))
+      ELSE
+        AddNode(XMLNode,'quantityInSU',FormatToXML(IntrastatJnlLine.Quantity));
+      // <-- 20151103-WI00-CMC02.02.00-2416-JCD01
+      // <-- 20140610-DEBDTI-CMB6.00.10.06-DRN01
+      AddNode(XMLNode,'invoicedAmount',FormatToXML(IntrastatJnlLine."Statistical Value"));
+      IF IntrastatJnlLine."Cust. VAT Registration No." <> '' THEN
+        AddNode(XMLNode,'partnerId',IntrastatJnlLine."Cust. VAT Registration No.");
+      AddNode(XMLNode,'statisticalProcedureCode',IntrastatJnlLine."Transaction Specification");
+
+      IF TempIntrastatJnlLine."Transaction Type" <> '' THEN BEGIN
+        AddGroupNode(XMLNode,'NatureOfTransaction');
+        AddNode(XMLNode,'natureOfTransactionACode',COPYSTR(TempIntrastatJnlLine."Transaction Type",1,1));
+        IF COPYSTR(TempIntrastatJnlLine."Transaction Type",2,1) <> '0' THEN
+          AddNode(XMLNode,'natureOfTransactionBCode',COPYSTR(TempIntrastatJnlLine."Transaction Type",2,1));
+        XMLNode := XMLNode.parentNode;
+      END;
+
+      IF IntrastatJnlLine."Transport Method" <> '' THEN
+        AddNode(XMLNode,'modeOfTransportCode',IntrastatJnlLine."Transport Method");
+
+      // --> 20140610-DEBDTI-CMB6.00.10.06-DRN01
+      IF IntrastatJnlLine.Area <> '' THEN   // Departement de provenance
+        AddNode(XMLNode,'regionCode',IntrastatJnlLine.Area);
+
+      IF IntrastatJnlLine.Type = 0 THEN BEGIN  // Lignes introduction
+        IF (IntrastatJnlLine."Transport Method" = '') THEN
+          ERROR(Text8060984,IntrastatJnlLine."Line No.",IntrastatJnlLine."Journal Batch Name");
+
+        IF (IntrastatJnlLine."Entry/Exit Point" = '') THEN
+          ERROR(Text8060982,IntrastatJnlLine."Line No.",IntrastatJnlLine."Journal Batch Name");
+
+        IF (IntrastatJnlLine.Area = '') THEN
+          ERROR(Text8060983,IntrastatJnlLine."Line No.",IntrastatJnlLine."Journal Batch Name");
+      END;
+      // <-- 20140610-DEBDTI-CMB6.00.10.06-DRN01
+    END;
+
+    LOCAL PROCEDURE AddGroupNode@1120006(VAR XMLNode@1120000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";NodeName@1120001 : Text[250]);
+    VAR
+      XMLNewChild@1120003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode";
+    BEGIN
+      AddElement(XMLNode,NodeName,'',XMLNewChild);
+      XMLNode := XMLNewChild;
+    END;
+
+    LOCAL PROCEDURE AddNode@1120009(VAR XMLNode@1120002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";NodeName@1120001 : Text[250];NodeText@1120000 : Text[250]);
+    VAR
+      XMLNewChild@1120003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode";
+    BEGIN
+      AddElement(XMLNode,NodeName,NodeText,XMLNewChild);
+    END;
+
+    LOCAL PROCEDURE AddLastNode@1120007(VAR XMLNode@1120002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 6.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v6.0'.IXMLDOMNode";NodeName@1120001 : Text[250];NodeText@1120000 : Text[250]);
+    VAR
+      XMLNewChild@1120003 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode";
+    BEGIN
+      AddElement(XMLNode,NodeName,NodeText,XMLNewChild);
+      XMLNode := XMLNode.parentNode;
+    END;
+
+    LOCAL PROCEDURE AddElement@6(VAR XMLNode@1001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode";NodeName@1002 : Text[250];NodeText@1003 : Text[250];VAR CreatedXMLNode@1005 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode");
+    VAR
+      NewChildNode@1006 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode";
+    BEGIN
+      NewChildNode := XMLNode.ownerDocument.createNode('element',NodeName,XMLNode.namespaceURI);
+
+      IF ISCLEAR(NewChildNode) THEN
+        EXIT;
+
+      IF NodeText <> '' THEN
+        NewChildNode.text := NodeText;
+
+      XMLNode.appendChild(NewChildNode);
+      CreatedXMLNode := NewChildNode;
+    END;
+
+    LOCAL PROCEDURE AddAttribute@7(VAR XMLNode@1001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode";Name@1002 : Text[260];NodeValue@1003 : Text[260]);
+    VAR
+      XMLNewAttributeNode@1004 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode";
+    BEGIN
+      XMLNewAttributeNode := XMLNode.ownerDocument.createAttribute(Name);
+
+      IF ISCLEAR(XMLNewAttributeNode) THEN
+        EXIT;
+
+      IF NodeValue <> '' THEN
+        XMLNewAttributeNode.nodeValue := NodeValue;
+
+      XMLNode.attributes.setNamedItem(XMLNewAttributeNode);
+    END;
+
+    BEGIN
+    {
+      // --> DYNAMICS BEGIN
+      20120928-DEBDTI-CMB6.00.10.06-JDL01 : NEWOBJECT ()
+      // <-- DYNAMICS END
+
+      // --> 3LI BEGIN
+      20140610-DEBDTI-CMB6.00.10.06-DRN01 : Report corrections TLM
+      20151103-WI00-CMC02.02.00-2416-JCD01 : ADDCODE (charge "Supplementary Quantity")
+      20160116-WI00-ADV01.01.00-2663-JCD01 : ADDCODE (Arrondi "Supplementary Quantity")
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,811 @@
+OBJECT Report 60041 Diff. Transfer Reconc. Regular
+{
+  OBJECT-PROPERTIES
+  {
+    Date=16/05/16;
+    Heure=00:00:00;
+    Liste versions=ADV01.00.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Difference transfert reconciliation regularisation;
+               FRA=Correction 'criture 'cart rapprochement transfert];
+    OnInitReport=BEGIN
+                   Simulate_G := TRUE;
+                   AutomaticReconciliation_G := AutomaticReconciliation_G::No;
+                 END;
+
+    OnPreReport=BEGIN
+                  IF NOT Simulate_G THEN IF NOT CONFIRM(Text50001, FALSE) THEN
+                    ERROR(Text50002);
+                END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table8052995;
+        DataItemTableView=SORTING(Receipt Type,No.)
+                          WHERE(Receipt Type=CONST(Transfert),
+                                Reconciliation Validated=CONST(Oui),
+                                Canceled=CONST(Non),
+                                Send IC Document=CONST(Non));
+        OnPreDataItem=BEGIN
+                        CASE AutomaticReconciliation_G OF
+                          AutomaticReconciliation_G::" ":
+                            SETRANGE("Automatic Reconciliation");
+                          AutomaticReconciliation_G::Yes:
+                            SETRANGE("Automatic Reconciliation", TRUE);
+                          AutomaticReconciliation_G::No:
+                            SETRANGE("Automatic Reconciliation", FALSE);
+                        END;
+
+                        CMCSetup_G.GET;
+
+                        TempItemJnlLine_G.RESET;
+                        TempItemJnlLine_G.DELETEALL;
+                        // --> 20160512-WI00-ADV01.01.00-2885-BGS01
+                        TempEcart_G.RESET;
+                        TempEcart_G.DELETEALL;
+                        // <-- 20160512-WI00-ADV01.01.00-2885-BGS01
+
+                        EntryNo_G := 10000;
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           IF NOT PostedDelivery_G.GET(PostedDelivery_G."Delivery Type"::Transfert, "CMC Posted Receipts"."Linked Output Transfer No.") THEN
+                             CurrReport.SKIP;
+
+                           IF PostedDelivery_G.Canceled THEN
+                             CurrReport.SKIP;
+
+                           IF PostedDelivery_G."Send IC Document" THEN
+                             CurrReport.SKIP;
+
+                           RecCompanyInfo_G.GET;
+                           IF (PostedDelivery_G."IC Direction" = PostedDelivery_G."IC Direction"::Incoming) AND PostedDelivery_G."On Behalf Of Adjustment"
+                           AND
+                             (RecCompanyInfo_G."IC Partner Code" = PostedDelivery_G."IC Partner-From Code") THEN
+                               CurrReport.SKIP;
+
+                           IF "Standard Weight" = PostedDelivery_G."Standard Weight" THEN
+                             CurrReport.SKIP;
+
+                           SumOfILE_G := 0;
+                           SumOfILE2_G := 0;
+
+
+                           ItemLedgerEntry_G.RESET;
+                           ItemLedgerEntry_G.SETCURRENTKEY("Document No.","Document Type","Document Line No.");
+                           ItemLedgerEntry_G.SETRANGE("Document No.", PostedDelivery_G."No.");
+                           IF ItemLedgerEntry_G.FINDSET THEN
+                             REPEAT
+                               Location_G.GET(ItemLedgerEntry_G."Location Code");
+                               IF Location_G."Use As In-Transit" THEN
+                                 SumOfILE_G := SumOfILE_G + ItemLedgerEntry_G.Quantity;
+                             UNTIL ItemLedgerEntry_G.NEXT = 0;
+
+                           ItemLedgerEntry_G.SETRANGE("Document No.", "CMC Posted Receipts"."No.");
+                           IF ItemLedgerEntry_G.FINDSET THEN
+                             REPEAT
+                               Location_G.GET(ItemLedgerEntry_G."Location Code");
+                               IF Location_G."Use As In-Transit" THEN
+                                 SumOfILE2_G := SumOfILE2_G + ItemLedgerEntry_G.Quantity;
+                             UNTIL ItemLedgerEntry_G.NEXT = 0;
+
+                           IF SumOfILE_G + SumOfILE2_G = 0 THEN
+                             CurrReport.SKIP;
+
+                           CreateTransferReconciliation;
+                           IF TempReconciliationTransfer_G.Reconciled THEN
+                             TreatTransferReconciliation;
+
+                           IF (PostedDelivery_G."Location Code" = "CMC Posted Receipts"."Transfer-from Code") AND
+                             (PostedDelivery_G."Transfer-to Code" <> "CMC Posted Receipts"."Location Code") THEN
+                             Diff_G := TRUE
+                           ELSE
+                             Diff_G := FALSE;
+                         END;
+
+        ReqFilterFields=No.,Automatic Reconciliation;
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Header;
+            SectionWidth=18450;
+            SectionHeight=1692;
+          }
+          CONTROLS
+          {
+            { 1000000023;TextBox;16200;846  ;2250 ;423  ;HorzAlign=Right;
+                                                         SourceExpr=USERID;
+                                                         DataSetFieldName=USERID }
+            { 1000000024;Label  ;17250;423  ;750  ;423  ;CaptionML=[ENU=Page;
+                                                                    FRA=Page];
+                                                         DataSetFieldName=CurrReport_PAGENOCaption }
+            { 1000000025;TextBox;18000;423  ;450  ;423  ;CaptionML=[ENU=Page;
+                                                                    FRA=Page];
+                                                         SourceExpr=CurrReport.PAGENO;
+                                                         DataSetFieldName=CurrReport_PAGENO }
+            { 1000000026;TextBox;0    ;423  ;7500 ;423  ;SourceExpr=COMPANYNAME;
+                                                         DataSetFieldName=COMPANYNAME }
+            { 1000000027;TextBox;15300;0    ;3150 ;423  ;HorzAlign=Right;
+                                                         SourceExpr=FORMAT(TODAY,0,4);
+                                                         DataSetFieldName=FORMAT_TODAY_0_4_ }
+            { 1000000028;Label  ;0    ;0    ;7500 ;423  ;FontSize=8;
+                                                         FontBold=Oui;
+                                                         CaptionML=[ENU=Update Item on Posted Delivery;
+                                                                    FRA=Mise . jour article sur le bon de sortie valid'];
+                                                         DataSetFieldName=Inventory_ValuationCaption }
+          }
+           }
+        { PROPERTIES
+          {
+            SectionType=Header;
+            PrintOnEveryPage=Oui;
+            SectionWidth=18450;
+            SectionHeight=1269;
+            OnPreSection=BEGIN
+                           CurrReport.SHOWOUTPUT(ShowDocuments_G);
+                         END;
+
+          }
+          CONTROLS
+          {
+            { 1000000002;Label  ;150  ;423  ;3150 ;423  ;FontBold=Oui;
+                                                         CaptionML=[ENU=Posted Receipt;
+                                                                    FRA=R'ception valid'e] }
+            { 1000000003;Label  ;6000 ;423  ;3150 ;423  ;FontBold=Oui;
+                                                         CaptionML=[ENU=Posted Delivery;
+                                                                    FRA=Bon de sortie valid'] }
+            { 1000000029;Label  ;3450 ;423  ;2100 ;423  ;HorzAlign=Right;
+                                                         FontBold=Oui;
+                                                         CaptionML=[ENU=Qty. on Transit;
+                                                                    FRA=Qt'. en transit] }
+            { 1000000030;Label  ;9300 ;423  ;2250 ;423  ;HorzAlign=Right;
+                                                         FontBold=Oui;
+                                                         CaptionML=[ENU=Qty. on Transit;
+                                                                    FRA=Qt'. en transit] }
+            { 1000000031;Label  ;11850;423  ;2550 ;423  ;FontBold=Oui;
+                                                         CaptionML=[ENU=Different Location;
+                                                                    FRA=Magasin different] }
+            { 1000000007;Label  ;14700;423  ;2550 ;423  ;FontBold=Oui;
+                                                         CaptionML=[ENU=Adjustment Cell;
+                                                                    FRA=Cellule d''cart] }
+          }
+           }
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=18450;
+            SectionHeight=423;
+            OnPreSection=BEGIN
+                           CurrReport.SHOWOUTPUT(ShowDocuments_G);
+                         END;
+
+          }
+          CONTROLS
+          {
+            { 1000000000;TextBox;150  ;0    ;3150 ;423  ;HorzAlign=Left;
+                                                         SourceExpr="CMC Posted Receipts"."No." }
+            { 1000000001;TextBox;6000 ;0    ;3150 ;423  ;HorzAlign=Left;
+                                                         SourceExpr=PostedDelivery_G."No." }
+            { 1000000004;TextBox;3450 ;0    ;2100 ;423  ;HorzAlign=Right;
+                                                         DecimalPlaces=0:5;
+                                                         SourceExpr=SumOfILE_G }
+            { 1000000005;TextBox;9300 ;0    ;2250 ;423  ;HorzAlign=Right;
+                                                         DecimalPlaces=0:5;
+                                                         SourceExpr=SumOfILE2_G }
+            { 1000000008;TextBox;11850;0    ;2550 ;423  ;HorzAlign=Left;
+                                                         SourceExpr=Diff_G }
+            { 1000000006;TextBox;14700;0    ;2550 ;423  ;HorzAlign=Left;
+                                                         SourceExpr=TempReconciliationTransfer_G."Gap Cell Code" }
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemTable=Table2000000026;
+        DataItemTableView=SORTING(Num'ro);
+        NewPagePerGroup=Oui;
+        OnPreDataItem=BEGIN
+                        TempItemJnlLine_G.RESET;
+                        IF TempItemJnlLine_G.ISEMPTY THEN
+                          CurrReport.BREAK;
+                        FirstEntry_G := TRUE;
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           IF FirstEntry_G THEN BEGIN
+                             TempItemJnlLine_G.FINDSET;
+                             FirstEntry_G := FALSE
+                           END ELSE
+                             IF TempItemJnlLine_G.NEXT = 0 THEN
+                               CurrReport.BREAK;
+
+                           IF TempItemJnlLine_G."Entry Type" = TempItemJnlLine_G."Entry Type"::"Negative Adjmt." THEN
+                             TempItemJnlLine_G.Quantity := - TempItemJnlLine_G.Quantity;
+                         END;
+
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Header;
+            PrintOnEveryPage=Oui;
+            SectionWidth=18450;
+            SectionHeight=1269;
+          }
+          CONTROLS
+          {
+            { 1000000016;Label  ;0    ;423  ;3150 ;423  ;ParentControl=1000000009;
+                                                         FontBold=Oui;
+                                                         CaptionML=[ENU=Document No.;
+                                                                    FRA=N› document] }
+            { 1000000017;Label  ;3300 ;423  ;2400 ;423  ;ParentControl=1000000010;
+                                                         FontBold=Oui;
+                                                         CaptionML=[ENU=Item No.;
+                                                                    FRA=N› article] }
+            { 1000000018;Label  ;5850 ;423  ;2250 ;423  ;FontBold=Oui;
+                                                         CaptionML=[ENU=Movement Type;
+                                                                    FRA=Type mouvement] }
+            { 1000000019;Label  ;8250 ;423  ;1950 ;423  ;ParentControl=1000000012;
+                                                         FontBold=Oui;
+                                                         CaptionML=[ENU=Campaign No.;
+                                                                    FRA=N› campagne] }
+            { 1000000020;Label  ;10350;423  ;2100 ;423  ;ParentControl=1000000013;
+                                                         FontBold=Oui;
+                                                         CaptionML=[ENU=Location Code;
+                                                                    FRA=Code magasin] }
+            { 1000000021;Label  ;12600;423  ;2100 ;423  ;ParentControl=1000000014;
+                                                         FontBold=Oui;
+                                                         CaptionML=[ENU=Cell Code;
+                                                                    FRA=Code cellule] }
+            { 1000000022;Label  ;14850;423  ;2100 ;423  ;ParentControl=1000000015;
+                                                         HorzAlign=Right;
+                                                         FontBold=Oui;
+                                                         CaptionML=[ENU=Quantity;
+                                                                    FRA=Quantit'] }
+          }
+           }
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=18450;
+            SectionHeight=423;
+          }
+          CONTROLS
+          {
+            { 1000000009;TextBox;0    ;0    ;3150 ;423  ;HorzAlign=Left;
+                                                         SourceExpr=TempItemJnlLine_G."Document No." }
+            { 1000000010;TextBox;3300 ;0    ;2400 ;423  ;HorzAlign=Left;
+                                                         SourceExpr=TempItemJnlLine_G."Item No." }
+            { 1000000011;TextBox;5850 ;0    ;2250 ;423  ;HorzAlign=Left;
+                                                         SourceExpr=FORMAT(TempItemJnlLine_G."Movement Type") }
+            { 1000000012;TextBox;8250 ;0    ;1950 ;423  ;HorzAlign=Left;
+                                                         SourceExpr=TempItemJnlLine_G."Campaign No." }
+            { 1000000013;TextBox;10350;0    ;2100 ;423  ;HorzAlign=Left;
+                                                         SourceExpr=TempItemJnlLine_G."Location Code" }
+            { 1000000014;TextBox;12600;0    ;2100 ;423  ;HorzAlign=Left;
+                                                         SourceExpr=TempItemJnlLine_G."Cell Code" }
+            { 1000000015;TextBox;14850;0    ;2100 ;423  ;HorzAlign=Right;
+                                                         DecimalPlaces=0:5;
+                                                         SourceExpr=TempItemJnlLine_G.Quantity }
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemTable=Table2000000026;
+        DataItemTableView=SORTING(Num'ro);
+        DataItemVarName=Ecart;
+        OnPreDataItem=BEGIN
+                        // --> 20160512-WI00-ADV01.01.00-2885-BGS01
+                        TempItemJnlLine_G.RESET;
+                        IF TempItemJnlLine_G.ISEMPTY THEN
+                          CurrReport.BREAK;
+
+                        FirstEntry_G := TRUE;
+
+                        TempEcart_G.RESET;
+                        TempItemJnlLine_G.SETRANGE("Location Code",CMCSetup_G."Indep. Transfer Transit Code");
+                        IF TempItemJnlLine_G.FINDSET THEN
+                          REPEAT
+                            IF TempItemJnlLine_G."Entry Type" = TempItemJnlLine_G."Entry Type"::"Negative Adjmt." THEN
+                              TempItemJnlLine_G.Quantity := - TempItemJnlLine_G.Quantity;
+
+                            IF TempEcart_G.GET(TempItemJnlLine_G."Item No.") THEN BEGIN
+                              TempEcart_G."Net Weight" := TempEcart_G."Net Weight" + TempItemJnlLine_G.Quantity;
+                              TempEcart_G.MODIFY(FALSE);
+                            END ELSE BEGIN
+                              TempEcart_G."No." := TempItemJnlLine_G."Item No.";
+                              TempEcart_G."Net Weight" := TempItemJnlLine_G.Quantity;
+                              TempEcart_G.INSERT(FALSE);
+                            END;
+                          UNTIL TempItemJnlLine_G.NEXT = 0;
+                        // <-- 20160512-WI00-ADV01.01.00-2885-BGS01
+                      END;
+
+        OnAfterGetRecord=BEGIN
+
+                           // --> 20160512-WI00-ADV01.01.00-2885-BGS01
+                           IF FirstEntry_G THEN BEGIN
+                             TempEcart_G.FINDSET;
+                             FirstEntry_G := FALSE;
+                           END ELSE
+                             IF TempEcart_G.NEXT = 0 THEN
+                              CurrReport.BREAK;
+                           // <-- 20160512-WI00-ADV01.01.00-2885-BGS01
+                         END;
+
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Header;
+            PrintOnEveryPage=Oui;
+            SectionWidth=18450;
+            SectionHeight=1269;
+          }
+          CONTROLS
+          {
+            { 1000000034;Label  ;0    ;423  ;2400 ;423  ;FontBold=Oui;
+                                                         CaptionML=[ENU=Item No.;
+                                                                    FRA=N› article] }
+            { 1000000036;Label  ;2400 ;423  ;2550 ;423  ;HorzAlign=Right;
+                                                         FontBold=Oui;
+                                                         CaptionML=[ENU=Quantity;
+                                                                    FRA=Quantit'] }
+          }
+           }
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=18450;
+            SectionHeight=423;
+          }
+          CONTROLS
+          {
+            { 1000000032;TextBox;0    ;0    ;2400 ;423  ;SourceExpr=TempEcart_G."No." }
+            { 1000000033;TextBox;2400 ;0    ;2550 ;423  ;DecimalPlaces=0:5;
+                                                         SourceExpr=TempEcart_G."Net Weight" }
+          }
+           }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=9020;
+      Height=3410;
+    }
+    CONTROLS
+    {
+      { 1000000000;Label  ;330  ;770  ;3300 ;440  ;CaptionML=[ENU=Simulation;
+                                                              FRA=Simulation] }
+      { 1000000002;CheckBox;4620;770  ;440  ;440  ;ShowCaption=Non;
+                                                   SourceExpr=Simulate_G }
+      { 1000000001;TextBox;4620 ;1760 ;1700 ;440  ;SourceExpr=AutomaticReconciliation_G }
+      { 1000000003;Label  ;330  ;1430 ;4180 ;770  ;MultiLine=Oui;
+                                                   CaptionML=[ENU=Automatic Reconciliation on Posted Receipts;
+                                                              FRA=Rapprochement automatique sur r'ceptions valid'es] }
+      { 1000000005;CheckBox;4620;2530 ;440  ;440  ;ShowCaption=Non;
+                                                   SourceExpr=ShowDocuments_G }
+      { 1000000006;Label  ;330  ;2530 ;4070 ;440  ;CaptionML=[ENU=Show documents;
+                                                              FRA=Afficher les documents] }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  CODE
+  {
+    VAR
+      PostedDelivery_G@1000000000 : Record 8053014;
+      ItemLedgerEntry_G@1000000001 : Record 32;
+      SumOfILE_G@1000000004 : Decimal;
+      SumOfILE2_G@1000000003 : Decimal;
+      Location_G@1000000002 : Record 14;
+      Simulate_G@1000000005 : Boolean;
+      TempReconciliationTransfer_G@1000000006 : TEMPORARY Record 8053308;
+      Diff_G@1000000008 : Boolean;
+      Isconfirmed_G@1000000009 : Boolean;
+      CMCSetup_G@1000000010 : Record 8052982;
+      TempItemJnlLine_G@1000000007 : TEMPORARY Record 83;
+      EntryNo_G@1000000011 : Integer;
+      FirstEntry_G@1000000012 : Boolean;
+      RecCompanyInfo_G@1000000013 : Record 79;
+      Text50001@1000000015 : TextConst 'ENU="This will create adjustments for the gap quantity. Are you sure you want to continue? ";FRA=Des ajustements seront cr'es pur l'''cart de quantit'. Souhaitez-vous continuer?';
+      Text50002@1000000014 : TextConst 'ENU=The process was interrupted.;FRA=La mise . jour a 't' interrompue.';
+      AutomaticReconciliation_G@1000000016 : ' ,Yes,No';
+      ShowDocuments_G@1000000017 : Boolean;
+      TempEcart_G@1000000018 : TEMPORARY Record 27;
+
+    PROCEDURE CreateTransferReconciliation@1000000000();
+    VAR
+      Ecart_L@1000000000 : Decimal;
+      FromLocation_L@1000000002 : Record 14;
+      ToLocation_L@1000000003 : Record 14;
+      SharedToSilo_L@1000000004 : Boolean;
+      SharedFromSilo_L@1000000005 : Boolean;
+      cduICInboxOutboxMgt_L@1000000006 : Codeunit 427;
+      CellsLocation_L@1000000007 : Record 8053031;
+    BEGIN
+      Ecart_L := 0;
+
+      TempReconciliationTransfer_G.INIT;
+      TempReconciliationTransfer_G."Entry No." := 1;
+      TempReconciliationTransfer_G."Date (Out)" := PostedDelivery_G."Sales Date";
+      TempReconciliationTransfer_G."Document No. (Out)" := PostedDelivery_G."No.";
+      TempReconciliationTransfer_G."Species Code (Out)" := PostedDelivery_G."Species Code";
+      TempReconciliationTransfer_G."Item No. (Out)"    := PostedDelivery_G."Item No.";
+      TempReconciliationTransfer_G."From-Location Code (Out)" := PostedDelivery_G."Location Code";
+      TempReconciliationTransfer_G."To-Location Code (Out)" := PostedDelivery_G."Transfer-to Code";
+      TempReconciliationTransfer_G."Net Weight (Out)" := PostedDelivery_G."Net Weight";
+      TempReconciliationTransfer_G."Standard Weight (Out)" := PostedDelivery_G."Standard Weight";
+      TempReconciliationTransfer_G."Manual Transf. No. (Out)" := PostedDelivery_G."Manual Transfer No.";
+      TempReconciliationTransfer_G."Campaign No. (Out)" := PostedDelivery_G."Campaign No.";
+      TempReconciliationTransfer_G."IC Partner Code (Out)" := PostedDelivery_G."IC Partner Code";
+      TempReconciliationTransfer_G."Shipping Agent Code (Out)" := PostedDelivery_G."Shipping Agent Code";
+
+      TempReconciliationTransfer_G."Document No. (In)"      := "CMC Posted Receipts"."No.";
+      TempReconciliationTransfer_G."Species Code (In)"      := "CMC Posted Receipts"."Species Code";
+      TempReconciliationTransfer_G."Item No. (In)"         := "CMC Posted Receipts"."Item No.";
+      TempReconciliationTransfer_G."From-Location Code (In)":= "CMC Posted Receipts"."Transfer-from Code";
+      TempReconciliationTransfer_G."To-Location Code (In)"  := "CMC Posted Receipts"."Location Code";
+      TempReconciliationTransfer_G."Net Weight (In)"        := "CMC Posted Receipts"."Net Weight";
+      TempReconciliationTransfer_G."Standard Weight (In)"   := "CMC Posted Receipts"."Standard Weight";
+      TempReconciliationTransfer_G."Manual Transf. No. (In)":= "CMC Posted Receipts"."Manual Transfer No.";
+      TempReconciliationTransfer_G."Campaign No. (In)"      := "CMC Posted Receipts"."Campaign No.";
+      TempReconciliationTransfer_G."IC Partner Code (In)" := "CMC Posted Receipts"."IC Partner Code";
+      TempReconciliationTransfer_G."Shipping Agent Code (In)" := "CMC Posted Receipts"."Shipping Agent Code";
+
+      Ecart_L := TempReconciliationTransfer_G."Net Weight (In)" - TempReconciliationTransfer_G."Net Weight (Out)";
+      IF (Ecart_L >= - CMCSetup_G."Independent Transfer Tolerance") AND
+         (Ecart_L <=   CMCSetup_G."Independent Transfer Tolerance") THEN BEGIN
+        TempReconciliationTransfer_G."Standard Gap Tolerated" :=
+          TempReconciliationTransfer_G."Standard Weight (In)" - TempReconciliationTransfer_G."Standard Weight (Out)";
+        TempReconciliationTransfer_G."Net Gap Tolerated" :=
+          TempReconciliationTransfer_G."Net Weight (In)" - TempReconciliationTransfer_G."Net Weight (Out)";
+      END ELSE BEGIN
+       TempReconciliationTransfer_G."Standard Gap Out Tolerance" :=
+         TempReconciliationTransfer_G."Standard Weight (In)" - TempReconciliationTransfer_G."Standard Weight (Out)";
+       TempReconciliationTransfer_G."Net Gap Out Tolerance" :=
+         TempReconciliationTransfer_G."Net Weight (In)" - TempReconciliationTransfer_G."Net Weight (Out)";
+      END;
+
+      IF (TempReconciliationTransfer_G."Manual Transf. No. (Out)" = TempReconciliationTransfer_G."Manual Transf. No. (In)") AND
+        TempReconciliationTransfer_G.SpeciesReconcilied(TempReconciliationTransfer_G."Species Code (Out)",
+          TempReconciliationTransfer_G."Species Code (In)") AND
+        (TempReconciliationTransfer_G."From-Location Code (Out)" = TempReconciliationTransfer_G."From-Location Code (In)") AND
+        //(TempReconciliationTransfer_G."To-Location Code (Out)" = TempReconciliationTransfer_G."To-Location Code (In)") AND
+        (TempReconciliationTransfer_G."Campaign No. (Out)"=TempReconciliationTransfer_G."Campaign No. (In)")
+      THEN BEGIN
+        IF CMCSetup_G."Shipping Code On Reconc Transf" AND
+          (TempReconciliationTransfer_G."Shipping Agent Code (Out)" <> TempReconciliationTransfer_G."Shipping Agent Code (In)")
+        THEN
+          CurrReport.SKIP;
+        FromLocation_L.GET(TempReconciliationTransfer_G."From-Location Code (Out)");
+        ToLocation_L.GET(TempReconciliationTransfer_G."To-Location Code (In)");
+        SharedToSilo_L := cduICInboxOutboxMgt_L.CompanyManageSharedSilo(ToLocation_L);
+        SharedFromSilo_L := cduICInboxOutboxMgt_L.CompanyManageSharedSilo(FromLocation_L);
+
+        // --> 20160516-WI00-ADV01.01.00-2885-BGS0
+        {BEFORE
+        IF NOT ((FromLocation_L."Compensation Location" OR
+          FromLocation_L."Shared Silo" AND NOT SharedFromSilo_L) AND
+          (ToLocation_L."Shared Silo" AND NOT SharedToSilo_L))
+        THEN BEGIN
+        AFTER}
+        // <-- 20160516-WI00-ADV01.01.00-2885-BGS0
+          IF (Ecart_L >= - CMCSetup_G."Independent Transfer Tolerance") AND   // si dans la tol'rance
+            (Ecart_L <= CMCSetup_G."Independent Transfer Tolerance")
+          THEN BEGIN
+            TempReconciliationTransfer_G.Reconciled := TRUE;
+            TempReconciliationTransfer_G."Automatic Reconciliation" := TRUE;
+
+            CASE CMCSetup_G."Difference On" OF
+              CMCSetup_G."Difference On"::"Transfer-From Location" :
+                BEGIN
+                  IF FromLocation_L."Compensation Location" OR
+                    FromLocation_L."Shared Silo" AND NOT SharedFromSilo_L
+                  THEN BEGIN
+                    TempReconciliationTransfer_G."Gap Location Code" := TempReconciliationTransfer_G."To-Location Code (In)";
+                  END ELSE
+                    TempReconciliationTransfer_G."Gap Location Code" := TempReconciliationTransfer_G."From-Location Code (Out)";
+                  CLEAR(CellsLocation_L);
+                  CellsLocation_L.SETRANGE("Location Code",TempReconciliationTransfer_G."Gap Location Code");
+                  CellsLocation_L.SETRANGE("Ajustment Cell",TRUE);
+                  IF CellsLocation_L.FINDFIRST THEN BEGIN
+                    TempReconciliationTransfer_G."Gap Cell Code" := CellsLocation_L."Cell Code";
+                  END ELSE BEGIN
+                    IF FromLocation_L."Compensation Location" OR
+                      FromLocation_L."Shared Silo" AND NOT SharedFromSilo_L
+                    THEN BEGIN
+                      TempReconciliationTransfer_G."Gap Cell Code" := "CMC Posted Receipts"."Cell Code";
+                    END ELSE
+                      TempReconciliationTransfer_G."Gap Cell Code" := PostedDelivery_G."Cell Code";
+                  END;
+                  IF (TempReconciliationTransfer_G."IC Partner Code (Out)" <> '') AND (FromLocation_L."Shared Silo") THEN BEGIN
+                      TempReconciliationTransfer_G."Gap Location Code"  := TempReconciliationTransfer_G."From-Location Code (Out)";
+                      CLEAR(CellsLocation_L);
+                      TempReconciliationTransfer_G."Gap Cell Code"      :=
+                        CellsLocation_L.GetUncontroledCell(TempReconciliationTransfer_G."From-Location Code (Out)");
+                    END;
+                END;
+              CMCSetup_G."Difference On"::"Transfer-To Location" :
+                BEGIN
+                  IF ToLocation_L."Compensation Location" OR
+                    ToLocation_L."Shared Silo" AND NOT SharedToSilo_L
+                  THEN BEGIN
+                    TempReconciliationTransfer_G."Gap Location Code" := TempReconciliationTransfer_G."From-Location Code (Out)"
+                  END ELSE
+                    TempReconciliationTransfer_G."Gap Location Code" := TempReconciliationTransfer_G."To-Location Code (In)";
+                  CLEAR(CellsLocation_L);
+                  CellsLocation_L.SETRANGE("Location Code",TempReconciliationTransfer_G."Gap Location Code");
+                  CellsLocation_L.SETRANGE("Ajustment Cell",TRUE);
+                  IF CellsLocation_L.FINDFIRST THEN BEGIN
+                    TempReconciliationTransfer_G."Gap Cell Code" := CellsLocation_L."Cell Code";
+                  END ELSE BEGIN
+                    IF ToLocation_L."Shared Silo" AND NOT SharedToSilo_L THEN BEGIN
+                      TempReconciliationTransfer_G."Gap Cell Code" := PostedDelivery_G."Cell Code";
+                    END ELSE
+                      TempReconciliationTransfer_G."Gap Cell Code" := "CMC Posted Receipts"."Cell Code";
+                  END;
+                END;
+            END;
+          END;
+        // --> 20160516-WI00-ADV01.01.00-2885-BGS0
+        {BEFORE
+        END;
+        AFTER}
+        // <-- 20160516-WI00-ADV01.01.00-2885-BGS0
+      END;
+    END;
+
+    PROCEDURE TreatTransferReconciliation@1000000001();
+    VAR
+      FromLocation_L@1000000000 : Record 14;
+      Ecart_L@1000000001 : Decimal;
+      IncomingICTransferDelivery_L@1000000002 : Boolean;
+      IncomingICOnBehalfOfAdjust_L@1000000003 : Boolean;
+      RecItemJnlLine_L@1000000004 : Record 83;
+      CellsLocation_L@1000000005 : Record 8053031;
+      CellsLocation1_L@1000000006 : Record 8053031;
+      Location_L@1000000007 : Record 14;
+      Item_L@1000000008 : Record 27;
+      IncomingICTransferReceipt_L@1000000009 : Boolean;
+      Iter_L@1000000010 : Integer;
+      i_L@1000000011 : Integer;
+      RecTempJnlLineDim_L@1000000013 : TEMPORARY Record 356;
+      PostItemJnlLine_L@1000000012 : Codeunit 22;
+      cduCMCDimension_L@1000000014 : Codeunit 8053004;
+    BEGIN
+      Isconfirmed_G := FALSE;
+      IF FromLocation_L.GET(TempReconciliationTransfer_G."From-Location Code (Out)") THEN
+        IF (TempReconciliationTransfer_G."IC Partner Code (Out)" <> '') AND (FromLocation_L."Shared Silo") AND
+             (CMCSetup_G."Difference On" = CMCSetup_G."Difference On"::"Transfer-From Location") THEN
+          Isconfirmed_G := TRUE;
+
+      IF Isconfirmed_G THEN
+        Iter_L := 4
+      ELSE
+        Iter_L := 2;
+
+      FOR i_L := 1 TO Iter_L DO BEGIN
+        Ecart_L := 0;
+        IncomingICTransferDelivery_L := (PostedDelivery_G."IC Direction" = PostedDelivery_G."IC Direction"::Incoming) AND
+          PostedDelivery_G."Shared Silo";
+        IncomingICTransferReceipt_L := ("CMC Posted Receipts"."IC Direction" = PostedDelivery_G."IC Direction"::Incoming) AND
+          "CMC Posted Receipts"."Shared Silo";
+        IncomingICOnBehalfOfAdjust_L := (PostedDelivery_G."IC Direction" = PostedDelivery_G."IC Direction"::Incoming) AND
+          PostedDelivery_G."On Behalf Of Adjustment";
+        IF TempReconciliationTransfer_G."Standard Gap Tolerated" <> 0 THEN
+          Ecart_L := TempReconciliationTransfer_G."Standard Gap Tolerated"
+        ELSE IF TempReconciliationTransfer_G."Standard Gap Out Tolerance" <> 0 THEN
+          Ecart_L := TempReconciliationTransfer_G."Standard Gap Out Tolerance";
+        IF Ecart_L <> 0 THEN BEGIN
+          RecItemJnlLine_L.INIT;
+          RecItemJnlLine_L."Posting Date"  := WORKDATE;
+          RecItemJnlLine_L."Document Date" := WORKDATE;
+          TempReconciliationTransfer_G.TESTFIELD("Gap Location Code");
+          TempReconciliationTransfer_G.TESTFIELD("Gap Cell Code");
+          CellsLocation_L.GET(TempReconciliationTransfer_G."Gap Location Code",TempReconciliationTransfer_G."Gap Cell Code");
+          IF TempReconciliationTransfer_G."Gap Location Code" = TempReconciliationTransfer_G."From-Location Code (Out)" THEN
+            RecItemJnlLine_L."Document No.":= TempReconciliationTransfer_G."Document No. (Out)"
+          ELSE
+            RecItemJnlLine_L."Document No.":= TempReconciliationTransfer_G."Document No. (In)";
+          RecItemJnlLine_L."Entry Type"    := RecItemJnlLine_L."Entry Type"::Transfer;
+          RecItemJnlLine_L."Item No."      := TempReconciliationTransfer_G."Item No. (Out)";
+
+          IF Ecart_L < 0 THEN BEGIN
+            CASE i_L OF
+                1 : BEGIN
+                  RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Positive Adjmt.";
+                  RecItemJnlLine_L."Location Code" := TempReconciliationTransfer_G."Gap Location Code";
+                  RecItemJnlLine_L."Indep. Transfer-From Location" := TempReconciliationTransfer_G."From-Location Code (Out)";
+                  RecItemJnlLine_L."Indep. Transfer-To Location" := TempReconciliationTransfer_G."To-Location Code (In)";
+                  RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::T10;
+                  IF CellsLocation_L."Ajustment Cell" THEN
+                    RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::E05;
+                  RecItemJnlLine_L.Quantity := ABS(Ecart_L);
+                  RecItemJnlLine_L."Cell Code" := TempReconciliationTransfer_G."Gap Cell Code";
+                  IF Isconfirmed_G THEN BEGIN
+                    RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Negative Adjmt.";
+                    RecItemJnlLine_L.Quantity := ABS(Ecart_L);
+                    RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::S05;
+                    RecItemJnlLine_L."Location Code" := CMCSetup_G."Indep. Transfer Transit Code";
+                    CLEAR(CellsLocation1_L);
+                    RecItemJnlLine_L."Cell Code"     := CellsLocation1_L.GetUncontroledCell(CMCSetup_G."Indep. Transfer Transit Code");
+                  END;
+                END;
+                2 : BEGIN
+                  RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Negative Adjmt.";
+                  RecItemJnlLine_L."Indep. Transfer-From Location" := TempReconciliationTransfer_G."From-Location Code (Out)";
+                  RecItemJnlLine_L."Indep. Transfer-To Location" := TempReconciliationTransfer_G."To-Location Code (In)";
+                  RecItemJnlLine_L."Location Code" := CMCSetup_G."Indep. Transfer Transit Code";
+                  RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::E05;
+                  // --> 20151218-GEN04-CMC02.02.00-2349-NED01
+                  RecItemJnlLine_L.Quantity := ABS(Ecart_L);
+                  RecItemJnlLine_L."Cell Code" := TempReconciliationTransfer_G."Gap Cell Code";
+                  IF Isconfirmed_G THEN BEGIN
+                    RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::T10;
+                    RecItemJnlLine_L."Location Code" := TempReconciliationTransfer_G."From-Location Code (Out)";
+                    CLEAR(CellsLocation1_L);
+                    RecItemJnlLine_L."Cell Code"     := CellsLocation1_L.GetUncontroledCell(
+                      TempReconciliationTransfer_G."From-Location Code (Out)");
+                  END;
+                END;
+                3 : BEGIN
+                  RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Positive Adjmt.";
+                  RecItemJnlLine_L."Location Code" := TempReconciliationTransfer_G."From-Location Code (Out)";
+                  RecItemJnlLine_L.Quantity   := TempReconciliationTransfer_G."Standard Weight (Out)";
+                  RecItemJnlLine_L."Indep. Transfer-From Location" := TempReconciliationTransfer_G."From-Location Code (Out)";
+                  RecItemJnlLine_L."Indep. Transfer-To Location" := TempReconciliationTransfer_G."To-Location Code (In)";
+                  RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::S05;
+                  CLEAR(CellsLocation1_L);
+                  RecItemJnlLine_L."Cell Code"     := CellsLocation1_L.GetUncontroledCell(
+                    TempReconciliationTransfer_G."From-Location Code (Out)");
+                END;
+                4 : BEGIN
+                  RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Negative Adjmt.";
+                  RecItemJnlLine_L."Location Code" := TempReconciliationTransfer_G."From-Location Code (Out)";
+                  RecItemJnlLine_L.Quantity   := TempReconciliationTransfer_G."Standard Weight (In)";
+                  RecItemJnlLine_L."Indep. Transfer-From Location" := TempReconciliationTransfer_G."From-Location Code (Out)";
+                  RecItemJnlLine_L."Indep. Transfer-To Location" := TempReconciliationTransfer_G."To-Location Code (In)";
+                  RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::S05;
+                  CLEAR(CellsLocation1_L);
+                  RecItemJnlLine_L."Cell Code"     := CellsLocation1_L.GetUncontroledCell(
+                    TempReconciliationTransfer_G."From-Location Code (Out)");
+                END;
+            END; //END Case
+          END ELSE IF Ecart_L > 0 THEN BEGIN
+            CASE i_L OF
+              1 : BEGIN
+                RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Positive Adjmt.";
+                RecItemJnlLine_L."Indep. Transfer-From Location" := TempReconciliationTransfer_G."From-Location Code (Out)";
+                RecItemJnlLine_L."Indep. Transfer-To Location" := TempReconciliationTransfer_G."To-Location Code (In)";
+                RecItemJnlLine_L."Location Code" := CMCSetup_G."Indep. Transfer Transit Code";
+                RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::S05;
+                RecItemJnlLine_L.Quantity := Ecart_L;
+                RecItemJnlLine_L."Cell Code" := TempReconciliationTransfer_G."Gap Cell Code";
+                IF Isconfirmed_G THEN BEGIN
+                  RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::T11;
+                  RecItemJnlLine_L."Location Code" := TempReconciliationTransfer_G."From-Location Code (Out)";
+                  CLEAR(CellsLocation1_L);
+                  RecItemJnlLine_L."Cell Code"     := CellsLocation1_L.GetUncontroledCell(
+                    TempReconciliationTransfer_G."From-Location Code (Out)");
+                END;
+              END;
+              2 : BEGIN
+                RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Negative Adjmt.";
+                RecItemJnlLine_L."Indep. Transfer-From Location" := TempReconciliationTransfer_G."From-Location Code (Out)";
+                RecItemJnlLine_L."Indep. Transfer-To Location" := TempReconciliationTransfer_G."To-Location Code (In)";
+                RecItemJnlLine_L."Location Code" := TempReconciliationTransfer_G."Gap Location Code";
+                RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::T11;
+                IF CellsLocation_L."Ajustment Cell" THEN
+                  RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::S05;
+                RecItemJnlLine_L.Quantity := Ecart_L;
+                RecItemJnlLine_L."Cell Code" := TempReconciliationTransfer_G."Gap Cell Code";
+                IF Isconfirmed_G THEN BEGIN
+                  RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Positive Adjmt.";
+                  RecItemJnlLine_L.Quantity := Ecart_L;
+                  RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::S05;
+                  RecItemJnlLine_L."Location Code" := CMCSetup_G."Indep. Transfer Transit Code";
+                  CLEAR(CellsLocation1_L);
+                  RecItemJnlLine_L."Cell Code"     := CellsLocation1_L.GetUncontroledCell(CMCSetup_G."Indep. Transfer Transit Code");
+                END;
+             END;
+             3 : BEGIN
+               RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Positive Adjmt.";
+               RecItemJnlLine_L."Location Code" := TempReconciliationTransfer_G."From-Location Code (Out)";
+               RecItemJnlLine_L.Quantity   := TempReconciliationTransfer_G."Standard Weight (Out)";
+               RecItemJnlLine_L."Indep. Transfer-From Location" := TempReconciliationTransfer_G."From-Location Code (Out)";
+               RecItemJnlLine_L."Indep. Transfer-To Location" := TempReconciliationTransfer_G."To-Location Code (In)";
+               RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::S05;
+               CLEAR(CellsLocation1_L);
+               RecItemJnlLine_L."Cell Code"     := CellsLocation1_L.GetUncontroledCell(
+                 TempReconciliationTransfer_G."From-Location Code (Out)");
+             END;
+             4 : BEGIN
+               RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Negative Adjmt.";
+               RecItemJnlLine_L."Location Code" := TempReconciliationTransfer_G."From-Location Code (Out)";
+               RecItemJnlLine_L.Quantity   := TempReconciliationTransfer_G."Standard Weight (In)";
+               RecItemJnlLine_L."Indep. Transfer-From Location" := TempReconciliationTransfer_G."From-Location Code (Out)";
+               RecItemJnlLine_L."Indep. Transfer-To Location" := TempReconciliationTransfer_G."To-Location Code (In)";
+               RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::S05;
+               CLEAR(CellsLocation1_L);
+               RecItemJnlLine_L."Cell Code"     := CellsLocation1_L.GetUncontroledCell(
+                 TempReconciliationTransfer_G."From-Location Code (Out)");
+             END;
+            END; //END Case
+          END;
+
+          Location_L.GET(RecItemJnlLine_L."Location Code");
+          RecItemJnlLine_L."Shared Silo" := Location_L."Shared Silo";
+          RecItemJnlLine_L."Force Entry In Shared Silo" := FALSE;
+          IF Isconfirmed_G THEN
+            RecItemJnlLine_L."Force Entry In Shared Silo" := TRUE;
+          RecItemJnlLine_L."Invoiced Quantity" := RecItemJnlLine_L.Quantity;
+          RecItemJnlLine_L."Quantity (Base)" := RecItemJnlLine_L.Quantity;
+          RecItemJnlLine_L."Invoiced Qty. (Base)" := RecItemJnlLine_L.Quantity;
+          Item_L.GET(RecItemJnlLine_L."Item No.");
+          RecItemJnlLine_L."Gen. Prod. Posting Group" := Item_L."Gen. Prod. Posting Group";
+          RecItemJnlLine_L."Inventory Posting Group" := Item_L."Inventory Posting Group";
+          RecItemJnlLine_L."Unit of Measure Code" := Item_L."Base Unit of Measure";
+          RecItemJnlLine_L."Qty. per Unit of Measure" := 1;
+          RecItemJnlLine_L."Product Group Code" := Item_L."Product Group Code";
+          RecItemJnlLine_L."Item Category Code" := Item_L."Item Category Code";
+          RecItemJnlLine_L."Stock Type" := RecItemJnlLine_L."Stock Type"::Company;
+          RecItemJnlLine_L."Vendor Storage" := FALSE;
+          RecItemJnlLine_L.VALIDATE("Campaign No.",TempReconciliationTransfer_G."Campaign No. (Out)");
+          RecItemJnlLine_L."Independent Transfer" := TRUE;
+          RecItemJnlLine_L."Gap Entry" := TRUE;
+
+          TempItemJnlLine_G := RecItemJnlLine_L;
+          TempItemJnlLine_G."Line No." := EntryNo_G;
+          TempItemJnlLine_G.INSERT;
+          EntryNo_G := EntryNo_G + 10000;
+
+          IF NOT Simulate_G THEN BEGIN
+            RecTempJnlLineDim_L.DELETEALL;
+            CLEAR(cduCMCDimension_L);
+            cduCMCDimension_L.DimFromItemJnl(RecTempJnlLineDim_L,RecItemJnlLine_L,TRUE);
+            CLEAR(PostItemJnlLine_L);
+            PostItemJnlLine_L.RunWithCheck(RecItemJnlLine_L,RecTempJnlLineDim_L);
+          END;
+        END;
+      END;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20160425-WI00-ADV01.01.00-2885-MMI01 : NEWOBJ
+      20160512-WI00-ADV01.01.00-2885-BGS01 : ADDCODE (add dataitem in order to calculate the sum of ecarts for each item for
+                                                      transit location)
+      20160516-WI00-ADV01.01.00-2885-BGS01 : DELCODE (removed condition because cell code is not calculated)
+      // <-- 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

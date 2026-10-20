@@ -1,0 +1,536 @@
+OBJECT Codeunit 8053373 CMC Sett_Off Post Line
+{
+  OBJECT-PROPERTIES
+  {
+    Date=30/10/14;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    TableNo=8053356;
+    Permissions=TableData 21=rimd,
+                TableData 25=rimd,
+                TableData 379=rimd,
+                TableData 380=rimd,
+                TableData 8053374=rimd;
+    OnRun=VAR
+            L_CUVendEntryApplyPostedEnt@8053001 : Codeunit 227;
+            L_CUGenJnlPostBatch@8053000 : Codeunit 13;
+            L_CUCustEntryApplyPostedEnt@8053002 : Codeunit 226;
+            L_TempJnlLineDim@8053004 : TEMPORARY Record 356;
+            L_NextGenJnlLineNo@8053003 : Integer;
+            L_NextNo@8053005 : Integer;
+            GLEntry_L@8053006 : Record 17;
+            NoSeriesMgt_L@8053007 : Codeunit 396;
+          BEGIN
+            G_CMCSetup.GET;
+            G_CMCSetup.TESTFIELD("SettOff Bal Acount");
+            ApplicationDate_G:="Posting Date";
+            Contact_G.GET("Account No.");
+
+            DocNum_G := "Document No.";
+
+            MixVendor_G := FALSE;
+            MixCustomer_G := FALSE;
+            VendLedgerEntry_G.LOCKTABLE;
+            CustLedgerEntry_G.LOCKTABLE;
+            //*********Lettrage des 'critures fournisseur********//
+
+            // mise . jour de la premiSre 'criture fournisseur
+            VendLedgerEntry_G.RESET;
+            VendLedgerEntry_G.SETCURRENTKEY("Vendor No.",Open,Positive,"Due Date","Currency Code");
+            VendLedgerEntry_G.SETRANGE("Vendor No.",Contact_G."Vendor No.");
+            VendLedgerEntry_G.SETRANGE(VendLedgerEntry_G.Open,TRUE);
+            VendLedgerEntry_G.SETFILTER(VendLedgerEntry_G."Applies-to ID",'');
+            VendLedgerEntry_G.CALCFIELDS("Capital Ledger");
+            VendLedgerEntry_G.SETRANGE(VendLedgerEntry_G."Capital Ledger",FALSE);
+            VendLedgerEntry_G.SETRANGE("SettOff Applies-to ID" ,"SettOff Applies-to ID");
+            VendLedgerEntry_G.CALCFIELDS(Amount,"Remaining Amount");
+            VendLedgerEntry_G.SETFILTER("Remaining Amount",'<>0');
+            VendLedgerEntry1_G.COPY(VendLedgerEntry_G);
+            NbVendEntries_G := VendLedgerEntry_G.COUNT;
+            IF (VendLedgerEntry_G.FINDSET(TRUE,FALSE)) AND (NbVendEntries_G>1) THEN BEGIN
+              AmountToCompensate_G := 0;
+              REPEAT
+                VendLedgerEntry_G.CALCFIELDS("Remaining Amount");
+                VendLedgerEntry_G."Applies-to ID" := USERID;
+                VendLedgerEntry_G."Amount to Apply":=VendLedgerEntry_G."Remaining Amount";
+                VendLedgerEntry_G."SettOff Applies-to ID" := '';
+                VendLedgerEntry_G.MODIFY;
+                DtldVendLedgEntry_G.RESET;
+                DtldVendLedgEntry_G.SETRANGE("Vendor Ledger Entry No.",VendLedgerEntry_G."Entry No.");
+                IF DtldVendLedgEntry_G.FINDSET(TRUE,FALSE) THEN BEGIN
+                  DtldVendLedgEntry_G."SettOff Applies-to ID" :='';
+                  DtldVendLedgEntry_G.MODIFY;
+                END;
+                AmountToCompensate_G += VendLedgerEntry_G."Remaining Amount";
+              UNTIL VendLedgerEntry_G.NEXT=0;
+
+              IF (AmountToCompensate_G <> 0) AND (NbVendEntries_G > 1) THEN BEGIN
+                MixVendor_G := TRUE;
+                GenJournalLine_G.INIT;
+                GenJournalLine_G."Line No." := L_NextGenJnlLineNo;
+                L_NextGenJnlLineNo+= 10000;
+                GenJournalLine_G."Document No." := DocNum_G;
+                GenJournalLine_G.VALIDATE("Posting Date",ApplicationDate_G);
+                GenJournalLine_G."Account Type" := GenJournalLine_G."Account Type"::Vendor;
+                GenJournalLine_G.VALIDATE("Account No.",VendLedgerEntry_G."Vendor No.");
+                GenJournalLine_G."Source Code" := VendLedgerEntry_G."Source Code";
+                GenJournalLine_G.Description:=STRSUBSTNO(Text8053004,VendLedgerEntry_G."Document No.");
+                GenJournalLine_G.VALIDATE(Amount,-AmountToCompensate_G);
+                GenJournalLine_G."Applies-to ID":=USERID;
+                GenJournalLine_G.VALIDATE("Bal. Account Type",GenJournalLine_G."Bal. Account Type"::"G/L Account");
+                GenJournalLine_G.VALIDATE("Bal. Account No.",G_CMCSetup."SettOff Bal Acount");
+                GenJournalLine_G."Setting Off":=TRUE;
+                CLEAR(GenJnlPostLine_G);
+                GenJnlPostLine_G.RunWithCheck(GenJournalLine_G,L_TempJnlLineDim);
+
+                GenJournalLine_G.INIT;
+                GenJournalLine_G."Line No." := L_NextGenJnlLineNo;
+                L_NextGenJnlLineNo+= 10000;
+                GenJournalLine_G."Document No." := DocNum_G;
+                GenJournalLine_G.VALIDATE("Posting Date",ApplicationDate_G);
+                GenJournalLine_G."Account Type" := GenJournalLine_G."Account Type"::"G/L Account";
+                GenJournalLine_G.VALIDATE("Account No.",G_CMCSetup."SettOff Bal Acount");
+                GenJournalLine_G."Source Code" := VendLedgerEntry_G."Source Code";
+                GenJournalLine_G.Description:=STRSUBSTNO(Text8053004,VendLedgerEntry_G."Document No.");
+                GenJournalLine_G.VALIDATE(Amount,-AmountToCompensate_G);
+                GenJournalLine_G."Applies-to ID":=USERID;
+                GenJournalLine_G.VALIDATE("Bal. Account Type",GenJournalLine_G."Bal. Account Type"::Vendor);
+                GenJournalLine_G.VALIDATE("Bal. Account No.",VendLedgerEntry_G."Vendor No.");
+                GenJournalLine_G."Setting Off":=TRUE;
+                CLEAR(GenJnlPostLine_G);
+                GenJnlPostLine_G.RunWithCheck(GenJournalLine_G,L_TempJnlLineDim);
+              END;
+             END;
+
+            //*********lettrage des 'critures clients*********//
+
+            // mise . jour de la premiSre 'criture Client
+            CustLedgerEntry_G.RESET;
+            CustLedgerEntry_G.SETCURRENTKEY("Customer No.",Open,Positive,"Due Date","Currency Code");
+            CustLedgerEntry_G.SETRANGE("Customer No.",Contact_G."Customer No.");
+            CustLedgerEntry_G.SETRANGE(CustLedgerEntry_G.Open,TRUE);
+            CustLedgerEntry_G.SETFILTER(CustLedgerEntry_G."Applies-to ID",'');
+            CustLedgerEntry_G.SETRANGE("SettOff Applies-to ID" ,"SettOff Applies-to ID");
+            CustLedgerEntry_G.CALCFIELDS(Amount,"Remaining Amount");
+            CustLedgerEntry_G.SETFILTER("Remaining Amount",'<>0');
+            NbCustEntries_G := CustLedgerEntry_G.COUNT;
+            CustLedgerEntry1_G.COPY(CustLedgerEntry_G);
+            IF (CustLedgerEntry_G.FINDSET(TRUE,FALSE)) AND (NbCustEntries_G>1) THEN BEGIN
+              AmountToCompensate_G := 0;
+              REPEAT
+                CustLedgerEntry_G.CALCFIELDS("Remaining Amount");
+                CustLedgerEntry_G."Applies-to ID" := USERID;
+                CustLedgerEntry_G."Amount to Apply":=CustLedgerEntry_G."Remaining Amount";
+                CustLedgerEntry_G."SettOff Applies-to ID" := '';
+                CustLedgerEntry_G.MODIFY;
+                DtldCustLedgEntry_G.RESET;
+                DtldCustLedgEntry_G.SETRANGE("Cust. Ledger Entry No.",CustLedgerEntry_G."Entry No.");
+                IF DtldCustLedgEntry_G.FINDSET(TRUE,FALSE) THEN BEGIN
+                  DtldCustLedgEntry_G."SettOff Applies-to ID" :='';
+                  DtldCustLedgEntry_G.MODIFY;
+                END;
+                AmountToCompensate_G += CustLedgerEntry_G."Remaining Amount"
+              UNTIL CustLedgerEntry_G.NEXT=0;
+
+              IF (AmountToCompensate_G <> 0) AND (NbCustEntries_G > 1) THEN BEGIN
+                MixCustomer_G := TRUE;
+                GenJournalLine_G.INIT;
+                GenJournalLine_G."Line No." := L_NextGenJnlLineNo;
+                L_NextGenJnlLineNo+= 10000;
+                GenJournalLine_G."Document No." := DocNum_G;
+                GenJournalLine_G.VALIDATE("Posting Date",ApplicationDate_G);
+                GenJournalLine_G."Account Type" := GenJournalLine_G."Account Type"::Customer;
+                GenJournalLine_G.VALIDATE("Account No.",CustLedgerEntry_G."Customer No.");
+                GenJournalLine_G."Source Code" := CustLedgerEntry_G."Source Code";
+                GenJournalLine_G.Description:=STRSUBSTNO(Text8053004,CustLedgerEntry_G."Document No.");
+                GenJournalLine_G.VALIDATE(Amount,-AmountToCompensate_G);
+                GenJournalLine_G."Applies-to ID":=USERID;
+                GenJournalLine_G.VALIDATE("Bal. Account Type",GenJournalLine_G."Bal. Account Type"::"G/L Account");
+                GenJournalLine_G.VALIDATE("Bal. Account No.",G_CMCSetup."SettOff Bal Acount");
+                GenJournalLine_G."Setting Off":=TRUE;
+                CLEAR(GenJnlPostLine_G);
+                GenJnlPostLine_G.RunWithCheck(GenJournalLine_G,L_TempJnlLineDim);
+
+                GenJournalLine_G.INIT;
+                GenJournalLine_G."Line No." := L_NextGenJnlLineNo;
+                L_NextGenJnlLineNo+= 10000;
+                GenJournalLine_G."Document No." := DocNum_G;
+                GenJournalLine_G.VALIDATE("Posting Date",ApplicationDate_G);
+                GenJournalLine_G."Account Type" := GenJournalLine_G."Account Type"::"G/L Account";
+                GenJournalLine_G.VALIDATE("Account No.",G_CMCSetup."SettOff Bal Acount");
+                GenJournalLine_G."Source Code" := CustLedgerEntry_G."Source Code";
+                GenJournalLine_G.Description:=STRSUBSTNO(Text8053004,CustLedgerEntry_G."Document No.");
+                GenJournalLine_G.VALIDATE(Amount,-AmountToCompensate_G);
+                GenJournalLine_G."Applies-to ID":=USERID;
+                GenJournalLine_G.VALIDATE("Bal. Account Type",GenJournalLine_G."Bal. Account Type"::Customer);
+                GenJournalLine_G.VALIDATE("Bal. Account No.",CustLedgerEntry_G."Customer No.");
+                GenJournalLine_G."Setting Off":=TRUE;
+                CLEAR(GenJnlPostLine_G);
+                GenJnlPostLine_G.RunWithCheck(GenJournalLine_G,L_TempJnlLineDim);
+              END;
+            END;
+
+            //********** lettrage mixte**********//
+            COMMIT;
+            CLEAR(IsCust_G);
+            IF MixCustomer_G THEN BEGIN
+              CustLedgerEntry_G.RESET;
+              CustLedgerEntry_G.SETRANGE("Customer No.",Contact_G."Customer No.");
+              CustLedgerEntry_G.SETRANGE(Open,TRUE);
+              CustLedgerEntry_G.SETRANGE("Setting Off not Allowed",FALSE);
+              CustLedgerEntry_G.SETRANGE("Setting Off",TRUE);
+            END ELSE BEGIN
+              CustLedgerEntry_G.RESET;
+              CustLedgerEntry_G.SETCURRENTKEY("Customer No.",Open,Positive,"Due Date","Currency Code");
+              CustLedgerEntry_G.SETRANGE("Customer No.",Contact_G."Customer No.");
+              CustLedgerEntry_G.SETRANGE(CustLedgerEntry_G.Open,TRUE);
+              CustLedgerEntry_G.SETFILTER(CustLedgerEntry_G."Applies-to ID",'');
+              CustLedgerEntry_G.SETRANGE("SettOff Applies-to ID" ,"SettOff Applies-to ID");
+              CustLedgerEntry_G.CALCFIELDS(Amount,"Remaining Amount");
+              CustLedgerEntry_G.SETFILTER("Remaining Amount",'<>0');
+            END;
+
+            IF MixVendor_G THEN BEGIN
+              VendLedgerEntry_G.RESET;
+              VendLedgerEntry_G.SETRANGE(Open,TRUE);
+              VendLedgerEntry_G.SETRANGE("Vendor No.",Contact_G."Vendor No.");
+              VendLedgerEntry_G.CALCFIELDS("Capital Ledger");
+              VendLedgerEntry_G.SETRANGE(VendLedgerEntry_G."Capital Ledger",FALSE);
+              VendLedgerEntry_G.SETRANGE("Setting Off not Allowed",FALSE);
+              VendLedgerEntry_G.SETRANGE("Setting Off",TRUE);
+            END ELSE BEGIN
+              VendLedgerEntry_G.RESET;
+              VendLedgerEntry_G.SETCURRENTKEY("Vendor No.",Open,Positive,"Due Date","Currency Code");
+              VendLedgerEntry_G.SETRANGE("Vendor No.",Contact_G."Vendor No.");
+              VendLedgerEntry_G.SETRANGE(VendLedgerEntry_G.Open,TRUE);
+              VendLedgerEntry_G.SETFILTER(VendLedgerEntry_G."Applies-to ID",'');
+              VendLedgerEntry_G.CALCFIELDS("Capital Ledger");
+              VendLedgerEntry_G.SETRANGE(VendLedgerEntry_G."Capital Ledger",FALSE);
+              VendLedgerEntry_G.SETRANGE("SettOff Applies-to ID" ,"SettOff Applies-to ID");
+              VendLedgerEntry_G.CALCFIELDS(Amount,"Remaining Amount");
+              VendLedgerEntry_G.SETFILTER("Remaining Amount",'<>0');
+            END;
+
+            AmountToCompensate_G := 0;
+            IF (CustLedgerEntry_G.FINDLAST) AND (VendLedgerEntry_G.FINDLAST) THEN BEGIN
+              MixVendor_G := TRUE;
+              MixCustomer_G := TRUE;
+              CustLedgerEntry_G.CALCFIELDS("Remaining Amount");
+              VendLedgerEntry_G.CALCFIELDS("Remaining Amount");
+              IF CustLedgerEntry_G."Remaining Amount" + VendLedgerEntry_G."Remaining Amount" <> 0 THEN BEGIN
+                IF ABS(CustLedgerEntry_G."Remaining Amount") < ABS(VendLedgerEntry_G."Remaining Amount") THEN BEGIN
+                  CustLedgerEntry_G."Applies-to ID" := USERID;
+                  CustLedgerEntry_G."Amount to Apply":=CustLedgerEntry_G."Remaining Amount";
+                  CustLedgerEntry_G."SettOff Applies-to ID" := '';
+                  CustLedgerEntry_G.MODIFY;
+                  AmountToCompensate_G := CustLedgerEntry_G."Remaining Amount";
+                  IsCust_G := TRUE;
+                  //mise . jour de la 1Sre 'criture fournisseur
+                  IF VendLedgerEntry_G.FINDFIRST THEN BEGIN
+                    VendLedgerEntry_G."Applying Entry" := TRUE;
+                    VendLedgerEntry_G."Applies-to ID" := USERID;
+                    VendLedgerEntry_G."Amount to Apply":=-AmountToCompensate_G;
+                    CODEUNIT.RUN(CODEUNIT::"Vend. Entry-Edit",VendLedgerEntry_G);
+                    COMMIT;
+                  END;
+                END ELSE BEGIN
+                  VendLedgerEntry_G."Applies-to ID" := USERID;
+                  VendLedgerEntry_G."Amount to Apply":=VendLedgerEntry_G."Remaining Amount";
+                  VendLedgerEntry_G."SettOff Applies-to ID" := '';
+                  VendLedgerEntry_G.MODIFY;
+                  AmountToCompensate_G := VendLedgerEntry_G."Remaining Amount";
+                  IsCust_G := FALSE;
+                  //mise . jour de la 1Sre 'criture client
+                  IF CustLedgerEntry_G.FINDFIRST THEN BEGIN
+                    CustLedgerEntry_G."Applying Entry" := TRUE;
+                    CustLedgerEntry_G."Applies-to ID" := USERID;
+                    CustLedgerEntry_G."Amount to Apply":=-AmountToCompensate_G;
+                    CODEUNIT.RUN(CODEUNIT::"Cust. Entry-Edit",CustLedgerEntry_G);
+                    COMMIT;
+                  END;
+                END;
+
+                IF AmountToCompensate_G <> 0 THEN BEGIN
+                  GenJournalLine_G.INIT;
+                  GenJournalLine_G."Line No." := L_NextGenJnlLineNo;
+                  L_NextGenJnlLineNo+= 10000;
+                  GenJournalLine_G."Document No." := DocNum_G;
+                  GenJournalLine_G.VALIDATE("Posting Date",ApplicationDate_G);
+                  IF IsCust_G THEN BEGIN
+                    GenJournalLine_G."Account Type" := GenJournalLine_G."Account Type"::Customer;
+                    GenJournalLine_G.VALIDATE("Account No.",CustLedgerEntry_G."Customer No.");
+                    GenJournalLine_G."Source Code" := CustLedgerEntry_G."Source Code";
+                    GenJournalLine_G.Description:=STRSUBSTNO(Text8053004,VendLedgerEntry_G."Document No.");
+                  END
+                  ELSE BEGIN
+                    GenJournalLine_G."Account Type" := GenJournalLine_G."Account Type"::Vendor;
+                    GenJournalLine_G.VALIDATE("Account No.",VendLedgerEntry_G."Vendor No.");
+                    GenJournalLine_G."Source Code" := VendLedgerEntry_G."Source Code";
+                    GenJournalLine_G.Description:=STRSUBSTNO(Text8053004,CustLedgerEntry_G."Document No.");
+                  END;
+                  GenJournalLine_G.VALIDATE(Amount,-AmountToCompensate_G);
+                  GenJournalLine_G."Applies-to ID":=USERID;
+                  GenJournalLine_G.VALIDATE("Bal. Account Type",GenJournalLine_G."Bal. Account Type"::"G/L Account");
+                  GenJournalLine_G.VALIDATE("Bal. Account No.",G_CMCSetup."SettOff Bal Acount");
+                  GenJournalLine_G."Setting Off":=TRUE;
+                  CLEAR(GenJnlPostLine_G);
+                  GenJnlPostLine_G.RunWithCheck(GenJournalLine_G,L_TempJnlLineDim);
+
+                  GenJournalLine_G.INIT;
+                  GenJournalLine_G."Line No." := L_NextGenJnlLineNo;
+                  L_NextGenJnlLineNo+= 10000;
+                  GenJournalLine_G."Document No." := DocNum_G;
+                  GenJournalLine_G.VALIDATE("Posting Date",ApplicationDate_G);
+                  IF IsCust_G THEN BEGIN
+                   GenJournalLine_G."Account Type" := GenJournalLine_G."Account Type"::Vendor;
+                   GenJournalLine_G.VALIDATE("Account No.",VendLedgerEntry_G."Vendor No.");
+                   GenJournalLine_G."Source Code" := VendLedgerEntry_G."Source Code";
+                   GenJournalLine_G.Description:=STRSUBSTNO(Text8053004,VendLedgerEntry_G."Document No.");
+                  END
+                  ELSE BEGIN
+                    GenJournalLine_G."Account Type" := GenJournalLine_G."Account Type"::Customer;
+                    GenJournalLine_G.VALIDATE("Account No.",CustLedgerEntry_G."Customer No.");
+                    GenJournalLine_G."Source Code" := CustLedgerEntry_G."Source Code";
+                    GenJournalLine_G.Description:=STRSUBSTNO(Text8053004,CustLedgerEntry_G."Document No.");
+                  END;
+                  GenJournalLine_G.VALIDATE(Amount,AmountToCompensate_G);
+                  GenJournalLine_G."Applies-to ID":=USERID;
+                  GenJournalLine_G.VALIDATE("Bal. Account Type",GenJournalLine_G."Bal. Account Type"::"G/L Account");
+                  GenJournalLine_G.VALIDATE("Bal. Account No.",G_CMCSetup."SettOff Bal Acount");
+                  GenJournalLine_G."Setting Off":=TRUE;
+                  CLEAR(GenJnlPostLine_G);
+                  GenJnlPostLine_G.RunWithCheck(GenJournalLine_G,L_TempJnlLineDim);
+                END;
+              END;
+            END;
+
+            //********* Compensation avec les retenues***********//
+
+            IF (MixVendor_G) AND (NbVendEntries_G>1) THEN BEGIN
+              VendLedgerEntry_G.RESET;
+              VendLedgerEntry_G.SETRANGE(Open,TRUE);
+              VendLedgerEntry_G.SETRANGE("Vendor No.",Contact_G."Vendor No.");
+              VendLedgerEntry_G.CALCFIELDS("Capital Ledger");
+              VendLedgerEntry_G.SETRANGE("Setting Off not Allowed",FALSE);
+              VendLedgerEntry_G.SETRANGE(VendLedgerEntry_G."Capital Ledger",FALSE);
+              VendLedgerEntry_G.SETRANGE("Setting Off",TRUE);
+            END ELSE BEGIN
+              VendLedgerEntry_G.RESET;
+              VendLedgerEntry_G.SETCURRENTKEY("Vendor No.",Open,Positive,"Due Date","Currency Code");
+              VendLedgerEntry_G.SETRANGE("Vendor No.",Contact_G."Vendor No.");
+              VendLedgerEntry_G.SETRANGE(VendLedgerEntry_G.Open,TRUE);
+              VendLedgerEntry_G.SETFILTER(VendLedgerEntry_G."Applies-to ID",'');
+              VendLedgerEntry_G.CALCFIELDS("Capital Ledger");
+              VendLedgerEntry_G.SETRANGE(VendLedgerEntry_G."Capital Ledger",FALSE);
+              VendLedgerEntry_G.SETRANGE("SettOff Applies-to ID" ,"SettOff Applies-to ID");
+              VendLedgerEntry_G.CALCFIELDS(Amount,"Remaining Amount");
+              VendLedgerEntry_G.SETFILTER("Remaining Amount",'<>0');
+            END;
+            IF VendLedgerEntry_G.FINDLAST THEN BEGIN
+              IsCust_G := TRUE;
+              VendLedgerEntry_G.CALCFIELDS("Remaining Amount");
+            END ELSE BEGIN
+              IsCust_G := FALSE;
+              IF MixCustomer_G THEN BEGIN
+                CustLedgerEntry_G.RESET;
+                CustLedgerEntry_G.SETRANGE(Open,TRUE);
+                CustLedgerEntry_G.SETRANGE("Customer No.",Contact_G."Customer No.");
+                CustLedgerEntry_G.SETRANGE("Setting Off not Allowed",FALSE);
+                CustLedgerEntry_G.SETRANGE("Setting Off",TRUE);
+              END ELSE BEGIN
+                CustLedgerEntry_G.RESET;
+                CustLedgerEntry_G.SETCURRENTKEY("Customer No.",Open,Positive,"Due Date","Currency Code");
+                CustLedgerEntry_G.SETRANGE("Customer No.",Contact_G."Customer No.");
+                CustLedgerEntry_G.SETRANGE(CustLedgerEntry_G.Open,TRUE);
+                CustLedgerEntry_G.SETFILTER(CustLedgerEntry_G."Applies-to ID",'');
+                CustLedgerEntry_G.SETRANGE("SettOff Applies-to ID" ,"SettOff Applies-to ID");
+                CustLedgerEntry_G.CALCFIELDS(Amount,"Remaining Amount");
+                CustLedgerEntry_G.SETFILTER("Remaining Amount",'<>0');
+              END;
+              IF CustLedgerEntry_G.FINDLAST THEN
+                CustLedgerEntry_G.CALCFIELDS("Remaining Amount");
+            END;
+
+            RestraintEntry_G.RESET;
+            RestraintEntry_G.SETCURRENTKEY("Member No.","Tiers Type",Priority,"SettOff Applies-to ID");
+            RestraintEntry_G.ASCENDING(TRUE);
+            RestraintEntry_G.SETFILTER("Member No.","Account No.");
+            IF IsCust_G THEN
+              RestraintEntry_G.SETRANGE(RestraintEntry_G."Tiers Type",RestraintEntry_G."Tiers Type"::Fournisseur)
+            ELSE
+              RestraintEntry_G.SETRANGE(RestraintEntry_G."Tiers Type",RestraintEntry_G."Tiers Type"::Client);
+
+            RestraintEntry_G.SETFILTER("SettOff Applies-to ID","SettOff Applies-to ID");
+            RestraintEntry_G.CALCFIELDS("Remaining Amount");
+            RestraintEntry_G.SETFILTER("Remaining Amount",'<>0');
+            IF RestraintEntry_G.FINDSET(TRUE,FALSE) THEN BEGIN
+              REPEAT
+                IF IsCust_G THEN BEGIN
+                  VendLedgerEntry_G.CALCFIELDS("Remaining Amount");
+                  IF ABS(RestraintEntry_G."Amount to Apply") >= ABS(VendLedgerEntry_G."Remaining Amount") THEN BEGIN
+                    VendLedgerEntry_G."Amount to Apply" :=VendLedgerEntry_G."Remaining Amount";
+                    RestraintEntry_G."Amount to Apply" := ABS(VendLedgerEntry_G."Remaining Amount");
+                    RestraintEntry_G.MODIFY;
+                  END ELSE
+                    VendLedgerEntry_G."Amount to Apply" := -RestraintEntry_G."Amount to Apply";
+                  VendLedgerEntry_G."Applying Entry" := TRUE;
+                  VendLedgerEntry_G."Applies-to ID" := USERID;
+                  CODEUNIT.RUN(CODEUNIT::"Vend. Entry-Edit",VendLedgerEntry_G);
+                  VendLedgerEntry_G.MODIFY;
+                END ELSE BEGIN
+                  CustLedgerEntry_G.CALCFIELDS("Remaining Amount");
+                  IF RestraintEntry_G."Amount to Apply" >= CustLedgerEntry_G."Remaining Amount" THEN BEGIN
+                    CustLedgerEntry_G."Amount to Apply" := CustLedgerEntry_G."Remaining Amount";
+                    RestraintEntry_G."Amount to Apply" := CustLedgerEntry_G."Remaining Amount";
+                    CustLedgerEntry_G.MODIFY;
+                  END ELSE
+                    CustLedgerEntry_G."Amount to Apply" := RestraintEntry_G."Amount to Apply";
+                  CustLedgerEntry_G."Applying Entry" := TRUE;
+                  CustLedgerEntry_G."Applies-to ID" := USERID;
+                  CODEUNIT.RUN(CODEUNIT::"Cust. Entry-Edit",CustLedgerEntry_G);
+                  CustLedgerEntry_G.MODIFY;
+                END;
+                GenJournalLine_G.INIT;
+                GenJournalLine_G."Line No." := L_NextGenJnlLineNo;
+                L_NextGenJnlLineNo+= 10000;
+                GenJournalLine_G."Document No." := DocNum_G;
+                GenJournalLine_G.VALIDATE("Posting Date",ApplicationDate_G);
+                IF IsCust_G THEN BEGIN
+                  GenJournalLine_G."Account Type" := GenJournalLine_G."Account Type"::Vendor;
+                  GenJournalLine_G.VALIDATE("Account No.",VendLedgerEntry_G."Vendor No.");
+                  GenJournalLine_G."Source Code" := VendLedgerEntry_G."Source Code";
+                  GenJournalLine_G.Description:=STRSUBSTNO(Text8053004,RestraintEntry_G."Document No.");
+                  GenJournalLine_G.VALIDATE(Amount,-VendLedgerEntry_G."Amount to Apply");
+                END ELSE BEGIN
+                  GenJournalLine_G."Account Type" := GenJournalLine_G."Account Type"::Customer;
+                  GenJournalLine_G.VALIDATE("Account No.",CustLedgerEntry_G."Customer No.");
+                  GenJournalLine_G."Source Code" := CustLedgerEntry_G."Source Code";
+                  GenJournalLine_G.Description:=STRSUBSTNO(Text8053004,RestraintEntry_G."Document No.");
+                  GenJournalLine_G.VALIDATE(Amount,-CustLedgerEntry_G."Amount to Apply");
+                END;
+                GenJournalLine_G."Applies-to ID":=USERID;
+                RestraintEntry_G.TESTFIELD("Restraint Bal. Account No.");
+                CASE RestraintEntry_G."Restraint Bal. Account Type" OF
+                  RestraintEntry_G."Restraint Bal. Account Type"::General:
+                    BEGIN
+                      GenJournalLine_G.VALIDATE("Bal. Account Type",GenJournalLine_G."Bal. Account Type"::"G/L Account");
+                      GenJournalLine_G.VALIDATE("Bal. Account No.",RestraintEntry_G."Restraint Bal. Account No.");
+                      GenJournalLine_G."External Document No." := RestraintEntry_G."Document No.";
+                      GenJournalLine_G."Setting Off":=TRUE;
+                      CLEAR(GenJnlPostLine_G);
+                      GenJnlPostLine_G.RunWithCheck(GenJournalLine_G,L_TempJnlLineDim);
+                      GenJnlPostLine_G.GetGLReg(GLRec_G);
+                    END;
+                  RestraintEntry_G."Restraint Bal. Account Type"::Vendor:
+                    BEGIN
+                      GenJournalLine_G.VALIDATE("Bal. Account Type",GenJournalLine_G."Bal. Account Type"::"G/L Account");
+                      GenJournalLine_G.VALIDATE("Bal. Account No.",G_CMCSetup."SettOff Bal Acount");
+                      GenJournalLine_G."External Document No." := RestraintEntry_G."Document No.";
+                      GenJournalLine_G."Setting Off":=TRUE;
+                      CLEAR(GenJnlPostLine_G);
+                      GenJnlPostLine_G.RunWithCheck(GenJournalLine_G,L_TempJnlLineDim);
+                      GenJnlPostLine_G.GetGLReg(GLRec_G);
+
+                      GenJournalLine1_G.INIT;
+                      GenJournalLine1_G."Line No." := 10000;
+                      GenJournalLine1_G."Document No." :=GenJournalLine_G."Document No.";
+                      GenJournalLine1_G.VALIDATE("Posting Date",GenJournalLine_G."Posting Date");
+                      GenJournalLine1_G."Account Type" := GenJournalLine_G."Account Type"::"G/L Account";
+                      GenJournalLine1_G.VALIDATE("Account No.",G_CMCSetup."SettOff Bal Acount");
+                      GenJournalLine1_G."Source Code" := GenJournalLine_G."Source Code";
+                      GenJournalLine1_G.Description:= GenJournalLine_G.Description;
+                      GenJournalLine1_G.VALIDATE(Amount,GenJournalLine_G.Amount);
+                      GenJournalLine1_G.VALIDATE("Bal. Account Type",GenJournalLine_G."Bal. Account Type"::Vendor);
+                      GenJournalLine1_G.VALIDATE("Bal. Account No.",RestraintEntry_G."Restraint Bal. Account No.");
+                      GenJournalLine1_G."Setting Off":=TRUE;
+                      CLEAR(GenJnlPostLine1_G);
+                      GenJnlPostLine1_G.RunWithCheck(GenJournalLine1_G,L_TempJnlLineDim);
+                    END;
+                END;
+
+                //**** insertion d'une 'criture retenue d'taill'e*****//
+                DtldRestraintEntry_G.RESET;
+                IF DtldRestraintEntry_G.FINDLAST THEN
+                  L_NextNo :=DtldRestraintEntry_G."Entry No."+1
+                ELSE
+                  L_NextNo := 1;
+
+                DtldRestraintEntry_G.INIT;
+                DtldRestraintEntry_G."Entry No." := L_NextNo;
+                DtldRestraintEntry_G."Restraint Entry No." := RestraintEntry_G."Entry No.";
+                DtldRestraintEntry_G."Entry Type" := DtldRestraintEntry_G."Entry Type"::Compensation;
+                DtldRestraintEntry_G."Member No." := Contact_G."No.";
+                DtldRestraintEntry_G."Posting Date" := ApplicationDate_G;
+                DtldRestraintEntry_G."Document No." := DocNum_G;
+                DtldRestraintEntry_G.Amount := -RestraintEntry_G."Amount to Apply";
+                DtldRestraintEntry_G."User Id" := USERID;
+                DtldRestraintEntry_G."Restraint Code" := RestraintEntry_G."Restraint Code";
+                DtldRestraintEntry_G."G/L Registers No." := GLRec_G."No.";
+                GLEntry_L.GET(GLRec_G."From Entry No.");
+                DtldRestraintEntry_G."G/L Document No." := GLEntry_L."Document No.";
+                DtldRestraintEntry_G.INSERT;
+
+                RestraintEntry_G."SettOff Applies-to ID" :='';
+                RestraintEntry_G."Amount to Apply":=0;
+                RestraintEntry_G.MODIFY;
+              UNTIL (RestraintEntry_G.NEXT=0);
+             END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Contact_G@8053000 : Record 5050;
+      VendLedgerEntry_G@8053001 : Record 25;
+      G_CMCSetup@8053003 : Record 8052982;
+      FirstVendEntry_G@8053004 : Integer;
+      FirstCustEntry_G@8053005 : Integer;
+      VendLedgerEntry1_G@8053006 : Record 25;
+      ApplicationDate_G@8053008 : Date;
+      CustLedgerEntry_G@8053010 : Record 21;
+      CustLedgerEntry1_G@8053011 : Record 21;
+      AmountToCompensate_G@8053002 : Decimal;
+      GenJournalLine_G@8053012 : Record 81;
+      DocNum_G@8053013 : Code[20];
+      IsCust_G@8053014 : Boolean;
+      Text8053004@8053015 : TextConst 'FRA=Compensation %1';
+      GenJnlPostLine_G@8053016 : Codeunit 12;
+      RestraintEntry_G@8053017 : Record 8053374;
+      Text8053005@8053018 : TextConst 'FRA=%1 %2';
+      MvtType_G@8053019 : Record 8053353;
+      DtldRestraintEntry_G@8053020 : Record 8053375;
+      GLRec_G@8053021 : Record 45;
+      DtldVendLedgEntry_G@8053007 : Record 380;
+      DtldCustLedgEntry_G@8053009 : Record 379;
+      NbVendEntries_G@8053022 : Integer;
+      NbCustEntries_G@8053023 : Integer;
+      MixVendor_G@8053024 : Boolean;
+      MixCustomer_G@8053025 : Boolean;
+      GenJournalLine1_G@8053026 : Record 81;
+      GenJnlPostLine1_G@8053027 : Codeunit 12;
+
+    PROCEDURE SetContact@8053000(NewContact_P@8053000 : Record 5050);
+    BEGIN
+      Contact_G := NewContact_P;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+
+      20130531-FINA13-CMC02.02.00-WSA01 : OBJCREATE
+      20130618-FINA13-CMC02.02.00-BRA01 : ADDCODE (ADDKEY)
+      20130619-FINA13-CMC02.02.00-BRA01 : DELCODE (Gestion lettrage avec  retenue)
+      20130723-FINA13-CMC02.02.00-BRA01 : ADDPERMISSION (T379 et 380)
+      20131106-FINA13-CMC02.02.00-1042-BRA01 : MODCODE (Cas d'une seule 'criture frs)
+      20140117-FINA13-CMC02.02.00-1165-WSA01 : MODCODE (Gestion conpensation des retenues)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

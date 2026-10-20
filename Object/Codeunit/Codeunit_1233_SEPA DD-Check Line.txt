@@ -1,0 +1,184 @@
+OBJECT Codeunit 1233 SEPA DD-Check Line
+{
+  OBJECT-PROPERTIES
+  {
+    Date=30/10/14;
+    Heure=00:00:00;
+    Liste versions=TFS288071,CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    TableNo=1208;
+    OnRun=BEGIN
+            DeletePaymentFileErrors;
+            CheckCollectionEntry(Rec);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      EuroCurrErr@1007 : TextConst 'ENU=Only transactions in euro (EUR) are allowed.;FRA=Seules les transactions en euros (EUR) sont autoris'es.';
+      FieldBlankErr@1006 : TextConst 'ENU=%1 must have a value in %2.;FRA=%1 doit avoir une valeur dans %2.';
+      FieldKeyBlankErr@1004 : TextConst 'ENU=%1 %2 must have a value in %3.;FRA=%1 %2 doit avoir une valeur dans %3.';
+      MustBeCustomerErr@1001 : TextConst 'ENU=The customer %1 does not exist.;FRA=Le client %1 n''existe pas.';
+      MustBePositiveErr@1000 : TextConst 'ENU=The amount must be positive.;FRA=Le montant doit ^tre positif.';
+      NotActiveMandateErr@1010 : TextConst 'ENU=The mandate %1 is not active.;FRA=Le mandat %1 n''est pas actif.';
+      PartnerTypeErr@1008 : TextConst 'ENU=The customer''s %1 must be %2.;FRA=Le %1 du client doit ^tre %2.';
+      TransferDateErr@1002 : TextConst 'ENU=The earliest possible transfer date is today.;FRA=La date de transfert la plus proche possible est aujourd''hui.';
+      SummarizeNotAllowedErr@1120001 : TextConst 'ENU=You cannot export a SEPA customer payment that is applied to multiple documents. Make sure that the Summarize per field in the Suggest Customer Payments window is blank.;FRA=Vous ne pouvez pas exporter un rSglement client SEPA lettr' avec plusieurs documents. Assurez-vous que le champ Totaliser par dans la fen^tre Proposer rSglements client est vide.';
+      UnappliedLinesNotAllowedErr@1120000 : TextConst 'ENU=Payment slip line %1 must be applied to a customer invoice.;FRA=La ligne bordereau paiement %1 doit ^tre lettr'e avec une facture client.';
+      AccTypeErr@1120002 : TextConst 'ENU=Only customer transactions are allowed.;FRA=Seules les transactions client sont autoris'es.';
+      BankAccErr@1120003 : TextConst 'ENU=You must use customer bank account, %1, which you specified in the selected direct debit mandate.;FRA=Vous devez utiliser le compte bancaire du client, %1, que vous avez sp'cifi' dans le mandat de pr'lSvement s'lectionn'.';
+      SelectedRecordTxt@1003 : TextConst 'ENU=The currently selected record;FRA=L''enregistrement s'lectionn'';
+      PartnerTypeBlankErr@1103 : TextConst 'ENU=%1 must be filled.;FRA=%1 doit ^tre renseign'.';
+
+    PROCEDURE CheckCollectionEntry@2(DirectDebitCollectionEntry@1000 : Record 1208);
+    VAR
+      Customer@1004 : Record 18;
+      CustomerBankAccount@1003 : Record 287;
+      DirectDebitCollection@1005 : Record 1207;
+      GLSetup@1002 : Record 98;
+      SEPADirectDebitMandate@1001 : Record 1230;
+    BEGIN
+      GLSetup.GET;
+      WITH DirectDebitCollectionEntry DO BEGIN
+        IF "Transfer Amount" <= 0 THEN
+          InsertPaymentFileError(MustBePositiveErr);
+
+        IF "Currency Code" <> GLSetup.GetCurrencyCode('EUR') THEN
+          InsertPaymentFileError(EuroCurrErr);
+
+        IF "Transfer Date" < TODAY THEN
+          InsertPaymentFileError(TransferDateErr);
+
+        IF NOT Customer.GET("Customer No.") THEN BEGIN
+          InsertPaymentFileError(STRSUBSTNO(MustBeCustomerErr,"Customer No."));
+          EXIT;
+        END;
+
+        IF Customer.Name = '' THEN
+          AddFieldEmptyError(DirectDebitCollectionEntry,Customer.TABLECAPTION,Customer.FIELDCAPTION(Name),"Customer No.");
+
+        DirectDebitCollection.GET("Direct Debit Collection No.");
+        IF Customer."Partner Type" <> DirectDebitCollection."Partner Type" THEN
+          InsertPaymentFileError(STRSUBSTNO(PartnerTypeErr,Customer.FIELDCAPTION("Partner Type"),
+              DirectDebitCollection."Partner Type"));
+
+        IF DirectDebitCollection."Partner Type" = DirectDebitCollection."Partner Type"::" " THEN
+          InsertPaymentFileError(STRSUBSTNO(PartnerTypeBlankErr,DirectDebitCollection.FIELDCAPTION("Partner Type")));
+
+        IF "Mandate ID" = '' THEN
+          AddFieldEmptyError(DirectDebitCollectionEntry,SelectedRecordTxt,FIELDCAPTION("Mandate ID"),"Mandate ID")
+        ELSE BEGIN
+          SEPADirectDebitMandate.GET("Mandate ID");
+          IF SEPADirectDebitMandate."Date of Signature" = 0D THEN
+            AddFieldEmptyError(
+              DirectDebitCollectionEntry,SEPADirectDebitMandate.TABLECAPTION,SEPADirectDebitMandate.FIELDCAPTION("Date of Signature"),
+              "Mandate ID");
+          IF NOT SEPADirectDebitMandate.IsMandateActive("Transfer Date") THEN
+            InsertPaymentFileError(STRSUBSTNO(NotActiveMandateErr,"Mandate ID"));
+
+          IF SEPADirectDebitMandate."Customer Bank Account Code" = '' THEN
+            AddFieldEmptyError(
+              DirectDebitCollectionEntry,SEPADirectDebitMandate.TABLECAPTION,
+              SEPADirectDebitMandate.FIELDCAPTION("Customer Bank Account Code"),SEPADirectDebitMandate.ID)
+          ELSE BEGIN
+            CustomerBankAccount.GET(Customer."No.",SEPADirectDebitMandate."Customer Bank Account Code");
+            IF CustomerBankAccount."SWIFT Code" = '' THEN
+              AddFieldEmptyError(
+                DirectDebitCollectionEntry,CustomerBankAccount.TABLECAPTION,CustomerBankAccount.FIELDCAPTION("SWIFT Code"),
+                CustomerBankAccount.Code);
+            IF CustomerBankAccount.IBAN = '' THEN
+              AddFieldEmptyError(
+                DirectDebitCollectionEntry,CustomerBankAccount.TABLECAPTION,CustomerBankAccount.FIELDCAPTION(IBAN),
+                CustomerBankAccount.Code);
+          END;
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE AddFieldEmptyError@1(VAR DirectDebitCollectionEntry@1002 : Record 1208;TableCaption@1000 : Text[1024];FieldCaption@1001 : Text[1024];KeyValue@1003 : Text[1024]);
+    VAR
+      ErrorText@1004 : Text[1024];
+    BEGIN
+      IF KeyValue = '' THEN
+        ErrorText := STRSUBSTNO(FieldBlankErr,TableCaption,FieldCaption)
+      ELSE
+        ErrorText := STRSUBSTNO(FieldKeyBlankErr,TableCaption,KeyValue,FieldCaption);
+      DirectDebitCollectionEntry.InsertPaymentFileError(ErrorText);
+    END;
+
+    PROCEDURE CheckPaymentLine@1120001(DirectDebitCollectionEntry@1120001 : Record 1208;PaymentLine@1120000 : Record 10866;VAR AppliesToEntryNo@1120004 : Integer) : Boolean;
+    VAR
+      SEPADirectDebitMandate@1120003 : Record 1230;
+      CustLedgerEntry@1120002 : Record 21;
+    BEGIN
+      // --> 20140806-WI00-CMC02.02.00-2405-BRA01
+      //BEFORE
+      //IF PaymentLine."Account Type" <> PaymentLine."Account Type"::Customer THEN
+      IF NOT (PaymentLine."Account Type" IN [PaymentLine."Account Type"::Customer,PaymentLine."Account Type"::"G/L Account"]) THEN
+      //AFTER
+      // <-- 20140806-WI00-CMC02.02.00-2405-BRA01
+        DirectDebitCollectionEntry.InsertPaymentFileError(AccTypeErr);
+
+      IF SEPADirectDebitMandate.GET(PaymentLine."Direct Debit Mandate ID") THEN
+        IF SEPADirectDebitMandate."Customer Bank Account Code" <> PaymentLine."Bank Account Code" THEN
+          DirectDebitCollectionEntry.InsertPaymentFileError(STRSUBSTNO(BankAccErr,SEPADirectDebitMandate."Customer Bank Account Code"));
+      // --> 20140603-WI00-CMC02.02.00-2184-AKH01
+      //BEFORE
+      {
+      IF (PaymentLine."Applies-to Doc. No." = '') AND (PaymentLine."Applies-to ID" = '') THEN
+        DirectDebitCollectionEntry.InsertPaymentFileError(STRSUBSTNO(UnappliedLinesNotAllowedErr,PaymentLine."Line No."))
+      ELSE
+      }
+      //AFTER
+      IF (PaymentLine."Applies-to Doc. No." <> '') OR (PaymentLine."Applies-to ID" <> '') THEN
+      // <-- 20140603-WI00-CMC02.02.00-2184-AKH01
+      BEGIN
+        PaymentLine.GetAppliesToDocCustLedgEntry(CustLedgerEntry);
+        // --> 20140806-WI00-CMC02.02.00-2406-BRA01
+        //BEFORE
+        {
+        IF CustLedgerEntry.COUNT > 1 THEN
+          DirectDebitCollectionEntry.InsertPaymentFileError(SummarizeNotAllowedErr);
+        // --> 20140723-WI00-CMC02.02.00-2389-BRA01
+        //BEFORE
+        {
+        CustLedgerEntry.FINDFIRST;
+        IF CustLedgerEntry."Document Type" <> CustLedgerEntry."Document Type"::Invoice THEN
+          DirectDebitCollectionEntry.InsertPaymentFileError(STRSUBSTNO(UnappliedLinesNotAllowedErr,PaymentLine."Line No."));
+        AppliesToEntryNo := CustLedgerEntry."Entry No.";
+        }
+        //AFTER
+        IF CustLedgerEntry.FINDFIRST THEN BEGIN
+          IF CustLedgerEntry."Document Type" <> CustLedgerEntry."Document Type"::Invoice THEN
+            DirectDebitCollectionEntry.InsertPaymentFileError(STRSUBSTNO(UnappliedLinesNotAllowedErr,PaymentLine."Line No."));
+          AppliesToEntryNo := CustLedgerEntry."Entry No.";
+        END;
+        // <-- 20140723-WI00-CMC02.02.00-2389-BRA01
+        }
+        //AFTER
+        CustLedgerEntry.FINDFIRST;
+        AppliesToEntryNo := CustLedgerEntry."Entry No.";
+        // <-- 20140806-WI00-CMC02.02.00-2406-BRA01
+      END;
+
+      EXIT(NOT DirectDebitCollectionEntry.HasPaymentFileErrors);
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+
+      20140603-WI00-CMC02.02.00-2184-AKH01 : MODCODE(g'n'rer un fichier de pr'lSvement sans lettrage associ')
+      20140723-WI00-CMC02.02.00-2389-BRA01 : MODCODE (PAs de blocage si aucune ligne de lettrage trouv')
+      20140806-WI00-CMC02.02.00-2406-BRA01 : MODCODE (Autoriser le multi lettrage)
+      20140806-WI00-CMC02.02.00-2405-BRA01 : MODCODE (Autoriser le type compte g'n'ral en plus du client)
+
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,622 @@
+OBJECT Codeunit 60051 Distribution Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=05/10/21;
+    Heure=00:00:00;
+    Liste versions=ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    TableNo=8053356;
+    Permissions=TableData 60071=rimd,
+                TableData 8087796=rimd;
+    OnRun=VAR
+            Campaign_L@1000000000 : Record 8052991;
+            AnalysisReportLine_L@1000000001 : Record 8053361;
+            AnalysisEntry_L@1000000002 : Record 8053362;
+            Contact_L@1000000003 : Record 5050;
+            CapRatesTypeCtr_L@1000000004 : Record 8053363;
+            IntRistourne_L@1000000005 : Integer;
+            BooTraiterRistourne_L@1000000006 : Boolean;
+            CMCSetup_L@1000000008 : Record 8052982;
+            Commitment_L@1000000009 : Record 8053199;
+            DtlPart_L@1000000010 : Record 8053352;
+            CapitalSetup_L@1000000011 : Record 8053350;
+            StatCap_L@1000000017 : Decimal;
+            RealCap_L@1000000016 : Decimal;
+            Dividend_L@1000000015 : Decimal;
+            Interset_L@1000000014 : Decimal;
+            PltSocial_L@1000000013 : Decimal;
+            PltLiberatoire_L@1000000012 : Decimal;
+            PartType_L@1000000018 : Record 8053351;
+            CapitalRates_L@1000000019 : Record 8053363;
+            CapitalJnlLine_L@1000000020 : Record 8053356;
+            BooCreate_L@1000000021 : Boolean;
+            DecTotalDistrib_L@1000000022 : Decimal;
+            GenProdPostingGroup_L@1000000007 : Record 251;
+            PurchInvLine_L@1000000023 : Record 123;
+          BEGIN
+            IF "Account No." = '' THEN BEGIN
+              IF CapitalJnlLine_L.GET("Capital Journal Template","Capital Batch Name","Line No.") THEN
+                CapitalJnlLine_L.DELETE;
+              EXIT;
+            END;
+
+            Contact_L.GET("Account No.");
+
+            // Si pas de capital - pas de distribution
+            FarmStatCap("Account No.","Campaign No.",StatCap_L,RealCap_L,"Closing Date");
+            Campaign_L.RESET;
+            IF Campaign_L.GET("Campaign No.") = FALSE THEN
+              BEGIN
+                Campaign_L.SETFILTER("No.",'%1',"Campaign No.");
+                Campaign_L.FIND('-');
+              END;
+
+            "Statutory Capital":=StatCap_L;
+            "Real Capital" := RealCap_L;
+
+            // --> 20161103-Wi00-ADV01.01.00-3140-JCD01
+            IF NOT "Exceptional Discount" THEN BEGIN
+            // <-- 20161103-Wi00-ADV01.01.00-3140-JCD01
+              // *** Calcul distribution par type de part
+              CLEAR(PartType_L);
+              PartType_L.SETRANGE("Member Filter","Account No.");
+              // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+              PartType_L.SETRANGE("Date Filter",0D,Campaign_L."Ending Date");
+              // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+              IF PartType_L.FIND('-') THEN REPEAT
+                PartType_L.CALCFIELDS("Part Type Count","Part Type Amount");
+                IF PartType_L."Part Type Count" <> 0 THEN BEGIN
+                  DtlPart_L.RESET;
+                  DtlPart_L.ASCENDING(FALSE);
+                  DtlPart_L.SETFILTER("Effective Date",'..%1',"Posting Date");
+                  DtlPart_L.SETRANGE(DtlPart_L."Part Code",PartType_L."Part Code");
+                  IF DtlPart_L.FINDFIRST THEN BEGIN
+
+                    // *** Calcul dividende ***//
+                    DtlPart_L.TESTFIELD("Dividend Amount");
+                    Dividend_L += PartType_L."Part Type Count" * DtlPart_L."Dividend Amount";
+
+                    // *** Calcul int'r^t ***//
+                    IF Contact_L."Partner Type"=Contact_L."Partner Type"::Cooperator THEN
+                      Interset_L += PartType_L."Part Type Amount" * (DtlPart_L."Interest Rate for Coop. Member"/100)
+                    ELSE IF Contact_L."Partner Type"=Contact_L."Partner Type"::"Not Cooperator" THEN
+                      Interset_L += PartType_L."Part Type Amount" * (DtlPart_L."Interest Rate for NotCoop. Mbr"/100);
+
+                    // *** Calcul pr'lSvement social *** //
+                    IF (Contact_L."Moral Or Natural Person" = Contact_L."Moral Or Natural Person"::Natural) THEN BEGIN
+                       IF DtlPart_L."Apply Dividend Social Prlt." THEN
+                         PltSocial_L += (PartType_L."Part Type Count" * DtlPart_L."Dividend Amount") * (DtlPart_L."Social Retrievement"/100);
+                       IF (Contact_L."Partner Type"=Contact_L."Partner Type"::"Not Cooperator")
+                           AND (DtlPart_L."Apply N Coop Interset S. Prlt") THEN
+                         PltSocial_L += (PartType_L."Part Type Amount" * (DtlPart_L."Interest Rate for NotCoop. Mbr"/100))
+                           * (DtlPart_L."Social Retrievement"/100);
+                       IF (Contact_L."Partner Type"=Contact_L."Partner Type"::Cooperator)
+                           AND (DtlPart_L."Apply Coop Interset S. Prlt") THEN
+                         PltSocial_L += (PartType_L."Part Type Amount" * (DtlPart_L."Interest Rate for Coop. Member"/100))
+                           * (DtlPart_L."Social Retrievement"/100);
+                       // *** Calcul pr'lSvement lib'ratoire si non exempt'
+                       IF NOT Contact_L."Exempt From Withholding Tax" THEN BEGIN
+                         IF DtlPart_L."Apply Dividend Social Prlt." THEN
+                           PltLiberatoire_L += (PartType_L."Part Type Count" * DtlPart_L."Dividend Amount")
+                                               * (DtlPart_L."Discharge Retrievement"/100);
+                         IF (Contact_L."Partner Type"=Contact_L."Partner Type"::"Not Cooperator")
+                             AND (DtlPart_L."Apply N Coop Interset S. Prlt") THEN
+                           PltLiberatoire_L += (PartType_L."Part Type Amount" * (DtlPart_L."Interest Rate for NotCoop. Mbr"/100))
+                             * (DtlPart_L."Discharge Retrievement"/100);
+                         IF (Contact_L."Partner Type"=Contact_L."Partner Type"::Cooperator)
+                             AND (DtlPart_L."Apply Coop Interset S. Prlt") THEN
+                           PltLiberatoire_L += (PartType_L."Part Type Amount" * (DtlPart_L."Interest Rate for Coop. Member"/100))
+                             * (DtlPart_L."Discharge Retrievement"/100);
+                      END;
+                    END;
+                  END;
+                END; //PartType_L."Part Type Count"
+              UNTIL PartType_L.NEXT = 0;
+
+              // MAJ des variables
+              // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+              {BEFORE
+              Dividend_L := ROUND(Dividend_L,GLSetup_G."Amount Rounding Precision");
+              Interset_L := ROUND(Interset_L,GLSetup_G."Amount Rounding Precision");
+              PltSocial_L := ROUND(PltSocial_L,GLSetup_G."Amount Rounding Precision");
+              PltLiberatoire_L := ROUND(PltLiberatoire_L,GLSetup_G."Amount Rounding Precision");
+              AFTER}
+              GLSetup_G.GET;
+              CapitalSetup_L.GET;
+              Dividend_L := ROUND(Dividend_L,GLSetup_G."Amount Rounding Precision");
+              Interset_L := ROUND(Interset_L,GLSetup_G."Amount Rounding Precision");
+              PltSocial_L := ROUND(PltSocial_L,GLSetup_G."Amount Rounding Precision");
+              PltLiberatoire_L := ROUND(PltLiberatoire_L,GLSetup_G."Amount Rounding Precision");
+              IF CapitalSetup_L."Dividend  Min. Amount" > Dividend_L THEN BEGIN
+                Dividend_L := 0;
+                Interset_L := 0;
+                PltSocial_L := 0;
+                PltLiberatoire_L := 0;
+              END;
+              // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+
+              Dividend := Dividend_L;
+              Interest := Interset_L;
+              "Social Plt." := PltSocial_L;
+              "Discharge Retrievement" := PltLiberatoire_L;
+            // --> 20161103-Wi00-ADV01.01.00-3140-JCD01
+            END;
+            // <-- 20161103-Wi00-ADV01.01.00-3140-JCD01
+
+            // --> *** Traitement Ristourne
+
+            BooTraiterRistourne_L := TRUE;
+
+            IF Campaign_L."Disc. Distribution Table Code" = '' THEN
+              BooTraiterRistourne_L := FALSE;
+
+            // --> 20161102-Wi00-ADV01.01.00-3140-JCD01
+            IF "No Discount" THEN BEGIN
+              ClearRistourne(Rec);
+              BooTraiterRistourne_L := FALSE;
+            END;
+            // <-- 20161102-Wi00-ADV01.01.00-3140-JCD01
+
+            // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+            {BEFORE
+            GLSetup_G.GET;
+            }
+            // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+
+            // Recherche du contrat Coeur ou Single : charg' dans CapRatesTypeCtr_L."Commitment Type"
+            // D'sol' pour le code fixe, Advitam n'a pas souhait' revenir dessus pour le mettre en param'trage
+            CMCSetup_L.GET;
+
+            AnalysisReportLine_L.RESET;
+            AnalysisReportLine_L.SETFILTER("Contact Filter","Account No.");
+            AnalysisReportLine_L.SETRANGE(Code,Campaign_L."Disc. Distribution Table Code");
+            AnalysisReportLine_L.SETRANGE("Line Type",AnalysisReportLine_L."Line Type"::"Funnel Filter");
+            // --> 20211005-WI00-ADV01.01.00-SP3574-MRU01
+            {BEFORE
+            IF AnalysisReportLine_L.COUNT > 5 THEN
+            AFTER}
+            IF AnalysisReportLine_L.COUNT > 10 THEN
+            // <-- 20211005-WI00-ADV01.01.00-SP3574-MRU01
+              ERROR(Text001,Campaign_L."Disc. Distribution Table Code");
+
+            IF BooTraiterRistourne_L THEN BEGIN
+              ClearRistourne(Rec);
+
+              IntRistourne_L := 0;
+              IF AnalysisReportLine_L.FIND('-') THEN REPEAT
+                IntRistourne_L += 1;
+                CapitalRates_L.GET("Campaign No.",AnalysisReportLine_L.Code,AnalysisReportLine_L.Line) ;
+                CapitalRates_L.TESTFIELD(Rate);
+                // --> 20161103-WI00-ADV01.01.00-3140-JCD01
+                IF "Exceptional Discount" = AnalysisReportLine_L."Exceptional Discount" THEN
+                  IF BooRistourne(AnalysisReportLine_L,"Account No.",Campaign_L."No.",Contact_L."Customer No.") THEN BEGIN
+                  // <-- 20161103-WI00-ADV01.01.00-3140-JCD01
+                    CLEAR(AnalysisEntry_L);
+                    AnalysisEntry_L.SETCURRENTKEY(Code,Line,Date,"Contact No.","Entry No.");
+                    AnalysisEntry_L.SETRANGE(Code,Campaign_L."Disc. Distribution Table Code");
+                    AnalysisEntry_L.SETRANGE(Line,AnalysisReportLine_L.Line);
+                    AnalysisEntry_L.SETFILTER("Contact No.","Account No.");
+                    AnalysisEntry_L.SETRANGE(Date,Campaign_L."Starting Date",Campaign_L."Ending Date");
+                    IF AnalysisEntry_L.FIND('-') THEN
+                      AnalysisEntry_L.CALCSUMS(Amount)
+                    ELSE
+                      CLEAR(AnalysisEntry_L);
+                    CASE IntRistourne_L OF
+                    1 : BEGIN
+                          "Base 1" := AnalysisEntry_L.Amount;
+                          "Rate 1" := CapitalRates_L.Rate;
+                          "Discount 1" := ROUND((AnalysisEntry_L.Amount * CapitalRates_L.Rate)/100,
+                                                      GLSetup_G."Amount Rounding Precision");
+                          // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+                          IF AnalysisReportLine_L."Disc. Min Amount" > "Discount 1" THEN
+                            "Discount 1" := 0;
+                          // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+                        END;
+                    2 : BEGIN
+                          "Base 2" := AnalysisEntry_L.Amount;
+                          "Rate 2" := CapitalRates_L.Rate;
+                          "Discount 2" := ROUND((AnalysisEntry_L.Amount * CapitalRates_L.Rate)/100,
+                                                      GLSetup_G."Amount Rounding Precision");
+                          // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+                          IF AnalysisReportLine_L."Disc. Min Amount" > "Discount 2" THEN
+                            "Discount 2" := 0;
+                          // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+                        END;
+                    3 : BEGIN
+                          "Base 3" := AnalysisEntry_L.Amount;
+                          "Rate 3" := CapitalRates_L.Rate;
+                          "Discount 3" := ROUND((AnalysisEntry_L.Amount * CapitalRates_L.Rate)/100,
+                                                      GLSetup_G."Amount Rounding Precision");
+                          // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+                          IF AnalysisReportLine_L."Disc. Min Amount" > "Discount 3" THEN
+                            "Discount 3" := 0;
+                          // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+                        END;
+                    4 : BEGIN
+                          "Base 4" := AnalysisEntry_L.Amount;
+                          "Rate 4" := CapitalRates_L.Rate;
+                          "Discount 4" := ROUND((AnalysisEntry_L.Amount * CapitalRates_L.Rate)/100,
+                                                      GLSetup_G."Amount Rounding Precision");
+                          // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+                          IF AnalysisReportLine_L."Disc. Min Amount" > "Discount 4" THEN
+                            "Discount 4" := 0;
+                          // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+                        END;
+                    5 : BEGIN
+                          "Base 5" := AnalysisEntry_L.Amount;
+                          "Rate 5" := CapitalRates_L.Rate;
+                          "Discount 5" := ROUND((AnalysisEntry_L.Amount * CapitalRates_L.Rate)/100,
+                                                      GLSetup_G."Amount Rounding Precision");
+                          // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+                          IF AnalysisReportLine_L."Disc. Min Amount" > "Discount 5" THEN
+                            "Discount 5" := 0;
+                          // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+                        END;
+                    // --> 20211005-WI00-ADV01.01.00-SP3574-MRU01
+                    6 : BEGIN
+                          "Base 6" := AnalysisEntry_L.Amount;
+                          "Rate 6" := CapitalRates_L.Rate;
+                          "Discount 6" := ROUND((AnalysisEntry_L.Amount * CapitalRates_L.Rate)/100,
+                                                      GLSetup_G."Amount Rounding Precision");
+                          IF AnalysisReportLine_L."Disc. Min Amount" > "Discount 6" THEN
+                            "Discount 6" := 0;
+                        END;
+                    7 : BEGIN
+                          "Base 7" := AnalysisEntry_L.Amount;
+                          "Rate 7" := CapitalRates_L.Rate;
+                          "Discount 7" := ROUND((AnalysisEntry_L.Amount * CapitalRates_L.Rate)/100,
+                                                      GLSetup_G."Amount Rounding Precision");
+                          IF AnalysisReportLine_L."Disc. Min Amount" > "Discount 7" THEN
+                            "Discount 7" := 0;
+                        END;
+                    8 : BEGIN
+                          "Base 8" := AnalysisEntry_L.Amount;
+                          "Rate 8" := CapitalRates_L.Rate;
+                          "Discount 8" := ROUND((AnalysisEntry_L.Amount * CapitalRates_L.Rate)/100,
+                                                      GLSetup_G."Amount Rounding Precision");
+                          IF AnalysisReportLine_L."Disc. Min Amount" > "Discount 8" THEN
+                            "Discount 8" := 0;
+                        END;
+                    9 : BEGIN
+                          "Base 9" := AnalysisEntry_L.Amount;
+                          "Rate 9" := CapitalRates_L.Rate;
+                          "Discount 9" := ROUND((AnalysisEntry_L.Amount * CapitalRates_L.Rate)/100,
+                                                      GLSetup_G."Amount Rounding Precision");
+                          IF AnalysisReportLine_L."Disc. Min Amount" > "Discount 9" THEN
+                            "Discount 9" := 0;
+                        END;
+                    10 : BEGIN
+                          "Base 10" := AnalysisEntry_L.Amount;
+                          "Rate 10" := CapitalRates_L.Rate;
+                          "Discount 10" := ROUND((AnalysisEntry_L.Amount * CapitalRates_L.Rate)/100,
+                                                      GLSetup_G."Amount Rounding Precision");
+                          IF AnalysisReportLine_L."Disc. Min Amount" > "Discount 10" THEN
+                            "Discount 10" := 0;
+                        END;
+                    // <-- 20211005-WI00-ADV01.01.00-SP3574-MRU01
+                    END;
+                    // --> 20161201-Wi00-ADV01.01.00-3213-JCD01
+                    IF (Contact_L."Vendor No." <> '') AND (AnalysisReportLine_L."Gen. Prod. Posting Group Purch" <> '') THEN BEGIN
+                      GenProdPostingGroup_L.GET(AnalysisReportLine_L."Gen. Prod. Posting Group Purch");
+                      PurchInvLine_L.RESET;
+                      PurchInvLine_L.SETCURRENTKEY("Buy-from Vendor No.");
+                      PurchInvLine_L.SETRANGE("Buy-from Vendor No.",Contact_L."Vendor No.");
+                      PurchInvLine_L.SETRANGE("Compain No.","Campaign No.");
+                      PurchInvLine_L.SETRANGE("Gen. Prod. Posting Group",AnalysisReportLine_L."Gen. Prod. Posting Group Purch");
+                      PurchInvLine_L.SETRANGE("VAT Prod. Posting Group",GenProdPostingGroup_L."Def. VAT Prod. Posting Group");
+                      PurchInvLine_L.SETFILTER("VAT %",'<>%1',0);
+                      IF NOT PurchInvLine_L.ISEMPTY THEN
+                        "Discount With VAT" := TRUE;
+                    END;
+                    // <-- 20161201-Wi00-ADV01.01.00-3213-JCD01
+                  END;
+              UNTIL AnalysisReportLine_L.NEXT = 0;
+
+              // --> 20211005-WI00-ADV01.01.00-SP3574-MRU01
+              {BEFORE
+              Discount := "Discount 1" + "Discount 2" + "Discount 3" + "Discount 4" + "Discount 5";
+              AFTER}
+              Discount := "Discount 1" + "Discount 2" + "Discount 3" + "Discount 4" + "Discount 5"
+                        + "Discount 6" + "Discount 7" + "Discount 8" + "Discount 9" + "Discount 10";
+              // <-- 20211005-WI00-ADV01.01.00-SP3574-MRU01
+
+            END;
+            // <-- *** FIN Traitement Ristourne
+
+            // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+            DecTotalDistrib_L := Dividend_L + Interset_L - PltSocial_L - PltLiberatoire_L + Discount;
+            IF CapitalSetup_L."Distribution Min. Amount" > DecTotalDistrib_L THEN BEGIN
+              // On met le capital . z'ro pour ne pas ins'rer la ligne ou la supprimer en cas de MAJ
+              IF CapitalJnlLine_L.GET("Capital Journal Template","Capital Batch Name","Line No.") = FALSE THEN BEGIN
+                "Real Capital" := 0;
+                Discount := 0;
+                EXIT;
+              END ELSE BEGIN
+                Dividend := 0;
+                Interest := 0;
+                "Social Plt." := 0;
+                "Discharge Retrievement" := 0;
+                //CapitalJnlLine_L.DELETE;
+              END;
+            END;
+            // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+            // *** Calcul capital r'el . ce jour ***//
+            RealCap_L := CalcRealCap(Contact_L,"Posting Date");
+            "Real Capital Posting Date" := RealCap_L;
+
+            // *** Calcul Retenue souscription ***//
+            // --> 20161104-Wi00-ADV01.01.00-3140-JCD01
+            IF NOT "Exceptional Discount" THEN
+            // <-- 20161104-Wi00-ADV01.01.00-3140-JCD01
+              // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+              // --> 20161123-Wi00-ADV01.01.00-3140-JCD01
+              {BEFORE
+              IF RealCap_L >= 0 THEN
+              // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+              AFTER}
+              IF RealCap_L > 0 THEN
+              // <-- 20161123-Wi00-ADV01.01.00-3140-JCD01
+                IF StatCap_L > RealCap_L THEN BEGIN
+                  "Sousc. Ret" := DecTotalDistrib_L;
+                  IF  "Sousc. Ret" > (StatCap_L - RealCap_L) THEN
+                    "Sousc. Ret" := StatCap_L - RealCap_L;
+                END;
+
+              // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+              {BEFORE
+              CapitalSetup_L.GET;
+              }
+              // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+            DtlPart_L.RESET;
+            DtlPart_L.ASCENDING(FALSE);
+            DtlPart_L.SETFILTER("Effective Date",'..%1',"Posting Date");
+            DtlPart_L.SETRANGE("Part Code",CapitalSetup_L."Restraint Part Type");
+            IF DtlPart_L.FINDFIRST THEN
+              "Part Type To Restraint" := "Sousc. Ret" DIV DtlPart_L."Unit Value";
+            "Sousc. Ret" := "Part Type To Restraint" * DtlPart_L."Unit Value";
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      GLSetup_G@1000000000 : Record 98;
+      Text001@1000000004 : TextConst 'ENU=You can not have more than 10 discounts : %1;FRA=Vous ne pouvez pas avoir plus de 10 ristournes : voir param'trage tableau d''analyse %1.';
+
+    PROCEDURE FarmStatCap@8053001(FarmerNo_P@8053000 : Code[20];CampaignNo_P@8053001 : Code[20];VAR StatCap_P@8053002 : Decimal;VAR RealCap_P@8053003 : Decimal;PostingDate_P@1000000000 : Date);
+    VAR
+      CurrCampaign_L@8053015 : Record 8052991;
+      TempCampaign_L@8053014 : TEMPORARY Record 8052991;
+      CapStat_L@8053013 : ARRAY [7] OF Decimal;
+      NbCampaign_L@8053012 : Integer;
+      CapitalRates_L@8053011 : Record 8053363;
+      I_L@8053010 : Integer;
+      PartRec_L@8053009 : Record 8053351;
+      AnalysisEntry_L@8053008 : Record 8053362;
+      Contact_L@8053007 : Record 5050;
+      AnalysisReportLine_L@8053006 : Record 8053361;
+      Campaign_L@8053005 : Record 8052991;
+      Average_L@8053004 : Decimal;
+      CapitalEntry_L@8053016 : Record 8053357;
+    BEGIN
+      // *** Calcul capital r'el***//
+      CLEAR(RealCap_P);
+      GLSetup_G.GET;
+      Contact_L.GET(FarmerNo_P);
+      PartRec_L.RESET;
+      PartRec_L.SETFILTER("Member Filter",Contact_L."No.");
+      PartRec_L.SETFILTER("Date Filter",'..%1',PostingDate_P);
+      IF PartRec_L.FINDFIRST THEN
+      PartRec_L.CALCFIELDS("Total Part Amount");
+      RealCap_P := PartRec_L."Total Part Amount";
+      RealCap_P := ROUND(RealCap_P,GLSetup_G."Amount Rounding Precision");
+
+      // *** Calcul capital statutaire***//
+      CLEAR(StatCap_P);
+      CurrCampaign_L.GET(CampaignNo_P);
+      CurrCampaign_L.TESTFIELD("Statutory Capital Table Code");
+      CurrCampaign_L.TESTFIELD("Campaigns Number");
+      TempCampaign_L.DELETEALL;
+      I_L := CurrCampaign_L."Campaigns Number";
+      REPEAT
+         TempCampaign_L.INIT;
+         TempCampaign_L.TRANSFERFIELDS(CurrCampaign_L);
+         TempCampaign_L.INSERT;
+       I_L-=1;
+      UNTIL (CurrCampaign_L.NEXT(-1)=0) OR (I_L=0) ;
+
+
+      Campaign_L.GET(CampaignNo_P);
+      AnalysisReportLine_L.RESET;
+      AnalysisReportLine_L.SETFILTER(AnalysisReportLine_L."Contact Filter",FarmerNo_P);
+      AnalysisReportLine_L.SETRANGE(Code,Campaign_L."Statutory Capital Table Code");
+      AnalysisReportLine_L.SETRANGE("Line Type",AnalysisReportLine_L."Line Type"::"Funnel Filter");
+      IF AnalysisReportLine_L.FINDSET THEN
+        REPEAT
+          CLEAR(Average_L);
+          IF TempCampaign_L.FINDFIRST THEN
+            REPEAT
+              AnalysisEntry_L.RESET;
+              AnalysisEntry_L.SETCURRENTKEY(Code,Line,Date,"Contact No.","Entry No.");
+              AnalysisEntry_L.SETRANGE(Code,Campaign_L."Statutory Capital Table Code");
+              AnalysisEntry_L.SETRANGE(Line,AnalysisReportLine_L.Line);
+              AnalysisEntry_L.SETFILTER(AnalysisEntry_L."Contact No.",Contact_L."No.");
+              AnalysisEntry_L.SETRANGE(Date,TempCampaign_L."Starting Date",TempCampaign_L."Ending Date");
+              AnalysisEntry_L.CALCSUMS(Amount);
+              CapitalRates_L.GET(CampaignNo_P,Campaign_L."Statutory Capital Table Code",AnalysisReportLine_L.Line) ;
+              CapitalRates_L.TESTFIELD(Rate);
+              CapitalRates_L.Rate := CapitalRates_L.Rate/100;
+              Average_L += AnalysisEntry_L.Amount;
+            UNTIL TempCampaign_L.NEXT=0;
+            Average_L := Average_L/Campaign_L."Campaigns Number";
+            StatCap_P += Average_L* CapitalRates_L.Rate;
+        UNTIL AnalysisReportLine_L.NEXT=0;
+
+      StatCap_P := ROUND(StatCap_P,GLSetup_G."Amount Rounding Precision");
+    END;
+
+    PROCEDURE CalcRealCap@8053004(Contact_P@8053003 : Record 5050;PostingDate_P@1000000000 : Date) : Decimal;
+    VAR
+      RealCap_L@8053000 : Decimal;
+      Contact_L@8053001 : Record 5050;
+      PartRec_L@8053002 : Record 8053351;
+    BEGIN
+      // *** Calcul capital r'el***//
+      GLSetup_G.GET;
+      CLEAR(RealCap_L);
+      PartRec_L.RESET;
+      PartRec_L.SETFILTER(PartRec_L."Member Filter",Contact_P."No.");
+      PartRec_L.SETFILTER(PartRec_L."Date Filter",'..%1',PostingDate_P);
+      IF PartRec_L.FINDFIRST THEN BEGIN
+        PartRec_L.CALCFIELDS("Total Part Amount");
+        RealCap_L := PartRec_L."Total Part Amount";
+        EXIT(ROUND(RealCap_L,GLSetup_G."Amount Rounding Precision"));
+      END ELSE
+        EXIT(0);
+    END;
+
+    PROCEDURE ClearRistourne@1000000011(VAR CapitalJnlLine_P@1000000000 : Record 8053356);
+    BEGIN
+      WITH CapitalJnlLine_P DO BEGIN
+        Discount := 0;
+        "Base 1" := 0;
+        "Rate 1" := 0;
+        "Discount 1" := 0;
+        "Base 2" := 0;
+        "Rate 2" := 0;
+        "Discount 2" := 0;
+        "Base 3" := 0;
+        "Rate 3" := 0;
+        "Discount 3" := 0;
+        "Base 4" := 0;
+        "Rate 4" := 0;
+        "Discount 4" := 0;
+        "Base 5" := 0;
+        "Rate 5" := 0;
+        "Discount 5" := 0;
+        // --> 20161201-Wi00-ADV01.01.00-3213-JCD01
+        "Discount With VAT" := FALSE;
+        // <-- 20161201-Wi00-ADV01.01.00-3213-JCD01
+        // --> 20211005-WI00-ADV01.01.00-SP3574-MRU01
+        "Base 6" := 0;
+        "Rate 6" := 0;
+        "Discount 6" := 0;
+        "Base 7" := 0;
+        "Rate 7" := 0;
+        "Discount 7" := 0;
+        "Base 8" := 0;
+        "Rate 8" := 0;
+        "Discount 8" := 0;
+        "Base 9" := 0;
+        "Rate 9" := 0;
+        "Discount 9" := 0;
+        "Base 10" := 0;
+        "Rate 10" := 0;
+        "Discount 10" := 0;
+        // <-- 20211005-WI00-ADV01.01.00-SP3574-MRU01
+      END;
+    END;
+
+    PROCEDURE ClearDistrib@1000000000(VAR CapitalJnlLine_P@1000000000 : Record 8053356);
+    BEGIN
+      WITH CapitalJnlLine_P DO BEGIN
+        CapitalJnlLine_P.Dividend := 0;
+        CapitalJnlLine_P.Interest := 0;
+        CapitalJnlLine_P."Social Plt." := 0;
+        CapitalJnlLine_P."Sousc. Ret" := 0;
+        CapitalJnlLine_P.Discount := 0;
+        CapitalJnlLine_P."Part Type To Restraint" := 0;
+        CapitalJnlLine_P."Discharge Retrievement" := 0;
+        CapitalJnlLine_P."Amount To Restraint" := 0;
+      END;
+    END;
+
+    PROCEDURE BooRistourne@1000000001(AnalysisReportLine_P@1000000000 : Record 8053361;ContactNo_P@1000000001 : Code[20];CampainNo_P@1000000002 : Code[10];CustomerNo_P@1000000007 : Code[20]) Boo_R : Boolean;
+    VAR
+      SupFrameContractHead_L@1000000003 : Record 8053239;
+      FrameContract_L@1000000004 : Record 8053208;
+      FrameContractType_L@1000000005 : Record 8053198;
+      SalesCrMemoHeader_L@1000000006 : Record 114;
+    BEGIN
+      // --> 20161012-WI00-ADV01.01.00-3140-JCD01
+      Boo_R := FALSE;
+
+      CASE AnalysisReportLine_P."Disc. Contrat Type" OF
+      '' : Boo_R := TRUE;
+      'CCC' : BEGIN
+                FrameContract_L.SETCURRENTKEY("Contact No.","Contract Type","Date Signed");
+                FrameContract_L.SETRANGE("Contact No.",ContactNo_P);
+                FrameContract_L.SETRANGE("Contract Type",AnalysisReportLine_P."Disc. Contrat Type");
+                FrameContract_L.SETRANGE("Campaign No.",CampainNo_P);
+                IF AnalysisReportLine_P."Disc. Commitment Code Filter" <> '' THEN
+                  FrameContract_L.SETFILTER("Commitment Code",AnalysisReportLine_P."Disc. Commitment Code Filter");
+                IF NOT FrameContract_L.ISEMPTY THEN
+                  Boo_R := TRUE;
+              END;
+      ELSE    BEGIN
+                SupFrameContractHead_L.SETCURRENTKEY("Contact No.","Frame Contract Type","Creation Date");
+                SupFrameContractHead_L.SETRANGE("Contact No.",ContactNo_P);
+                SupFrameContractHead_L.SETRANGE("Frame Contract Type",AnalysisReportLine_P."Disc. Contrat Type");
+                SupFrameContractHead_L.SETRANGE("Campaign No.",CampainNo_P);
+                IF AnalysisReportLine_P."Disc. Commitment Code Filter" <> '' THEN
+                  SupFrameContractHead_L.SETFILTER("Commitment Code",AnalysisReportLine_P."Disc. Commitment Code Filter");
+                IF NOT SupFrameContractHead_L.ISEMPTY THEN
+                  Boo_R := TRUE;
+              END;
+      END;
+      // <-- 20161012-WI00-ADV01.01.00-3140-JCD01
+
+      // --> 20161102-WI00-ADV01.01.00-3140-JCD01
+      //Le contrat doit ^tre honor' pour avoir une prime (pour les CCA ou JA).
+      //S'il y a une prime et qu'il est honor' FrameContractType_L."Doc. Category Code" donne la cat'gorie de la facture
+      // S'il existe un avoir avec cette cat'gorie, l'agriculteur a bien honor' son contrat...
+      IF Boo_R AND (CustomerNo_P <> '') THEN
+        IF FrameContractType_L.GET(AnalysisReportLine_P."Disc. Contrat Type") THEN
+          IF FrameContractType_L."Doc. Category Code" <> '' THEN BEGIN
+            SalesCrMemoHeader_L.RESET;
+            SalesCrMemoHeader_L.SETCURRENTKEY("Sell-to Customer No.","External Document No.");
+            SalesCrMemoHeader_L.SETRANGE("Sell-to Customer No.",CustomerNo_P);
+            SalesCrMemoHeader_L.SETRANGE("CMC Campaign No.",CampainNo_P);
+            SalesCrMemoHeader_L.SETRANGE("Doc. Category Code",FrameContractType_L."Doc. Category Code");
+            IF SalesCrMemoHeader_L.ISEMPTY THEN
+              Boo_R := FALSE;
+          END;
+      // <-- 20161102-WI00-ADV01.01.00-3140-JCD01
+
+      // --> 20191002-WI00-ADV01.01.00-3442-MRU01
+      //Dans le cadre d'un contrat CCA : on ne tient plus compte de la pr'sence d'un avoir mais du champ Conformit' pour paiement
+      IF AnalysisReportLine_P."Disc. Contrat Type" = 'CCA' THEN BEGIN
+        SupFrameContractHead_L.SETRANGE("Conformity For Payment", SupFrameContractHead_L."Conformity For Payment"::Yes);
+        IF NOT SupFrameContractHead_L.ISEMPTY THEN
+          Boo_R := TRUE
+        ELSE
+          Boo_R := FALSE;
+      END;
+      // <-- 20191002-WI00-ADV01.01.00-3442-MRU01
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+
+      20160916-Wi00-ADV01.01.00-3140-JCD01 : ADDCODE (gestion distribution : mutualisation des fonctions pour la CREATION et la MAJ)
+      20160926-Wi00-ADV01.01.00-3140-JCD01 : ADDCODE (ajout du filtre "date comptable" sur le dividende,
+                changement place chargement "campagne")
+      20160926-Wi00-ADV01.01.00-3140-JCD01 : MODCODE (Ajout seuil de montant ristourne, dividende et distribution totale)
+      20161012-WI00-ADV01.01.00-3140-JCD01 : ADDCODE (Gestion de filtre type contrat et code engagement dans les ristournes)
+                                             MODFUNCT (BooRistourne)
+      20161104-Wi00-ADV01.01.00-3140-JCD01 : ADDCODE (Gestion ristourne exceptionnel)
+      20161123-Wi00-ADV01.01.00-3140-JCD01 : MODCODE (PAs de retenue si capital fin = 0 + droits tables)
+      20161201-Wi00-ADV01.01.00-3213-JCD01 : ADDCODE (TVA sur ristourne)
+      20191002-WI00-ADV01.01.00-3442-MRU01 : MODCODE (Contrat CCA: on ne tient plus compte de la pr'sence d'un avoir mais de la conformit'
+                                                      du contrat)
+      20211005-WI00-ADV01.01.00-SP3574-MRU01 : ADDCODE (Gestion 5 ristournes suppl'mentaires)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

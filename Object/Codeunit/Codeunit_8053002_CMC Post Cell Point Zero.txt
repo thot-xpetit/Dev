@@ -1,0 +1,261 @@
+OBJECT Codeunit 8053002 CMC Post Cell Point Zero
+{
+  OBJECT-PROPERTIES
+  {
+    Date=14/04/25;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    TableNo=8053031;
+    Permissions=TableData 8053031=rimd,
+                TableData 8053036=rimd;
+    OnRun=BEGIN
+            G_recLocationCell.COPY(Rec);
+            IF ValidationType_G=ValidationType_G::ZeroPoint  THEN BEGIN
+
+              IF ValidMajInvent_G THEN
+                CreateSoldeStk(Rec);
+              Code;
+            END ELSE BEGIN
+              CreateSoldeMutation(Rec);
+
+            END;
+
+            Rec.COPY(G_recLocationCell);
+            COMMIT;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      G_Date@8053000 : Date;
+      G_SpeciesCode@8053001 : Code[20];
+      G_ItemNo@8053002 : Code[20];
+      G_Comment@8053003 : Text[250];
+      G_recLocationCell@8053004 : Record 8053031;
+      G_recLocation@8053005 : Record 14;
+      Text8053000@8053006 : TextConst 'ENU=Cereal Lot Root must not be blank for location %1!;FRA=Racine lot c'r'ale ne doit pas ^tre vide pour le magasin %1 !';
+      Text8053001@8053007 : TextConst 'ENU=Date must not be blank!;FRA=La date ne doit pas ^tre vide !';
+      RecItemJournalLine_G@8053009 : Record 83;
+      TempJnlLineDim_G@8053010 : TEMPORARY Record 356;
+      PostItemJnlLine_G@8053011 : Codeunit 22;
+      ValidMajInvent_G@8053012 : Boolean;
+      ValidationType_G@8053013 : 'ZeroPoint,Mutation';
+      Text8053003@8053014 : TextConst 'FRA=La cellule doit avoir une quantit' poisitive';
+      SourceDocNo_G@8053008 : Code[20];
+      RecItemJournalLine2_G@1000000000 : Record 83;
+
+    PROCEDURE Code@8053002();
+    BEGIN
+      CheckData;
+      CreatePostedIntervention;
+      WITH G_recLocationCell DO BEGIN
+        "Last Lot No." := "Active Lot No.";
+        IF "Last Lot No." <> '' THEN
+          "Active Lot No." := INCSTR("Last Lot No.")
+        ELSE
+          "Active Lot No." := G_recLocation."Cereal Lot Root" + '-' + "Cell Code" + '-0000001';
+        "Active Species Code" := G_SpeciesCode;
+        "Active Item No." := G_ItemNo;
+        MODIFY(TRUE);
+      END;
+    END;
+
+    PROCEDURE CreatePostedIntervention@8053000();
+    VAR
+      L_recPostedIntervention@8053000 : Record 8053036;
+      L_recLastPostedIntervention@8053001 : Record 8053036;
+      L_recItemLedgEntry@8053002 : Record 32;
+    BEGIN
+      WITH G_recLocationCell DO BEGIN
+        L_recPostedIntervention.INIT;
+        IF L_recLastPostedIntervention.FINDLAST THEN
+          L_recPostedIntervention."Entry No." := L_recLastPostedIntervention."Entry No." + 1
+        ELSE
+          L_recPostedIntervention."Entry No." := 1;
+        L_recPostedIntervention.VALIDATE("Location Code","Location Code");
+        L_recPostedIntervention.VALIDATE("Cell No.","Cell Code");
+        IF ValidationType_G=ValidationType_G::ZeroPoint THEN
+        L_recPostedIntervention."Zero Point" := TRUE;
+        L_recPostedIntervention.Comment := G_Comment;
+        L_recPostedIntervention.VALIDATE("Intervention Date",G_Date);
+        L_recPostedIntervention.VALIDATE("Validation Date",CURRENTDATETIME);
+        L_recPostedIntervention.VALIDATE("Species Code","Active Species Code");
+        L_recPostedIntervention.VALIDATE("Item No.","Active Item No.");
+        IF "Active Item No." <> '' THEN
+          L_recItemLedgEntry.SETRANGE("Item No.","Active Item No.");
+        L_recItemLedgEntry.SETRANGE("Location Code","Location Code");
+        L_recItemLedgEntry.SETRANGE("Cell Code","Cell Code");
+        IF L_recItemLedgEntry.FINDLAST THEN
+          L_recPostedIntervention."Last Item Ledger Entry No." := L_recItemLedgEntry."Entry No.";
+        L_recPostedIntervention."Source Document No." := SourceDocNo_G;
+        // --> 20150831-ADV14-CMC02.02.00-1789-SDE01
+        IF (ValidationType_G=ValidationType_G::Mutation) AND (L_recPostedIntervention.Comment='') THEN
+          L_recPostedIntervention.Comment:=COPYSTR(STRSUBSTNO('Mutation %1 %2',
+            G_recLocationCell."Active Item No.",G_ItemNo),1,100);
+        // <-- 20150831-ADV14-CMC02.02.00-1789-SDE01
+        L_recPostedIntervention.INSERT(TRUE);
+       END;
+    END;
+
+    PROCEDURE GetParameters@8053001(P_Date@8053000 : Date;P_SpeciesCode@8053001 : Code[20];P_ItemNo@8053002 : Code[20];P_Comment@8053003 : Text[250];ValidMajInvent_P@8053004 : Boolean;ValidationType_P@8053005 : 'ZeroPoint,Mutation');
+    BEGIN
+      G_Date := P_Date;
+      G_SpeciesCode := P_SpeciesCode;
+      G_ItemNo := P_ItemNo;
+      G_Comment := P_Comment;
+      ValidMajInvent_G:=ValidMajInvent_P;
+      ValidationType_G:=ValidationType_P;
+    END;
+
+    PROCEDURE CheckData@8053003();
+    BEGIN
+      G_recLocationCell.TESTFIELD("Location Code");
+      G_recLocation.GET(G_recLocationCell."Location Code");
+      IF G_recLocation."Cereal Lot Root" = '' THEN
+        ERROR(Text8053000,G_recLocationCell."Location Code");
+      IF G_Date = 0D THEN
+        ERROR(Text8053001);
+    END;
+
+    PROCEDURE CreateSoldeStk@8053004(RecCellsLocation_P@8053000 : Record 8053031);
+    VAR
+      RecItem_L@8053001 : Record 27;
+      RecSpecies_L@8053002 : Record 8052988;
+      CduDimensionsMgt_L@8053003 : Codeunit 8053004;
+    BEGIN
+      RecCellsLocation_P.CALCFIELDS("Cell Inventory");
+      IF ABS(RecCellsLocation_P."Cell Inventory")<>0 THEN BEGIN
+        RecItemJournalLine_G.INIT;
+        RecItemJournalLine_G.VALIDATE("Posting Date",G_Date);
+        IF RecCellsLocation_P."Cell Inventory">0 THEN
+          RecItemJournalLine_G.VALIDATE("Entry Type",RecItemJournalLine_G."Entry Type"::"Negative Adjmt.")
+        ELSE
+          RecItemJournalLine_G.VALIDATE("Entry Type",RecItemJournalLine_G."Entry Type"::"Positive Adjmt.");
+        RecItemJournalLine_G.VALIDATE(Quantity,ABS(RecCellsLocation_P."Cell Inventory"));
+        RecItemJournalLine_G.VALIDATE("Campaign No.",GetCampainNo('',WORKDATE,WORKDATE));
+        RecItem_L.GET(RecCellsLocation_P."Active Item No.");
+        RecSpecies_L.GET(RecItem_L."Species Code");
+        // --> 20150505-Wi00-CMC02.02.00-2955-FHS01
+        //BEFORE
+        //IF RecSpecies_L."Item Entry Typed" THEN
+        //AFTER
+        IF RecSpecies_L."Item Entry Typed" THEN BEGIN
+        // <-- 20150505-Wi00-CMC02.02.00-2955-FHS01
+          IF RecItemJournalLine_G."Entry Type"= RecItemJournalLine_G."Entry Type"::"Positive Adjmt." THEN
+            RecItemJournalLine_G."Movement Type":=RecItemJournalLine_G."Movement Type"::T10;
+          IF RecItemJournalLine_G."Entry Type"= RecItemJournalLine_G."Entry Type"::"Negative Adjmt." THEN
+            RecItemJournalLine_G."Movement Type":=RecItemJournalLine_G."Movement Type"::T11;
+        // <-- 20150505-Wi00-CMC02.02.00-2955-FHS01
+        END;
+        // --> 20150505-Wi00-CMC02.02.00-2955-FHS01
+        RecItemJournalLine_G.VALIDATE("Item No.",RecCellsLocation_P."Active Item No.");
+        RecItemJournalLine_G.VALIDATE("Location Code",RecCellsLocation_P."Location Code");
+        RecItemJournalLine_G.VALIDATE("Cell Code",RecCellsLocation_P."Cell Code");
+        RecItemJournalLine_G."Document No.":=COPYSTR(STRSUBSTNO('PZ-%1-%2',
+          RecCellsLocation_P."Location Code",RecCellsLocation_P."Cell Code"), 1, 20);
+        RecItemJournalLine_G.Description:=STRSUBSTNO('Point z'ro %1 %2',
+          RecCellsLocation_P."Location Code",RecCellsLocation_P."Cell Code");
+        TempJnlLineDim_G.DELETEALL;
+        // --> 20150204-WI00-CMC02.02.00-2739-DRN01
+        CduDimensionsMgt_L.DimFromItemJnl(TempJnlLineDim_G,RecItemJournalLine_G,TRUE);
+        // <-- 20150204-WI00-CMC02.02.00-2739-DRN01
+        CLEAR(PostItemJnlLine_G);
+        // --> 20250313-WI00-ADV01.01.00-32141-IJI
+        PostItemJnlLine_G.SetPointZeroLine(TRUE);
+        // <-- 20250313-WI00-ADV01.01.00-32141-IJI
+        PostItemJnlLine_G.RunWithCheck(RecItemJournalLine_G, TempJnlLineDim_G);
+      END;
+    END;
+
+    PROCEDURE GetCampainNo@8053006(P_CampainType@8053000 : Code[10];P_StartingDate@8053001 : Date;P_EndingDate@8053002 : Date) Res_CampainNo : Code[10];
+    VAR
+      L_recCampaign@8053003 : Record 8052991;
+    BEGIN
+      Res_CampainNo := '';
+
+      L_recCampaign.RESET;
+      L_recCampaign.SETCURRENTKEY("Type Code","Starting Date","Ending Date");
+      L_recCampaign.SETRANGE("Type Code", P_CampainType);
+      L_recCampaign.SETFILTER("Starting Date", '<=%1', P_StartingDate);
+      L_recCampaign.SETFILTER("Ending Date", '>=%1|%2', P_EndingDate, 0D);
+      IF L_recCampaign.FINDFIRST THEN
+        Res_CampainNo := L_recCampaign."No.";
+
+      EXIT(Res_CampainNo);
+    END;
+
+    PROCEDURE CreateSoldeMutation@8053009(RecCellsLocation_P@8053000 : Record 8053031);
+    VAR
+      CduDimensionsMgt_L@1000000000 : Codeunit 8053004;
+    BEGIN
+      // --> 20150831-ADV14-CMC02.02.00-1789-SDE01
+      RecCellsLocation_P.CALCFIELDS("Cell Inventory");
+      IF RecCellsLocation_P."Cell Inventory"<= 0 THEN
+        ERROR(Text8053003);
+
+        RecItemJournalLine_G.INIT;
+        RecItemJournalLine_G.VALIDATE("Posting Date",G_Date);
+      RecItemJournalLine_G.VALIDATE("Entry Type",RecItemJournalLine_G."Entry Type"::"Negative Adjmt.");
+        RecItemJournalLine_G.VALIDATE(Quantity,ABS(RecCellsLocation_P."Cell Inventory"));
+        RecItemJournalLine_G.VALIDATE("Campaign No.",GetCampainNo('',WORKDATE,WORKDATE));
+        RecItemJournalLine_G."Movement Type":=RecItemJournalLine_G."Movement Type"::T20;
+        RecItemJournalLine_G.VALIDATE("Item No.",RecCellsLocation_P."Active Item No.");
+        RecItemJournalLine_G.VALIDATE("Location Code",RecCellsLocation_P."Location Code");
+        RecItemJournalLine_G.VALIDATE("Cell Code",RecCellsLocation_P."Cell Code");
+
+        RecItemJournalLine_G."Document No.":=STRSUBSTNO('Mut-%1-%2',
+          RecCellsLocation_P."Location Code",RecCellsLocation_P."Cell Code");
+        RecItemJournalLine_G.Description:=STRSUBSTNO('Mutation %1 %2',
+          RecCellsLocation_P."Location Code",RecCellsLocation_P."Cell Code");
+
+      RecItemJournalLine2_G:=RecItemJournalLine_G;
+      RecItemJournalLine2_G.VALIDATE("Entry Type",RecItemJournalLine_G."Entry Type"::"Positive Adjmt.");
+      RecItemJournalLine2_G.VALIDATE("Item No.",G_ItemNo);
+
+
+        TempJnlLineDim_G.DELETEALL;
+      CduDimensionsMgt_L.DimFromItemJnl(TempJnlLineDim_G,RecItemJournalLine_G,TRUE);
+        CLEAR(PostItemJnlLine_G);
+        PostItemJnlLine_G.RunWithCheck(RecItemJournalLine_G, TempJnlLineDim_G);
+
+      Code;
+
+      TempJnlLineDim_G.DELETEALL;
+      CduDimensionsMgt_L.DimFromItemJnl(TempJnlLineDim_G,RecItemJournalLine2_G,TRUE);
+      CLEAR(PostItemJnlLine_G);
+      PostItemJnlLine_G.RunWithCheck(RecItemJournalLine2_G, TempJnlLineDim_G);
+
+      //--> 20150831-ADV14-CMC02.02.00-1789-SDE01
+    END;
+
+    PROCEDURE SetSourceDocNo@8053005(SourceDocNo_P@8053001 : Code[20]);
+    BEGIN
+      SourceDocNo_G := SourceDocNo_P;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20110601-Wi00-CMC01.04 : Version RTM 01.04 - NavAgri
+      20110601-Wi00-CMC02.01.00-SD01 : ADDCODE , ADDFUNCTION
+      20120411-Wi00-CMC01.04.05-TLM12158-JLT01: Enlever control sur espSce
+      20120712-Wi00-CMC02.01.00-JLT01 : Permission indirect Table CMC Cells location
+      20120715-Wi00-CMC02.01.00-SD01 :  ADDCODE (mutation)
+      20121207-Cer14-CMC02.02.00-MMI : Bug correction (text Document No. too long)
+      20131113-Cer25/001-CMC02.02.00-KEM01 : ADDCODE (Affectation N› document origine)
+      20140103-WI00-CMC02.02.00-1386-SD01 : ADDCODE (Cas des points 0 pour cellule appro)
+      20140424-CER19-CMC02.02.00-SDE01 : MODFIELDS (Ajout T11 S11 T21 T22 dans Movement Type)
+      20150204-WI00-CMC02.02.00-2739-DRN01 : Correction alimentation du buffer analytique PostItemJnlLine
+      20150505-Wi00-CMC02.02.00-2955-FHS01 : MODCODE (Permet de faire fonctionner les points zero avec les articles non c'r'ale)
+      20150831-ADV14-CMC02.02.00-1789-SDE01 : ADDCODE (mutation cellule)
+      20250313-WI00-ADV01.01.00-32141-IJI : ADDCODE (valide cellule ajustement cas appro)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

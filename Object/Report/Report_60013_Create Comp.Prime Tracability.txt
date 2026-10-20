@@ -1,0 +1,669 @@
+OBJECT Report 60013 Create Comp.Prime Tracability
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02/03/26;
+    Heure=00:00:00;
+    Liste versions=TER01.01.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Create Comp.Prime Tracability;
+               FRA=G'n'ration compl'ment de prix prime traÎabilit'];
+    ProcessingOnly=Oui;
+    OnPreReport=BEGIN
+                  CountCredMemosInt_G := 0;
+                  CountInvoiceInt_G := 0;
+                  WindowDial_G.OPEN(Text8053006);
+                END;
+
+    OnPostReport=BEGIN
+                   WindowDial_G.CLOSE;
+                   IF (CountCredMemosInt_G <> 0) OR (CountInvoiceInt_G <> 0) THEN
+                     MESSAGE(STRSUBSTNO(Text8053008),CountInvoiceInt_G,CountCredMemosInt_G) ;
+                 END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table5050;
+        DataItemTableView=SORTING(No.)
+                          WHERE(Contact Type=CONST(Farm));
+        DataItemVarName=Contact;
+        OnPreDataItem=BEGIN
+                        IF StartDate_G      = 0D THEN  ERROR(Text001);
+                        IF EndDate_G        = 0D THEN  ERROR(Text002);
+                        IF G_PostingDateReq = 0D THEN  ERROR(Text60000);
+                        IF G_DocDateReq     = 0D THEN  ERROR(Text60001);
+                        IF G_DueDateReq     = 0D THEN  ERROR(Text60002);
+                        ReceiptionNo_G:= '';
+                        ReceiptionLineNum_G := 0;
+                        ItemCode_G := '';
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           HeaderCreated_G := FALSE;
+                           LineNoInt_G := 0;
+                           ExistLine_G := FALSE;
+                         END;
+
+        ReqFilterFields=No.;
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=1;
+        DataItemTable=Table23;
+        DataItemVarName=Vendor;
+        OnPreDataItem=BEGIN
+                        Line_G := 0;
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           //-- delete tempory aux records at each change of Contact no.
+                           PurchLineTmp_G.RESET;
+                           PurchLineTmp_G.DELETEALL;
+                           PurchaseHeaderTmpRec_G.RESET;
+                           PurchaseHeaderTmpRec_G.DELETEALL;
+                           DocHeaderExistBool_G := FALSE;
+                           LineAmountDec_G := 0;
+                           // --> 20151210-CER36-TER01.01.00-2513-NED01
+                           LineNoInt_G := 0;
+                           LineNumber_G := 0;
+                           // <-- 20151210-CER36-TER01.01.00-2513-NED01
+                           //-- check if already have a posted document "Collection Invoice Type"::"Price premium traceability", if so skip.
+                           IF CheckPostedInvoicedPeriod THEN
+                           // <-- 20151210-CER36-TER01.01.00-2513-NED01
+                             CurrReport.SKIP;
+                         END;
+
+        ReqFilterFields=No.;
+        DataItemLink=No.=FIELD(No.);
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=2;
+        DataItemTable=Table8052983;
+        DataItemTableView=WHERE(Type=FILTER(Contract));
+        DataItemVarName=DataItemContract;
+        OnAfterGetRecord=VAR
+                           ParcelDetailRec_L@1000000000 : Record 8053123;
+                         BEGIN
+                           PurchLineTmp_G.DELETEALL; // 20180328-Wi00-TER01.01.00-ID33815-JLT01
+                           CLEAR(PurchLineTmp_G);
+                           ParcelDetailRec_L.SETRANGE("Farmer No.","Vendor No.");
+                           ParcelDetailRec_L.SETRANGE("Species Code","Species Code");
+                           ParcelDetailRec_L.SETRANGE("Item No.","Item No.");
+                           ParcelDetailRec_L.SETRANGE("Campaign No.","Campaign No.");
+                           ParcelDetailRec_L.SETFILTER("Parcel Card Return Date",'<>%1',0D);
+                           IF NOT ParcelDetailRec_L.FINDSET THEN CurrReport.SKIP;
+                         END;
+
+        ReqFilterFields=No.;
+        DataItemLink=Vendor No.=FIELD(No.);
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=3;
+        DataItemTable=Table8053104;
+        DataItemTableView=WHERE(Receipt Type=FILTER(Receipt),
+                                Canceled Line=FILTER(Non),
+                                Cancellation line=FILTER(Non));
+        DataItemVarName=DataItemPostedReceiptsLine;
+        OnPreDataItem=BEGIN
+                        NoOfRecordsInt_G := COUNT;
+                        ContCountInt_G := 0;
+                      END;
+
+        OnAfterGetRecord=VAR
+                           PurchaseInvLineRec_L@1000000010 : Record 123;
+                           PurchaseInvLineAuxRec_L@1000000009 : Record 123;
+                           CMCPurchLineVariatPriceRec_L@1000000008 : Record 8053005;
+                           PriceDec_L@1000000004 : Decimal;
+                           PriceVariationDec_L@1000000003 : Decimal;
+                           PurchaseCrMLineRec_L@1000000002 : Record 125;
+                           PurchaseCrMLineAuxRec_L@1000000001 : Record 125;
+                           ReceiptTypeOpt_L@1000000000 : 'Receipt,Transfert,Resumption';
+                           LineNo_L@1000000005 : Integer;
+                         BEGIN
+                           // lecture de la ventilation du bon sur le contrat
+                           ContCountInt_G := ContCountInt_G + 1;
+                           WindowDial_G.UPDATE(1,DataItemPostedReceiptsLine."Vendor No.");
+
+                           IF NoOfRecordsInt_G <> 0 THEN
+                             WindowDial_G.UPDATE(2,ROUND(ContCountInt_G / NoOfRecordsInt_G * 10000,1));
+
+                           CLEAR(PurchaseInvLineRec_L);
+
+                           PurchaseInvLineRec_L.SETCURRENTKEY("Buy-from Vendor No.","Collection recept No.","Collection Recept Line","Species Code", "No.");
+                           PurchaseInvLineRec_L.SETRANGE(PurchaseInvLineRec_L."Buy-from Vendor No.",DataItemContract."Vendor No.");
+                           PurchaseInvLineRec_L.SETRANGE(Type,PurchaseInvLineRec_L.Type::Item);
+                           PurchaseInvLineRec_L.SETRANGE(PurchaseInvLineRec_L."Posting Date",StartDate_G,EndDate_G);
+                           PurchaseInvLineRec_L.SETRANGE("Collection recept No.",DataItemPostedReceiptsLine."No.");
+                           PurchaseInvLineRec_L.SETRANGE("Collection Recept Line",DataItemPostedReceiptsLine."Line No.");
+
+                           IF PurchaseInvLineRec_L.FINDSET THEN BEGIN
+
+                            // for the last combination "Collection receipt No." and "Collection Receipt Line"
+                            IF (ReceiptionNo_G <> PurchaseInvLineRec_L."Collection recept No.") OR
+                              (ReceiptionLineNum_G <> PurchaseInvLineRec_L."Collection Recept Line") OR
+                              (ItemCode_G <> PurchaseInvLineRec_L."No.")  THEN  BEGIN
+                               CLEAR(CMCPurchLineVariatPriceRec_L);
+                               CMCPurchLineVariatPriceRec_L.SETRANGE("Document Type",CMCPurchLineVariatPriceRec_L."Document Type"::"Posted invoice");
+                               CMCPurchLineVariatPriceRec_L.SETRANGE("Document No.",DataItemPostedReceiptsLine."Posted Purch. Document No");
+                               CMCPurchLineVariatPriceRec_L.SETRANGE("Purch Line No.",DataItemPostedReceiptsLine."Posted Purch. Doc. Line No");
+                               CMCPurchLineVariatPriceRec_L.SETRANGE("Variation Type",CMCPurchLineVariatPriceRec_L."Variation Type"::TraÎabilit');
+                               IF CMCPurchLineVariatPriceRec_L.FINDSET THEN BEGIN
+                                 PriceDec_L :=0;
+                                 PriceVariationDec_L := -CMCPurchLineVariatPriceRec_L."Unit Price Variation";
+                                 PriceDec_L := -CMCPurchLineVariatPriceRec_L."Unit Price Variation";
+                               END;
+
+                             IF PriceDec_L <> 0 THEN  BEGIN
+                               IF NOT DocHeaderExistBool_G THEN BEGIN
+                                 CreateTempPurchaseHeader();
+                                 DocHeaderExistBool_G := TRUE;
+                               END;
+                               // cr'ation de la prestation
+                               CreatePrestation(PurchaseInvLineRec_L."Collection recept No.",ReceiptTypeOpt_L::Receipt,
+                                                PurchaseInvLineRec_L."Collection Recept Line",PriceVariationDec_L,LineNo_L);
+                               // cr'ation de la ligne d'achat temporaire
+                               CreateTempPurchaseLine(PurchaseInvLineRec_L."Collection recept No.",ReceiptTypeOpt_L::Receipt,
+                                                      PurchaseInvLineRec_L."Collection Recept Line",PriceDec_L,LineNo_L);
+                               ReceiptionNo_G      :=  PurchaseInvLineRec_L."Collection recept No.";
+                               ReceiptionLineNum_G :=  PurchaseInvLineRec_L."Collection Recept Line";
+                               ItemCode_G          :=  PurchaseInvLineRec_L."No.";
+                             END;
+                             END;
+                           END;
+                         END;
+
+        OnPostDataItem=BEGIN
+                         IF ((NOT HeaderCreated_G) AND ExistLine_G) THEN BEGIN
+                             CreatePurchaseHeader(DocTypeOpt_G::Invoice);
+                             CountInvoiceInt_G += 1;
+                         END;
+
+                         IF ExistLine_G THEN CreatePurchLines;
+                       END;
+
+        ReqFilterFields=No.;
+        DataItemLink=Contract No.=FIELD(No.);
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=6820;
+      Height=4070;
+      SaveValues=Oui;
+    }
+    CONTROLS
+    {
+      { 1000000002;TextBox;3630 ;440  ;1700 ;440  ;CaptionML=FRA=Date D'but;
+                                                   SourceExpr=StartDate_G }
+      { 1000000003;Label  ;220  ;440  ;3300 ;440  ;ParentControl=1000000002 }
+      { 1000000004;TextBox;3630 ;1100 ;1700 ;440  ;CaptionML=FRA=Date Fin;
+                                                   SourceExpr=EndDate_G }
+      { 1000000005;Label  ;220  ;1100 ;3300 ;440  ;ParentControl=1000000004 }
+      { 1000000006;TextBox;3630 ;1760 ;1700 ;440  ;CaptionML=FRA=Date Comptabilisation;
+                                                   SourceExpr=G_PostingDateReq }
+      { 1000000007;Label  ;220  ;1760 ;3300 ;440  ;ParentControl=1000000006 }
+      { 1000000008;TextBox;3630 ;2420 ;1700 ;440  ;CaptionML=FRA=Date document;
+                                                   SourceExpr=G_DocDateReq }
+      { 1000000009;Label  ;220  ;2420 ;3300 ;440  ;ParentControl=1000000008 }
+      { 1000000010;TextBox;3630 ;3190 ;1700 ;440  ;CaptionML=FRA=Date d''ch'ance;
+                                                   SourceExpr=G_DueDateReq }
+      { 1000000011;Label  ;220  ;3190 ;3300 ;440  ;ParentControl=1000000010 }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Oui;
+    }
+    CONTROLS
+    {
+      { 60003;0  ;Container ;
+                  ContainerType=ContentArea }
+
+      { 60002;1  ;Group     ;
+                  CaptionML=[ENU=Options;
+                             FRA=Options] }
+
+      { 60001;2  ;Field     ;
+                  CaptionML=[ENU=Starting Date;
+                             FRA=Date d'but];
+                  SourceExpr=StartDate_G }
+
+      { 60000;2  ;Field     ;
+                  CaptionML=[ENU=Ending Date;
+                             FRA=Date fin];
+                  SourceExpr=EndDate_G }
+
+      { 60006;2  ;Field     ;
+                  CaptionML=[ENU=Posting Date;
+                             FRA=Date comptabilisation];
+                  SourceExpr=G_PostingDateReq }
+
+      { 60005;2  ;Field     ;
+                  CaptionML=[ENU=Document Date;
+                             FRA=Date document];
+                  SourceExpr=G_DocDateReq }
+
+      { 60004;2  ;Field     ;
+                  CaptionML=FRA=Date 'ch'ance;
+                  SourceExpr=G_DueDateReq }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      PurchaseHeaderRec_G@60004 : Record 38;
+      PurchaseHeaderTmpRec_G@60010 : TEMPORARY Record 38;
+      PurchLineTmp_G@60012 : TEMPORARY Record 39;
+      StartDate_G@60000 : Date;
+      EndDate_G@60001 : Date;
+      Text001@60002 : TextConst 'ENU=Enter the starting date.;FRA=Entrez la date de d'but.';
+      Text002@60003 : TextConst 'ENU=Enter the ending date.;FRA=Entrez la date de fin';
+      Text8053015@60005 : TextConst 'ENU=Prime traceability;FRA=Prime traÎabilit'';
+      Text8053006@60006 : TextConst 'ENU=Contract no.       @2@@@@@@@@@@@@@@@@@@@@@@@@@@@@\;FRA=#1############# @2@@@@@@@@@@@@@@@@@@@@@@@@@@@@\';
+      WindowDial_G@60007 : Dialog;
+      ContCountInt_G@60009 : Integer;
+      NoOfRecordsInt_G@60008 : Integer;
+      LineNoInt_G@60011 : Integer;
+      Text8053007@60014 : TextConst 'FRA=TMP Supl0';
+      CountCredMemosInt_G@60013 : Integer;
+      CountInvoiceInt_G@60015 : Integer;
+      LineAmountDec_G@60016 : Decimal;
+      Text8053008@60017 : TextConst 'ENU=%1 Invoices and %2 credit memo where created;FRA=%1 facture(s) et %2 avoir(s) ont 't' cr''(s)';
+      G_PostingDateReq@60020 : Date;
+      G_DocDateReq@60019 : Date;
+      G_DueDateReq@60018 : Date;
+      Text60000@60023 : TextConst 'ENU=Please enter the posting date.;FRA=Veuillez saisir une date de comptabilisation.';
+      Text60001@60022 : TextConst 'ENU=Please enter the document date.;FRA=Veuillez saisir la date du document.';
+      Text60002@60021 : TextConst 'FRA=Veuillez saisir la date d'''ch'ance .';
+      RunedOne_G@60024 : Boolean;
+      DocHeaderExistBool_G@60025 : Boolean;
+      DocTypeOpt_G@60026 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order';
+      ReceiptionNo_G@1000000003 : Code[20];
+      ReceiptionLineNum_G@1000000002 : Integer;
+      ItemCode_G@1000000001 : Code[20];
+      HeaderCreated_G@1000000004 : Boolean;
+      LineNumber_G@1000000005 : Integer;
+      Line_G@1000000006 : Integer;
+      ExistLine_G@1000000000 : Boolean;
+      CMCCreateCollectInvoiceOpt_G@100000000 : Codeunit 8053066;
+      ArianeMgt_G@1000000007 : Codeunit 60125;
+
+    PROCEDURE CheckPostedInvoicedPeriod@1000000000() ResultBool_R : Boolean;
+    VAR
+      PostedInvoiceRec_L@1000000000 : Record 122;
+    BEGIN
+      PostedInvoiceRec_L.SETCURRENTKEY("Buy-from Vendor No.");
+      PostedInvoiceRec_L.SETRANGE("Buy-from Vendor No.",Vendor."No.");
+      PostedInvoiceRec_L.SETRANGE("Collection Invoice Type",PostedInvoiceRec_L."Collection Invoice Type"::"Price premium traceability");
+      PostedInvoiceRec_L.SETRANGE("Posting Date",StartDate_G,EndDate_G);
+      EXIT(PostedInvoiceRec_L.FINDFIRST);
+    END;
+
+    PROCEDURE CreatePurchaseHeader@60000(DocTypeOpt_P@60000 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order');
+    VAR
+      RecPurchHead_L@1000000000 : Record 38;
+      RecItem_L@1000000001 : Record 27;
+    BEGIN
+      // Cr'ation de l'ent^te
+      PurchaseHeaderRec_G.INIT;
+      PurchaseHeaderRec_G."Document Type" := DocTypeOpt_P;
+      PurchaseHeaderRec_G."No." := '';
+      PurchaseHeaderRec_G.INSERT(TRUE);
+      PurchaseHeaderRec_G.VALIDATE("Buy-from Vendor No.",DataItemContract."Vendor No.");
+      PurchaseHeaderRec_G.VALIDATE("Collection Invoice Type",
+      PurchaseHeaderRec_G."Collection Invoice Type"::"Price premium traceability");
+      PurchaseHeaderRec_G.VALIDATE("Posting Date",G_PostingDateReq);
+      PurchaseHeaderRec_G.VALIDATE("Document Date",G_DocDateReq);
+      PurchaseHeaderRec_G."Due Date" := G_DueDateReq;
+      // --> 20190313-WI00-ADV01.01.00-40067-FBE
+      PurchaseHeaderRec_G."Vendor Invoice No." := PurchaseHeaderRec_G."No.";
+      // <-- 20190313-WI00-ADV01.01.00-40067-FBE
+
+      CLEAR(RecItem_L);
+      IF RecItem_L.GET(DataItemContract."Item No.") THEN BEGIN
+        PurchaseHeaderRec_G."Activity Code"     := RecItem_L."Activity Code";
+        PurchaseHeaderRec_G."Family Code"       := RecItem_L."Family Code";
+        PurchaseHeaderRec_G."Sub-Family Code"   := RecItem_L."Sub-Family Code";
+        PurchaseHeaderRec_G."Species Code"      := RecItem_L."Species Code";
+        PurchaseHeaderRec_G."CMC Campaign No."  := DataItemContract."Campaign No.";
+      END;
+
+      // --> 20260224-WI00-ADV01.01.00-42635-IJI
+      PurchaseHeaderRec_G."Send to Approved Platform" := ArianeMgt_G.PurchaseHeaderSendAP(PurchaseHeaderRec_G);
+      // <-- 20260224-WI00-ADV01.01.00-42635-IJI
+
+      PurchaseHeaderRec_G.MODIFY;
+      HeaderCreated_G := TRUE;
+    END;
+
+    PROCEDURE CreatePrestation@60001(ReceiptNoCode_P@60005 : Code[20];ReceiptTypeOpt_P@60006 : 'Receipt,Transfert,Resumption';ReceiptLineLinkInt_P@60007 : Integer;PriceDec_P@60003 : Decimal;VAR PrestaLineNo_P@1000000000 : Integer);
+    VAR
+      PrestationLine_L@60000 : Record 8052997;
+      PostedReceiptsRec_L@60004 : Record 8052995;
+      PostedReceipAuxRec_L@60001 : Record 8053104;
+      RecPostedReceiptLine_L@60008 : Record 8052997;
+    BEGIN
+      // 20180328-Wi00-TER01.01.00-ID33815-JLT01 --> tout r''crit
+      // RecieiptNoCode_P : N› de bpn
+      // renvoie PrestaLine_P avec le N. de ligne de la prestation
+      PrestaLineNo_P := 0;
+
+      PrestationLine_L.SETRANGE("Posted Receipt No.",ReceiptNoCode_P);
+        IF PrestationLine_L.FINDLAST THEN
+          LineNumber_G := PrestationLine_L."Line No." + 10000
+        ELSE
+          LineNumber_G := 10000;
+
+      PrestationLine_L.SETRANGE("Receips Line No. Link",ReceiptLineLinkInt_P);
+      PrestationLine_L.SETRANGE("Line Type",PrestationLine_L."Line Type"::"traceabitiliy complement");
+      PrestationLine_L.SETRANGE("Receipt Type" ,ReceiptTypeOpt_P);
+      PrestationLine_L.SETRANGE(Invoiced,FALSE);
+      IF PrestationLine_L.FINDFIRST THEN
+        PrestaLineNo_P := PrestationLine_L."Line No." // ligne de prestation traÎabilit' existe d'j.
+      ELSE BEGIN
+        // 20180328-Wi00-TER01.01.00-ID33815-JLT01
+        // if PostedReceipAuxRec_L.GET(ReceiptTypeOpt_P,ReceiptNoCode_P,ReceiptLineLinkInt_P) then;
+        PostedReceipAuxRec_L.GET(ReceiptTypeOpt_P,ReceiptNoCode_P,ReceiptLineLinkInt_P);
+
+        PrestationLine_L.INIT;
+        PrestationLine_L."Receipt Type"       := ReceiptTypeOpt_P;
+        PrestationLine_L."Posted Receipt No." := ReceiptNoCode_P ;
+        PrestationLine_L."Line No."           := LineNumber_G;
+        PrestationLine_L."Line Type"          := PrestationLine_L."Line Type"::"traceabitiliy complement";
+        PrestationLine_L.Date                 := WORKDATE;
+        PrestationLine_L.Quantity             := ABS(PostedReceipAuxRec_L.Quantity);
+        PrestationLine_L."Unit Price"         :=  PriceDec_P;
+        PrestationLine_L."Receips Line No. Link" := ReceiptLineLinkInt_P;
+        PrestationLine_L.INSERT;
+
+        PrestaLineNo_P := PrestationLine_L."Line No.";
+      END;
+    END;
+
+    PROCEDURE CreatePurchLines@60009();
+    VAR
+      PurchaseLineRec_L@60000 : Record 39;
+      DocDimensionRec_L@60005 : Record 357;
+      DefaultDimRec_L@60004 : Record 352;
+      LocationRec_L@60003 : Record 14;
+      DimensionValueRec_L@60002 : Record 349;
+      GLSetupRec_L@60006 : Record 98;
+      RecPostedReceiptLine_L@60001 : Record 8052997;
+      PurchaseLine@1000000000 : Record 39;
+    BEGIN
+      // Cr'ation des lignes . partir du buffer pour le contrat
+      // ======================================================
+      GLSetupRec_L.GET;
+      IF PurchLineTmp_G.FINDSET THEN REPEAT
+        PurchaseLine.SETRANGE("Document Type",PurchaseHeaderRec_G."Document Type");
+        PurchaseLine.SETRANGE("Document No.",PurchaseHeaderRec_G."No.");
+        PurchaseLine.SETRANGE("Collection Recept No.",PurchLineTmp_G."Collection Recept No.");
+        PurchaseLine.SETRANGE("Collection Recept Line",PurchLineTmp_G."Collection Recept Line");
+
+        IF PurchaseLine.ISEMPTY THEN BEGIN
+
+          PurchaseLineRec_L.INIT;
+          PurchaseLineRec_L := PurchLineTmp_G;
+          PurchaseLineRec_L."Document Type" := PurchaseHeaderRec_G."Document Type";
+          PurchaseLineRec_L."Document No." := PurchaseHeaderRec_G."No.";
+          Line_G := Line_G + 10000;
+          PurchaseLineRec_L."Line No." := Line_G;
+          PurchaseLineRec_L.INSERT(TRUE);
+
+          PurchaseLineRec_L.VALIDATE(Type,PurchaseLineRec_L.Type::Item);
+          PurchaseLineRec_L.VALIDATE("No.",PurchLineTmp_G."No.");
+          //20220608-CER-ADV-SP3590-CC42211-JLT -->
+          PurchaseLineRec_L."Gen. Prod. Posting Group":=PurchLineTmp_G."Gen. Prod. Posting Group";
+          PurchaseLineRec_L.VALIDATE("VAT Prod. Posting Group",PurchLineTmp_G."VAT Prod. Posting Group");
+          //20220608-CER-ADV-SP3590-CC42211-JLT <--
+          IF PurchaseHeaderRec_G."Document Type" = PurchaseHeaderRec_G."Document Type"::"Credit Memo" THEN
+            PurchaseLineRec_L.VALIDATE(Quantity,-PurchLineTmp_G.Quantity)
+          ELSE
+            PurchaseLineRec_L.VALIDATE(Quantity,PurchLineTmp_G.Quantity);
+          PurchaseLineRec_L.VALIDATE("Direct Unit Cost",PurchLineTmp_G."Unit Cost");
+          PurchaseLineRec_L.VALIDATE("Collection Recept No.",PurchLineTmp_G."Collection Recept No.");
+          PurchaseLineRec_L.VALIDATE("Collection Recept Line",PurchLineTmp_G."Collection Recept Line");
+          PurchaseLineRec_L."Line Collection Type" := PurchaseLineRec_L."Line Collection Type" :: "Traceabitiliy complement";
+          PurchaseLineRec_L."CMC Campaign No." := DataItemContract."Campaign No.";
+          PurchaseLineRec_L."Net Quantity"     := PurchLineTmp_G."Net Quantity";
+          PurchaseLineRec_L.MODIFY(TRUE);
+
+          //-- insert Item Dimension from item contract
+          IF DefaultDimRec_L.GET(DATABASE::Item,PurchLineTmp_G."No.",DefaultDimRec_L.Type::"Regular Dimension",
+            GLSetupRec_L."Shortcut Dimension 2 Code") THEN BEGIN
+            CLEAR(DocDimensionRec_L);
+            DocDimensionRec_L.SETRANGE("Table ID",DATABASE::"Purchase Line");
+            DocDimensionRec_L.SETRANGE("Document Type",DocDimensionRec_L."Document Type"::Invoice);
+            DocDimensionRec_L.SETRANGE("Document No.",PurchaseHeaderRec_G."No.");
+            DocDimensionRec_L.SETRANGE("Line No.",PurchaseLineRec_L."Line No.");
+            DocDimensionRec_L.SETRANGE(Type,DocDimensionRec_L.Type::"Regular Dimension");
+            DocDimensionRec_L.SETRANGE("Dimension Code",DefaultDimRec_L."Dimension Code");
+            IF NOT DocDimensionRec_L.FINDSET THEN BEGIN
+              CLEAR(DocDimensionRec_L);
+              DocDimensionRec_L.INIT;
+              DocDimensionRec_L."Table ID" := DATABASE::"Purchase Line";
+              DocDimensionRec_L."Document Type" := DocDimensionRec_L."Document Type"::Invoice;
+              DocDimensionRec_L."Document No." :=  PurchaseHeaderRec_G."No.";
+              DocDimensionRec_L."Line No." :=  PurchaseLineRec_L."Line No.";
+              DocDimensionRec_L.Type := DocDimensionRec_L.Type::"Regular Dimension";
+              DocDimensionRec_L."Dimension Code" := DefaultDimRec_L."Dimension Code";
+              DocDimensionRec_L."Dimension Value Code" := DefaultDimRec_L."Dimension Value Code";
+              DocDimensionRec_L.INSERT(TRUE);
+            END;
+          END;
+
+          //-- insert Loc Dimension from default Location contract
+          IF LocationRec_L.GET(PurchLineTmp_G."Location Code") THEN BEGIN
+            IF DimensionValueRec_L.GET(GLSetupRec_L."Shortcut Dimension 1 Code",LocationRec_L."Analytic Section") THEN BEGIN
+
+              CLEAR(DocDimensionRec_L);
+              DocDimensionRec_L.SETRANGE("Table ID",DATABASE::"Purchase Line");
+              DocDimensionRec_L.SETRANGE("Document Type",DocDimensionRec_L."Document Type"::Invoice);
+              DocDimensionRec_L.SETRANGE("Document No.",PurchaseHeaderRec_G."No.");
+              DocDimensionRec_L.SETRANGE("Line No.",PurchaseLineRec_L."Line No.");
+              DocDimensionRec_L.SETRANGE(Type,DocDimensionRec_L.Type::"Regular Dimension");
+              DocDimensionRec_L.SETRANGE("Dimension Code",DimensionValueRec_L."Dimension Code");
+              IF NOT DocDimensionRec_L.FINDSET THEN BEGIN
+                CLEAR(DocDimensionRec_L);
+                DocDimensionRec_L.INIT;
+                DocDimensionRec_L."Table ID" := DATABASE::"Purchase Line";
+                DocDimensionRec_L."Document Type" := DocDimensionRec_L."Document Type"::Invoice;
+                DocDimensionRec_L."Document No." :=  PurchaseHeaderRec_G."No.";
+                DocDimensionRec_L."Line No." :=  PurchaseLineRec_L."Line No.";
+                DocDimensionRec_L.Type := DocDimensionRec_L.Type::"Regular Dimension";
+                DocDimensionRec_L."Dimension Code" := DimensionValueRec_L."Dimension Code";
+                DocDimensionRec_L."Dimension Value Code" := DimensionValueRec_L.Code;
+                DocDimensionRec_L.INSERT(TRUE);
+              END;
+            END;
+          END;
+
+
+          // Mise . jour des Prestations avec la ligne de facture cr''s
+          RecPostedReceiptLine_L.SETCURRENTKEY("Posted Receipt No.","Posted Receipt Linked No.");
+          RecPostedReceiptLine_L.SETRANGE("Posted Receipt No.",      PurchLineTmp_G."Collection Recept No.");
+          // 20180330-Wi00-TER01.01.00-ID33815-JLT01 -->
+          //RecPostedReceiptLine_L.SETRANGE("Receips Line No. Link",   PurchLineTmp_G."Collection Recept Line");
+          RecPostedReceiptLine_L.SETRANGE(RecPostedReceiptLine_L."Line No.",PurchaseLineRec_L."Collection Recept Line");
+          //<-- 20180330-Wi00-TER01.01.00-ID33815-JLT01
+          RecPostedReceiptLine_L.SETRANGE("Line Type",RecPostedReceiptLine_L."Line Type" :: "traceabitiliy complement");
+          IF RecPostedReceiptLine_L.FIND('-') THEN BEGIN
+            RecPostedReceiptLine_L."Purch. Document Type" := RecPostedReceiptLine_L."Purch. Document Type"::Invoice;
+            RecPostedReceiptLine_L."Purch. Document No" := PurchaseLineRec_L."Document No.";
+            RecPostedReceiptLine_L."Purch. Doc. Line No" := PurchaseLineRec_L."Line No.";
+            RecPostedReceiptLine_L.MODIFY;
+          END;
+        END;
+      UNTIL PurchLineTmp_G.NEXT = 0;
+    END;
+
+    PROCEDURE CreateTempPurchaseHeader@60007();
+    VAR
+      RecPurchHead_L@1000000000 : Record 38;
+    BEGIN
+
+      PurchaseHeaderTmpRec_G.INIT;
+      PurchaseHeaderTmpRec_G."Document Type" := PurchaseHeaderRec_G."Document Type"::Invoice;
+      PurchaseHeaderTmpRec_G."No." := Text8053007;
+      PurchaseHeaderTmpRec_G.INSERT;
+
+      PurchaseHeaderTmpRec_G."Buy-from Vendor No.":= DataItemContract."Vendor No.";
+      PurchaseHeaderTmpRec_G."Collection Invoice Type" := PurchaseHeaderTmpRec_G."Collection Invoice Type"::"Price premium traceability"
+      ;
+      PurchaseHeaderTmpRec_G.MODIFY;
+    END;
+
+    PROCEDURE CreateTempPurchaseLine@60005(ReceiptNoCode_P@60005 : Code[20];ReceiptTypeOpt_P@60004 : 'Receipt,Transfert,Resumption';ReceiptLineLinkInt_P@60003 : Integer;PriceDec_P@60002 : Decimal;LinePresta_P@1000000000 : Integer);
+    VAR
+      PurchaseLineRec_L@60000 : Record 39;
+      PostedRecptLineRec_L@60001 : Record 8053104;
+      RecPurchaseLine_L@60006 : Record 39;
+    BEGIN
+      // cr'ation ligne temporaire
+      //=============================
+      RecPurchaseLine_L.SETCURRENTKEY("Collection Recept No.","Collection Recept Line");
+      RecPurchaseLine_L.SETRANGE("Collection Recept No.",ReceiptNoCode_P);
+      // 20180329-Wi00-TER01.01.00-ID33815-JLT01 -->
+      {BEFORE
+      RecPurchaseLine_L.SETRANGE("Collection Recept Line",ReceiptLineLinkInt_P);
+      AFTER}
+      RecPurchaseLine_L.SETRANGE("Collection Recept Line",LinePresta_P);
+      //<-- 20180329-Wi00-TER01.01.00-ID33815-JLT01
+
+      IF RecPurchaseLine_L.ISEMPTY THEN BEGIN
+
+        LineNoInt_G := LineNoInt_G + 10000;
+        PurchLineTmp_G.INIT;
+        PurchLineTmp_G."Document Type" := PurchaseHeaderTmpRec_G."Document Type";
+        PurchLineTmp_G."Document No."  := PurchaseHeaderTmpRec_G."No.";
+        PurchLineTmp_G."Line No."      := LineNoInt_G;
+        PurchLineTmp_G.INSERT;
+
+        ExistLine_G := TRUE;
+
+        IF PostedRecptLineRec_L.GET(ReceiptTypeOpt_P,ReceiptNoCode_P,ReceiptLineLinkInt_P) THEN BEGIN
+          PurchLineTmp_G.Type:= PurchLineTmp_G.Type::Item;
+          PurchLineTmp_G."No." := PostedRecptLineRec_L."Item Contract No.";
+          CMCCreateCollectInvoiceOpt_G.GetInvoiceVAT(DataItemPostedReceiptsLine, PurchLineTmp_G);//20220608-CER-ADV-SP3590-CC42211-JLT
+
+          PurchLineTmp_G."Location Code" := PostedRecptLineRec_L."Location Code";
+          CASE PostedRecptLineRec_L."Receipt Type" OF
+            PostedRecptLineRec_L."Receipt Type"::Resumption:
+              BEGIN
+                PurchLineTmp_G.Quantity:= -PostedRecptLineRec_L.Quantity;
+                PurchLineTmp_G."Unit Cost" :=ABS(PriceDec_P);
+                LineAmountDec_G += PriceDec_P;
+
+              END;
+            PostedRecptLineRec_L."Receipt Type"::Receipt:
+              BEGIN
+                PurchLineTmp_G.Quantity:= PostedRecptLineRec_L.Quantity;
+                PurchLineTmp_G."Unit Cost" := ABS(PriceDec_P);
+                LineAmountDec_G += PriceDec_P;
+              END;
+          END;
+          PurchLineTmp_G."Collection Recept No."  := ReceiptNoCode_P;
+          PurchLineTmp_G."Collection Recept Line" := LinePresta_P;
+          PurchLineTmp_G."Line Collection Type"   := PurchLineTmp_G."Line Collection Type" :: "Traceabitiliy complement";
+          PurchLineTmp_G."Net Quantity"           := DataItemPostedReceiptsLine.Quantity;
+          PurchLineTmp_G.MODIFY;
+        END;
+      END;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI END
+      20141001-CER36-TER01.01.00-SCF01
+      20141211-CER36-TER01.01.00-RMZ01: ADDCODE(Contact - OnAfterGetRecord,CreateTempPurchaseLine,CreatePurchLines)
+      20141219-CER36-TER01.01.00-RMZ01: CHANGETEXTBOX(Text8053008)
+      20150330-CER99-TER01.01.00-202-BSI01 : ADDCODE (Alimentation de diff'rentes dates)
+      20150422-CER99-TER01.01.00-202-BSI01 : Revue du report
+      20150506-CER99-TER01.01.00-202-BSI01 : MODCODE (D'placement d'un code pour afficher un message . la fin du report)
+      20150527-CER99-TER01.01.00-202-BSI01 : MODCODE (Cr'er une seule facture par vendeur)
+      20151210-CER36-TER01.01.00-2513-NED01 : ADDCODE (Correction du fonctionnement)
+      20151210-CER36-TER01.01.00-2513-NED01 : MODCODE (D'placement d'un code)
+      20160122-CER36-TER01.01.00-2674-NED01 : ADDCODE (Ajout de champs dans facture prime traÎa)
+      20160202-CER36-TER01.01.00-2706-NED01 : ADDCODE (Cr'ation ent^te facture si ligne facture existe)
+      20180328-Wi00-TER01.01.00-ID33815-JLT01 : NETTOYAGE DU CODE ET REECRITURE
+                                                MODCOD la ligne de facture se cr'ait que sur un seul contrat
+      20190313-WI00-ADV01.01.00-40067-FBE : MODFUNCT (CreatePurchaseHeader, N› facture fournisseur = N› facture)
+      20220608-CER-ADV-SP3590-CC42211-JLT : MODCODE (r'cup'rer la tva de la facture initiale )
+      20260224-WI00-ADV01.01.00-42635-IJI : ADDCODE (A transmettre . la Plateforme Agr'e)
+      // <-- 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

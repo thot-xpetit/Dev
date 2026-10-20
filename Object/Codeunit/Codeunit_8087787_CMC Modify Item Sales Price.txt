@@ -1,0 +1,146 @@
+OBJECT Codeunit 8087787 CMC Modify Item Sales Price
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25/04/14;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    TableNo=8061230;
+    OnRun=VAR
+            "<-- 3LI LOCALS -->"@1000000000 : Integer;
+            TableAdvitam_L@1000000001 : Record 8053450;
+            TableItem_L@1000000002 : Record 27;
+            TableVariante_L@1000000005 : Record 5401;
+            TableSalesPrice_L@1000000004 : Record 7002;
+            ImpExpFolder_L@1000000010 : Text[250];
+            LogFolder_L@1000000009 : Text[250];
+            ExtensionFile_L@1000000008 : Text[10];
+            PrefixFile_L@1000000007 : Text[10];
+            FileLogName_L@1000000006 : Text[250];
+            ConnectorName_L@1000000003 : Code[20];
+            Result_L@1000000011 : Text[250];
+            Prix_L@1000000012 : Decimal;
+            LogModif_L@1000000013 : Boolean;
+            RecRef_L@1000000016 : RecordRef;
+            cduCMCMCSyncCRM_L@1000000017 : Codeunit 8053600;
+          BEGIN
+            CodeUnit_G := Processing;
+
+            LogModif_L := TRUE; // Pour loguer les modifications.
+
+            IF TableAdvitam_L.FINDFIRST THEN BEGIN
+              IF TableAdvitam_L.ModifyItemSalesPrice THEN BEGIN
+                MoteurInterface_G.GetParameter(CodeUnit_G, ConnectorName_L, ImpExpFolder_L, LogFolder_L, ExtensionFile_L, PrefixFile_L);
+                ToolsFile_G.LogInit(LogFolder_L, 'NavAgri');
+                ToolsFile_G.LogInitCodeUnit(CodeUnit_G);
+
+                TableItem_L.SETFILTER(TableItem_L."Activity Code", TableAdvitam_L.ModifyItemSalesPriceSelAct);
+                IF TableItem_L.FINDSET THEN BEGIN
+                  REPEAT
+                    // Recherche prix du jour
+                    TableSalesPrice_L.SETRANGE("Item No.", TableItem_L."No.");
+                    TableSalesPrice_L.SETRANGE("Sales Type", TableAdvitam_L."MISP Sales Type");
+                    TableSalesPrice_L.SETRANGE(TableSalesPrice_L."Sales Code", TableAdvitam_L."MISP Sales Code");
+                    TableSalesPrice_L.SETFILTER("Starting Date", '<= %1', TODAY);
+                    TableSalesPrice_L.SETFILTER(TableSalesPrice_L."Ending Date", '>= %1', TODAY);
+                    TableSalesPrice_L.SETRANGE("Variant Code", '');
+                    TableSalesPrice_L.SETRANGE("Unit of Measure Code", TableItem_L."Sales Unit of Measure");
+                    TableSalesPrice_L.SETRANGE("Minimum Quantity", 0);
+                    Prix_L := 0;
+                    IF TableSalesPrice_L.FINDLAST() THEN BEGIN
+                      Prix_L := TableSalesPrice_L."Unit Price";
+                    END;
+                    IF TableItem_L."Reference Sales Price" <> Prix_L THEN BEGIN
+                      IF LogModif_L THEN BEGIN
+                        ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Modif:%1 %2 %3 :%4 en %5:', TableItem_L."No.",
+                          TableItem_L.Description, TableItem_L."Activity Code", TableItem_L."Reference Sales Price", Prix_L),
+                          1, MAXSTRLEN(Result_L)));
+                      END;
+                      TableItem_L."Reference Sales Price" := Prix_L;
+                      IF NOT TableItem_L.MODIFY(TRUE) THEN BEGIN
+                        ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0102, TableItem_L."No.", TableItem_L.TABLECAPTION),
+                          1, MAXSTRLEN(Result_L)));
+                      END ELSE BEGIN
+                        RecRef_L.GETTABLE(TableItem_L);
+                        cduCMCMCSyncCRM_L.SyncModify(RecRef_L, RecRef_L);
+                      END;
+                    END;
+
+                    // Traiter les variantes
+                    TableVariante_L.SETRANGE("Item No.", TableItem_L."No.");
+                    IF TableVariante_L.FINDSET THEN BEGIN
+                      REPEAT
+                        // Recherche prix du jour
+                        TableSalesPrice_L.SETRANGE("Item No.", TableItem_L."No.");
+                        TableSalesPrice_L.SETRANGE("Sales Type", TableAdvitam_L."MISP Sales Type");
+                        TableSalesPrice_L.SETRANGE(TableSalesPrice_L."Sales Code", TableAdvitam_L."MISP Sales Code");
+                        TableSalesPrice_L.SETFILTER("Starting Date", '<= %1', TODAY);
+                        TableSalesPrice_L.SETFILTER(TableSalesPrice_L."Ending Date", '>= %1', TODAY);
+                        TableSalesPrice_L.SETRANGE("Variant Code", TableVariante_L.Code);
+                        TableSalesPrice_L.SETRANGE("Unit of Measure Code", TableItem_L."Sales Unit of Measure");
+                        TableSalesPrice_L.SETRANGE(TableSalesPrice_L."Minimum Quantity", 0);
+                        Prix_L := 0;
+                        IF TableSalesPrice_L.FINDLAST() THEN BEGIN
+                          Prix_L := TableSalesPrice_L."Unit Price";
+                        END;
+                        IF TableVariante_L."Reference Sales Price" <> Prix_L THEN BEGIN
+                          IF LogModif_L THEN BEGIN
+                            ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Variante Modif:%1 %2 %3 :%4 en %5:', TableItem_L."No." +
+                              '-' + TableVariante_L.Code, TableItem_L.Description, TableItem_L."Activity Code",
+                              TableItem_L."Reference Sales Price", Prix_L), 1, MAXSTRLEN(Result_L)));
+                          END;
+                          TableVariante_L."Reference Sales Price" := Prix_L;
+                          IF NOT TableVariante_L.MODIFY(TRUE) THEN BEGIN
+                            ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0102, TableItem_L."No." + '-' + TableVariante_L.Code,
+                              TableVariante_L.TABLECAPTION), 1, MAXSTRLEN(Result_L)));
+                          END ELSE BEGIN
+                            RecRef_L.GETTABLE(TableVariante_L);
+                            cduCMCMCSyncCRM_L.SyncModify(RecRef_L, RecRef_L);
+                          END;
+                        END;
+                      UNTIL TableVariante_L.NEXT = 0;
+                    END;
+                  UNTIL TableItem_L.NEXT = 0;
+                END;
+                FileLogName_L := ToolsFile_G.LogName;
+                ToolsFile_G.LogClose();
+                IF ToolsFile_G.LogErreurType() = 'E' THEN BEGIN
+                  Result_L := 'ERREUR ' + FileLogName_L;
+                  ERROR(Result_L);
+                END ELSE BEGIN
+                  IF ToolsFile_G.LogErreurType() = 'I' THEN BEGIN
+                    Result_L := Text0101;
+                    MoteurInterface_G.InsertLog(CodeUnit_G, FileLogName_L);
+                  END ELSE BEGIN
+                    MoteurInterface_G.InsertOk(CodeUnit_G);
+                  END;
+                END;
+              END;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      "<-- 3LI GLOBALS -->"@1000000004 : Integer;
+      ToolsFile_G@1000000003 : Codeunit 8053405;
+      MoteurInterface_G@1000000002 : Codeunit 8061230;
+      CodeUnit_G@1000000000 : Integer;
+      "<-- 3LI TEXT GLOBALS -->"@1000000001 : TextConst;
+      Text0101@1000000005 : TextConst 'FRA=Veuillez consulter le Log.';
+      Text0102@1000000006 : TextConst 'FRA=Erreur enregistrement "%1/%2" table "%3".';
+
+    BEGIN
+    {
+      //--> 3LI BEGIN
+      20140407-Int26-CMC02.02.00-ADVITAM-CDL : - M.j prix de vente article.
+      //<-- 3LI END
+    }
+    END.
+  }
+}
+

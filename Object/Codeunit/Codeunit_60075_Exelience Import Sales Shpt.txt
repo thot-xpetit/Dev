@@ -1,0 +1,851 @@
+OBJECT Codeunit 60075 Exelience Import Sales Shpt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=17/07/19;
+    Heure=00:00:00;
+    Liste versions=SP3375;
+  }
+  PROPERTIES
+  {
+    TableNo=8061230;
+    OnRun=VAR
+            "<-- 3LI LOCALS -->"@60006 : Integer;
+            Result_L@60005 : Text[256];
+            FileLogName_L@60004 : Text[256];
+            FilePath_L@60003 : Text[500];
+            FileName_L@60002 : Text[500];
+            MsgErr_L@60001 : Text[250];
+            File_L@60000 : Text[1000];
+          BEGIN
+            CodeUnit_G := Processing;
+
+            LaunchMoteurInterface_G.GET("Connector Name");
+            //mise . jour de la derniSre date ex'cution lors de la premiSre fois
+            IF LaunchMoteurInterface_G."Last Execution" = 0DT THEN BEGIN
+              LaunchMoteurInterface_G."Last Execution" := CURRENTDATETIME;
+              LaunchMoteurInterface_G.MODIFY;
+            END;
+
+            MoteurInterface_G.GetParameter(CodeUnit_G, ConnectorName_G, ImpExpFolder_G, LogFolder_G, ExtensionFile_G, PrefixFile_G);
+            MoteurInterface_G.GetTemplatesCode(ConnectorName_G, ItemTemplateCode_G, CustomerTemplateCode_G, VendorTemplateCode_G,
+              ContactTemplateCode_G, AccountTemplateCode_G, GlobalTemplateCode_G);
+            ToolsFile_G.LogInit(LogFolder_G, ConnectorName_G);
+            ToolsFile_G.LogInitCodeUnit(CodeUnit_G);
+
+            IF ("File in use" <> '') THEN BEGIN
+              ToolsFile_G.LogInitFileExecute("File in use");
+              ToolsFile_G.SplitFilename ("File in use",FilePath_L,FileName_L);
+
+              ReadFileToWrkTable("File in use", COMPANYNAME, FALSE);
+
+              //Contr"le des donn'es issues de l'import du fichier
+              ControlImportedData(FALSE);
+
+              IF ToolsFile_G.LogErreurType() = 'E' THEN BEGIN
+                ExelienceImport_G.DeleteImportedData(ExelienceFileFlowEntry_G);
+
+                CLEAR(MsgErr_L);
+                FileLogName_L := ToolsFile_G.LogName;
+                ToolsFile_G.LogClose();
+
+                MsgErr_L := 'ERREUR ' + FileLogName_L;
+                ERROR(MsgErr_L);
+              END ELSE BEGIN
+                //Traitement des donn'es issues de l'import du fichier
+                InsertSalesShpt(FALSE);
+                ExelienceImport_G.InsertExelienceError(ToolsFile_G,ExelienceFileFlowEntry_G);
+
+                IF NOT ToolsFile_G.FileRenameSav("File in use", 'SAV', TRUE) THEN BEGIN
+                  ToolsFile_G.LogWriteInfo(STRSUBSTNO(Text60000,"File in use"));
+                END ELSE
+                  ExelienceImport_G.UpdateFileName(ExelienceFileFlowEntry_G,FilePath_L+'SAV\',FileName_L);
+
+                IF ToolsFile_G.LogErreurType() = 'I' THEN BEGIN
+                  FileLogName_L := ToolsFile_G.LogName;
+                  ToolsFile_G.LogClose();
+                  MoteurInterface_G.InsertLog(CodeUnit_G, FileLogName_L);
+                END ELSE
+                  MoteurInterface_G.InsertOk(CodeUnit_G);
+              END;
+
+              ExelienceImport_G.UpdateErrorStatus;
+
+            END ELSE BEGIN
+
+              //Contr"le des donn'es pr'sentes dans les tables d'import
+              ControlImportedData(TRUE);
+
+              //Traitement des donn'es
+              InsertSalesShpt(TRUE);
+
+              ExelienceImport_G.UpdateErrorStatus;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      CodeUnit_G@60000 : Integer;
+      MoteurInterface_G@60015 : Codeunit 8061230;
+      ToolsFile_G@60014 : Codeunit 8053405;
+      ConnectorName_G@60013 : Code[20];
+      ImpExpFolder_G@60012 : Text[256];
+      LogFolder_G@60011 : Text[256];
+      ExtensionFile_G@60010 : Text[10];
+      PrefixFile_G@60009 : Text[30];
+      ItemTemplateCode_G@60008 : Code[20];
+      CustomerTemplateCode_G@60007 : Code[20];
+      VendorTemplateCode_G@60006 : Code[20];
+      ContactTemplateCode_G@60005 : Code[20];
+      AccountTemplateCode_G@60004 : Code[20];
+      GlobalTemplateCode_G@60003 : Code[20];
+      SetupAlreadyRead_G@60002 : Boolean;
+      LaunchMoteurInterface_G@60001 : Record 8061230;
+      Text60000@60016 : TextConst 'ENU=Can not archive the file;FRA=Archivage du fichier %1 impossible';
+      Text60001@100000004 : TextConst 'FRA=Ligne N› %1 : Champ %2 : Champ obligatoire non pr'sent';
+      Text60002@60021 : TextConst 'ENU=Sales Shipment No. %1 : Unknown Multiplier for this Registration No.;FRA=BL N› %1 : multiplicateur inexistant pour ce SIRET';
+      Text60003@60022 : TextConst 'ENU=Sales Shipment No. %1 : Many Multipliers for this Registration No.;FRA=BL N› %1 : plusieurs multiplicateurs existants pour ce SIRET';
+      Text60004@60025 : TextConst 'ENU=Shipment No. %1 : Product Code EXELIENCE not previously received in the repository feed;FRA=BL N› %1 : Code produit EXELIENCE non reÎu au pr'alable dans le flux r'f'rentiel';
+      Text60005@60024 : TextConst 'ENU=Shipment No. %1 : Product Code EXELIENCE received, but correspondence not made in base;FRA=BL N› %1 : Code produit EXELIENCE reÎu, mais correspondance non-effectu'e en base';
+      Text60006@60023 : TextConst 'ENU=Shipment No. %1 : False Item Correspondence;FRA=BL N› %1 : Correspondance article erron'e';
+      Text60007@60026 : TextConst 'ENU=Shipment No. %1 : Unknown Purchase Price;FRA=BL N› %1 : tarif d''achat non param'tr'';
+      Text60008@60027 : TextConst 'FRA=BL N› %1 : %2';
+      Text60009@60028 : TextConst 'FRA=BL N› %1 : r'f'rence d'ja existante sur la commande %2';
+      Text60010@60029 : TextConst 'FRA=BL N› %1 : Article non actif . la vente';
+      Text60011@60030 : TextConst 'FRA=BL N› %1 : Article bloqu' en commande d''achat';
+      Text8053600@60019 : TextConst 'ENU=OK;FRA=OK';
+      Text8053601@60018 : TextConst 'ENU=Issue Read;FRA=ProblSme de lecture';
+      Text8053603@60017 : TextConst 'ENU=File doesn''t exist;FRA=Le fichier n''existe pas';
+      ExelienceFileFlowEntry_G@60020 : Integer;
+      ExelienceHeaderNo_G@100000000 : Text[80];
+      ExelienceLineNo_G@100000001 : Text[80];
+      FileLineNumber_G@100000002 : Integer;
+      ExelienceImport_G@100000003 : Codeunit 60069;
+
+    PROCEDURE ReadFileToWrkTable@1000000014(Filename_P@1000000000 : Text[1000];CompanyNo_P@1000000001 : Code[10];ArchiveFile_P@1000000002 : Boolean) Result_L : Text[30];
+    VAR
+      File_L@1000000003 : File;
+      FileStream_L@1000000004 : InStream;
+      Line_L@1000000006 : Text[1000];
+      CharLF_L@1000000007 : Char;
+      CharRC_L@1000000008 : Char;
+      EndLine_L@1000000009 : Text[2];
+      cduFormatFieldsMgt_L@8053601 : Codeunit 8060985;
+      LineToCut_L@1000000005 : Text[1000];
+      Position_L@1000000010 : Integer;
+      LineNo_L@1000000011 : Integer;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Lit et lance l'action de d'coupage du fichier
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - Filename_P : adresse et nom du fichier
+      //    - CompanyNo_P : N› de soci't' . qui appartient le fichier
+      //    - DeleteFile_P : Indique si le fichier doit ^tre supprim'
+      //----------------------------------------------------------------------------------------------------------------------------------
+
+      GetSetup();
+
+      //Initialisation des variables locales
+      Result_L := Text8053600;
+      CharLF_L := 10;
+      CharRC_L := 13;
+      EndLine_L := FORMAT(CharLF_L) + FORMAT(CharRC_L);
+
+      //V'rification si le fichier exist
+      IF NOT(EXISTS(Filename_P)) THEN
+        Result_L := Text8053603;
+
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //Ouverture du fichier pour lire du texte en lecture seule
+      //----------------------------------------------------------------------------------------------------------------------------------
+        IF Result_L = Text8053600 THEN BEGIN
+          File_L.WRITEMODE(FALSE);
+          File_L.TEXTMODE(TRUE);
+          IF NOT(File_L.OPEN(Filename_P)) THEN
+            Result_L := Text8053601;
+        END;
+
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //D'coupage du fichier pour r'cup'rer chaque ligne
+      //----------------------------------------------------------------------------------------------------------------------------------
+        IF Result_L = Text8053600 THEN BEGIN
+          //R'cup'ration du N› de s'quence du fichier
+          GetNextNo;
+
+          LineNo_L := 1;
+          FileLineNumber_G := 0;
+
+          File_L.CREATEINSTREAM(FileStream_L);
+            REPEAT
+              IF FileStream_L.READTEXT(Line_L) > 0 THEN BEGIN
+                //conversion de ANSI vers ASCII
+                Line_L := cduFormatFieldsMgt_L.Ansi2Ascii(Line_L);
+                Line_L := DELCHR(Line_L, '=', EndLine_L);
+                LineToCut_L := Line_L;
+
+                ReadLine(Filename_P, LineToCut_L);
+
+                LineNo_L += 1;
+              END;
+            UNTIL FileStream_L.EOS = TRUE;
+
+            //Fermeture du fichier aprSs traitement
+            File_L.CLOSE;
+        END;
+
+      EXIT(Result_L);
+    END;
+
+    PROCEDURE GetSetup@8053683();
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Permet de r'cup'rer le param'trage de l'interface en faisant le moins possible de lecture dans la BDD
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //  Sorties
+      //----------------------------------------------------------------------------------------------------------------------------------
+      IF SetupAlreadyRead_G = FALSE THEN BEGIN
+        SetupAlreadyRead_G := TRUE;
+      END;
+    END;
+
+    PROCEDURE ReadLine@1000000017(Filename_P@8053602 : Text[1000];Line_P@1000000000 : Text[1000]);
+    VAR
+      BufferLine_L@8053606 : Text[1000];
+      Position_L@8053607 : Integer;
+      i_L@8053608 : Integer;
+      TestError_L@1000000068 : Text[250];
+      "-----------------------"@1000000002 : Integer;
+      Type_L@1000000001 : Text[100];
+      ExelienceFileFlow_L@1000000003 : Record 60105;
+      "------------------------"@1000000032 : Integer;
+      H_ShipmentNo_L@1000000055 : Text[100];
+      H_ShipmentDate_L@1000000054 : Text[100];
+      H_OrderedTo_L@1000000053 : Text[100];
+      H_DeliveredTo_L@1000000052 : Text[100];
+      H_InvoicedTo_L@1000000051 : Text[100];
+      ExelienceHeader_L@1000000056 : Record 60078;
+      "-------------------------"@1000000057 : Integer;
+      L_ShipmentNo_L@1000000058 : Text[100];
+      L_ExelienceProductCode_L@1000000062 : Text[100];
+      L_DeliveredQuantity_L@1000000063 : Text[100];
+      ExelienceLine_L@1000000067 : Record 60103;
+      "--------------------------"@60000 : Integer;
+      D_ShipmentNo_L@60001 : Text[100];
+      D_ExpirationDate_L@60002 : Text[100];
+      D_BatchNo_L@60003 : Text[100];
+      D_ShippedQuantity_L@60004 : Text[100];
+      D_ProductionDate_L@60005 : Text[100];
+      ExelienceLineDetail_L@100000000 : Record 60107;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // D'coupe la ligne pass'e en paramStre pour la traiter
+      // Attention, COMMIT dans cette fonction
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - Filename_P : adresse et nom du fichier
+      //    - Line_P : Ligne . traiter
+      //  Sorties
+      //----------------------------------------------------------------------------------------------------------------------------------
+      BufferLine_L := Line_P;
+
+      Type_L := ReadNextItem(BufferLine_L, 1);                          //Flag
+
+      CASE Type_L OF
+        'E':
+          //Traitement des lignes de type en-t^te
+          BEGIN
+            ReadNextItem(BufferLine_L, 5);                              //Type d'exp'dition
+            H_ShipmentNo_L := ReadNextItem(BufferLine_L, 17);           //N› exp'dition (BL)
+            H_ShipmentDate_L := ReadNextItem(BufferLine_L, 8);          //Date exp'dition (BL)
+            ReadNextItem(BufferLine_L, 17);                             //N› commande
+            ReadNextItem(BufferLine_L, 10);                             //Type de commande
+            ReadNextItem(BufferLine_L, 17);                             //Libre
+          END;
+        'A':
+          //Traitement des lignes de type adresse en-t^te
+          BEGIN
+            H_ShipmentNo_L := ReadNextItem(BufferLine_L, 35);           //N› exp'dition (BL)
+            ReadNextItem(BufferLine_L, 13);                             //Command' par
+            H_OrderedTo_L := ReadNextItem(BufferLine_L, 17);            //Command' par
+            ReadNextItem(BufferLine_L, 13);                             //Command' .
+            ReadNextItem(BufferLine_L, 17);                             //Command' .
+            ReadNextItem(BufferLine_L, 13);                             //Livr' .
+            H_DeliveredTo_L := ReadNextItem(BufferLine_L, 17);          //Livr' .
+            ReadNextItem(BufferLine_L, 15);                             //Code interne site livraison
+            ReadNextItem(BufferLine_L, 13);                             //Lieu de livraison
+            ReadNextItem(BufferLine_L, 17);                             //Lieu de livraison
+            ReadNextItem(BufferLine_L, 15);                             //Code interne lieu livraison
+            ReadNextItem(BufferLine_L, 13);                             //Factur' .
+            H_InvoicedTo_L := ReadNextItem(BufferLine_L, 17);           //Factur' .
+            ReadNextItem(BufferLine_L, 13);                             //Factur' pour le compte de
+            ReadNextItem(BufferLine_L, 17);                             //Factur' pour le compte de
+            ReadNextItem(BufferLine_L, 15);                             //Code interne du Pour le compte de
+            ReadNextItem(BufferLine_L, 13);                             //Identification adresse EAN13
+            ReadNextItem(BufferLine_L, 17);                             //Identification adresse SIREN
+            ReadNextItem(BufferLine_L, 15);                             //Code interne identification adresse
+            ReadNextItem(BufferLine_L, 35);                             //Raison sociale (1)
+            ReadNextItem(BufferLine_L, 35);                             //Raison sociale (2)
+            ReadNextItem(BufferLine_L, 35);                             //N› - Rue - BP (1)
+            ReadNextItem(BufferLine_L, 35);                             //N› - Rue - BP (2)
+            ReadNextItem(BufferLine_L, 35);                             //Ville
+            ReadNextItem(BufferLine_L, 3);                              //Pays
+            ReadNextItem(BufferLine_L, 35);                             //Nom contact intervenant
+            ReadNextItem(BufferLine_L, 25);                             //T'l contact intervenant
+            ReadNextItem(BufferLine_L, 25);                             //N› fax contact intervenant
+            ReadNextItem(BufferLine_L, 35);                             //E-mail contact intervenant
+          END;
+        'L':
+          //Traitement des lignes de type ligne
+          BEGIN
+            L_ShipmentNo_L := ReadNextItem(BufferLine_L, 35);           //N› exp'dition (BL)
+            ReadNextItem(BufferLine_L, 4);                              //N› ligne BL exp'dition
+            ReadNextItem(BufferLine_L, 13);                             //Code produit
+            L_ExelienceProductCode_L := ReadNextItem(BufferLine_L, 35); //Code produit interne fournisseur
+            ReadNextItem(BufferLine_L, 35);                             //Libell' produit
+            ReadNextItem(BufferLine_L, 3);                              //Unit' de mesure
+            L_DeliveredQuantity_L := ReadNextItem(BufferLine_L, 9);     //Quantit' livr'e
+            L_DeliveredQuantity_L := INSSTR(L_DeliveredQuantity_L, ',', 7);
+            DecimalFormat(L_DeliveredQuantity_L);
+            ReadNextItem(BufferLine_L, 4);                              //N› ligne OL
+            ReadNextItem(BufferLine_L, 14);                             //EAN produit initial command'
+            ReadNextItem(BufferLine_L, 17);                             //N› commande d'origine
+          END;
+        'M':
+          //Traitement des lignes de type d'tail ligne
+          BEGIN
+            D_ShipmentNo_L := ReadNextItem(BufferLine_L, 35);           //N› exp'dition (BL)
+            ReadNextItem(BufferLine_L, 4);                              //N› ligne BL
+            ReadNextItem(BufferLine_L, 19);                             //Libre
+            ReadNextItem(BufferLine_L, 12);                             //N› r'f'rence hi'rarchique
+            ReadNextItem(BufferLine_L, 12);                             //Libre
+            ReadNextItem(BufferLine_L, 3);                              //Code marquage colis
+            D_ExpirationDate_L := ReadNextItem(BufferLine_L, 8);        //Date limite de consommation
+            D_BatchNo_L := ReadNextItem(BufferLine_L, 35);              //N› de lot
+            D_ShippedQuantity_L := ReadNextItem(BufferLine_L, 15);      //Quantit' exp'di'e
+            D_ShippedQuantity_L := INSSTR(D_ShippedQuantity_L, ',', 13);
+            DecimalFormat(D_ShippedQuantity_L);
+            ReadNextItem(BufferLine_L, 3);                              //Unit' de mesure
+            ReadNextItem(BufferLine_L, 16);                             //Nombre unit' de manutention
+            ReadNextItem(BufferLine_L, 3);                              //Unit' du nombre d'unit' de manutention
+            D_ProductionDate_L := ReadNextItem(BufferLine_L, 8);        //Date de fabrication
+            ReadNextItem(BufferLine_L, 16);                             //Quantit' gratuite
+            ReadNextItem(BufferLine_L, 3);                              //Unit' quantit' gratuite
+            ReadNextItem(BufferLine_L, 16);                             //Poids unitaire article
+            ReadNextItem(BufferLine_L, 3);                              //Unit' poids unitaire article
+          END;
+      END;
+
+
+      CASE Type_L OF
+        'I':
+          //Ecriture dans la table 60105
+          BEGIN
+            ExelienceFileFlow_L.LOCKTABLE;
+            ExelienceFileFlow_L.INIT;
+
+            FileLineNumber_G += 1;
+            ExelienceFileFlow_L."Sequence No." := ExelienceFileFlowEntry_G;
+            ExelienceFileFlow_L."Seq. Number Recording" := FORMAT(FileLineNumber_G);
+            ExelienceFileFlow_L."Import DateTime" := CREATEDATETIME(TODAY,TIME);
+            ExelienceFileFlow_L."File Name" := COPYSTR(Filename_P,1,250);
+            ExelienceFileFlow_L.Status := ExelienceFileFlow_L.Status::"In Process";
+            ExelienceFileFlow_L.Type := Type_L;
+            ExelienceFileFlow_L."Record Order No." := FileLineNumber_G;
+            ExelienceFileFlow_L."Import Type" := ExelienceFileFlow_L."Import Type"::SalesShpt;
+            ExelienceFileFlow_L.INSERT;
+          END;
+        'E':
+          //Ecriture dans la table 60078
+          BEGIN
+            ExelienceHeader_L.LOCKTABLE;
+            ExelienceHeader_L.INIT;
+
+            FileLineNumber_G += 1;
+            ExelienceHeader_L."Sequence Flow No." := ExelienceFileFlowEntry_G;
+            ExelienceHeader_L."Sequence No." := FORMAT(FileLineNumber_G);
+            ExelienceHeader_L.Status := ExelienceHeader_L.Status::"In Process";
+            ExelienceHeader_L."Record Type" := Type_L;
+            ExelienceHeader_L."Sales Shipment No." := H_ShipmentNo_L;
+            ExelienceHeader_L."Sales Shipment Date" := H_ShipmentDate_L;
+            ExelienceHeader_L."Record Order No." := FileLineNumber_G;
+            ExelienceHeader_L.INSERT;
+
+            //Sauvegarde du N› d'en-t^te pour faire le lien avec l'adresse et les lignes
+            ExelienceHeaderNo_G := FORMAT(FileLineNumber_G);
+          END;
+        'A':
+          //Mise . jour table 60078
+          BEGIN
+            FileLineNumber_G += 1;
+
+            IF ExelienceHeader_L.GET(ExelienceFileFlowEntry_G, ExelienceHeaderNo_G) THEN BEGIN
+              ExelienceHeader_L.LOCKTABLE;
+              ExelienceHeader_L."Delivered To" := H_DeliveredTo_L;
+              ExelienceHeader_L.MODIFY;
+            END;
+          END;
+        'L':
+          //Ecriture dans la table 60103
+          BEGIN
+            ExelienceLine_L.LOCKTABLE;
+            ExelienceLine_L.INIT;
+
+            FileLineNumber_G += 1;
+            ExelienceLine_L."Sequence Flow No." := ExelienceFileFlowEntry_G;
+            ExelienceLine_L."Sequence Header No." := ExelienceHeaderNo_G;
+            ExelienceLine_L."Sequence No." := FORMAT(FileLineNumber_G);
+            ExelienceLine_L.Status := ExelienceLine_L.Status::"In Process";
+            ExelienceLine_L."Record Type" := Type_L;
+            ExelienceLine_L."Sales Shipment No." := L_ShipmentNo_L;
+            ExelienceLine_L."Exelience Product Code" := L_ExelienceProductCode_L;
+            ExelienceLine_L."Delivered Quantity" := L_DeliveredQuantity_L;
+            ExelienceLine_L."Record Order No." := FileLineNumber_G;
+            ExelienceLine_L.INSERT;
+
+            //Sauvegarde du N› de ligne pour faire le lien avec les lignes d'tail
+            ExelienceLineNo_G := FORMAT(FileLineNumber_G);
+          END;
+        'M':
+          //Ecriture dans la table 60107
+          BEGIN
+            ExelienceLineDetail_L.LOCKTABLE;
+            ExelienceLineDetail_L.INIT;
+
+            FileLineNumber_G += 1;
+            ExelienceLineDetail_L."Sequence Flow No." := ExelienceFileFlowEntry_G;
+            ExelienceLineDetail_L."Sequence Header No." := ExelienceHeaderNo_G;
+            ExelienceLineDetail_L."Sequence Line No." := ExelienceLineNo_G;
+            ExelienceLineDetail_L."Sequence No." := FORMAT(FileLineNumber_G);
+            ExelienceLineDetail_L.Status := ExelienceLineDetail_L.Status::"In Process";
+            ExelienceLineDetail_L."Record Type" := Type_L;
+            ExelienceLineDetail_L."Sales Shipment No." := D_ShipmentNo_L;
+            ExelienceLineDetail_L."Expiration Date" := D_ExpirationDate_L;
+            ExelienceLineDetail_L."Batch No." := D_BatchNo_L;
+            ExelienceLineDetail_L."Shipped Quantity" := D_ShippedQuantity_L;
+            ExelienceLineDetail_L."Production Date" := D_ProductionDate_L;
+            ExelienceLineDetail_L."Record Order No." := FileLineNumber_G;
+            ExelienceLineDetail_L.INSERT;
+          END;
+      END;
+    END;
+
+    PROCEDURE GetNextNo@1000000011();
+    VAR
+      ExelienceFileFlow_L@1000000000 : Record 60105;
+      ExelienceHeader_L@1000000002 : Record 60078;
+      ExelienceLine_L@1000000003 : Record 60103;
+    BEGIN
+      ExelienceFileFlow_L.RESET;
+      IF ExelienceFileFlow_L.FINDLAST THEN
+        ExelienceFileFlowEntry_G := ExelienceFileFlow_L."Sequence No." + 1
+      ELSE
+        ExelienceFileFlowEntry_G := 1;
+    END;
+
+    PROCEDURE ReadNextItem@8053600(VAR Var_Line_P@8053600 : Text[1000];Length_P@60000 : Integer) Result_L : Text[50];
+    VAR
+      Position_L@8053601 : Integer;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // R'cupSre le prochain 'l'ment de la liste et l'enlSve de la liste
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - Var_Line_P : Ligne . traiter
+      //  Sorties
+      //    - Result_L : la prochain 'l'ment de la liste
+      //----------------------------------------------------------------------------------------------------------------------------------
+
+      Result_L := COPYSTR(Var_Line_P, 1, Length_P);
+      //Suppression des espaces en fin de champ
+      Result_L := DELCHR(Result_L, '>');
+      Var_Line_P := COPYSTR(Var_Line_P, Length_P + 1, STRLEN(Var_Line_P));
+
+      EXIT(Result_L);
+    END;
+
+    PROCEDURE ControlImportedData@1000000008(Global_P@1000000000 : Boolean);
+    BEGIN
+      //Traitement global de contr"le sur toutes les donn'es import'es sauf les donn'es trait'es
+      //On supprime les erreurs
+      EraseExelienceError;
+
+      //Contr"le de l'existence des donn'es
+      ControlTypeExelienceHeader;
+      ControlTypeExelienceLine;
+      ControlTypeExelienceLineDetail;
+
+      //Contr"les propres . l'import des exp'ditions ventes
+      ControlSalesShptData(Global_P);
+
+      //Mise . jour des statuts des enregistrements des diff'rentes tables
+      ExelienceImport_G.UpdateErrorStatus;
+    END;
+
+    PROCEDURE ControlTypeExelienceHeader@1000000018();
+    VAR
+      ExelienceHeader_L@1000000002 : Record 60078;
+      LineFileFlowNo_L@1000000000 : Integer;
+      LineHeaderNo_L@1000000001 : Text[100];
+      ExelienceFileFlow_L@1000000003 : Record 60105;
+      ExelienceFileFlow_SequenceNo_L@1000000004 : Integer;
+    BEGIN
+      ExelienceFileFlow_L.RESET;
+      ExelienceFileFlow_L.SETRANGE(Status,ExelienceFileFlow_L.Status::"In Process");
+      ExelienceFileFlow_L.SETRANGE("Import Type", ExelienceFileFlow_L."Import Type"::SalesShpt);
+      IF ExelienceFileFlow_L.FINDFIRST THEN REPEAT
+        IF ExelienceFileFlow_SequenceNo_L <> ExelienceFileFlow_L."Sequence No." THEN BEGIN
+          ExelienceHeader_L.RESET;
+          ExelienceHeader_L.SETRANGE(Status,ExelienceHeader_L.Status::"In Process");
+          ExelienceHeader_L.SETRANGE("Sequence Flow No.", ExelienceFileFlow_L."Sequence No.");
+          IF ExelienceHeader_L.FINDFIRST THEN REPEAT
+            WITH ExelienceHeader_L DO BEGIN
+              LineFileFlowNo_L := "Sequence Flow No.";
+              LineHeaderNo_L := "Sequence No.";
+
+              IF NOT ExelienceImport_G.IsNotEmptyControl("Sales Shipment No.") THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Sales Shipment No."))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.IsNotEmptyControl("Sales Shipment Date") THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Sales Shipment Date"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.IsNotEmptyControl("Delivered To") THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Delivered To"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+            END;
+          UNTIL ExelienceHeader_L.NEXT = 0;
+          ExelienceFileFlow_SequenceNo_L := ExelienceFileFlow_L."Sequence No.";
+        END;
+      UNTIL ExelienceFileFlow_L.NEXT = 0;
+    END;
+
+    PROCEDURE ControlTypeExelienceLine@1000000019();
+    VAR
+      ExelienceLine_L@1000000001 : Record 60103;
+      LineFileFlowNo_L@1000000000 : Integer;
+      LineHeaderNo_L@1000000002 : Text[80];
+      LineNo_L@1000000003 : Text[80];
+      ExelienceFileFlow_L@1000000004 : Record 60105;
+      ExelienceFileFlow_SequenceNo_L@1000000005 : Integer;
+    BEGIN
+      ExelienceFileFlow_L.RESET;
+      ExelienceFileFlow_L.SETRANGE(Status,ExelienceFileFlow_L.Status::"In Process");
+      ExelienceFileFlow_L.SETRANGE("Import Type", ExelienceFileFlow_L."Import Type"::SalesShpt);
+      IF ExelienceFileFlow_L.FINDFIRST THEN REPEAT
+        IF ExelienceFileFlow_SequenceNo_L <> ExelienceFileFlow_L."Sequence No." THEN BEGIN
+          ExelienceLine_L.RESET;
+          ExelienceLine_L.SETRANGE(Status,ExelienceLine_L.Status::"In Process");
+          ExelienceLine_L.SETRANGE("Sequence Flow No.", ExelienceFileFlow_L."Sequence No.");
+          IF ExelienceLine_L.FINDFIRST THEN REPEAT
+            WITH ExelienceLine_L DO BEGIN
+              LineFileFlowNo_L := "Sequence Flow No.";
+              LineHeaderNo_L := "Sequence Header No.";
+              LineNo_L := "Sequence No.";
+
+              IF NOT ExelienceImport_G.IsNotEmptyControl("Sales Shipment No.") THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Sales Shipment No."))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,LineNo_L, "Record Order No.");
+              IF NOT ExelienceImport_G.IsNotEmptyControl("Delivered Quantity") THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Delivered Quantity"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,LineNo_L, "Record Order No.");
+              IF NOT ExelienceImport_G.IsNotEmptyControl("Exelience Product Code") THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Exelience Product Code"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,LineNo_L, "Record Order No.");
+            END;
+          UNTIL ExelienceLine_L.NEXT = 0;
+          ExelienceFileFlow_SequenceNo_L := ExelienceFileFlow_L."Sequence No.";
+        END;
+      UNTIL ExelienceFileFlow_L.NEXT = 0;
+    END;
+
+    PROCEDURE ControlTypeExelienceLineDetail@100000000();
+    VAR
+      ExelienceLineDetail_L@1000000001 : Record 60107;
+      LineFileFlowNo_L@1000000000 : Integer;
+      LineHeaderNo_L@1000000002 : Text[80];
+      LineNo_L@1000000003 : Text[80];
+      ExelienceFileFlow_L@1000000004 : Record 60105;
+      ExelienceFileFlow_SequenceNo_L@1000000005 : Integer;
+      LineDetailNo_L@100000000 : Text[80];
+    BEGIN
+      ExelienceFileFlow_L.RESET;
+      ExelienceFileFlow_L.SETRANGE(Status,ExelienceFileFlow_L.Status::"In Process");
+      ExelienceFileFlow_L.SETRANGE("Import Type", ExelienceFileFlow_L."Import Type"::SalesShpt);
+      IF ExelienceFileFlow_L.FINDFIRST THEN REPEAT
+        IF ExelienceFileFlow_SequenceNo_L <> ExelienceFileFlow_L."Sequence No." THEN BEGIN
+          ExelienceLineDetail_L.RESET;
+          ExelienceLineDetail_L.SETRANGE(Status,ExelienceLineDetail_L.Status::"In Process");
+          ExelienceLineDetail_L.SETRANGE("Sequence Flow No.", ExelienceFileFlow_L."Sequence No.");
+          IF ExelienceLineDetail_L.FINDFIRST THEN REPEAT
+            WITH ExelienceLineDetail_L DO BEGIN
+              LineFileFlowNo_L := "Sequence Flow No.";
+              LineHeaderNo_L := "Sequence Header No.";
+              LineNo_L := "Sequence Line No.";
+              LineDetailNo_L := "Sequence No.";
+
+              IF NOT ExelienceImport_G.IsNotEmptyControl("Sales Shipment No.") THEN
+                ExelienceImport_G.InsertErrorLineDetail(STRSUBSTNO(Text60001,LineDetailNo_L,FIELDCAPTION("Sales Shipment No."))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,LineNo_L, "Record Order No.", LineDetailNo_L);
+              IF NOT ExelienceImport_G.IsNotEmptyControl("Batch No.") THEN
+                ExelienceImport_G.InsertErrorLineDetail(STRSUBSTNO(Text60001,LineDetailNo_L,FIELDCAPTION("Batch No."))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,LineNo_L, "Record Order No.", LineDetailNo_L);
+              IF NOT ExelienceImport_G.IsNotEmptyControl("Shipped Quantity") THEN
+                ExelienceImport_G.InsertErrorLineDetail(STRSUBSTNO(Text60001,LineDetailNo_L,FIELDCAPTION("Shipped Quantity"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,LineNo_L, "Record Order No.", LineDetailNo_L);
+            END;
+          UNTIL ExelienceLineDetail_L.NEXT = 0;
+          ExelienceFileFlow_SequenceNo_L := ExelienceFileFlow_L."Sequence No.";
+        END;
+      UNTIL ExelienceFileFlow_L.NEXT = 0;
+    END;
+
+    PROCEDURE EraseExelienceError@1000000021();
+    VAR
+      ExelienceError_L@1000000000 : Record 60104;
+      ExelienceFileFlow_L@1000000002 : Record 60105;
+      ExelienceHeader_L@100000000 : Record 60078;
+      ExelienceLine_L@100000001 : Record 60103;
+      ExelienceLineDetail_L@100000002 : Record 60107;
+    BEGIN
+      ExelienceFileFlow_L.RESET;
+      ExelienceFileFlow_L.SETRANGE("Import Type", ExelienceFileFlow_L."Import Type"::SalesShpt);
+      ExelienceFileFlow_L.SETRANGE(Status, ExelienceFileFlow_L.Status::"In Process");
+      IF ExelienceFileFlow_L.FINDSET THEN REPEAT
+        ExelienceError_L.RESET;
+        ExelienceError_L.SETRANGE("Sequence Flow No.", ExelienceFileFlow_L."Sequence No.");
+        ExelienceError_L.SETRANGE("Sequence Header No.", '');
+        ExelienceError_L.SETRANGE("Sequence Line No.", '');
+        IF NOT ExelienceError_L.ISEMPTY THEN
+          ExelienceError_L.DELETEALL;
+      UNTIL ExelienceFileFlow_L.NEXT = 0;
+
+      ExelienceHeader_L.RESET;
+      ExelienceHeader_L.SETRANGE(Status, ExelienceFileFlow_L.Status::"In Process");
+      IF ExelienceHeader_L.FINDSET THEN REPEAT
+        ExelienceFileFlow_L.RESET;
+        ExelienceFileFlow_L.SETRANGE("Sequence No.", ExelienceHeader_L."Sequence Flow No.");
+        IF ExelienceFileFlow_L.FINDSET THEN BEGIN
+          IF ExelienceFileFlow_L."Import Type" = ExelienceFileFlow_L."Import Type"::SalesShpt THEN BEGIN
+            ExelienceError_L.RESET;
+            ExelienceError_L.SETRANGE("Sequence Flow No.", ExelienceFileFlow_L."Sequence No.");
+            ExelienceError_L.SETRANGE("Sequence Header No.", ExelienceHeader_L."Sequence No.");
+            ExelienceError_L.SETRANGE("Sequence Line No.", '');
+            IF NOT ExelienceError_L.ISEMPTY THEN
+              ExelienceError_L.DELETEALL;
+          END;
+        END;
+      UNTIL ExelienceHeader_L.NEXT = 0;
+
+      ExelienceLine_L.RESET;
+      ExelienceLine_L.SETRANGE(Status, ExelienceFileFlow_L.Status::"In Process");
+      IF ExelienceLine_L.FINDSET THEN REPEAT
+        ExelienceFileFlow_L.RESET;
+        ExelienceFileFlow_L.SETRANGE("Sequence No.", ExelienceLine_L."Sequence Flow No.");
+        IF ExelienceFileFlow_L.FINDSET THEN BEGIN
+          IF ExelienceFileFlow_L."Import Type" = ExelienceFileFlow_L."Import Type"::SalesShpt THEN BEGIN
+            ExelienceError_L.RESET;
+            ExelienceError_L.SETRANGE("Sequence Flow No.", ExelienceFileFlow_L."Sequence No.");
+            ExelienceError_L.SETRANGE("Sequence Header No.", ExelienceLine_L."Sequence Header No.");
+            ExelienceError_L.SETRANGE("Sequence Line No.", ExelienceLine_L."Sequence No.");
+            IF NOT ExelienceError_L.ISEMPTY THEN
+              ExelienceError_L.DELETEALL;
+          END;
+        END;
+      UNTIL ExelienceLine_L.NEXT = 0;
+
+      ExelienceLineDetail_L.RESET;
+      ExelienceLineDetail_L.SETRANGE(Status, ExelienceFileFlow_L.Status::"In Process");
+      IF ExelienceLineDetail_L.FINDSET THEN REPEAT
+        ExelienceFileFlow_L.RESET;
+        ExelienceFileFlow_L.SETRANGE("Sequence No.", ExelienceLine_L."Sequence Flow No.");
+        IF ExelienceFileFlow_L.FINDSET THEN BEGIN
+          IF ExelienceFileFlow_L."Import Type" = ExelienceFileFlow_L."Import Type"::SalesShpt THEN BEGIN
+            ExelienceError_L.RESET;
+            ExelienceError_L.SETRANGE("Sequence Flow No.", ExelienceFileFlow_L."Sequence No.");
+            ExelienceError_L.SETRANGE("Sequence Header No.", ExelienceLineDetail_L."Sequence Header No.");
+            ExelienceError_L.SETRANGE("Sequence Line No.", ExelienceLineDetail_L."Sequence Line No.");
+            ExelienceError_L.SETRANGE("Sequence Line Detail No.", ExelienceLineDetail_L."Sequence No.");
+            IF NOT ExelienceError_L.ISEMPTY THEN
+              ExelienceError_L.DELETEALL;
+          END;
+        END;
+      UNTIL ExelienceLineDetail_L.NEXT = 0;
+    END;
+
+    PROCEDURE DecimalFormat@60001(VAR DecimalValue_P@60000 : Text[80]);
+    BEGIN
+      // --> 20190717-WI00-ADV01.01.00-43945-MRU01
+      //Certains fichiers transmis n'ont plus de 0 mais des espaces : conversion en 0 pour reprendre le process mis en place
+      DecimalValue_P := CONVERTSTR(DecimalValue_P, ' ', '0');
+      // <-- 20190717-WI00-ADV01.01.00-43945-MRU01
+
+      //Suppression des 0 en d'but et fin de champ
+      DecimalValue_P := DELCHR(DecimalValue_P, '<', '0');
+      DecimalValue_P := DELCHR(DecimalValue_P, '>', '0');
+      //Suppression de la virgule si elle est en fin de champ
+      DecimalValue_P := DELCHR(DecimalValue_P, '>', ',');
+    END;
+
+    PROCEDURE ControlSalesShptData@60000(Global_P@60000 : Boolean);
+    VAR
+      Contact_L@60001 : Record 5050;
+      Vendor_L@60002 : Record 23;
+      ExelienceFileFlow_L@60003 : Record 60105;
+      ExelienceFileFlow_SequenceNo_L@60004 : Integer;
+      ExelienceHeader_L@60005 : Record 60078;
+      ResultNumber_L@60006 : Integer;
+      ExelienceLine_L@60007 : Record 60103;
+      ItemSNO_L@60008 : Record 60100;
+      Item_L@60009 : Record 27;
+      PurchasePrice_L@60010 : Record 7012;
+      PurchaseSetup_L@60011 : Record 312;
+      ShipmentDate_L@60012 : Date;
+      DateText_L@60013 : Text[8];
+      SalesHeader_L@60014 : Record 36;
+    BEGIN
+      ExelienceFileFlow_L.RESET;
+      ExelienceFileFlow_L.SETRANGE("Import Type", ExelienceFileFlow_L."Import Type"::SalesShpt);
+      ExelienceFileFlow_L.SETRANGE(Status, ExelienceFileFlow_L.Status::"In Process");
+      IF NOT Global_P THEN
+        ExelienceFileFlow_L.SETRANGE("Sequence No.", ExelienceFileFlowEntry_G);
+      IF ExelienceFileFlow_L.FINDFIRST THEN REPEAT
+        IF ExelienceFileFlow_SequenceNo_L <> ExelienceFileFlow_L."Sequence No." THEN BEGIN
+          //Contr"le dans les lignes d'ent^te
+          ExelienceHeader_L.RESET;
+          ExelienceHeader_L.SETRANGE(Status, ExelienceHeader_L.Status::"In Process");
+          ExelienceHeader_L.SETRANGE("Sequence Flow No.", ExelienceFileFlow_L."Sequence No.");
+          IF ExelienceHeader_L.FINDFIRST THEN REPEAT
+            WITH ExelienceHeader_L DO BEGIN
+              //V'rification que le BL import' n'existe pas dans la base
+              SalesHeader_L.RESET;
+              SalesHeader_L.SETCURRENTKEY("External Reference No.");
+              SalesHeader_L.SETRANGE("Document Type", SalesHeader_L."Document Type"::Order);
+              SalesHeader_L.SETRANGE("External Reference No.", "Sales Shipment No.");
+              IF SalesHeader_L.FINDFIRST THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60009, "Sales Shipment No.", SalesHeader_L."No.")
+                                              ,"Sequence Flow No.","Sequence No.",'',"Record Order No.");
+
+              //Contr"le du num'ro de SIRET du donneur d'ordre
+              //2 cas : soit on ne le trouve pas, soit il y en a plusieurs => messages d'erreur sp'cifiques
+              ResultNumber_L := 0;
+              Contact_L.RESET;
+              Contact_L.SETRANGE("Contact Type", Contact_L."Contact Type"::Farm);
+              Contact_L.SETRANGE("Registration No.", "Delivered To");
+              IF Contact_L.FINDFIRST THEN REPEAT
+                IF Vendor_L.GET(Contact_L."Vendor No.") THEN BEGIN
+                  IF Vendor_L.Multiplier THEN
+                    ResultNumber_L += 1;
+                END;
+              UNTIL Contact_L.NEXT = 0;
+              IF ResultNumber_L = 0 THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60002,"Sales Shipment No.")
+                                              ,"Sequence Flow No.","Sequence No.",'',"Record Order No.")
+              ELSE IF ResultNumber_L > 1 THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60003,"Sales Shipment No.")
+                                              ,"Sequence Flow No.","Sequence No.",'',"Record Order No.");
+
+              //Contr"le dans les lignes d'ent^te
+              ExelienceLine_L.RESET;
+              ExelienceLine_L.SETRANGE("Sequence Flow No.", "Sequence Flow No.");
+              ExelienceLine_L.SETRANGE("Sequence Header No.", "Sequence No.");
+              IF ExelienceLine_L.FINDFIRST THEN REPEAT
+                //Contr"le du Code Produit Exelience pr'sent dans les lignes
+                ItemSNO_L.RESET;
+                IF ItemSNO_L.GET(ExelienceLine_L."Exelience Product Code") THEN BEGIN
+                  IF ItemSNO_L."Correspondance num'ro article" = '' THEN
+                    ExelienceImport_G.InsertError(STRSUBSTNO(Text60005,"Sales Shipment No.")
+                                                  ,"Sequence Flow No.","Sequence No.",ExelienceLine_L."Sequence No."
+                                                  ,ExelienceLine_L."Record Order No.")
+                  ELSE BEGIN
+                    //Contr"le si l'article existe bien au niveau de la table des articles (aucun contr"le dans la table SNO)
+                    IF NOT Item_L.GET(ItemSNO_L."Correspondance num'ro article") THEN
+                      ExelienceImport_G.InsertError(STRSUBSTNO(Text60006,"Sales Shipment No.")
+                                                    ,"Sequence Flow No.","Sequence No.",ExelienceLine_L."Sequence No."
+                                                    ,ExelienceLine_L."Record Order No.")
+                    ELSE BEGIN
+                      //Contr"le si l'article est actif . la vente
+                      IF Item_L."Blocked For Sales" THEN
+                        ExelienceImport_G.InsertError(STRSUBSTNO(Text60010,"Sales Shipment No.")
+                                                      ,"Sequence Flow No.","Sequence No.",ExelienceLine_L."Sequence No."
+                                                      ,ExelienceLine_L."Record Order No.");
+
+                      //Contr"le si l'article est non bloqu' en commande d'achat
+                      IF Item_L."Blocked For Purchase" THEN
+                        ExelienceImport_G.InsertError(STRSUBSTNO(Text60011,"Sales Shipment No.")
+                                                      ,"Sequence Flow No.","Sequence No.",ExelienceLine_L."Sequence No."
+                                                      ,ExelienceLine_L."Record Order No.");
+
+                      //Contr"le de la pr'sence d'un tarif achat
+                      DateText_L := "Sales Shipment Date";
+                      DateText_L := COPYSTR(DateText_L,7,2) + COPYSTR(DateText_L,5,2) + COPYSTR(DateText_L,1,4);
+                      EVALUATE(ShipmentDate_L, DateText_L);
+                      PurchaseSetup_L.GET;
+                      PurchasePrice_L.RESET;
+                      PurchasePrice_L.SETRANGE("Item No.", Item_L."No.");
+                      PurchasePrice_L.SETRANGE("Vendor No.", PurchaseSetup_L."Order Export - Vendor Code");
+                      PurchasePrice_L.SETFILTER("Starting Date", '<=%1', ShipmentDate_L);
+                      PurchasePrice_L.SETFILTER("Ending Date", '>=%1|%2', ShipmentDate_L, 0D);
+                      IF NOT PurchasePrice_L.FINDFIRST THEN
+                        ExelienceImport_G.InsertError(STRSUBSTNO(Text60007,"Sales Shipment No.")
+                                                      ,"Sequence Flow No.","Sequence No.",ExelienceLine_L."Sequence No."
+                                                      ,ExelienceLine_L."Record Order No.")
+                    END;
+                  END;
+                END ELSE
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60004,"Sales Shipment No.")
+                                                ,"Sequence Flow No.","Sequence No.",ExelienceLine_L."Sequence No."
+                                                ,ExelienceLine_L."Record Order No.");
+              UNTIL ExelienceLine_L.NEXT = 0;
+            END;
+          UNTIL ExelienceHeader_L.NEXT = 0;
+          ExelienceFileFlow_SequenceNo_L := ExelienceFileFlow_L."Sequence No.";
+        END;
+      UNTIL ExelienceFileFlow_L.NEXT = 0;
+    END;
+
+    PROCEDURE InsertSalesShpt@60004(Global_P@60000 : Boolean);
+    VAR
+      ExelienceFileFlow_L@60001 : Record 60105;
+      ExelienceHeader_L@60002 : Record 60078;
+      ExelienceFileFlow_SequenceNo_L@60003 : Integer;
+    BEGIN
+      ExelienceFileFlow_L.RESET;
+      ExelienceFileFlow_L.SETRANGE("Import Type", ExelienceFileFlow_L."Import Type"::SalesShpt);
+      ExelienceFileFlow_L.SETRANGE(Status, ExelienceFileFlow_L.Status::"In Process");
+      IF NOT Global_P THEN
+        ExelienceFileFlow_L.SETRANGE("Sequence No.", ExelienceFileFlowEntry_G);
+      IF ExelienceFileFlow_L.FINDSET THEN REPEAT
+        IF ExelienceFileFlow_SequenceNo_L <> ExelienceFileFlow_L."Sequence No." THEN BEGIN
+          ExelienceHeader_L.RESET;
+          ExelienceHeader_L.SETRANGE("Sequence Flow No.", ExelienceFileFlow_L."Sequence No.");
+          ExelienceHeader_L.SETRANGE(Status, ExelienceHeader_L.Status::"In Process");
+          IF ExelienceHeader_L.FINDSET THEN REPEAT
+            WITH ExelienceHeader_L DO BEGIN
+              CALCFIELDS(Errors);
+              IF Errors = 0 THEN BEGIN
+                COMMIT;
+                IF NOT CODEUNIT.RUN(60076, ExelienceHeader_L) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60008, "Sales Shipment No.", GETLASTERRORTEXT)
+                              ,"Sequence Flow No.","Sequence No.",'', "Record Order No.")
+              END;
+            END;
+          UNTIL ExelienceHeader_L.NEXT = 0;
+          ExelienceFileFlow_SequenceNo_L := ExelienceFileFlow_L."Sequence No.";
+        END;
+      UNTIL ExelienceFileFlow_L.NEXT = 0;
+    END;
+
+    BEGIN
+    {
+      //--> 3LI BEGIN
+      20190225-WI00-ADV01.01.00-3375-MRU01 CREATE Object
+      20190717-WI00-ADV01.01.00-43945-MRU01 : MODFUNCTION (DecimalFormat)
+      //<-- 3LI END
+    }
+    END.
+  }
+}
+

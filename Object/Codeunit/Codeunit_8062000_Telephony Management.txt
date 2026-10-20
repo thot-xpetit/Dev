@@ -1,0 +1,473 @@
+OBJECT Codeunit 8062000 Telephony Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=12/03/15;
+    Heure=00:00:00;
+    Liste versions=CTI2.1.1;
+  }
+  PROPERTIES
+  {
+    Permissions=;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TelephonySetup@8062001 : Record 8062000;
+      TelephonySetupPages@8062008 : Record 8062003;
+      TelephonySetupCompanies@8062000 : Record 8062004;
+      TelephonyPhonebook@8062002 : Record 8062001;
+      TelephonyLog@8062003 : Record 8062002;
+      TelephonyAPI@8062004 : Codeunit 8062002;
+      TelephonyUtils@8062005 : Codeunit 8062001;
+      IsSetupGot@8062009 : Boolean;
+      CalledCompany@8062006 : Text[30];
+      CompanyName_G@8053000 : Text[30];
+
+    PROCEDURE GetSetup@8062011();
+    BEGIN
+      IF NOT IsSetupGot THEN
+        WITH TelephonySetup DO BEGIN
+          // --> 20150312-WI00-CMC02.02.00-2694-FBE
+          IF CompanyName_G <> '' THEN BEGIN
+            CHANGECOMPANY(CompanyName_G);
+            SetMCCompany(CompanyName_G);
+          END;
+          // <-- 20150312-WI00-CMC02.02.00-2694-FBE
+          GetSetup();
+          IsSetupGot := TRUE;
+        END;
+    END;
+
+    PROCEDURE GetLiveUpdate@8062016() : Boolean;
+    BEGIN
+      GetSetup();
+      EXIT(TelephonySetup.LiveUpdate);
+    END;
+
+    PROCEDURE CreateEntry@8062000(VAR Rec@8062006 : Record 8062001;_SourceType@8062000 : Integer;_SourceNo@8062001 : Text[50];_PhoneNo@8062002 : Text[30];_CountryCode@8062005 : Code[10];_Description@8062004 : Text[50];_Name@8062003 : Text[50]) : Boolean;
+    BEGIN
+
+      WITH Rec DO BEGIN
+        INIT();
+        VALIDATE("Source Type", _SourceType);
+        // --> 20150312-WI00-CMC02.02.00-2694-FBE
+        //VALIDATE("Source No.", _SourceNo);
+        "Source No."  :=  _SourceNo;
+        // <-- 20150312-WI00-CMC02.02.00-2694-FBE
+        VALIDATE("Phone No.", TelephonyUtils.CleanPhoneNo(_PhoneNo, _CountryCode));
+        VALIDATE("Country/Region Code", _CountryCode);
+        VALIDATE(Description, _Description);
+        VALIDATE(Name, _Name);
+        // --> 20150312-WI00-CMC02.02.00-2694-FBE
+        //EXIT(INSERT(TRUE));
+        IF CompanyName_G <> '' THEN
+          "Source Company" := CompanyName_G
+        ELSE
+          "Source Company" := COMPANYNAME;
+        EXIT(INSERT());
+        // <-- 20150312-WI00-CMC02.02.00-2694-FBE
+      END;
+    END;
+
+    PROCEDURE CreateLogEntry@8062004(_CallID@1000000000 : Integer;_SourceCompany@8062001 : Text[30];_SourceType@8062002 : Integer;_SourceNo@8062003 : Text[50];_PhoneNo@8062004 : Text[30];_Direction@8062000 : Integer;_CalledCompany@8062005 : Text[30]);
+    BEGIN
+      WITH TelephonyLog DO BEGIN
+        CLEAR(TelephonyLog);
+        VALIDATE("Call ID", _CallID);
+        VALIDATE("Source Company", _SourceCompany);
+        VALIDATE("Source Type", _SourceType);
+        VALIDATE("Source No.", _SourceNo);
+        VALIDATE("Phone No.", _PhoneNo);
+        VALIDATE(Direction, _Direction);
+        VALIDATE(Status, Status::Called);
+        IF 0 = _Direction THEN
+          VALIDATE("Called Company", _CalledCompany);
+        IF NOT INSERT(TRUE) THEN
+          MODIFY(TRUE);
+      END;
+    END;
+
+    PROCEDURE CompleteLogEntry@8053600(_CallDate@8053600 : Date;_CallID@8053601 : Integer;VAR _telephonyPhonebook@8053602 : Record 8062001);
+    BEGIN
+      WITH TelephonyLog DO BEGIN
+        IF GET(_CallDate, _CallID) AND ((Status::Called = Status) OR (Status::Answered = Status)) THEN
+          TransferPhonebookFields(_telephonyPhonebook);
+        MODIFY(TRUE);
+      END;
+    END;
+
+    PROCEDURE UpdateLogEntryStatus@8062009(_CallID@8053600 : Integer;_CallDate@8053601 : Date;_Status@8062000 : Integer);
+    BEGIN
+      WITH TelephonyLog DO IF GET(_CallDate, _CallID) THEN BEGIN
+        IF 0  <> _Status  THEN VALIDATE(Status, _Status);
+        MODIFY(TRUE);
+      END;
+    END;
+
+    PROCEDURE CreateFromCompanyInformation@8053601(VAR _Rec@8062000 : Record 79);
+    BEGIN
+      WITH TelephonySetupCompanies DO BEGIN
+        INIT();
+        VALIDATE("Phone No.", _Rec."Phone No.");
+        VALIDATE("Company Name", _Rec.Name);
+        IF NOT INSERT(TRUE) THEN IF RENAME("Phone No.", "Company Name") THEN;
+        CreateEntry(TelephonyPhonebook, 1, _Rec.Name, _Rec."Phone No.", _Rec."Country/Region Code", _Rec.FIELDCAPTION("Phone No."), _Rec
+      .Name);
+
+        INIT();
+        VALIDATE("Phone No.", _Rec."Phone No. 2");
+        VALIDATE("Company Name", _Rec.Name);
+        IF NOT INSERT(TRUE) THEN IF RENAME("Phone No.", "Company Name") THEN;
+        CreateEntry(TelephonyPhonebook, 1, _Rec.Name, _Rec."Phone No. 2", _Rec."Country/Region Code", _Rec.FIELDCAPTION("Phone No. 2"),
+      _Rec.Name);
+      END;
+    END;
+
+    PROCEDURE InOutCall@1000000001(_UserID@1000000004 : Text[30];_CallID@1000000003 : Integer;_CallingPhoneNo@1000000002 : Text[30];_CalledPhoneNo@1000000001 : Text[30];VAR _TextInfo@1000000000 : Text[1024];_Direction@1000000005 : Integer) Return : Text[1024];
+    BEGIN
+      _CallingPhoneNo := TelephonyUtils.CleanPhoneNo(_CallingPhoneNo, '');
+      _CalledPhoneNo  := TelephonyUtils.CleanPhoneNo(_CalledPhoneNo, '');
+
+      CalledCompany := GetCalledCompany(_CalledPhoneNo);
+
+      WITH TelephonyPhonebook DO BEGIN
+        RESET();
+        FilterSourceCompanies();
+
+        SETRANGE("Phone No.", _CallingPhoneNo);
+
+        IF '' <> CalledCompany THEN SETFILTER("Source Company", '%1', CalledCompany);
+
+        IF      ISEMPTY     THEN Return := _NoEntryFound(_CallID, _CallingPhoneNo, _CalledPhoneNo, _TextInfo, _Direction)
+        ELSE IF 1 = COUNT() THEN Return := _OneEntryFound(_CallID, _CallingPhoneNo, _CalledPhoneNo, _TextInfo, _Direction)
+                            ELSE Return := _ManyEntriesFound(_CallID, _CallingPhoneNo, _CalledPhoneNo, _TextInfo, _Direction);
+      END;
+    END;
+
+    PROCEDURE IncomingCall@8062001(_UserID@1000000004 : Text[30];_CallID@1000000003 : Integer;_CallingPhoneNo@1000000002 : Text[30];_CalledPhoneNo@1000000001 : Text[30];VAR _TextInfo@1000000000 : Text[1024]) : Text[1024];
+    BEGIN
+      EXIT(InOutCall(_UserID, _CallID, _CallingPhoneNo, _CalledPhoneNo, _TextInfo, 0));
+    END;
+
+    LOCAL PROCEDURE _NoEntryFound@8062007(_CallID@1000000000 : Integer;_CallingPhoneNo@8062002 : Text[30];_CalledPhoneNo@8053600 : Text[30];VAR _TextInfo@8062000 : Text[1024];_Direction@1000000001 : Integer) : Text[1024];
+    BEGIN
+      CreateLogEntry(_CallID, '', 0, '', _CallingPhoneNo, _Direction, CalledCompany);
+      _TextInfo := CreateTextInfo(_CalledPhoneNo, _CallingPhoneNo);
+    END;
+
+    LOCAL PROCEDURE _OneEntryFound@8062006(_CallID@1000000000 : Integer;_CallingPhoneNo@8062002 : Text[30];_CalledPhoneNo@8053600 : Text[30];VAR _TextInfo@8062000 : Text[1024];_Direction@1000000001 : Integer) : Text[1024];
+    BEGIN
+      GetSetup();
+
+      WITH TelephonyPhonebook DO BEGIN
+        FINDFIRST();
+
+        CreateLogEntry(_CallID, "Source Company", "Source Type", "Source No.", "Phone No.", _Direction, CalledCompany);
+        CompleteLogEntry(TODAY, _CallID, TelephonyPhonebook);
+
+        _TextInfo := CreateTextInfo(_CalledPhoneNo, _CallingPhoneNo);
+        IF (TelephonySetup."Use Only Phonebook Card") OR ("Source Type"::External = "Source Type") THEN
+          EXIT(CreatePhonebookCardURL("Source Company", "Source Company", "Source Type", "Source No.", "Phone No."))
+
+        ELSE IF (TelephonySetup."Prevent Change Company") AND (COMPANYNAME <> "Source Company") THEN
+          EXIT(CreatePhonebookCardURL(COMPANYNAME, "Source Company", "Source Type", "Source No.", "Phone No."))
+
+        ELSE
+          EXIT(CreateURL("Source Company", 'ONE', GetSetupPageNo("Source Type", CalledCompany), "Source Type", "Source No.", '', 0));
+      END;
+    END;
+
+    LOCAL PROCEDURE _ManyEntriesFound@8062008(_CallID@1000000000 : Integer;_CallingPhoneNo@8062003 : Text[30];_CalledPhoneNo@8053600 : Text[30];VAR _TextInfo@8062000 : Text[1024];_Direction@1000000001 : Integer) : Text[1024];
+    VAR
+      HowMany@8062001 : TextConst 'ENU=%1 contacts found;FRA=%1 contacts trouv's';
+    BEGIN
+      CreateLogEntry(_CallID, '', 0, '', _CallingPhoneNo, _Direction, CalledCompany);
+
+      _TextInfo := CreateTextInfo(_CalledPhoneNo, _CallingPhoneNo);
+      EXIT(CreatePhonebookListURL(COMPANYNAME, CalledCompany, _CallingPhoneNo, _CallID));
+    END;
+
+    PROCEDURE GetSetupPageNo@8062010(_SourceType@8062001 : Integer;_CompanyCalled@8062000 : Text[30]) : Integer;
+    BEGIN
+      GetSetup();
+
+      WITH TelephonySetup DO BEGIN
+        IF TelephonySetupPages.GET(Type, Code, _SourceType, _CompanyCalled) THEN EXIT(TelephonySetupPages."Page No.");
+        IF TelephonySetupPages.GET(Type, Code, _SourceType, '')             THEN EXIT(TelephonySetupPages."Page No.");
+
+        IF Type::User = Type THEN IF TelephonySetupPages.GET(Type::Profile, GetUserProfile(), _SourceType, _CompanyCalled) THEN EXIT(
+      TelephonySetupPages."Page No.");
+        IF Type::User = Type THEN IF TelephonySetupPages.GET(Type::Profile, GetUserProfile(), _SourceType, '')             THEN EXIT(
+      TelephonySetupPages."Page No.");
+
+        IF Type::Global = Type THEN EXIT(0);
+
+        IF TelephonySetupPages.GET(Type::Global, '', _SourceType, _CompanyCalled) THEN EXIT(TelephonySetupPages."Page No.");
+        IF TelephonySetupPages.GET(Type::Global, '', _SourceType, '')             THEN EXIT(TelephonySetupPages."Page No.");
+
+        EXIT(0);
+      END;
+    END;
+
+    PROCEDURE GetCalledCompany@8062020(_PhoneNo@8062000 : Text[30]) : Text[1024];
+    VAR
+      _CompaniesFilter@8062001 : Text[1024];
+    BEGIN
+      WITH TelephonySetupCompanies DO BEGIN
+        SETRANGE("Phone No.", _PhoneNo);
+        IF ISEMPTY THEN EXIT('');
+        IF 1 = COUNT THEN BEGIN
+          FINDFIRST();
+          EXIT("Company Name");
+        END ELSE BEGIN
+          FINDSET();
+          REPEAT
+            IF '' <> _CompaniesFilter THEN _CompaniesFilter += '|';
+            _CompaniesFilter += "Company Name";
+          UNTIL 0 = NEXT();
+          EXIT(_CompaniesFilter);
+        END;
+      END;
+    END;
+
+    PROCEDURE CreateURL@8062012(_NAVCompany@8062007 : Text[50];_Action@8062010 : Code[20];_Page@8062000 : Integer;_Type@8062005 : Integer;_Code@8062001 : Text[250];_PhoneNo@8062006 : Text[30];_CallID@8053602 : Integer) return : Text[1024];
+    VAR
+      URLBase@8062002 : TextConst 'ENU=DynamicsNAV://%1/%2/%3/';
+      URLReport@8062003 : TextConst 'ENU="runreport?report=%1"';
+      URLReportFilter@8062004 : TextConst 'ENU="&filter=%22%1%22.%22%2%22:%3"';
+      _NAVServer@8053600 : Text[50];
+      _NAVInstance@8053601 : Text[50];
+    BEGIN
+      WITH TelephonySetup DO BEGIN
+        GET(Type::Global, '');
+        _NAVServer   := "NAV Server";
+        _NAVInstance := "NAV Instance";
+      END;
+
+      IF ('' <> _NAVServer) AND ('' <> _NAVInstance) AND ('' <> _NAVCompany) THEN
+        return := STRSUBSTNO(URLBase, _NAVServer, _NAVInstance, _NAVCompany)
+      ELSE return := STRSUBSTNO(URLBase, '', '', '');
+
+      return += STRSUBSTNO(URLReport, 8062000);
+      return += STRSUBSTNO(URLReportFilter, 'GET', 'Action', _Action);
+
+      IF 0  <> _Page    THEN return += STRSUBSTNO(URLReportFilter, 'GET', 'Page', _Page);
+      IF 0  <> _Type    THEN return += STRSUBSTNO(URLReportFilter, 'GET', 'Type', _Type);
+      IF '' <> _Code    THEN return += STRSUBSTNO(URLReportFilter, 'GET', 'Code', _Code);
+      IF '' <> _PhoneNo THEN return += STRSUBSTNO(URLReportFilter, 'GET', 'Phone No.', _PhoneNo);
+      IF 0  <> _CallID  THEN return += STRSUBSTNO(URLReportFilter, 'GET', 'CallID', _CallID);
+    END;
+
+    PROCEDURE CreatePhonebookCardURL@8062013(_NAVCompany@8062004 : Text[50];_SourceCompany@8062000 : Text[50];_SourceType@8062001 : Integer;_SourceNo@8062002 : Text[30];_PhoneNo@8062003 : Text[30]) : Text[1024];
+    BEGIN
+      EXIT(CreateURL(_NAVCompany, 'ONE', 8062004, 0,
+        _SourceCompany + ',' + FORMAT(_SourceType) + ',' + _SourceNo + ',' + _PhoneNo, '', 0));
+    END;
+
+    PROCEDURE CreatePhonebookListURL@8062014(_NAVCompany@8062002 : Text[50];_CompanyFilters@8062000 : Text[1024];_PhoneNo@8062001 : Text[30];_CallID@8053600 : Integer) : Text[1024];
+    BEGIN
+      EXIT(CreateURL(_NAVCompany, 'MANY', 8062001, 0, _CompanyFilters, _PhoneNo, _CallID));
+    END;
+
+    PROCEDURE CreateTextInfo@8062026(_InternalPhoneNo@8053604 : Text[30];_ExternalPhoneNo@8053605 : Text[30]) : Text[1024];
+    VAR
+      _Count@8062000 : Integer;
+      TextInfoBase@8053600 : TextConst 'FRA=%1@%2@%3';
+      TextInfoMany@8053601 : TextConst 'ENU=Many Entries;FRA=Plusieurs entr'es';
+      TextInfoNone@8053602 : TextConst 'ENU=Unknown;FRA=Inconnu';
+      _CalledCompany@8053603 : Text[30];
+    BEGIN
+      WITH TelephonyPhonebook DO BEGIN
+
+        IF '' = CalledCompany THEN _CalledCompany := _InternalPhoneNo ELSE _CalledCompany := CalledCompany;
+        IF ISEMPTY THEN EXIT("Phone No." + '@' + _CalledCompany);
+
+        CASE COUNT OF
+          1: IF Name = Company THEN EXIT (Name + '@' + _CalledCompany)
+                               ELSE IF '' = Company THEN EXIT(Name + '@' + _CalledCompany)
+                                                    ELSE EXIT('(' + Company + ') ' + Name + '@' + _CalledCompany)
+          ELSE BEGIN
+            _Count := COUNT;
+            FINDFIRST();
+            SETRANGE(Company, Company);
+            IF _Count = COUNT THEN IF '' = Company THEN EXIT(_ExternalPhoneNo + '@' + _CalledCompany)
+                                                   ELSE EXIT('(' + Company + ') ' + _ExternalPhoneNo + '@' + _CalledCompany)
+            ELSE BEGIN
+              SETRANGE(Company);
+              EXIT(_ExternalPhoneNo + '@' + _CalledCompany);
+            END;
+          END;
+        END
+      END;
+    END;
+
+    PROCEDURE OutgoingCall@8062002(_UserID@1000000004 : Text[30];_CallID@1000000003 : Integer;_CallingPhoneNo@1000000002 : Text[30];_CalledPhoneNo@1000000001 : Text[30];VAR _TextInfo@1000000000 : Text[1024]) Return : Text[1024];
+    BEGIN
+      //PhoneNo params are swapped for Outgoing
+      EXIT(InOutCall(_UserID, _CallID, _CalledPhoneNo, _CallingPhoneNo, _TextInfo, 1));
+    END;
+
+    PROCEDURE URLCall@8062003(_Action@8062000 : Code[20];_PageNo@8062004 : Integer;_Type@8062003 : Integer;_Code@8062002 : Text[250];_PhoneNo@8062001 : Text[30];_CallID@8053600 : Integer);
+    VAR
+      _RecordRef@8062005 : RecordRef;
+      _RecPhonebook@1000000000 : Record 8062001;
+      _RecCompanyInfo@1000000001 : Record 79;
+      _RecContact@1000000002 : Record 5050;
+      _RecSalesperson@1000000003 : Record 13;
+      _RecLocation@1000000004 : Record 14;
+      _PhonebookList@8053601 : Page 8062001;
+    BEGIN
+      CASE _Action OF
+
+        'ONE': BEGIN
+          GetRec(_Type, _Code, _RecordRef);
+
+          CASE _Type OF
+
+            0: BEGIN
+              _RecPhonebook.SETPOSITION(_RecordRef.GETPOSITION());
+              PAGE.RUN(_PageNo, _RecPhonebook);
+            END;
+
+            1: BEGIN
+              _RecCompanyInfo.SETPOSITION(_RecordRef.GETPOSITION());
+              PAGE.RUN(_PageNo, _RecCompanyInfo);
+            END;
+
+            2: BEGIN
+              _RecContact.SETPOSITION(_RecordRef.GETPOSITION());
+              PAGE.RUN(_PageNo, _RecContact);
+            END;
+
+            3: BEGIN
+              _RecSalesperson.SETPOSITION(_RecordRef.GETPOSITION());
+              PAGE.RUN(_PageNo, _RecSalesperson);
+            END;
+
+            4: BEGIN
+              _RecContact.SETPOSITION(_RecordRef.GETPOSITION());
+              PAGE.RUN(_PageNo, _RecContact);
+            END;
+
+            5: BEGIN
+              _RecLocation.SETPOSITION(_RecordRef.GETPOSITION());
+              PAGE.RUN(_PageNo, _RecLocation);
+            END;
+
+          END;
+        END;
+
+        'MANY': BEGIN
+          GetPhonebookRec(_PhoneNo, _Code, _RecPhonebook);
+          _PhonebookList.SETTABLEVIEW(_RecPhonebook);
+          _PhonebookList.SetCallID(_CallID);
+          _PhonebookList.RUN();
+        END;
+      END;
+    END;
+
+    PROCEDURE GetRec@8062005(_Type@8062001 : Integer;_Code@8062000 : Text[250];VAR _RecordRef@8062002 : RecordRef);
+    BEGIN
+      WITH _RecordRef DO BEGIN
+        OPEN(TelephonyAPI.GetTableNo(_Type));
+        SETPOSITION(TelephonyUtils.SetComplexPosition(CURRENTKEY, _Code));
+        FIND('=');
+      END;
+    END;
+
+    PROCEDURE GetPhonebookRec@8062023(_PhoneNo@8062001 : Text[30];_CompanyFilters@8062002 : Text[1024];VAR _Rec@8062000 : Record 8062001);
+    BEGIN
+      WITH _Rec DO BEGIN
+          SETRANGE("Phone No.", _PhoneNo);
+          IF '' <> _CompanyFilters THEN SETFILTER("Source Company", '=', _CompanyFilters);
+      END;
+    END;
+
+    PROCEDURE OpenPage@8062015(_PageNo@8062000 : Integer;VAR _Rec@8062001 : Variant);
+    BEGIN
+      PAGE.RUN(_PageNo, _Rec);
+    END;
+
+    PROCEDURE OpenPhonebookCardPage@8062017(VAR Rec@8062000 : Record 8062001);
+    BEGIN
+      OpenPage(8062004, Rec);
+    END;
+
+    PROCEDURE OpenConfiguredPage@8062018(VAR Rec@8062000 : Record 8062001);
+    VAR
+      _RecordRef@8053600 : RecordRef;
+      _RecPhonebook@8053605 : Record 8062001;
+      _RecCompanyInfo@8053604 : Record 79;
+      _RecContact@8053603 : Record 5050;
+      _RecSalesperson@8053602 : Record 13;
+      _RecLocation@8053601 : Record 14;
+    BEGIN
+      WITH Rec DO BEGIN
+        IF 0 <> "Source Type" THEN GetRec("Source Type", "Source No.", _RecordRef)
+        ELSE GetRec(0, "Source Company" + ',External,,' + "Phone No.", _RecordRef);
+
+        CASE "Source Type" OF
+
+          0: BEGIN
+            _RecPhonebook.SETPOSITION(_RecordRef.GETPOSITION());
+            PAGE.RUN(GetSetupPageNo(0, COMPANYNAME), _RecPhonebook);
+          END;
+
+          1: BEGIN
+            _RecCompanyInfo.SETPOSITION(_RecordRef.GETPOSITION());
+            PAGE.RUN(GetSetupPageNo(1, COMPANYNAME), _RecCompanyInfo);
+          END;
+
+          2: BEGIN
+            _RecContact.SETPOSITION(_RecordRef.GETPOSITION());
+            PAGE.RUN(GetSetupPageNo(2, COMPANYNAME), _RecContact);
+          END;
+
+          3: BEGIN
+            _RecSalesperson.SETPOSITION(_RecordRef.GETPOSITION());
+            PAGE.RUN(GetSetupPageNo(3, COMPANYNAME), _RecSalesperson);
+          END;
+
+          4: BEGIN
+            _RecContact.SETPOSITION(_RecordRef.GETPOSITION());
+            PAGE.RUN(GetSetupPageNo(4, COMPANYNAME), _RecContact);
+          END;
+
+          5: BEGIN
+            _RecLocation.SETPOSITION(_RecordRef.GETPOSITION());
+            PAGE.RUN(GetSetupPageNo(5, COMPANYNAME), _RecLocation);
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE SetMCCompany@8053000(CompanyName_P@8053000 : Text[30]);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      //  Initialise la soci't' lors de la diffusion de donn'es MS
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - CompanyName_P : Le nom de la soci't' pour laquelle on modifie ou insere l'enregistrement
+      // Sorties:
+      //   - N/A
+      //----------------------------------------------------------------------------------------------------------
+      CompanyName_G := CompanyName_P;
+      TelephonyUtils.SetMCCompany(CompanyName_P);
+    END;
+
+    BEGIN
+    {
+      // --> 3LI END
+
+      20150312-WI00-CMC02.02.00-2694-FBE : Gestion des donn'es MS, ADDFUNC SetMCCompany
+
+      // <-- 3LI BEGIN
+    }
+    END.
+  }
+}
+

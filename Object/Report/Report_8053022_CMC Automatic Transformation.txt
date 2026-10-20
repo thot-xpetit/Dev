@@ -1,0 +1,206 @@
+OBJECT Report 8053022 CMC Automatic Transformation
+{
+  OBJECT-PROPERTIES
+  {
+    Date=30/08/11;
+    Heure=00:00:00;
+    Liste versions=CMC01.04.01;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=CMC Automatic Transformation;
+               FRA=Transformation contrats];
+    ProcessingOnly=Oui;
+    OnPreReport=BEGIN
+                  IF StartDate_G = 0D THEN
+                   ERROR(Text8053000);
+                END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table8052983;
+        DataItemTableView=SORTING(Type)
+                          ORDER(Ascending)
+                          WHERE(Type=CONST(Contract),
+                                Vendor No.=FILTER(<>''));
+        OnPreDataItem=BEGIN
+                        "CMC Collection Contract".SETFILTER("Purchase Date Limit",'(<>%1)&(<=%2)',0D,StartDate_G);
+
+                        DlgWin_G.OPEN('#1###############################' + '\' +
+                                           '@2@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@' + '\');
+                        DlgWin_G.UPDATE(1, Text8053003);
+                        TotalIter_G := "CMC Collection Contract".COUNT;
+                        Iter_G := 0;
+                      END;
+
+        OnAfterGetRecord=VAR
+                           ItemLedgerEntry_L@8053000 : Record 32;
+                           PostedReceipts_L@8053007 : Record 8052995;
+                           PostedReceipts2_L@8053006 : Record 8052995;
+                           StatusMgtcdu_L@8053005 : Codeunit 8052985;
+                           TotalIter_L@8053003 : Integer;
+                           Iter_L@8053002 : Integer;
+                           QteLetTest_L@8053001 : Decimal;
+                           CMCManagementcdu_L@8053009 : Codeunit 8052982;
+                           CMCCollectionContract_L@8053004 : Record 8052983;
+                         BEGIN
+                           DlgWin_G.UPDATE(2, ROUND(Iter_G / TotalIter_G * 10000,1));
+                           Iter_G := Iter_G + 1;
+
+                           ItemLedgerEntry_L.RESET;
+                           ItemLedgerEntry_L.SETCURRENTKEY("Movement Type","Collection Contract No.");
+                           ItemLedgerEntry_L.SETRANGE("Movement Type",ItemLedgerEntry_L."Movement Type"::S03);
+                           ItemLedgerEntry_L.SETRANGE("Collection Contract No.","CMC Collection Contract"."No.");
+                           IF ItemLedgerEntry_L.FINDFIRST THEN
+                            CurrReport.SKIP; // On ne prend pas les contrats avec des reprises
+
+                           PostedReceipts_L.RESET;
+                           PostedReceipts_L.SETCURRENTKEY("Contract No.");
+                           PostedReceipts_L.SETRANGE("Contract No.","CMC Collection Contract"."No.");
+                           PostedReceipts_L.SETRANGE("Collection Type", PostedReceipts_L."Collection Type"::Storage);
+                           PostedReceipts_L.SETFILTER("Receipt Type",'%1|%2',PostedReceipts_L."Receipt Type"::Receipt,
+                                                                                PostedReceipts_L."Receipt Type"::Resumption);
+                           PostedReceipts_L.SETRANGE(Canceled,FALSE);
+                           PostedReceipts_L.SETRANGE(Invoiced,FALSE);
+                           PostedReceipts_L.SETFILTER("Quantity To Invoice",'<>%1',0);
+
+                           QteLetTest_L:=0;
+                           IF PostedReceipts_L.FINDSET(FALSE, FALSE) THEN
+                             REPEAT
+                               QteLetTest_L := QteLetTest_L +PostedReceipts_L."Quantity To Lettred";
+                             UNTIL PostedReceipts_L.NEXT=0;
+
+                           IF QteLetTest_L <> 0 THEN
+                            CurrReport.SKIP;
+
+                           PostedReceipts_L.RESET;
+                           PostedReceipts_L.SETCURRENTKEY("Contract No.");
+                           PostedReceipts_L.SETRANGE("Contract No.","CMC Collection Contract"."No.");
+                           PostedReceipts_L.SETRANGE("Collection Type", PostedReceipts_L."Collection Type"::Storage);
+                           PostedReceipts_L.SETFILTER("Receipt Type",'%1|%2',PostedReceipts_L."Receipt Type"::Receipt,
+                                                                                PostedReceipts_L."Receipt Type"::Resumption);
+                           PostedReceipts_L.SETRANGE(Canceled,FALSE);
+                           PostedReceipts_L.SETRANGE(Invoiced,FALSE);
+                           PostedReceipts_L.SETFILTER("Quantity To Invoice",'<>%1',0);
+
+                           IF PostedReceipts_L.FINDSET(TRUE, FALSE) THEN BEGIN
+
+                               REPEAT
+                                 CMCManagementcdu_L.LettrageMiseAchat(PostedReceipts_L);
+                                 PostedReceipts2_L.GET(PostedReceipts_L."Receipt Type", PostedReceipts_L."No.");
+                                 IF ( PostedReceipts2_L."Receipt Type" = PostedReceipts2_L."Receipt Type"::Receipt ) AND
+                                    ( PostedReceipts2_L."Quantity To Invoice" - PostedReceipts2_L."Quantity To Lettred" > 0 )
+                                 THEN BEGIN
+                                   PostedReceipts2_L.VALIDATE(Status, PostedReceipts2_L.Status::Open);
+                                   PostedReceipts2_L.VALIDATE("Collection Type", PostedReceipts_L."Collection Type");
+                                   PostedReceipts2_L.VALIDATE("Purchase Date", PostedReceipts_L."Purchase Date Selection");
+                                   PostedReceipts2_L.VALIDATE("Contract No.", PostedReceipts_L."Contract No.");
+                                   PostedReceipts2_L.VALIDATE("Unit Price", PostedReceipts_L."Unit Price");
+                                   PostedReceipts2_L."Quantity To Invoice":=
+                                     PostedReceipts2_L."Quantity To Invoice" - PostedReceipts_L."Quantity To Lettred";
+                                   PostedReceipts2_L."Collection Type" := PostedReceipts2_L."Collection Type"::Purchase;
+                                   PostedReceipts2_L.MODIFY(TRUE);
+                                   StatusMgtcdu_L.PurchasingPostedReceipt(PostedReceipts2_L, PostedReceipts_L."Purchase Date");
+                                 END ELSE BEGIN
+                                   PostedReceipts2_L."Quantity To Invoice":=
+                                     PostedReceipts2_L."Quantity To Invoice"-PostedReceipts_L."Quantity To Lettred";
+                                   PostedReceipts2_L."Collection Type" := PostedReceipts2_L."Collection Type"::Purchase;
+                                   PostedReceipts2_L.MODIFY;
+                                 END;
+
+                               UNTIL PostedReceipts_L.NEXT = 0;
+                               CMCCollectionContract_L.GET("CMC Collection Contract"."No.");
+                               StatusMgtcdu_L.OpenContract(CMCCollectionContract_L);
+                               CMCCollectionContract_L."Collection Type" := CMCCollectionContract_L."Collection Type"::Purchase;
+                               CMCCollectionContract_L."Transformation Date" := TODAY;
+                               CMCCollectionContract_L.MODIFY;
+                               StatusMgtcdu_L.LockContract(CMCCollectionContract_L);
+                            END;
+                         END;
+
+        OnPostDataItem=BEGIN
+                         DlgWin_G.CLOSE;
+                         MESSAGE(Text8053001);
+                       END;
+
+        ReqFilterFields=No.;
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=9020;
+      Height=3410;
+    }
+    CONTROLS
+    {
+      { 1000000000;TextBox;4620 ;550  ;1700 ;440  ;InPage=-1;
+                                                   SourceExpr=StartDate_G }
+      { 1000000002;Label  ;0    ;550  ;4620 ;440  ;CaptionML=FRA="Date de mise en achat ( <= )" }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 8053000; ;Container ;
+                  ContainerType=ContentArea }
+
+      { 8053001;1;Group     ;
+                  CaptionML=[ENU=Options;
+                             FRA=Options] }
+
+      { 8053002;2;Field     ;
+                  CaptionML=FRA="Date de mise en achat ( <= )";
+                  SourceExpr=StartDate_G }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      StartDate_G@8053000 : Date;
+      Text8053000@8053001 : TextConst 'FRA=Veuillez renseigner une date de mise en achat';
+      DlgWin_G@8053002 : Dialog;
+      Text8053003@8053003 : TextConst 'ENU=Transform. Inventory Receipt to Purchase Receipt;FRA=Mise en achat des r'ceptions en stockage';
+      Text8053001@8053004 : TextConst 'ENU=Purchase has been done.;FRA=Traitement termin'';
+      TotalIter_G@8053006 : Integer;
+      Iter_G@8053005 : Integer;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+
+      20110601-Wi00-CMC01.04 : Version RTM 01.04 - NavAgri
+      20110830-Wi00-CMC01.04.01 : MODOBJ (Correctif : ajout du RequestPage Options)
+
+      // --> 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

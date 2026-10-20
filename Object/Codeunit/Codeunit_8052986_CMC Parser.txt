@@ -1,0 +1,401 @@
+OBJECT Codeunit 8052986 CMC Parser
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18/03/15;
+    Heure=00:00:00;
+    Liste versions=CMC02.01.00,TER01.01.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            MESSAGE(FORMAT(CalcDecimalExpr('(2.5+3.2)/5.1')));
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text003@8053000 : TextConst 'ENU=Error converting "%1" in expression "%2";FRA=Erreur conversion "%1" dans expression "%2"';
+      Text006@8053001 : TextConst 'ENU=Function %1 must be called with %2 parameters;FRA=La fonction %1 doit ^tre appel'e avec %2 paramStres';
+      Text001@8053002 : TextConst 'ENU=Weight conversion formule is not correct.;FRA=Formule de conversion de poids incorrecte.';
+      G_CampaignNo@8053003 : Code[10];
+      G_SpeciesCode@8053004 : Code[10];
+      RegionCode_G@60000 : Code[10];
+
+    LOCAL PROCEDURE ParseSkipBlanks@1101257006(VAR APos@1101257001 : Integer;AMacro@1101257000 : Text[1024]);
+    BEGIN
+      IF APos <= STRLEN(AMacro) THEN
+        WHILE COPYSTR(AMacro, APos, 1) = ' ' DO
+        BEGIN
+          APos += 1;
+          IF APos > STRLEN(AMacro) THEN
+            EXIT;
+        END;
+    END;
+
+    LOCAL PROCEDURE ParseReadName@8053010(VAR APos@1101257000 : Integer;AMacro@1101257001 : Text[1024]) Result@1101257003 : Text[1024];
+    VAR
+      s@1101257002 : Text[30];
+    BEGIN
+      ParseSkipBlanks(APos, AMacro);
+      s := '';
+      IF APos <= STRLEN(AMacro) THEN
+      BEGIN
+        IF COPYSTR(AMacro, APos, 1) IN ['a'..'z', 'A'..'Z', '_','%'] THEN BEGIN
+          s := s + FORMAT(AMacro[APos]);
+          APos += 1;
+
+          WHILE COPYSTR(AMacro, APos, 1) IN ['a'..'z', 'A'..'Z', '_','%', '0'..'9'] DO BEGIN
+            s := s + FORMAT(AMacro[APos]);
+            APos += 1;
+          END;
+        END;
+      END;
+
+      ParseSkipBlanks(APos, AMacro);
+      Result := s;
+    END;
+
+    LOCAL PROCEDURE ParseTrimBlanks@8053018(p_txtExpr@1101257000 : Text[1024]) p_txtResult : Text[1024];
+    BEGIN
+      IF p_txtExpr <> '' THEN BEGIN
+        WHILE COPYSTR(p_txtExpr, 1, 1) = ' ' DO
+          p_txtExpr := DELSTR(p_txtExpr, 1, 1);
+
+        WHILE COPYSTR(p_txtExpr, STRLEN(p_txtExpr), 1) = ' ' DO
+          p_txtExpr := DELSTR(p_txtExpr, STRLEN(p_txtExpr), 1);
+      END;
+
+      p_txtResult := p_txtExpr;
+    END;
+
+    LOCAL PROCEDURE ParseReadFunctionParams@8053016(VAR APos@8053001 : Integer;AMacro@8053000 : Text[1024];VAR AParamCount@8053004 : Integer;VAR AParams@8053005 : ARRAY [20] OF Text[1024]);
+    VAR
+      s@8053002 : Text[1024];
+      strParam@8053008 : Text[1024];
+      intP@8053003 : Integer;
+      intBegin@8053006 : Integer;
+      intEnd@8053007 : Integer;
+    BEGIN
+      ParseSkipBlanks(APos, AMacro);
+      AParamCount := 0;
+      CLEAR(AParams);
+      IF COPYSTR(AMacro, APos, 1) = '(' THEN BEGIN
+        s := '';
+        intP := 1;
+        APos += 1;
+        intBegin := APos;
+        WHILE (APos <= STRLEN(AMacro)) AND (intP >= 1) DO BEGIN
+          CASE AMacro[APos] OF
+            '(': BEGIN
+              intP += 1;
+              APos += 1;
+            END;
+            ')': BEGIN
+              intP -= 1;
+              IF intP = 0 THEN BEGIN
+                intEnd := APos - 1;
+                strParam := ParseTrimBlanks(COPYSTR(AMacro, intBegin, intEnd - intBegin + 1));
+                IF (AParamCount = 0) AND (strParam = '') THEN BEGIN
+                  // nulis parametru
+                END ELSE BEGIN
+                  AParamCount += 1;
+                  AParams[AParamCount] := strParam;
+                END;
+                intBegin := -1;
+                intEnd := -1;
+              END;
+              APos += 1;
+            END;
+            ',': BEGIN
+              IF intP = 1 THEN BEGIN
+                intEnd := APos - 1;
+                strParam := ParseTrimBlanks(COPYSTR(AMacro, intBegin, intEnd - intBegin + 1));
+                AParamCount += 1;
+                AParams[AParamCount] := strParam;
+                APos += 1;
+                intBegin := APos;
+                intEnd := -1;
+              END ELSE
+                APos += 1;
+            END;
+            ELSE BEGIN
+              APos += 1;
+            END;
+          END;
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE ParseReadDecimalValue@1101257015(VAR APos@1101257000 : Integer;AMacro@1101257001 : Text[1024]) Result@1101257003 : Decimal;
+    VAR
+      s@1101257002 : Text[30];
+      t@1101257004 : Text[1];
+      f@1101261000 : Boolean;
+    BEGIN
+      ParseSkipBlanks(APos, AMacro);
+      s := '';
+      t := COPYSTR(FORMAT(FORMAT(1.1)), 2, 1);
+      IF APos <= STRLEN(AMacro) THEN BEGIN
+        f := TRUE;
+        WHILE (COPYSTR(AMacro, APos, 1) IN ['0'..'9', '.']) OR (f AND (COPYSTR(AMacro, APos, 1) = '-')) DO BEGIN
+          f := FALSE;
+          IF COPYSTR(AMacro, APos, 1) = '.' THEN
+            s := s + t
+          ELSE
+            s := s + FORMAT(COPYSTR(AMacro, APos, 1));
+          APos += 1;
+        END;
+      END;
+
+      IF NOT EVALUATE(Result, s) THEN
+        ERROR(STRSUBSTNO(Text003, s, AMacro));
+    END;
+
+    LOCAL PROCEDURE CalcFunction@8053021(p_txtName@8053000 : Text[50];p_intParamCount@8053001 : Integer;p_txtParams@8053002 : ARRAY [20] OF Text[1024];VAR p_decResult@8053005 : Decimal;VAR p_txtResult@8053004 : Text[30]);
+    VAR
+      intCount@8053007 : Integer;
+      intTypes@8053008 : ARRAY [20] OF Integer;
+    BEGIN
+      p_decResult := 0;
+      p_txtResult := '';
+
+      GetFunctionParamCount(p_txtName, intCount, intTypes);
+
+      IF intCount <> p_intParamCount THEN
+        ERROR(STRSUBSTNO(Text006, p_txtName, intCount));
+
+      IF (UPPERCASE(p_txtName)='ABS') OR (UPPERCASE(p_txtName)='%') THEN BEGIN
+      CASE UPPERCASE(p_txtName) OF
+        'ABS': p_decResult := Calc_ABS(p_txtParams);
+        '%'  : p_decResult := CalcPercent(p_txtParams);
+      END
+      END ELSE
+        p_decResult := CalcCoeff(p_txtName,p_txtParams);
+    END;
+
+    LOCAL PROCEDURE GetFunctionParamCount@8053026(p_txtName@8053000 : Text[1024];VAR p_intCount@8053001 : Integer;VAR p_intTypes@8053002 : ARRAY [20] OF Integer);
+    VAR
+      RecAnalysisCharacteristic_L@1000000000 : Record 8053092;
+    BEGIN
+      p_intCount := 0;
+      CLEAR(p_intTypes);
+
+      CASE UPPERCASE(p_txtName) OF
+        'ABS','%': BEGIN
+          p_intCount := 1;
+          p_intTypes[1] := 0;
+        END;
+      END;
+
+      // --> 20121213-Wi00-CMC02.02.00-SD
+          RecAnalysisCharacteristic_L.RESET;
+          RecAnalysisCharacteristic_L.SETFILTER("Coeff Table Code",UPPERCASE(p_txtName));
+          IF RecAnalysisCharacteristic_L.FINDSET THEN
+          BEGIN
+            p_intCount := 1;
+            p_intTypes[1] := 0;
+          END;
+
+      // <-- 20121213-Wi00-CMC02.02.00-SD
+    END;
+
+    LOCAL PROCEDURE Calc_ABS@8053058(p_txtParams@8053000 : ARRAY [20] OF Text[1024]) decResult : Decimal;
+    VAR
+      decParam1@8053008 : Decimal;
+    BEGIN
+      decParam1 := CalcDecimalExpr(p_txtParams[1]);
+
+      decResult := ABS(decParam1);
+    END;
+
+    LOCAL PROCEDURE ParseDecimalLevel1@1101257000(VAR AResult@1101257005 : Decimal;VAR AParsePos@8053001 : Integer;AMacro@8053000 : Text[1024]);
+    VAR
+      op@1101257008 : Text[1];
+      fltResult@1101257009 : Decimal;
+    BEGIN
+      ParseDecimalLevel2(AResult, AParsePos, AMacro);
+      WHILE COPYSTR(AMacro, AParsePos, 1) IN ['+', '-'] DO BEGIN
+        op := COPYSTR(AMacro, AParsePos, 1);
+        AParsePos += 1;
+        ParseDecimalLevel2(fltResult, AParsePos, AMacro);
+        CASE op OF
+          '+': AResult := AResult + fltResult;
+          '-': AResult := AResult - fltResult;
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE ParseDecimalLevel2@1101257001(VAR AResult@8053000 : Decimal;VAR AParsePos@8053002 : Integer;AMacro@8053001 : Text[1024]);
+    VAR
+      op@1101257008 : Text[1];
+      fltResult@1101257009 : Decimal;
+    BEGIN
+      ParseDecimalLevel3(AResult, AParsePos, AMacro);
+      WHILE COPYSTR(AMacro, AParsePos, 1) IN ['*', '/','C'] DO BEGIN
+        op := COPYSTR(AMacro, AParsePos, 1);
+        AParsePos += 1;
+        ParseDecimalLevel3(fltResult, AParsePos, AMacro);
+        CASE op OF
+          '*': AResult := AResult * fltResult;
+          '/': BEGIN
+            IF fltResult <> 0 THEN
+              AResult := AResult / fltResult
+            ELSE
+              AResult := 0;
+          END;
+        END;
+        ParseSkipBlanks(AParsePos, AMacro);
+      END;
+      ParseSkipBlanks(AParsePos, AMacro);
+    END;
+
+    LOCAL PROCEDURE ParseDecimalLevel3@1101257002(VAR AResult@8053000 : Decimal;VAR AParsePos@8053002 : Integer;AMacro@8053001 : Text[1024]);
+    VAR
+      fltResult@1101257001 : Decimal;
+    BEGIN
+      ParseDecimalLevel4(AResult, AParsePos, AMacro);
+      WHILE COPYSTR(AMacro, AParsePos, 1) = '^' DO BEGIN
+        AParsePos += 1;
+        ParseDecimalLevel4(fltResult, AParsePos, AMacro);
+        AResult := POWER(AResult, fltResult);
+        ParseSkipBlanks(AParsePos, AMacro);
+      END;
+      ParseSkipBlanks(AParsePos, AMacro);
+    END;
+
+    LOCAL PROCEDURE ParseDecimalLevel4@1101257003(VAR AResult@8053000 : Decimal;VAR AParsePos@8053002 : Integer;AMacro@8053001 : Text[1024]);
+    BEGIN
+      ParseSkipBlanks(AParsePos, AMacro);
+      IF AParsePos <= STRLEN(AMacro) THEN
+      BEGIN
+        IF COPYSTR(AMacro, AParsePos, 1) = '(' THEN BEGIN
+          AParsePos += 1;
+          ParseDecimalLevel1(AResult, AParsePos, AMacro);
+          ParseSkipBlanks(AParsePos, AMacro);
+          IF COPYSTR(AMacro, AParsePos, 1) = ')' THEN
+            AParsePos += 1;
+        END ELSE
+          ParseDecimalLevel5(AResult, AParsePos, AMacro);
+      END;
+      ParseSkipBlanks(AParsePos, AMacro);
+    END;
+
+    LOCAL PROCEDURE ParseDecimalLevel5@1101257005(VAR AResult@8053000 : Decimal;VAR AParsePos@8053002 : Integer;AMacro@8053001 : Text[1024]);
+    VAR
+      strName@8053003 : Text[1024];
+      txtParams@8053005 : ARRAY [20] OF Text[1024];
+      txtTmp@8053007 : Text[1024];
+      intParamCount@8053004 : Integer;
+    BEGIN
+      ParseSkipBlanks(AParsePos, AMacro);
+      IF AParsePos <= STRLEN(AMacro) THEN BEGIN
+        strName := ParseReadName(AParsePos, AMacro);
+        IF strName <> '' THEN BEGIN
+          IF COPYSTR(AMacro, AParsePos, 1) = '(' THEN BEGIN
+            ParseReadFunctionParams(AParsePos, AMacro, intParamCount, txtParams);
+            CalcFunction(strName, intParamCount, txtParams, AResult, txtTmp);
+          END ELSE BEGIN
+            // variable
+            IF UPPERCASE(strName) = 'PI' THEN
+              AResult := 3.14
+            ELSE
+              ERROR(Text001);
+          END;
+        END ELSE
+          AResult := ParseReadDecimalValue(AParsePos, AMacro);
+      END;
+      ParseSkipBlanks(AParsePos, AMacro);
+    END;
+
+    PROCEDURE CalcDecimalExpr@8053006(p_txtExpr@8053000 : Text[1024]) decResult : Decimal;
+    VAR
+      intPos@8053001 : Integer;
+    BEGIN
+      decResult := 0;
+      intPos := 1;
+      ParseDecimalLevel1(decResult, intPos, p_txtExpr);
+    END;
+
+    PROCEDURE ReplaceCommaWithDot@8053000(P_CommaDecimalText@8053000 : Text[250]) R_DotDecimalTxt : Text[250];
+    BEGIN
+      R_DotDecimalTxt := CONVERTSTR(P_CommaDecimalText,',','.');
+      R_DotDecimalTxt := DELCHR(R_DotDecimalTxt);           // Suppression des espaces
+      R_DotDecimalTxt := DELCHR(R_DotDecimalTxt, '=', '˜'); // Suppression s'parateur de millier
+      EXIT(R_DotDecimalTxt);
+    END;
+
+    PROCEDURE ReplaceSubstring@8053001(P_String@8053000 : Text[250];P_FromString@8053001 : Text[250];P_ToString@8053002 : Text[250]) R_String : Text[250];
+    VAR
+      L_Position@8053003 : Integer;
+    BEGIN
+      R_String := P_String;
+      L_Position := STRPOS(R_String,P_FromString);
+      WHILE L_Position <> 0 DO BEGIN
+        R_String := DELSTR(R_String,L_Position,STRLEN(P_FromString));
+        R_String := INSSTR(R_String,P_ToString,L_Position);
+        L_Position := STRPOS(R_String,P_FromString);
+      END;
+      EXIT(R_String);
+    END;
+
+    PROCEDURE InitCMC@8053005(P_CampaignNo@8053000 : Code[10];P_SpeciesCode@8053001 : Code[10];RegionCode_P@60000 : Code[10]);
+    BEGIN
+      G_CampaignNo := P_CampaignNo;
+      G_SpeciesCode := P_SpeciesCode;
+      // --> 20150317-CER06-TER01.01.00-220-BSI01
+      RegionCode_G := RegionCode_P;
+      // <-- 20150317-CER06-TER01.01.00-220-BSI01
+    END;
+
+    PROCEDURE CalcPercent@8053002(p_txtParams@8053000 : ARRAY [20] OF Text[1024]) R_Result : Decimal;
+    VAR
+      L_decParam1@8053001 : Decimal;
+    BEGIN
+      L_decParam1 := CalcDecimalExpr(p_txtParams[1]);
+      R_Result := (100-L_decParam1)/100;
+      EXIT(R_Result);
+    END;
+
+    PROCEDURE CalcCoeff@8053004(p_txtName@8053003 : Text[1024];p_txtParams@8053001 : ARRAY [20] OF Text[1024]) R_result : Decimal;
+    VAR
+      L_RecWeightConvCoeff@8053000 : Record 8053002;
+      L_AnalyseCharacteristic@8053004 : Record 8053092;
+      L_decParam1@8053002 : Decimal;
+    BEGIN
+      L_decParam1 := CalcDecimalExpr(p_txtParams[1]);
+      L_AnalyseCharacteristic.RESET;
+      L_AnalyseCharacteristic.SETRANGE("Coeff Table Code",p_txtName);
+      IF L_AnalyseCharacteristic.FINDSET THEN BEGIN
+      L_RecWeightConvCoeff.SETRANGE("Campaign No.",G_CampaignNo);
+      L_RecWeightConvCoeff.SETRANGE("Species Code",G_SpeciesCode);
+      L_RecWeightConvCoeff.SETRANGE("Analysis Code",L_AnalyseCharacteristic.Code);
+      // --> 20150317-CER06-TER01.01.00-220-BSI01
+      L_RecWeightConvCoeff.SETRANGE("Region Code",RegionCode_G);
+      // <-- 20150317-CER06-TER01.01.00-220-BSI01
+      L_RecWeightConvCoeff.SETFILTER("Minimum Range Value",'<=%1',L_decParam1);
+      L_RecWeightConvCoeff.SETFILTER("Maximum Range Value",'>=%1|%2',L_decParam1, 0);
+      IF L_RecWeightConvCoeff.FINDFIRST THEN
+        R_result := L_RecWeightConvCoeff.Coefficient/1000
+      ELSE
+        R_result := 0;
+      EXIT(R_result);
+
+      END;
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+
+      20110601-Wi00-CMC01.04 : Version RTM 01.04 - NavAgri
+      20111224-Cer12-CMC02.01.00-SD : ADDCODE (Code Analyse)
+      20121213-Wi00-CMC02.02.00-SD  : ADDCODE (Correction)
+      20150317-CER06-TER01.01.00-220-BSI01 : MODCODE (Code r'gion dans bar'me conversion de poids)
+      // --> 3LI END
+    }
+    END.
+  }
+}
+

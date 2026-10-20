@@ -1,0 +1,670 @@
+OBJECT Codeunit 8087776 CMC SICAPA Import facture Nav
+{
+  OBJECT-PROPERTIES
+  {
+    Date=30/01/26;
+    Heure=11:04:42;
+    Modifi'=Oui;
+    Liste versions=CMC02.02.00,ADV18.06.01,SP3548;
+  }
+  PROPERTIES
+  {
+    TableNo=8087768;
+    OnRun=VAR
+            "<-- 3LI LOCALS -->"@1000000001 : Integer;
+            TableSetup_L@1000000000 : Record 8053408;
+            TableImportHead_L@1000000003 : Record 8087767;
+            TableImportLine_L@1000000004 : Record 8087768;
+            TablePurchaseHeader_L@1000000014 : Record 38;
+            TablePurchaseLine_L@1000000015 : Record 39;
+            TablePurchRcptLine_L@1000000017 : Record 121;
+            TableReturnShipLine_L@1000000002 : Record 6651;
+            TableItemCrossRef_L@1000000008 : Record 5717;
+            TableVendorVatReg_L@1000000009 : Record 8053499;
+            PurchaseHeader_L@1000000016 : Boolean;
+            TableItem_L@1000000006 : Record 27;
+            TableDftDim_L@1000000018 : Record 352;
+            TableLocation_L@1000000022 : Record 14;
+            ConvUnite_L@1000000007 : Decimal;
+            Axe1_L@1000000010 : Code[20];
+            Axe2_L@1000000011 : Code[20];
+            Item_L@1000000012 : Code[20];
+            Variant_L@1000000013 : Code[20];
+            TextTemp_L@1000000019 : Text[30];
+            intPos1_L@1000000020 : Integer;
+            Magasin_L@1000000021 : Code[10];
+            UnitPrice_L@1000000005 : Decimal;
+            PurchasesPayablesSetup_L@1000000023 : Record 312;
+          BEGIN
+            IF TableSetup_L.FINDFIRST AND TableSetup_L."Import Invoice" THEN BEGIN
+              MoteurInterface_G.GetParameter(TableSetup_L.CodeUnitIntegInvoiceConn, ConnectorName_G, ImpExpFolder_G,
+                LogFolder_G, ExtensionFile_G, PrefixFile_G);
+              MoteurInterface_G.GetTemplatesCode(ConnectorName_G, ItemTemplateCode_G, CustomerTemplateCode_G, VendorTemplateCode_G,
+                ContactTemplateCode_G, AccountTemplateCode_G, GlobalTemplateCode_G);
+              // --> 20210512-WI00-ADV01.01.00-SP3548-JML01
+              PurchasesPayablesSetup_L.GET;
+              // < -- 20210512-WI00-ADV01.01.00-SP3548-JML01
+              PurchaseHeader_L := FALSE;
+
+              // Traiter la facture
+              TableImportHead_L.SETRANGE("Emetteur Type", "Emetteur Type");
+              TableImportHead_L.SETRANGE(Emetteur, Emetteur);
+              TableImportHead_L.SETRANGE("Destinataire Type", "Destinataire Type");
+              TableImportHead_L.SETRANGE(Destinataire, Destinataire);
+              TableImportHead_L.SETRANGE("Type Facture", "Type Facture");
+              TableImportHead_L.SETRANGE("Num Facture", "Num Facture");
+              TableImportHead_L.SETRANGE(TableImportHead_L.HoroIntegration, 0DT);
+              IF NOT TableImportHead_L.FINDFIRST THEN BEGIN
+                ERROR(Text0001, "Num Facture");
+              END ELSE BEGIN
+                IF TableImportHead_L.HoroIntegration <> 0DT THEN BEGIN
+                  ERROR(Text0002, "Num Facture");
+                END ELSE BEGIN
+
+                  // Contr"ler que tous les produits ont un BR associ'
+                  TableImportLine_L.SETRANGE("Emetteur Type", "Emetteur Type");
+                  TableImportLine_L.SETRANGE(Emetteur, Emetteur);
+                  TableImportLine_L.SETRANGE("Destinataire Type", "Destinataire Type");
+                  TableImportLine_L.SETRANGE(Destinataire, Destinataire);
+                  TableImportLine_L.SETRANGE("Type Facture", "Type Facture");
+                  TableImportLine_L.SETRANGE("Num Facture", "Num Facture");
+                  // Traiter toutes les lignes ou une seule ?
+                  IF "Num Ligne" = 0 THEN BEGIN
+                    TableImportLine_L.SETRANGE("Num Ligne");
+                  END ELSE BEGIN
+                    TableImportLine_L.SETRANGE("Num Ligne", "Num Ligne");
+                  END;
+
+                  IF TableImportLine_L.FINDSET THEN BEGIN
+                    REPEAT
+                      IF ((TableImportLine_L.Type <> TableImportLine_L.Type::"G/L Account") AND
+                        ((TableImportLine_L."Receipt No." = '') OR (TableImportLine_L."Receipt Line No." = 0))) THEN BEGIN
+                        ERROR(Text0003, "Num Facture", TableImportLine_L."Num Ligne");
+                      END;
+                      IF (TableImportLine_L.Type = TableImportLine_L.Type::"G/L Account") THEN BEGIN
+                        // Recherche si article ?
+                        CLEAR(Item_L);
+                        CLEAR(Variant_L);
+                        CLEAR(Axe1_L);
+                        CLEAR(Axe2_L);
+
+                        TableItemCrossRef_L.SETRANGE("Cross-Reference Type", TableItemCrossRef_L."Cross-Reference Type"::"Bar Code");
+                        TableItemCrossRef_L.SETRANGE("Cross-Reference No.", FORMAT(TableImportLine_L.Ean13));
+                        IF TableItemCrossRef_L.FINDFIRST() THEN BEGIN
+                          Item_L := TableItemCrossRef_L."Item No.";
+                          Variant_L := TableItemCrossRef_L."Variant Code";
+                        END ELSE BEGIN
+                          IF TableImportLine_L."Code Produit fournisseur" <> '' THEN BEGIN
+                            TableItemCrossRef_L.SETRANGE("Cross-Reference Type", TableItemCrossRef_L."Cross-Reference Type"::Vendor);
+                            TableItemCrossRef_L.SETRANGE("Cross-Reference Type No.", TableSetup_L.Vendor);
+                            TableItemCrossRef_L.SETRANGE("Cross-Reference No.", TableImportLine_L."Code Produit fournisseur");
+                            IF TableItemCrossRef_L.FINDFIRST THEN BEGIN
+                              Item_L := TableItemCrossRef_L."Item No.";
+                              Variant_L := TableItemCrossRef_L."Variant Code";
+                            END;
+                          END;
+                        END;
+                        //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                        // BEFORE
+                        {
+                        IF Item_L = '' THEN BEGIN
+                          ERROR(Text0007, TableImportLine_L.Ean13, TableItemCrossRef_L.TABLECAPTION,
+                            "Num Facture", TableImportLine_L."Num Ligne");
+                        END;
+                        }
+                        //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                        // Contr"le correspondance Magasin r'ception.
+                        //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                        // BEFORE
+                        {
+                        IF TableImportHead_L.DPNavAgri = '' THEN BEGIN
+                          TextTemp_L := MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G, 'Location', 'Code',
+                            TableImportHead_L.DPEan13, TRUE, TRUE);
+                          intPos1_L := 1;
+                          Magasin_L := ToolsFile_G.ExtractTextCsv(TextTemp_L, intPos1_L, 'Ø', 30);
+                        }
+                        // AFTER
+                        Magasin_L := TableImportHead_L.DPNavAgri;
+                        //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                        IF Magasin_L = '' THEN BEGIN
+                          ERROR(Text0005, TableImportHead_L.FIELDCAPTION(DPNavAgri),
+                            TableImportHead_L.DPNavAgri, TableImportLine_L."Num Facture",
+                            TablePurchaseLine_L."Line No.");
+                        END ELSE BEGIN
+                          IF TableLocation_L.GET(Magasin_L) THEN BEGIN
+                            Axe1_L := TableLocation_L."Analytic Section";
+                          END;
+                          //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                          // BEFORE
+                          {
+                          TableImportHead_L.DPNavAgri := Magasin_L;
+                          }
+                          //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                        END;
+                        //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                        // BEFORE
+                        {
+                        END;
+                        }
+                        //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+
+                        IF TableDftDim_L.GET(27, Item_L, TableDftDim_L.Type::"Regular Dimension", 'PRODUIT') THEN BEGIN
+                          Axe2_L := TableDftDim_L."Dimension Value Code";
+                        END;
+                        //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                        // BEFORE
+                        {
+                        IF (Axe1_L = '') THEN BEGIN
+                          ERROR(Text0006, 1, "Num Facture", TableImportLine_L."Num Ligne");
+                        END;
+                        IF (Axe2_L = '') THEN BEGIN
+                          ERROR(Text0006, 2, "Num Facture", TableImportLine_L."Num Ligne");
+                        END;
+                        }
+                        //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                      END;
+
+                      //-----------------------------------------------------
+                      // Cr'ation des factures
+                      //-----------------------------------------------------
+                      IF NOT PurchaseHeader_L THEN BEGIN
+                        //-->20151119-INT08-CMC02.02.00-ADVITAM-CDL011
+                        IF TableImportHead_L."Type Facture" = '381' THEN BEGIN
+                          TablePurchaseHeader_L."Document Type" := TablePurchaseHeader_L."Document Type"::"Credit Memo";
+                        END ELSE BEGIN
+                        //<--20151119-INT08-CMC02.02.00-ADVITAM-CDL011
+                          TablePurchaseHeader_L."Document Type" := TablePurchaseHeader_L."Document Type"::Invoice;
+                        //-->20151119-INT08-CMC02.02.00-ADVITAM-CDL011
+                        END;
+                        //<--20151119-INT08-CMC02.02.00-ADVITAM-CDL011
+                        IF NOT TablePurchaseHeader_L.INSERT(TRUE) THEN BEGIN
+                          ERROR(Text0013, TableImportHead_L.TABLECAPTION, TableImportHead_L."No.", 0);
+                        END;
+                        //TablePurchaseHeader_L.VALIDATE("Buy-from Vendor No.", TableSetup_L.Vendor);
+                        TablePurchaseHeader_L.VALIDATE("Buy-from Vendor No.", TableImportHead_L."Vendor No.");
+                        //-->20151110-INT08-CMC02.02.00-ADVITAM-CDL008
+                        // BEFORE
+                        {
+                        TablePurchaseHeader_L.VALIDATE("Posting Date", TableImportHead_L."Date facture");
+                        }
+                        // AFTER
+
+                        // --> 20210512-WI00-ADV01.01.00-SP3548-JML01
+                        {BEFORE
+                        TablePurchaseHeader_L.VALIDATE("Posting Date", TODAY);
+                        AFTER}
+                        IF PurchasesPayablesSetup_L."Import / Default Posting Date" =
+                          PurchasesPayablesSetup_L."Import / Default Posting Date"::"Document Date"
+                        THEN TablePurchaseHeader_L.VALIDATE("Posting Date", TableImportHead_L."Date facture")
+                        ELSE TablePurchaseHeader_L.VALIDATE("Posting Date", TODAY);
+                        // < -- 20210512-WI00-ADV01.01.00-SP3548-JML01
+
+                        TablePurchaseHeader_L.VALIDATE("Document Date", TableImportHead_L."Date facture");
+                        //<--20151110-INT08-CMC02.02.00-ADVITAM-CDL008
+
+                        TablePurchaseHeader_L.VALIDATE("Due Date", TableImportHead_L."Date 'ch'ance");
+                        //-->20151119-INT08-CMC02.02.00-ADVITAM-CDL011
+                        IF TableImportHead_L."Type Facture" = '381' THEN BEGIN
+                          TablePurchaseHeader_L.VALIDATE(TablePurchaseHeader_L."Vendor Cr. Memo No.", TableImportHead_L."Num Facture");
+                        END ELSE BEGIN
+                        //<--20151119-INT08-CMC02.02.00-ADVITAM-CDL011
+                          TablePurchaseHeader_L.VALIDATE("Vendor Invoice No.", TableImportHead_L."Num Facture");
+                        //-->20151119-INT08-CMC02.02.00-ADVITAM-CDL011
+                        END;
+                        //<--20151119-INT08-CMC02.02.00-ADVITAM-CDL011
+                        IF (TableImportHead_L."VAT Registration No." <> '') THEN BEGIN
+                          TablePurchaseHeader_L.VALIDATE("VAT Registration No.", TableImportHead_L."VAT Registration No.");
+                        END ELSE BEGIN
+                          TableVendorVatReg_L.SETRANGE("Vendor No.", TablePurchaseHeader_L."Buy-from Vendor No.");
+                          TableVendorVatReg_L.SETRANGE("Country/Region Code", 'FR');
+                          IF TableVendorVatReg_L.FINDFIRST THEN BEGIN
+                            IF TableVendorVatReg_L."VAT Registration No." <> '' THEN BEGIN
+                              TablePurchaseHeader_L.VALIDATE("VAT Registration No.", TableVendorVatReg_L."VAT Registration No.");
+                            END;
+                          END;
+                        END;
+            //          TablePurchaseHeader_L."Pay-to Vendor No."
+                        IF NOT TablePurchaseHeader_L.MODIFY(TRUE) THEN BEGIN
+                          ERROR(Text0013, TableImportHead_L.TABLECAPTION, TableImportHead_L."No.", 0);
+                        END;
+
+                        PurchaseHeader_L := TRUE;
+                      END;
+
+                      IF (TableImportLine_L.Type <> TableImportLine_L.Type::"G/L Account") THEN BEGIN
+                        //-->20151119-INT08-CMC02.02.00-ADVITAM-CDL011
+                        IF TableImportHead_L."Type Facture" = '381' THEN BEGIN
+                          IF NOT TableReturnShipLine_L.GET(TableImportLine_L."Receipt No.", TableImportLine_L."Receipt Line No.") THEN BEGIN
+                            ERROR(Text0004, TableImportLine_L."Receipt No." + '-' + FORMAT(TableImportLine_L."Receipt Line No."),
+                              TableReturnShipLine_L.TABLECAPTION, TableImportLine_L."Num Facture", TableImportLine_L."Num Ligne");
+                          END;
+                        END ELSE BEGIN
+                        //<--20151119-INT08-CMC02.02.00-ADVITAM-CDL011
+                          IF NOT TablePurchRcptLine_L.GET(TableImportLine_L."Receipt No.", TableImportLine_L."Receipt Line No.") THEN BEGIN
+                            ERROR(Text0004, TableImportLine_L."Receipt No." + '-' + FORMAT(TableImportLine_L."Receipt Line No."),
+                              TablePurchRcptLine_L.TABLECAPTION, TableImportLine_L."Num Facture", TableImportLine_L."Num Ligne");
+                          END;
+                        //-->20151119-INT08-CMC02.02.00-ADVITAM-CDL011
+                        END;
+                        //<--20151119-INT08-CMC02.02.00-ADVITAM-CDL011
+                      END;
+
+                      CLEAR(TablePurchaseLine_L);
+                      TablePurchaseLine_L.VALIDATE("Document Type", TablePurchaseHeader_L."Document Type");
+                      TablePurchaseLine_L.VALIDATE("Document No.", TablePurchaseHeader_L."No.");
+                      TablePurchaseLine_L.VALIDATE("Line No.", TableImportLine_L."Num Ligne");
+                      TablePurchaseLine_L.VALIDATE(Type, TableImportLine_L.Type);
+                      // Article existe
+                      IF (TableImportLine_L.Type = TableImportLine_L.Type::Item) THEN BEGIN
+                        IF NOT TableItem_L.GET(TableImportLine_L."Item No. NavAgri") THEN BEGIN
+                          ERROR(Text0019, TableImportLine_L."Item No. NavAgri", TableItem_L.TABLECAPTION,
+                            TableImportHead_L."No.", TablePurchaseLine_L."Line No.");
+                        END;
+                      END;
+                      TablePurchaseLine_L.VALIDATE("No.", TableImportLine_L."Item No. NavAgri");
+
+                      //-->20151110-INT08-CMC02.02.00-ADVITAM-CDL009
+                      // BEFORE
+                      {
+                      // Correspondance unit' SICAPA
+                      IF (TableImportLine_L.Type = TableImportLine_L.Type::Item) THEN BEGIN
+                        UniteEdi_L := MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G, 'Unit of Measure', 'Code',
+                          TablePurchaseLine_L."Unit of Measure Code", FALSE, TRUE);
+                        IF UniteEdi_L = '' THEN BEGIN
+                          ERROR(Text0005, TablePurchaseLine_L.FIELDCAPTION("Unit of Measure Code"),
+                            TablePurchaseLine_L."Unit of Measure Code", TableImportLine_L."Num Facture",
+                            TablePurchaseLine_L."Line No.");
+                        END;
+                      END ELSE BEGIN
+                        UniteEdi_L := TableImportLine_L.Unite;
+                        CASE UniteEdi_L OF
+                          'L': UniteEdi_L := 'LTR';
+                          'KG': UniteEdi_L := 'KGM';
+                          //-->20150710-INT08-CMC02.02.00-ADVITAM-CDL003
+                          'UN': UniteEdi_L := 'PCE';
+                          //<--20150710-INT08-CMC02.02.00-ADVITAM-CDL003
+                        END;
+                      END;
+
+                      // Unit' chez Sicapa.
+                      UniteSicapa_L := TableImportLine_L.Unite;
+                      }
+                      //<--20151110-INT08-CMC02.02.00-ADVITAM-CDL009
+
+            //          CLEAR(UniteSicapa_L);
+            //          IF TableImportLine_L."Code Produit" <> '' THEN BEGIN
+            //            IF TableSicapaItem_L.GET(TableImportLine_L."Code Produit") THEN BEGIN
+            //              UniteSicapa_L := TableSicapaItem_L."Unite Vente";
+            //            END;
+            //          END;
+            //          IF UniteSicapa_L = '' THEN BEGIN
+            //            TableSicapaItem_L.SETRANGE("Code EAN", FORMAT(TableImportLine_L.Ean13));
+            //            IF TableSicapaItem_L.FINDFIRST THEN BEGIN
+            //              UniteSicapa_L := TableSicapaItem_L."Unite Vente";
+            //            END;
+            //            IF UniteSicapa_L = '' THEN BEGIN
+            //              ERROR(Text0019, TableImportLine_L.Ean13, TableSicapaItem_L.TABLECAPTION, TableImportLine_L."Num Facture",
+            //                TableImportLine_L."Num Ligne");
+            //            END;
+            //          END;
+
+                      //-->20151110-INT08-CMC02.02.00-ADVITAM-CDL009
+                      // BEFORE
+                      {
+                      // Test Unit' convertible (uS = UNav (ConvUnite = 0, 1 si idem
+                      // Pb Sicapa n'envoi pas tout avec les Codes EDI
+                      CASE UniteSicapa_L OF
+                        'L': UniteSicapa_L := 'LTR';
+                        'KG': UniteSicapa_L := 'KGM';
+                        //-->20150710-INT08-CMC02.02.00-ADVITAM-CDL003
+                        'UN': UniteSicapa_L := 'PCE';
+                        //<--20150710-INT08-CMC02.02.00-ADVITAM-CDL003
+                        //-->20150718-INT08-CMC02.02.00-ADVITAM-CDL005
+                        'DOS': UniteSicapa_L := 'DOSE';
+                        //<--20150718-INT08-CMC02.02.00-ADVITAM-CDL005
+                      END;
+                      //-->20150718-INT08-CMC02.02.00-ADVITAM-CDL005
+                      CASE UniteEdi_L OF
+                        'DOS': UniteEdi_L := 'DOSE';
+                      END;
+                      //<--20150718-INT08-CMC02.02.00-ADVITAM-CDL005
+                      CASE TRUE OF
+                        UniteEdi_L = UniteSicapa_L: BEGIN
+                          ConvUnite_L := 1 ;
+                        END;
+                        ((UniteEdi_L = 'KGM') AND (UniteSicapa_L = 'T')): BEGIN
+                          ConvUnite_L := 0.001;
+                        END;
+                        ((UniteEdi_L = 'T') AND (UniteSicapa_L = 'KGM')): BEGIN
+                          ConvUnite_L := 1000;
+                        END;
+                        //-->20150713-INT08-CMC02.02.00-ADVITAM-CDL004
+                        // BEFORE
+                        {
+                        (((UPPERCASE(UniteEdi_L) = 'UN') AND (UPPERCASE(UniteSicapa_L) = 'DOSE')) OR
+                        ((UPPERCASE(UniteEdi_L) = 'DOSE') AND (UPPERCASE(UniteSicapa_L) = 'UN'))): BEGIN
+                        }
+                        // AFTER
+                        (((UPPERCASE(UniteEdi_L) = 'PCE') AND (UPPERCASE(UniteSicapa_L) = 'DOSE')) OR
+                        ((UPPERCASE(UniteEdi_L) = 'DOSE') AND (UPPERCASE(UniteSicapa_L) = 'PCE'))): BEGIN
+                        //<--20150713-INT08-CMC02.02.00-ADVITAM-CDL004
+                          ConvUnite_L := 1;
+                        END;
+                        //--20150709-INT08-CMC02.02.00-ADVITAM-CDL001
+                        // BEFORE
+                        {
+                        (((UPPERCASE(UniteSicapa_L) = 'UN') AND (UPPERCASE(UniteEdi_L) = 'L')) OR
+                        ((UPPERCASE(UniteSicapa_L) = 'UN') AND (UPPERCASE(UniteEdi_L) = 'KGM'))): BEGIN
+                        }
+                        // AFTER
+                        //-->20150713-INT08-CMC02.02.00-ADVITAM-CDL004
+                        // BEFORE
+                        {
+                        (((UPPERCASE(UniteSicapa_L) = 'UN') AND (UPPERCASE(UniteEdi_L) = 'LTR')) OR
+                        ((UPPERCASE(UniteSicapa_L) = 'UN') AND (UPPERCASE(UniteEdi_L) = 'KGM'))): BEGIN
+                        }
+                        // AFTER
+                        (((UPPERCASE(UniteSicapa_L) = 'PCE') AND (UPPERCASE(UniteEdi_L) = 'LTR')) OR
+                        ((UPPERCASE(UniteSicapa_L) = 'PCE') AND (UPPERCASE(UniteEdi_L) = 'KGM'))): BEGIN
+                        //<--20150713-INT08-CMC02.02.00-ADVITAM-CDL004
+                        //<--20150709-INT08-CMC02.02.00-ADVITAM-CDL001
+                          IF TableItem_L.Capacity <> 0 THEN BEGIN
+                            //-->20150730-INT08-CMC02.02.00-ADVITAM-CDL006
+                            // BEFORE
+                            {
+                            ConvUnite_L := 1 / TableItem_L.Capacity;
+                            }
+                            // AFTER
+                            ConvUnite_L := TableItem_L.Capacity;
+                            //<--20150730-INT08-CMC02.02.00-ADVITAM-CDL006
+                          END;
+                        END;
+                        //--20150709-INT08-CMC02.02.00-ADVITAM-CDL001
+                        // BEFORE
+                        {
+                        (((UPPERCASE(UniteSicapa_L) = 'L') AND (UPPERCASE(UniteEdi_L) = 'UN')) OR
+                        ((UPPERCASE(UniteSicapa_L) = 'KGM') AND (UPPERCASE(UniteEdi_L) = 'UN'))): BEGIN
+                        }
+                        // AFTER
+                        //-->20150713-INT08-CMC02.02.00-ADVITAM-CDL004
+                        // BEFORE
+                        {
+                        (((UPPERCASE(UniteSicapa_L) = 'LTR') AND (UPPERCASE(UniteEdi_L) = 'UN')) OR
+                        ((UPPERCASE(UniteSicapa_L) = 'KGM') AND (UPPERCASE(UniteEdi_L) = 'UN'))): BEGIN
+                        }
+                        // AFTER
+                        (((UPPERCASE(UniteSicapa_L) = 'LTR') AND (UPPERCASE(UniteEdi_L) = 'PCE')) OR
+                        ((UPPERCASE(UniteSicapa_L) = 'KGM') AND (UPPERCASE(UniteEdi_L) = 'PCE'))): BEGIN
+                        //<--20150713-INT08-CMC02.02.00-ADVITAM-CDL004
+                        //<--20150709-INT08-CMC02.02.00-ADVITAM-CDL001
+                          IF TableItem_L.Capacity <> 0 THEN BEGIN
+                            //-->20150730-INT08-CMC02.02.00-ADVITAM-CDL006
+                            // BEFORE
+                            {
+                            ConvUnite_L := TableItem_L.Capacity;
+                            }
+                            // AFTER
+                            ConvUnite_L := 1 / TableItem_L.Capacity;
+                            //<--20150730-INT08-CMC02.02.00-ADVITAM-CDL006
+                          END;
+                        END;
+                        ELSE BEGIN
+                          ConvUnite_L := 0;
+                          ERROR(Text0016, TablePurchaseLine_L."No.", TableItemCrossRef_L."Cross-Reference No.", UniteSicapa_L, UniteEdi_L,
+                            TableImportLine_L."Num Facture", TableImportLine_L."Num Ligne");
+                        END;
+                      END;
+                      }
+                      // AFTER
+                      //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                      IF TableImportLine_L.Type <> TableImportLine_L.Type::"G/L Account" THEN BEGIN
+                      //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                        ConvUnite_L := TableImportLine_L."Coefficient Unit";
+                        IF ConvUnite_L = 0 THEN BEGIN
+                          ERROR(Text0016, TablePurchaseLine_L."No.", TableItemCrossRef_L."Cross-Reference No.", TableImportLine_L.Unite,
+                            TablePurchaseLine_L."Unit of Measure Code", TableImportLine_L."Num Facture", TableImportLine_L."Num Ligne");
+                        END;
+                      //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                      END;
+                      //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                      //<--20151110-INT08-CMC02.02.00-ADVITAM-CDL009
+
+                      TablePurchaseLine_L.VALIDATE("Variant Code", TableImportLine_L."Variant Code NavAgri");
+                      //-->20151119-INT08-CMC02.02.00-ADVITAM-CDL011
+                      IF TableImportHead_L."Type Facture" = '381' THEN BEGIN
+                        TablePurchaseLine_L.VALIDATE("Location Code", TableReturnShipLine_L."Location Code");
+                        TablePurchaseLine_L.VALIDATE("Buy-from Vendor No.", TableReturnShipLine_L."Buy-from Vendor No.");
+                      END ELSE BEGIN
+                      //<--20151119-INT08-CMC02.02.00-ADVITAM-CDL011
+                        TablePurchaseLine_L.VALIDATE("Location Code", TablePurchRcptLine_L."Location Code");
+                        TablePurchaseLine_L.VALIDATE("Buy-from Vendor No.", TablePurchRcptLine_L."Buy-from Vendor No.");
+                      //-->20151119-INT08-CMC02.02.00-ADVITAM-CDL011
+                      END;
+                      //<--20151119-INT08-CMC02.02.00-ADVITAM-CDL011
+
+                      //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                      IF TableImportLine_L.Type <> TableImportLine_L.Type::"G/L Account" THEN BEGIN
+                      //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                        //-->20150730-INT08-CMC02.02.00-ADVITAM-CDL006
+                        // BEFORE
+                        {
+                        TablePurchaseLine_L.VALIDATE(Quantity, TableImportLine_L."Quantite facture");
+                        }
+                        // AFTER
+                        TablePurchaseLine_L.VALIDATE(Quantity, TableImportLine_L."Quantite facture" * ConvUnite_L);
+                        //<--20150730-INT08-CMC02.02.00-ADVITAM-CDL006
+                        TablePurchaseLine_L.VALIDATE("First Receipt Quantity", TableImportLine_L."Quantite facture" * ConvUnite_L);
+                        //-->20150731-INT08-CMC02.02.00-ADVITAM-CDL007
+                        IF ConvUnite_L = 1 THEN BEGIN
+                        //<--20150731-INT08-CMC02.02.00-ADVITAM-CDL007
+                          // <-- 20201109-CLA87065-ADVITAM-XPE001
+                          //UnitPrice_L := TableImportLine_L.Montant / TablePurchaseLine_L.Quantity;
+                          UnitPrice_L := TableImportLine_L.Montant / TableImportLine_L."Quantite facture";
+                          IF (UnitPrice_L <> TableImportLine_L."Prix net") THEN BEGIN
+                            //TablePurchaseLine_L.VALIDATE("Direct Unit Cost", TableImportLine_L.Montant / TablePurchaseLine_L.Quantity);
+                            TablePurchaseLine_L.VALIDATE("Direct Unit Cost", TableImportLine_L.Montant / TableImportLine_L."Quantite facture")
+            ;
+                          END ELSE BEGIN
+                          // --> 20201109-CLA87065-ADVITAM-XPE001
+                            TablePurchaseLine_L.VALIDATE("Direct Unit Cost", TableImportLine_L."Prix net");
+                          // <-- 20201109-CLA87065-ADVITAM-XPE001
+                          END;
+                          // --> 20201109-CLA87065-ADVITAM-XPE001
+                        //-->20150731-INT08-CMC02.02.00-ADVITAM-CDL007
+                        END ELSE BEGIN
+                          TablePurchaseLine_L.VALIDATE("Direct Unit Cost", TableImportLine_L.Montant / TablePurchaseLine_L.Quantity);
+                        END;
+                        //<--20150731-INT08-CMC02.02.00-ADVITAM-CDL007
+                      //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                      END;
+                      //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+
+                      TablePurchaseLine_L.VALIDATE("VAT Base Amount", TableImportLine_L.Montant);
+                      //-->20151119-INT08-CMC02.02.00-ADVITAM-CDL011
+                      IF TableImportHead_L."Type Facture" = '381' THEN BEGIN
+                        TablePurchaseLine_L.VALIDATE("Return Shipment No.", TableImportLine_L."Receipt No.");
+                        TablePurchaseLine_L.VALIDATE("Return Shipment Line No.", TableImportLine_L."Receipt Line No.");
+                        TablePurchaseLine_L.VALIDATE("CMC Campaign No.", TableReturnShipLine_L."Compain No.");
+                      END ELSE BEGIN
+                      //<--20151119-INT08-CMC02.02.00-ADVITAM-CDL011
+                        TablePurchaseLine_L.VALIDATE("Receipt No.", TableImportLine_L."Receipt No.");
+                        TablePurchaseLine_L.VALIDATE("Receipt Line No.", TableImportLine_L."Receipt Line No.");
+                        TablePurchaseLine_L.VALIDATE("CMC Campaign No.", TablePurchRcptLine_L."Compain No.");
+                      //-->20151119-INT08-CMC02.02.00-ADVITAM-CDL011
+                      END;
+                      //<--20151119-INT08-CMC02.02.00-ADVITAM-CDL011
+                      //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                      // BEFORE
+                      {
+                      // Les axes analytiques.
+                      IF (TableImportLine_L.Type = TableImportLine_L.Type::"G/L Account") THEN BEGIN
+                        TablePurchaseLine_L.VALIDATE("Shortcut Dimension 1 Code", Axe1_L);
+                        TablePurchaseLine_L.VALIDATE("Shortcut Dimension 2 Code", Axe2_L);
+                      END;
+                      }
+                      //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                      IF NOT TablePurchaseLine_L.INSERT() THEN BEGIN
+                        ERROR(Text0013, TablePurchaseLine_L.TABLECAPTION, TablePurchaseLine_L."No.", TablePurchaseLine_L."Line No.");
+                      END;
+                      //-->20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                      // Les axes analytiques.
+                      IF (TableImportLine_L.Type = TableImportLine_L.Type::"G/L Account") THEN BEGIN
+                        IF (Axe1_L <> '') OR (Axe2_L <> '') THEN BEGIN
+                          IF Axe1_L <> '' THEN BEGIN
+                            TablePurchaseLine_L.VALIDATE("Shortcut Dimension 1 Code", Axe1_L);
+                          END;
+                          IF Axe2_L <> '' THEN BEGIN
+                            TablePurchaseLine_L.VALIDATE("Shortcut Dimension 2 Code", Axe2_L);
+                          END;
+                        END;
+                        IF NOT TablePurchaseLine_L.MODIFY() THEN BEGIN
+                          ERROR(Text0013, TablePurchaseLine_L.TABLECAPTION, TablePurchaseLine_L."No.", TablePurchaseLine_L."Line No.");
+                        END;
+                      END;
+                      // --> 20180606-XPE-ADV
+                      SetUnitCost(TablePurchaseLine_L);
+                      // <-- 20180606-XPE-ADV
+                      //<--20151116-INT08-CMC02.02.00-ADVITAM-CDL010
+                    UNTIL TableImportLine_L.NEXT = 0;
+                    TableImportHead_L."Invoice No." := TablePurchaseHeader_L."No.";
+                    TableImportHead_L.HoroIntegration := CURRENTDATETIME;
+                    SetSuccessStatus(TableImportHead_L);
+                    IF NOT TableImportHead_L.MODIFY(TRUE) THEN BEGIN
+                      ERROR(Text0013, TableImportHead_L.TABLECAPTION, TableImportHead_L."No.");
+                    END;
+                  END;
+                END;
+              END;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      "<-- 3LI TEXT GLOBALS -->"@1000000002 : TextConst;
+      Text0001@1000000003 : TextConst 'ENU=The invoice : %1 don''t exists;FRA=La facture "%1" n''existe pas.';
+      Text0002@1000000010 : TextConst 'ENU=The invoice : %1 already exists;FRA=La facture "%1" a d'j. 't' int'gr'e.';
+      Text0003@1000000014 : TextConst 'FRA=Ligne facture "%1-%2" non affect' . un Bon de R'ception.';
+      Text0004@1000000000 : TextConst 'FRA=Erreur "%1" inexistant dans table "%2" : Enregistrement "%3-%4".';
+      Text0005@1000000022 : TextConst 'ENU=Error Corresponding "%1" : "%2" Doesn''t exist for Order : "%3", Line : "%4";FRA=Erreur correspondance "%1" : "%2" non param'tr'e pour : "%3", ligne : "%4".';
+      Text0006@1000000025 : TextConst 'FRA=Axe analytique %1 obligatoire pour une ligne comptable : pour ''%2-%3''.';
+      Text0007@1000000026 : TextConst 'FRA=Produit Sicapa "%1" non r'f'renc' dans table "%2" : pour ''%3-%4''.';
+      Text0008@1000000012 : TextConst 'ENU=Error field %1 : Record %2;FRA="Erreur zone ""%1""=""%2"" : Enregistrement ""%3-%4""."';
+      Text0013@1000000011 : TextConst 'FRA=Erreur INSERT table "%1" : "%2-%3"';
+      Text0014@1000000013 : TextConst 'FRA=Erreur MODIFY table "%1" : "%2-%3"';
+      "<-- 3LI GLOBALS -->"@1000000001 : Integer;
+      MoteurInterface_G@1000000021 : Codeunit 8061230;
+      ToolsFile_G@1000000020 : Codeunit 8053405;
+      ConnectorName_G@1000000019 : Code[20];
+      ImpExpFolder_G@1000000018 : Text[256];
+      LogFolder_G@1000000017 : Text[256];
+      ExtensionFile_G@1000000016 : Text[10];
+      PrefixFile_G@1000000015 : Text[30];
+      ItemTemplateCode_G@1000000009 : Code[20];
+      CustomerTemplateCode_G@1000000008 : Code[20];
+      VendorTemplateCode_G@1000000007 : Code[20];
+      ContactTemplateCode_G@1000000006 : Code[20];
+      AccountTemplateCode_G@1000000005 : Code[20];
+      GlobalTemplateCode_G@1000000004 : Code[20];
+      Text0016@1000000024 : TextConst 'FRA=Produit "%1-%2" unit' sicapa "%3" non convertible unit' Nav "%4" pour "%5-%6".';
+      Text0019@1000000023 : TextConst 'FRA="""%1"" inexistant dans table ""%2"". Enregistrement ""%3-%4""."';
+      TSuccess@1000000027 : TextConst 'ENU=Importation Successfull;FRA=Importation r'alis'e avec succ's';
+
+    PROCEDURE "--FCT.20180606-XPE-ADV --"@1000000000();
+    BEGIN
+    END;
+
+    PROCEDURE SetUnitCost@1000000001(VAR PurchaseLine@1000000000 : Record 39);
+    VAR
+      PurchRcptLine@1000000001 : Record 121;
+      PurchLine@1000000002 : Record 39;
+      ReturnShipLine@1000000003 : Record 6651;
+      Price@1000000004 : Decimal;
+    BEGIN
+      // --> 20180606-XPE-ADV
+      Price := 0;
+      CASE (PurchaseLine."Document Type") OF
+        PurchaseLine."Document Type"::Invoice : BEGIN
+          PurchRcptLine.SETRANGE(PurchRcptLine."Document No.", PurchaseLine."Receipt No.");
+          PurchRcptLine.SETRANGE("Line No.", PurchaseLine."Receipt Line No.");
+          IF (PurchRcptLine.FINDFIRST()) THEN BEGIN
+            PurchLine.SETRANGE("Document Type", PurchLine."Document Type"::Order);
+            PurchLine.SETRANGE("Document No.", PurchRcptLine."Order No.");
+            PurchLine.SETRANGE("Line No.", PurchRcptLine."Order Line No.");
+            IF (PurchLine.FINDFIRST()) THEN BEGIN
+              Price := PurchRcptLine."Direct Unit Cost";
+            END;
+          END;
+        END;
+        PurchaseLine."Document Type"::"Credit Memo" : BEGIN
+          ReturnShipLine.SETRANGE("Document No.", PurchaseLine."Return Shipment No.");
+          ReturnShipLine.SETRANGE("Line No.", PurchaseLine."Return Shipment Line No.");
+          IF (ReturnShipLine.FINDFIRST()) THEN BEGIN
+            PurchLine.SETRANGE("Document Type", PurchLine."Document Type"::"Return Order");
+            PurchLine.SETRANGE("Document No.", ReturnShipLine."Return Order No.");
+            PurchLine.SETRANGE("Line No.", ReturnShipLine."Return Order Line No.");
+            IF (PurchLine.FINDFIRST()) THEN BEGIN
+              Price := PurchLine."Direct Unit Cost";
+            END;
+          END;
+        END;
+      END;
+      IF (Price <> 0) THEN BEGIN
+        PurchaseLine."Unit Price (LCY)" := Price;
+        PurchaseLine.MODIFY;
+      END;
+      // <-- 20180606-XPE-ADV
+    END;
+
+    PROCEDURE SetSuccessStatus@1000000002(VAR InvoiceHeader@1000000000 : Record 8087767);
+    VAR
+      InvoiceLines@1000000001 : Record 8087768;
+    BEGIN
+      InvoiceLines.SETRANGE("Emetteur Type", InvoiceHeader."Emetteur Type");
+      InvoiceLines.SETRANGE(Emetteur, InvoiceHeader.Emetteur);
+      InvoiceLines.SETRANGE("Destinataire Type", InvoiceHeader."Destinataire Type");
+      InvoiceLines.SETRANGE(Destinataire, InvoiceHeader.Destinataire);
+      InvoiceLines.SETRANGE("Type Facture", InvoiceHeader."Type Facture");
+      InvoiceLines.SETRANGE("Num Facture", InvoiceHeader."Num Facture");
+      IF (InvoiceLines.FINDFIRST()) THEN BEGIN
+        InvoiceLines.Status := InvoiceLines.Status::Success;
+        InvoiceLines."Status Message" := TSuccess;
+        InvoiceLines.MODIFY();
+      END;
+      InvoiceHeader.Status := InvoiceHeader.Status::Success;
+      InvoiceHeader."Status Message" := TSuccess;
+    END;
+
+    BEGIN
+    {
+      //--> 3LI BEGIN
+      20140203-Int08-CMC02.02.00-ADVITAM-CDL : - Importation d'une facture Sicapa dans NavAgri.
+      20150709-INT08-CMC02.02.00-ADVITAM-CDL001 : - Erreur Test unit' 'L' en 'LTR'
+      20150710-INT08-CMC02.02.00-ADVITAM-CDL003 : - Erreur Test unit' 'UN' en 'PCE'
+      20150713-INT08-CMC02.02.00-ADVITAM-CDL004 : - Erreur Test unit' 'UN' en 'PCE'
+      20150718-INT08-CMC02.02.00-ADVITAM-CDL005 : - Sicapa utilise 'DOS' ou 'DOSE' ! ==> Conversion
+      20150730-INT08-CMC02.02.00-ADVITAM-CDL006 : - ProblSme conversion
+      20150731-INT08-CMC02.02.00-ADVITAM-CDL007 : - ProblSme conversion : appliquer aussi un recalcul du prix
+      20151110-INT08-CMC02.02.00-ADVITAM-CDL008 : - Date de comptabilisation doit ^tre la date du jour et non celle de facture Sicapa.
+                                                    + Date de document = date facture
+      20151110-INT08-CMC02.02.00-ADVITAM-CDL009 : - Modification Conversion unit' : Utilisation fonction
+                                                    + Ici Import D'part (Sicapa) vers Arriv' (Nav) : Calcul toujours Qt' * Coef.
+                                                    + Fonction "OnRun" suppression variable locale :
+                                                      * UniteEdi_L Text 30
+                                                      * UniteSicapa_L Text 30
+      20151116-INT08-CMC02.02.00-ADVITAM-CDL010 : - Si type "Compte g'n'raux" recherche produit sicapa pour d'terminer analytique mais pas
+                                                    d'erreur si pas de correspondace (==> Pas analytique).
+                                                  - Recherche d'p"t d'j. fait sur programme appelant
+                                                  - Pas d'erreur si pas d'axe analytique
+      20151119-INT08-CMC02.02.00-ADVITAM-CDL011 : - Traiter les avoirs
+      //<-- 3LI END
+      20180606-XPE-ADV : Added new function SetUnitCost
+                         Call this function after purchase line created
+      20201109-CLA87065-ADVITAM-XPE001 : Management The HT Price : Sometime, this one is wrong
+      20210512-WI00-ADV01.01.00-SP3548-JML01 : MODCODE Gestion Date de comptabilisation
+    }
+    END.
+  }
+}
+

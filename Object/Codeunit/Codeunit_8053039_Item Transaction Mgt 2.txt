@@ -1,0 +1,212 @@
+OBJECT Codeunit 8053039 Item Transaction Mgt 2
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27/08/20;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            TestLaunch;
+          END;
+
+  }
+  CODE
+  {
+
+    PROCEDURE TestLaunch@8053002();
+    VAR
+      ItemTransEntry_L@8053000 : Record 8053336;
+      ItemLedgerEntry_L@8053001 : Record 32;
+      WinMgt_L@8053002 : Codeunit 8060986;
+      ValueEntry_L@8053003 : Record 5802;
+      ItemTransValEntry_L@8053004 : Record 8053337;
+      WeightNo_L@8053005 : Decimal;
+    BEGIN
+      CLEAR(WinMgt_L);
+
+      ItemTransEntry_L.RESET;
+      ItemTransEntry_L.DELETEALL;
+
+      ItemLedgerEntry_L.RESET;
+      WinMgt_L.CreateWindow(ItemLedgerEntry_L.COUNT);
+      IF ItemLedgerEntry_L.FINDSET THEN
+        REPEAT
+          WinMgt_L.UpdateWindow;
+          WeightNo_L := GetWeightNo(ItemLedgerEntry_L);
+          CreateTransFromLedgerEntry(ItemLedgerEntry_L,WeightNo_L);
+        UNTIL ItemLedgerEntry_L.NEXT = 0;
+
+      CLEAR(WinMgt_L);
+
+      ItemTransValEntry_L.RESET;
+      ItemTransValEntry_L.DELETEALL;
+
+      ValueEntry_L.RESET;
+      WinMgt_L.CreateWindow(ValueEntry_L.COUNT);
+      IF ValueEntry_L.FINDSET THEN
+        REPEAT
+          WinMgt_L.UpdateWindow;
+          CreateValueFromValueEntry(ValueEntry_L);
+        UNTIL ValueEntry_L.NEXT = 0;
+
+      WinMgt_L.CloseWindow('');
+    END;
+
+    PROCEDURE CreateTransFromLedgerEntry@8053000(ItemLedgerEntry_P@8053002 : Record 32;WeightNo_P@8053005 : Decimal);
+    VAR
+      ItemTransEntry_L@8053003 : Record 8053336;
+      Item_L@8053000 : Record 27;
+      SalesShipmentHeader_L@1000000000 : Record 110;
+      SalesHeader_L@1000000001 : Record 36;
+      DoCompileEntry_L@8053004 : Boolean;
+      CMCSalesArea_L@1000000002 : Record 8053156;
+      ItemLedgerEntry_L@100000000 : Record 32;
+      PurchRcptHeader_L@100000001 : Record 120;
+      SalesOrderLine_L@100000002 : Record 37;
+    BEGIN
+      ItemTransEntry_L.LOCKTABLE;
+      IF ItemTransEntry_L.FINDLAST AND (ItemTransEntry_L."Posting Date" = ItemLedgerEntry_P."Posting Date") AND
+         (ItemTransEntry_L."Document Type" = ItemLedgerEntry_P."Document Type") AND
+         (ItemTransEntry_L."Document No." = ItemLedgerEntry_P."Document No.") AND
+         ((ItemTransEntry_L."Document Line No." = ItemLedgerEntry_P."Document Line No.") OR
+          ((ItemTransEntry_L."Weighing No." = WeightNo_P) AND (WeightNo_P <> 0))) AND
+         (ItemTransEntry_L."Item No." = ItemLedgerEntry_P."Item No.") AND
+         (ItemTransEntry_L."Variant Code" = ItemLedgerEntry_P."Variant Code") AND
+         (ItemTransEntry_L."Location Code" = ItemLedgerEntry_P."Location Code") AND
+         DoCompileEntry(ItemLedgerEntry_P."Inv. Adjmt. Reason Code") AND DoCompileEntry(ItemTransEntry_L."Inv. Adjmt. Reason Code")
+      THEN BEGIN
+        ItemTransEntry_L.Quantity += ItemLedgerEntry_P.Quantity;
+        ItemTransEntry_L.MODIFY;
+      END ELSE BEGIN
+        CLEAR(ItemTransEntry_L);
+        IF NOT ItemTransEntry_L.GET(ItemLedgerEntry_P."Entry No.") THEN BEGIN
+          ItemTransEntry_L.INIT;
+          ItemTransEntry_L.TRANSFERFIELDS(ItemLedgerEntry_P);
+          Item_L.GET(ItemTransEntry_L."Item No.");
+          ItemTransEntry_L."Activity Code" := Item_L."Activity Code";
+          ItemTransEntry_L."Family Code" := Item_L."Family Code";
+          ItemTransEntry_L."Sub-Family Code" := Item_L."Sub-Family Code";
+          ItemTransEntry_L."Species Code" :=  Item_L."Species Code";
+          ItemTransEntry_L."Market Code" := Item_L."Market Code";
+          ItemTransEntry_L."Submarket Code" := Item_L."Submarket Code";
+          ItemTransEntry_L."Campaign No." := ItemLedgerEntry_P."Campaign No.";
+          ItemTransEntry_L."Season ID No." := ItemLedgerEntry_P."Season ID No.";
+          ItemTransEntry_L."Order Date" := ItemLedgerEntry_P."Order Date";
+          ItemTransEntry_L."Weighing No." := WeightNo_P;
+          ItemTransEntry_L."End Discount Campaign Inactive" := Item_L."End Discount Campaign Inactive";
+          //-->20150929-WI00-ADV01.01.00-2211-DGL01
+          IF (ItemLedgerEntry_P."Entry Type" = ItemLedgerEntry_P."Entry Type"::Sale) AND
+            (ItemLedgerEntry_P."Document Type" = ItemLedgerEntry_P."Document Type"::"Sales Shipment") THEN BEGIN
+            IF SalesShipmentHeader_L.GET(ItemLedgerEntry_P."Document No.") THEN BEGIN
+              IF SalesHeader_L.GET(1,SalesShipmentHeader_L."Order No.") THEN
+                ItemTransEntry_L."Doc. Category Code" := SalesHeader_L."Doc. Category Code";
+            // --> 20200827-WI00-ADV01.01.00-ID52098-MRU01
+            {BEFORE
+            END;
+            AFTER}
+            END ELSE BEGIN
+              IF ItemLedgerEntry_P."Applies-to Entry" <> 0 THEN BEGIN
+                IF ItemLedgerEntry_L.GET(ItemLedgerEntry_P."Applies-to Entry") THEN
+                  IF PurchRcptHeader_L.GET(ItemLedgerEntry_L."Document No.") THEN BEGIN
+                    SalesOrderLine_L.RESET;
+                    SalesOrderLine_L.SETRANGE("Document Type", SalesOrderLine_L."Document Type"::Order);
+                    SalesOrderLine_L.SETRANGE("Purchase Order No.", PurchRcptHeader_L."Order No.");
+                    IF SalesOrderLine_L.FINDFIRST THEN BEGIN
+                      IF SalesHeader_L.GET(1, SalesOrderLine_L."Document No.") THEN
+                        ItemTransEntry_L."Doc. Category Code" := SalesHeader_L."Doc. Category Code";
+                    END;
+                  END;
+              END;
+            END;
+            // <-- 20200827-WI00-ADV01.01.00-ID52098-MRU01
+          END;
+          //<--20150929-WI00-ADV01.01.00-2211-DGL01
+          //-->20160928-WI00-ADV01.01.00-21985-VMR01
+          CLEAR(CMCSalesArea_L);
+          CMCSalesArea_L.SETRANGE(Code,ItemLedgerEntry_P."CMC Sales Area Code");
+          CMCSalesArea_L.SETRANGE("Excluded from society quota",TRUE);
+          IF CMCSalesArea_L.FINDFIRST THEN
+            ItemTransEntry_L."Excluded from society quota":=TRUE;
+          //<--20160928-WI00-ADV01.01.00-21985-VMR01
+          ItemTransEntry_L.INSERT;
+        END;
+      END;
+    END;
+
+    PROCEDURE CreateValueFromValueEntry@8053001(ValueEntry_P@8053000 : Record 5802);
+    VAR
+      ItemTransValEntry_L@8053001 : Record 8053337;
+      ItemTransEntry_L@8053002 : Record 8053336;
+      Item_L@8053003 : Record 27;
+    BEGIN
+      CLEAR(ItemTransValEntry_L);
+      ItemTransEntry_L.SETFILTER("Entry No.",'<=%1',ValueEntry_P."Item Ledger Entry No.");
+      ItemTransEntry_L.FINDLAST;
+
+      ItemTransValEntry_L.INIT;
+      ItemTransValEntry_L.TRANSFERFIELDS(ValueEntry_P);
+      ItemTransValEntry_L."Item Ledger Entry No." := ItemTransEntry_L."Entry No.";
+      Item_L.GET(ItemTransEntry_L."Item No.");
+      ItemTransValEntry_L."End Discount Campaign Inactive" := Item_L."End Discount Campaign Inactive";
+      ItemTransValEntry_L.INSERT;
+    END;
+
+    PROCEDURE DoCompileEntry@8053003(VAR InvAdjmtReasonCode_P@1000000000 : Code[20]) : Boolean;
+    VAR
+      InvAdjmtReason_L@1000000001 : Record 8061350;
+    BEGIN
+      IF InvAdjmtReasonCode_P = '' THEN
+        EXIT(TRUE);
+
+      InvAdjmtReason_L.RESET;
+      InvAdjmtReason_L.SETRANGE(Code,InvAdjmtReasonCode_P);
+      IF NOT InvAdjmtReason_L.FINDFIRST THEN
+        EXIT(TRUE)
+      ELSE
+        EXIT(NOT InvAdjmtReason_L."Do Not Compile in Transactions");
+    END;
+
+    PROCEDURE GetWeightNo@8053004(ItemLedgerEntry_P@8053000 : Record 32) : Integer;
+    VAR
+      SalesShptLine_L@8053001 : Record 111;
+      PurchRcptLine_L@8053002 : Record 121;
+    BEGIN
+      WITH ItemLedgerEntry_P DO
+        CASE "Document Type" OF
+          "Document Type"::"Sales Shipment" : BEGIN
+            SalesShptLine_L.GET("Document No.","Document Line No.");
+            EXIT(SalesShptLine_L."Weighing No.");
+          END;
+          "Document Type"::"Purchase Receipt" : BEGIN
+            PurchRcptLine_L.GET("Document No.","Document Line No.");
+            EXIT(PurchRcptLine_L."Weighing No.");
+          END;
+        END;
+    END;
+
+    BEGIN
+    {
+      //--> 3LI BEGIN
+      20140120-Wi00-CMC02.02.00-1522-FGS: ADDCODE
+      20140317-APP32-CMC02.02.00-1838-FEC01 : ADDCODE.
+      20140401-APP32-CMC02.02.00-FEC01 : ADDCODE.
+      20140509-Wi00-CMC02.02.00-2094-FEC01 : MODCODE.
+      20140520-Wi00-CMC02.02.00-2133-FEC01 : ADDFUNC(DoCompileEntry).
+      20140520-Wi00-CMC02.02.00-2133-FEC02 : DELCODE(Suppression de la modification pr'c'dente).
+      20140520-Wi00-CMC02.02.00-2133-FEC03 : ADDCODE.
+      20140926-Wi00-CMC02.02.00-FEC01 : ADDFUNC(GetWeightNo).
+      20140926-Wi00-CMC02.02.00-FEC02 : ADDCODE(Gestion du ticket de pes'e).
+      20150105-GEN23/001-CMC02.02.00-2579-FHS01 : MODCODE (remise fin de campagne inactive)
+      20150311-GEN23/001-CMC02.02.00-2579-FHS01 : MODCODE (remise fin de campagne inactive)
+      20150930-WI00-ADV01.01.00-2211-DGL01 : MODCODE (Ajout Cat'gorie doc. sur enregistrement)
+      20160928-WI00-ADV01.01.00-21985-VMR01 : MODCODE (Maj du champ Exclue de la region commerciale)
+      20200827-WI00-ADV01.01.00-ID52098-MRU01 : MODCODE (Gestion Code Categorie Document si validation Expe Vte via Commande achat en LD)
+      //<-- 3LI END
+    }
+    END.
+  }
+}
+

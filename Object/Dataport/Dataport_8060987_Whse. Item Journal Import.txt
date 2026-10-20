@@ -1,0 +1,423 @@
+OBJECT Dataport 8060987 Whse. Item Journal Import
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18/11/11;
+    Heure=00:00:00;
+    Liste versions=CMB6.00.10.04;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 6550=rimd;
+    CaptionML=[ENU=Whse. Item Journal Import;
+               FRA=Import feuille article entrep"t];
+    FieldStartDelimiter=<None>;
+    FieldEndDelimiter=<None>;
+    FieldSeparator=[;];
+    DataItemSeparator=<<NewLine>>;
+    OnPreDataport=BEGIN
+                    CurrDataport.FILENAME := txtFilename;
+                    txtLogFilename := 'c:\logfile.txt';
+                  END;
+
+    OnPostDataport=BEGIN
+                     IF NOT IsError THEN BEGIN
+                       LogFile.CLOSE;
+                       MESSAGE(ProcessEndingOK);
+                       ERASE(txtLogFilename);
+                     END ELSE BEGIN
+                       IF CONFIRM(ProcessEndingNotOK,TRUE,txtLogFilename) THEN
+                         HYPERLINK(LogFile.NAME);
+                       LogFile.CLOSE;
+
+                       WhseItemJnlLine.RESET;
+                       WhseItemJnlLine.SETRANGE("Journal Template Name",JnlTemplName);
+                       WhseItemJnlLine.SETRANGE("Journal Batch Name",JnlBatchName);
+                       IF WhseItemJnlLine.FINDFIRST THEN
+                         WhseItemJnlLine.DELETEALL(TRUE);
+                     END;
+                   END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table2000000026;
+        AutoSave=Non;
+        AutoUpdate=Non;
+        AutoReplace=Non;
+        DataItemTableView=SORTING(Num'ro);
+        OnPreDataItem=BEGIN
+                        // --> Controle que les donn'es de base sont renseign'es
+                        IF (JnlTemplName = '') OR
+                           (JnlBatchName = '') THEN
+                           InsertError(BaseDatasOKErr,TRUE);
+
+                        // --> Controle que la feuille compta est vide
+                        WhseItemJnlLine.RESET;
+                        WhseItemJnlLine.SETRANGE("Journal Template Name",JnlTemplName);
+                        WhseItemJnlLine.SETRANGE("Journal Batch Name",JnlBatchName);
+                        IF WhseItemJnlLine.FIND('-') THEN
+                          InsertError(STRSUBSTNO(GenJnlLineExistErr,JnlTemplName,JnlBatchName),TRUE);
+
+                        // --> Initialisation des variables
+                        NextLineNo := 0;
+                        FileLineNo := 0;
+                        IsError := FALSE;
+
+                        // --> Ouverture du fichier de log
+                        LogFile.CREATE('c:\logfile.txt');
+                        LogFile.WRITEMODE := TRUE;
+                        LogFile.TEXTMODE := TRUE;
+                      END;
+
+        OnBeforeImportRecord=BEGIN
+                               CLEAR(InputText);
+                               FileLineNo += 1;
+                             END;
+
+        OnAfterImportRecord=BEGIN
+                              // --> On ne traite pas la premiSre ligne
+                              IF FileLineNo <= HeaderLineToSkip_G THEN
+                                CurrDataport.SKIP;
+
+                              // --> V'rification d'existences
+                              IF NOT Item.GET(InputText[4]) THEN
+                                InsertError(STRSUBSTNO(ItemNotExistErr,InputText[4],FileLineNo),FALSE);
+
+                              IF Item.Blocked THEN
+                                InsertError(STRSUBSTNO(ItemIsBlockedErr,InputText[4],FileLineNo),FALSE);
+
+                              IF NOT Location.GET(InputText[10]) THEN
+                                InsertError(STRSUBSTNO(LocationNotExistErr,InputText[10],FileLineNo),FALSE);
+
+                              FormatFieldsMgt.Text2Decimal(DummyDecimal_G,InputText[13]);
+                              IF (InputText[14] <> '') AND (DummyDecimal_G <> 1) THEN
+                                InsertError(STRSUBSTNO(SerieQtyNoErr,InputText[4],FileLineNo),FALSE);
+
+                              // --> Insertion dans les lignes feuilles article
+
+                              NextLineNo += 10000;
+
+                              WhseItemJnlLine.INIT;
+                              WhseItemJnlLine."Line No." := NextLineNo;
+                              WhseItemJnlLine."Journal Template Name" := JnlTemplName;
+                              WhseItemJnlLine."Journal Batch Name" := JnlBatchName;
+                              WhseItemJnlLine."Line No." := NextLineNo;
+
+                              CASE InputText[7] OF
+                                '': WhseItemJnlLine."Entry Type" := WhseItemJnlLine."Entry Type"::"Positive Adjmt.";
+                                'Positif (ajust.)' : WhseItemJnlLine."Entry Type" := WhseItemJnlLine."Entry Type"::"Positive Adjmt.";
+                                'N'gatif (ajust.)' : WhseItemJnlLine."Entry Type" := WhseItemJnlLine."Entry Type"::"Negative Adjmt.";
+                              END;
+
+                              IF Item."Item Tracking Code" <> '' THEN BEGIN
+
+                                ItemTrackingCode_G.GET(Item."Item Tracking Code");
+                                IF WhseItemJnlLine."Entry Type" = WhseItemJnlLine."Entry Type"::"Positive Adjmt." THEN
+                                  IF (ItemTrackingCode_G."SN Pos. Adjmt. Inb. Tracking") AND (InputText[14] = '') THEN
+                                    InsertError(STRSUBSTNO(SerieNoMissingErr,InputText[4],FileLineNo),FALSE);
+
+                                IF WhseItemJnlLine."Entry Type" = WhseItemJnlLine."Entry Type"::"Positive Adjmt." THEN
+                                  IF (ItemTrackingCode_G."Lot Pos. Adjmt. Inb. Tracking") AND (InputText[15] = '') THEN
+                                    InsertError(STRSUBSTNO(LotNoMissingErr,InputText[4],FileLineNo),FALSE);
+
+                                IF  ItemTrackingCode_G."Man. Expir. Date Entry Reqd." THEN
+                                  IF InputText[16] = '' THEN
+                                    InsertError(STRSUBSTNO(ExpDateMissingErr,InputText[4],FileLineNo),FALSE);
+
+                              END;
+
+                              WhseItemJnlLine.VALIDATE("Whse. Document No.",InputText[8]);
+
+                              WhseItemJnlLine."Source Code" := WhseJnlTemplate."Source Code";
+                              WhseItemJnlLine.VALIDATE("Location Code",InputText[10]);
+                              WhseItemJnlLine.VALIDATE("Item No.",InputText[4]);
+                              WhseItemJnlLine.VALIDATE("Variant Code",InputText[5]);
+
+                              FormatFieldsMgt.Text2Date(WhseItemJnlLine."Registering Date",InputText[6]);
+                              WhseItemJnlLine.VALIDATE("Registering Date");
+
+                              WhseItemJnlLine.VALIDATE("Zone Code",InputText[11]);
+                              WhseItemJnlLine.VALIDATE("Bin Code",InputText[12]);
+
+                              GetBin(Location.Code,Location."Adjustment Bin Code");
+                              WhseItemJnlLine."From Zone Code" := BinRec_G."Zone Code";
+                              WhseItemJnlLine."From Bin Code" := BinRec_G.Code;
+                              WhseItemJnlLine."From Bin Type Code" := BinRec_G."Bin Type Code";
+
+                              FormatFieldsMgt.Text2Decimal(WhseItemJnlLine.Quantity,InputText[13]);
+                              WhseItemJnlLine.VALIDATE(Quantity);
+
+                              WhseItemJnlLine.Description := FormatFieldsMgt.Ansi2Ascii(COPYSTR(InputText[9],1,50));
+                              WhseItemJnlLine.INSERT(TRUE);
+
+                              SetTracking;
+                            END;
+
+      }
+      FIELDS
+      {
+        {      ;     ;InputText[1]         }
+        {      ;     ;InputText[2]         }
+        {      ;     ;InputText[3]         }
+        {      ;     ;InputText[4]         }
+        {      ;     ;InputText[5]         }
+        {      ;     ;InputText[6]         }
+        {      ;     ;InputText[7]         }
+        {      ;     ;InputText[8]         }
+        {      ;     ;InputText[9]        ;OnBeforeEvaluateField=BEGIN
+                                                                   IF Text = '' THEN
+                                                                     Text := '0';
+                                                                 END;
+                                                                  }
+        {      ;     ;InputText[10]       ;OnBeforeEvaluateField=BEGIN
+                                                                   IF Text = '' THEN
+                                                                     Text := '0';
+                                                                 END;
+                                                                  }
+        {      ;     ;InputText[11]        }
+        {      ;     ;InputText[12]        }
+        {      ;     ;InputText[13]        }
+        {      ;     ;InputText[14]        }
+        {      ;     ;InputText[15]        }
+        {      ;     ;InputText[16]        }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=11110;
+      Height=11220;
+      SaveControlInfo=Oui;
+      SaveValues=Oui;
+      OnOpenForm=BEGIN
+                   HeaderLineToSkip_G := 1;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1   ;TextBox      ;3520 ;1320 ;5610 ;440  ;InPage=-1;
+                                                   AssistEdit=Oui;
+                                                   CaptionML=[ENU=File name;
+                                                              FRA=Nom du fichier];
+                                                   SourceExpr=txtFilename }
+      { 60001;Label       ;110  ;1320 ;3300 ;440  ;ParentControl=1;
+                                                   InPage=-1 }
+      { 60000;TextBox     ;3520 ;110  ;2750 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Item Journal Template;
+                                                              FRA=ModSle feuille article];
+                                                   SourceExpr=JnlTemplName;
+                                                   TableRelation="Warehouse Journal Template";
+                                                   OnValidate=BEGIN
+                                                                JnlBatchName := '';
+                                                              END;
+                                                               }
+      { 60002;TextBox     ;3520 ;660  ;2750 ;440  ;InPage=-1;
+                                                   Lookup=Oui;
+                                                   CaptionML=[ENU=Item Journal Batch;
+                                                              FRA=Nom feuille article];
+                                                   SourceExpr=JnlBatchName;
+                                                   OnValidate=BEGIN
+                                                                IF JnlBatchName <> '' THEN
+                                                                  WhseJnlBatch.GET(JnlTemplName,JnlBatchName);
+                                                              END;
+
+                                                   OnLookup=BEGIN
+                                                              IF JnlTemplName <> '' THEN BEGIN
+                                                                WhseJnlTemplate.GET(JnlTemplName);
+                                                                WhseJnlBatch.SETRANGE("Journal Template Name",JnlTemplName);
+                                                                IF FORM.RUNMODAL(0,WhseJnlBatch) = ACTION::LookupOK THEN
+                                                                  JnlBatchName := WhseJnlBatch.Name;
+                                                              END;
+                                                            END;
+                                                             }
+      { 60003;Label       ;110  ;110  ;3300 ;440  ;ParentControl=60000;
+                                                   InPage=-1 }
+      { 60004;Label       ;110  ;660  ;3300 ;440  ;ParentControl=60002;
+                                                   InPage=-1 }
+      { 60005;TextBox     ;3520 ;1980 ;2750 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Header Line to Skip;
+                                                              FRA=Nb lignes en-t^te . ignorer];
+                                                   SourceExpr=HeaderLineToSkip_G }
+      { 60006;Label       ;110  ;1980 ;3300 ;440  ;ParentControl=60005 }
+      { 1180250002;Label  ;110  ;3080 ;6050 ;440  ;FontUnderline=Oui;
+                                                   LeaderDots=Non;
+                                                   CaptionML=FRA=Structure des colonnes : }
+      { 1180250003;Label  ;110  ;2530 ;6050 ;440  ;LeaderDots=Non;
+                                                   CaptionML=[FRA="Type de fichier : CSV s'parateur "";"""] }
+      { 1180250004;Label  ;330  ;3740 ;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=1 - Vide }
+      { 1180250005;Label  ;330  ;4180 ;10670;440  ;MultiLine=Oui;
+                                                   LeaderDots=Non;
+                                                   CaptionML=FRA=2 - Vide }
+      { 1180250006;Label  ;330  ;4620 ;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=3 - Vide }
+      { 1180250007;Label  ;330  ;5060 ;10780;440  ;MultiLine=Oui;
+                                                   LeaderDots=Non;
+                                                   CaptionML=FRA=4 - N› Article }
+      { 1180250008;Label  ;330  ;5500 ;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=5 - Code variante }
+      { 1180250009;Label  ;330  ;5940 ;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=6 - Date enregistrement }
+      { 1180250010;Label  ;330  ;6380 ;10670;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=7 - Type de mouvement. Valeurs possibles : ' ', Positif (ajust.), N'gatif (ajust.) }
+      { 1180250011;Label  ;330  ;6820 ;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=8 - N› Document }
+      { 1180250012;Label  ;330  ;7260 ;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=9 - D'signation }
+      { 1180250013;Label  ;330  ;7700 ;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=10 - Code magasin }
+      { 1180250014;Label  ;330  ;8140 ;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=11 - Code zone }
+      { 1180250015;Label  ;330  ;8580 ;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=12 - Code emplacement }
+      { 1180250016;Label  ;330  ;9020 ;10670;440  ;MultiLine=Oui;
+                                                   LeaderDots=Non;
+                                                   CaptionML=FRA=13 - Quantit' }
+      { 1180250017;Label  ;330  ;9460 ;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=14 - N› s'rie }
+      { 1180250018;Label  ;330  ;9900 ;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=15 - N› lot }
+      { 1180250019;Label  ;330  ;10340;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=16 - Date expiration }
+    }
+  }
+  CODE
+  {
+    VAR
+      BaseDatasOKErr@60031 : TextConst 'FRA=Les donn'es de base doivent ^tre renseign'es.';
+      GenJnlLineExistErr@60018 : TextConst 'FRA=Des lignes existent pour le modSle %1 feuille %2, vous devez les supprimer pour continuer l''import.';
+      FormatFieldsMgt@60019 : Codeunit 8060985;
+      ItemNotExistErr@60021 : TextConst 'FRA=L''article %1 n''existe pas, erreur ligne %2.';
+      NextLineNo@60012 : Integer;
+      WhseItemJnlLine@60025 : Record 7311;
+      FileLineNo@60034 : Integer;
+      InputText@60000 : ARRAY [100] OF Text[250];
+      txtFilename@60001 : Text[250];
+      txtLogFilename@60027 : Text[250];
+      WhseJnlTemplate@60004 : Record 7309;
+      WhseJnlBatch@60003 : Record 7310;
+      JnlTemplName@60002 : Code[20];
+      JnlBatchName@60005 : Code[20];
+      Item@60007 : Record 27;
+      ItemIsBlockedErr@1000000001 : TextConst 'FRA=L''article %1 est bloqu', erreur ligne %2.';
+      LocationNotExistErr@1000000000 : TextConst 'FRA=Le code magasin %1 n''existe pas, erreur ligne %2';
+      SourceCodeNotOKErr@60008 : TextConst 'FRA=La code journal de la feuille %1 diffSre de celui du fichier %2, erreur ligne %3.';
+      Location@1000000002 : Record 14;
+      ProcessEndingOK@60011 : TextConst 'FRA=Le traitement s''est d'roul' avec succSs.';
+      ProcessEndingNotOK@60023 : TextConst 'FRA=Le traitement a rencontr' des erreurs. \Un fichier log a 't' g'n'r' . cet emplacement : \%1\Voulez-vous le consulter ?';
+      DimValueNotExistErr@60014 : TextConst 'FRA=L''axe analytique %1 %2 n''existe pas, erreur ligne %3.';
+      LogFile@60013 : File;
+      IsError@60020 : Boolean;
+      i@60017 : Integer;
+      DummyDecimal_G@60006 : Decimal;
+      SerieQtyNoErr@60009 : TextConst 'FRA=La quantit' doit ^tre 1 pour l''article %1 si un num'ro de s'rie est renseign', erreur ligne %2.';
+      ItemTrackingCode_G@60010 : Record 6502;
+      SerieNoMissingErr@60015 : TextConst 'FRA=Le num'ro de s'rie est manquant pour l''article %1, erreur ligne %2.';
+      LotNoMissingErr@60022 : TextConst 'FRA=Le num'ro de lot est manquant pour l''article %1, erreur ligne %2.';
+      ExpDateMissingErr@60026 : TextConst 'FRA=La date d''expiration est manquante pour l''article %1, erreur ligne %2.';
+      HeaderLineToSkip_G@60028 : Integer;
+      BinRec_G@1000000003 : Record 7354;
+
+    PROCEDURE InsertError@60001(ErrorText@60000 : Text[250];StopProcess@60001 : Boolean);
+    BEGIN
+      IF StopProcess THEN
+        ERROR(ErrorText)
+      ELSE BEGIN
+        IsError := TRUE;
+        LogFile.WRITE(ErrorText);
+        CurrDataport.SKIP;
+      END;
+    END;
+
+    PROCEDURE SetTracking@1120000();
+    VAR
+      WhseItemTraking_L@1120000 : Record 6550;
+      NextEntryNo_L@1120001 : Integer;
+      SerialNoInfo_L@60001 : Record 6504;
+      LotNoInfo_L@60002 : Record 6505;
+      DummyDate_L@60003 : Date;
+    BEGIN
+      Item.GET(WhseItemJnlLine."Item No.");
+      IF ItemTrackingCode_G.GET(Item."Item Tracking Code") THEN BEGIN
+
+        WhseItemTraking_L.RESET;
+        IF WhseItemTraking_L.FINDLAST THEN
+          NextEntryNo_L := WhseItemTraking_L."Entry No." + 1
+        ELSE
+          NextEntryNo_L := 1;
+
+        WhseItemTraking_L.INIT;
+        WhseItemTraking_L."Entry No." := NextEntryNo_L;
+        WhseItemTraking_L.VALIDATE("Item No.",WhseItemJnlLine."Item No.");
+        WhseItemTraking_L.VALIDATE("Variant Code",WhseItemJnlLine."Variant Code");
+        WhseItemTraking_L.VALIDATE("Quantity (Base)",WhseItemJnlLine.Quantity);
+        WhseItemTraking_L."Source Type" := 7311;
+        WhseItemTraking_L."Source Subtype" := 0;
+        WhseItemTraking_L."Source Batch Name" := WhseItemJnlLine."Journal Template Name";
+        WhseItemTraking_L."Source ID" := WhseItemJnlLine."Journal Batch Name";
+        WhseItemTraking_L.VALIDATE("Source Ref. No.",WhseItemJnlLine."Line No.");
+        WhseItemTraking_L.VALIDATE("Source Prod. Order Line",0);
+        WhseItemTraking_L."Lot No." := InputText[15];
+        WhseItemTraking_L."Serial No." := InputText[14];
+        WhseItemTraking_L."Location Code" := WhseItemJnlLine."Location Code";
+        WhseItemTraking_L.VALIDATE("Qty. to Handle (Base)",WhseItemJnlLine.Quantity);
+
+
+        IF InputText[16] <> '' THEN BEGIN
+          FormatFieldsMgt.Text2Date(DummyDate_L,InputText[16]);
+          WhseItemTraking_L."Expiration Date" := DummyDate_L;
+        END;
+
+        WhseItemTraking_L.INSERT(TRUE);
+
+        IF (WhseItemTraking_L."Serial No." <> '') AND
+           (ItemTrackingCode_G."SN Info. Inbound Must Exist") THEN BEGIN
+          SerialNoInfo_L.INIT;
+          SerialNoInfo_L."Item No." := WhseItemTraking_L."Item No.";
+          SerialNoInfo_L."Variant Code" := WhseItemTraking_L."Variant Code";
+          SerialNoInfo_L."Serial No." := WhseItemTraking_L."Serial No.";
+          SerialNoInfo_L.Description := WhseItemTraking_L."Serial No.";
+          IF SerialNoInfo_L.INSERT THEN;
+        END;
+
+        IF (WhseItemTraking_L."Lot No." <> '') AND
+           (ItemTrackingCode_G."Lot Info. Inbound Must Exist") THEN BEGIN
+          LotNoInfo_L.INIT;
+          LotNoInfo_L."Item No." := WhseItemTraking_L."Item No.";
+          LotNoInfo_L."Variant Code" := WhseItemTraking_L."Variant Code";
+          LotNoInfo_L."Lot No." := WhseItemTraking_L."Lot No.";
+          LotNoInfo_L.Description := WhseItemTraking_L."Lot No.";
+          IF LotNoInfo_L.INSERT THEN;
+        END;
+
+      END;
+    END;
+
+    LOCAL PROCEDURE GetBin@19(LocationCode@1000 : Code[10];BinCode@1002 : Code[20]);
+    BEGIN
+      IF (LocationCode = '') OR (BinCode = '') THEN
+        BinRec_G.INIT
+      ELSE
+        IF (BinRec_G."Location Code" <> LocationCode) OR
+           (BinRec_G.Code <> BinCode)
+        THEN
+          BinRec_G.GET(LocationCode,BinCode);
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20101213-8060990/065-CMB6.00.01-FEC01 : ADDOBJ (Nouvel objet).
+      20111017-8060990/065-CMB6.00.10.04-JDL01 : MODOBJ (Modification complSte du C/AL Code (position des champs, request form ...)).
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

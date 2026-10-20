@@ -1,0 +1,1176 @@
+OBJECT Codeunit 60031 Imp Whse Shpt Phyto Logis Tour
+{
+  OBJECT-PROPERTIES
+  {
+    Date=22/02/21;
+    Heure=13:43:32;
+    Modifi'=Oui;
+    Liste versions=LogA07-SCT00.00.00;
+  }
+  PROPERTIES
+  {
+    TableNo=60075;
+    Permissions=TableData 60075=rimd;
+    OnRun=BEGIN
+            RecPhytoInterfaceSetup_G.GET;
+            // --> 20171129-LogA07-SCT00.00.00-3313-NED
+            IF IsBuildKit_G THEN
+              UpdateKitLine(Rec)
+            ELSE
+            // <-- 20171129-LogA07-SCT00.00.00-3313-NED
+              UpdateWhseShpt(Rec);
+            DeleteOrderSimulation(SimOrderNo_G);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      RecPhytoInterfaceSetup_G@60002 : Record 60076;
+      RecSourceSalesLine_G@1000000003 : Record 37;
+      FinalFileName_G@60001 : Text[1024];
+      Text60000@60007 : TextConst 'FRA=Fichier(s) import'(s) avec succ's.';
+      Text60001@60006 : TextConst 'FRA=Il n''y a pas de fichier pour l''exp'dition N› %1 et la commande N› %2.';
+      Text60002@60005 : TextConst 'FRA=Le(s) fichier(s) de l''exp'dition N› %1 n''est pas conforme. L''import est abondonn'.';
+      Text60003@60004 : TextConst 'FRA=Le dossier d''import n''existe pas. Veuillez contacter votre administrateur.';
+      Text60004@60003 : TextConst 'ENU=The file %1 has not been uploaded.;FRA=Le fichier %1 n''a pas 't' t'l'charg'.';
+      Text60005@60011 : TextConst 'FRA=Les fichiers d''import de l''exp'dition N› %1 sont d'j. trait's.';
+      InsertLine_G@60012 : Boolean;
+      Text60006@60013 : TextConst 'FRA=N› lot ou/et date de fabrication doivent avoir une valeur.';
+      Text60007@60014 : TextConst 'ENU=You don''t authorize to create/visualise warehouse shipment on the location specified in order line;FRA=Vos droits magasiniers ne vous permettent pas de cr'er/visualiser les exp'ditions entrep"t sur les magasins sp'cifi's en ligne de vente.';
+      Text60008@60016 : TextConst 'ENU=Not found document to create. Please, reopen and release document.;FRA=Il n''y a rien a cr'er. Veuillez rouvrir et relancer le document.';
+      OutstandQty_G@1000000000 : Decimal;
+      Text60009@60000 : TextConst 'FRA=L''import est r'alis' pour certains fichiers et a 't' abandonn' pour d''autres fichiers erron's.';
+      Text60010@60017 : TextConst 'FRA=Vous ne pouvez pas saisir une quantit' de %1 parce que l''article %2 dispose d''une quantit' indivisible de %3.';
+      Text60011@60015 : TextConst 'FRA=Vous ne pouvez pas livrer partiellement des composants d''un pack.';
+      Text60012@60010 : TextConst 'FRA="Vous ne pouvez pas ajouter un article non pr'vu dans le fichier pack. "';
+      Text60013@60009 : TextConst 'FRA=Il n''y a pas de fichier (articles composants kit) pour l''exp'dition N› %1 et la commande N› %2.';
+      SIMULATION@1000000001 : TextConst 'FRA=SIM';
+      SimOrderNo_G@1000000002 : Code[20];
+      IsBuildKit_G@60008 : Boolean;
+      OutstandKitQty_G@60018 : Decimal;
+
+    PROCEDURE ImportFile@60007(RecWhseShptHeader_P@60000 : Record 7320);
+    VAR
+      RecWhseShptLine_L@1000000000 : Record 7321;
+    BEGIN
+      CLEARLASTERROR;
+      RecPhytoInterfaceSetup_G.GET;
+      RecPhytoInterfaceSetup_G.TESTFIELD("Shpt Citrix Folder Tour Import");
+      RecPhytoInterfaceSetup_G.TESTFIELD("Shpt Local Folder Tour Import");
+      RecPhytoInterfaceSetup_G.TESTFIELD("Shpt File Import Tour Extens.");
+
+      IF ISSERVICETIER THEN BEGIN
+        CLEAR(RecWhseShptLine_L);
+        RecWhseShptLine_L.SETRANGE("No.",RecWhseShptHeader_P."No.");
+        RecWhseShptLine_L.SETRANGE("Build Kit",FALSE);
+        IF NOT RecWhseShptLine_L.ISEMPTY THEN
+          ImportKitAndItem(RecWhseShptHeader_P,FALSE,'_' + RecWhseShptHeader_P."No.");
+        RecWhseShptLine_L.SETRANGE("Build Kit",TRUE);
+        IF NOT RecWhseShptLine_L.ISEMPTY THEN
+          ImportKitAndItem(RecWhseShptHeader_P,TRUE,'_P' + RecWhseShptHeader_P."No.");
+      END;
+    END;
+
+    PROCEDURE GetFileName@60001(ShptNo_P@60004 : Code[20];OrderNo_P@60008 : Code[20]) Filename_R : Text[1024];
+    VAR
+      StringArray@60007 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Array" RUNONCLIENT;
+      StringEnumerator@60006 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Collections.IEnumerator" RUNONCLIENT;
+      SysDirectory@60005 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.Directory" RUNONCLIENT;
+      SysPath@60003 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.Path" RUNONCLIENT;
+      Filename@60002 : Text[1024];
+      SourceFolder_L@60001 : Text[1024];
+      FilesSysObj2_L@60000 : Automation "{F935DC20-1CF0-11D0-ADB9-00C04FD58A0B} 1.0:{0D43FE01-F093-11CF-8940-00A0C9054228}:'Windows Script Host Object Model'.FileSystemObject";
+    BEGIN
+      IF ISSERVICETIER THEN BEGIN
+        IF ISCLEAR(FilesSysObj2_L) THEN
+          CREATE(FilesSysObj2_L,TRUE,TRUE);
+
+        SourceFolder_L := RecPhytoInterfaceSetup_G."Shpt Citrix Folder Tour Import";
+
+        IF NOT FilesSysObj2_L.FolderExists(SourceFolder_L) THEN BEGIN
+          SourceFolder_L := RecPhytoInterfaceSetup_G."Shpt Local Folder Tour Import";
+          IF NOT FilesSysObj2_L.FolderExists(SourceFolder_L) THEN
+            ERROR(Text60003);
+        END;
+        CLEAR(FilesSysObj2_L);
+
+        StringArray := SysDirectory.GetFiles(SourceFolder_L,'*.' + RecPhytoInterfaceSetup_G."Shpt File Import Tour Extens.");
+      StringEnumerator := StringArray.GetEnumerator;
+      WHILE StringEnumerator.MoveNext DO BEGIN
+        Filename := '';
+        Filename := SysPath.GetFileNameWithoutExtension(StringEnumerator.Current);
+        IF (STRPOS(Filename,ShptNo_P) <> 0) AND (STRPOS(Filename,OrderNo_P) <> 0) THEN BEGIN
+            Filename_R := SourceFolder_L + '\' + Filename + '.' + RecPhytoInterfaceSetup_G."Shpt File Import Tour Extens.";
+          END;
+        END;
+      END;
+      EXIT(Filename_R);
+    END;
+
+    PROCEDURE UploadFileSilent@60010(ClientFilePath_P@60001 : Text[1024];FileExtension_P@60000 : Text[30]) : Text[1024];
+    VAR
+      ClientFilePath@60007 : Text[1024];
+      TempClientFile@60006 : Text[1024];
+      CU3TierAutoMgt_L@60005 : Codeunit 419;
+      ServerFileName@60004 : Text[1024];
+      PathHelper@60003 : DotNet "'mscorlib'.System.IO.Path";
+      FilesSysObj_L@60002 : Automation "{F935DC20-1CF0-11D0-ADB9-00C04FD58A0B} 1.0:{0D43FE01-F093-11CF-8940-00A0C9054228}:'Windows Script Host Object Model'.FileSystemObject";
+    BEGIN
+      IF ISSERVICETIER THEN BEGIN
+        IF ISCLEAR(FilesSysObj_L) THEN
+          CREATE(FilesSysObj_L,TRUE,TRUE);
+
+        TempClientFile := CU3TierAutoMgt_L.ClientTempFileName('',FileExtension_P);
+        FilesSysObj_L.CopyFile(ClientFilePath_P,TempClientFile,TRUE);
+        ServerFileName := CU3TierAutoMgt_L.ServerTempFileName('',FileExtension_P);
+        IF NOT UPLOAD('','<TEMP>','',PathHelper.GetFileName(TempClientFile),ServerFileName) THEN
+           ERROR(Text60004,ClientFilePath_P);
+        FilesSysObj_L.DeleteFile(TempClientFile);
+        FilesSysObj_L.DeleteFile(ClientFilePath_P);
+        CLEAR(FilesSysObj_L);
+        // --> 20200222-CLA93265-XPE1
+        ServerFileName := CheckFile(ServerFileName, FileExtension_P);
+        // <-- 20200222-CLA93265-XPE1
+      END;
+      EXIT(ServerFileName);
+    END;
+
+    PROCEDURE UpdateWhseShpt@60004(RecPhytoSalesImport_P@60003 : Record 60075);
+    VAR
+      RecWhseShptLine_L@60002 : Record 7321;
+    BEGIN
+      OutstandQty_G := RecPhytoSalesImport_P."Quantity Handled";
+
+      IF NOT InsertLine_G THEN BEGIN
+        CLEAR(RecWhseShptLine_L);
+        RecWhseShptLine_L.SETCURRENTKEY("No.","Item No.","Variant Code");
+        RecWhseShptLine_L.SETRANGE("No.",RecPhytoSalesImport_P."No.");
+        RecWhseShptLine_L.SETRANGE("Item No.",RecPhytoSalesImport_P."Item No.");
+        RecWhseShptLine_L.SETRANGE("Variant Code",RecPhytoSalesImport_P."Variant Code");
+        RecWhseShptLine_L.SETRANGE("Source Document",RecWhseShptLine_L."Source Document" :: "Sales Order");
+        RecWhseShptLine_L.SETRANGE(RecWhseShptLine_L."Source No.",RecPhytoSalesImport_P."Charter Order No.");
+        IF RecWhseShptLine_L.FINDSET THEN
+        REPEAT
+          IF RecWhseShptLine_L."Qty. to Ship" <= RecWhseShptLine_L.Quantity THEN
+            UpdateWhseLine(RecWhseShptLine_L,RecPhytoSalesImport_P);
+        UNTIL (RecWhseShptLine_L.NEXT = 0) OR (OutstandQty_G = 0);
+        IF OutstandQty_G > 0 THEN
+          InsertLine_G := TRUE;
+      END;
+
+      IF InsertLine_G THEN BEGIN
+        UpdateSalesOrder(RecPhytoSalesImport_P,OutstandQty_G);
+        OutstandQty_G := 0;
+      END;
+    END;
+
+    PROCEDURE UpdateReservEntry@60002(RecWhseShptLine_P@60000 : Record 7321;RecPhytoSalesImport_P@60003 : Record 60075;QtyToReserv_P@60005 : Decimal);
+    VAR
+      RecReservEntry_L@60002 : Record 337;
+      RecReservEntry1_L@60001 : Record 337;
+      RecSalesLine_L@60006 : Record 37;
+      RecItem_L@60004 : Record 27;
+      RecPhytoSalesImport_L@60007 : Record 60075;
+      RecPhytoInterfaceSetup_L@1000000000 : Record 60076;
+      RecWhseShptHeader_L@1000000001 : Record 7320;
+    BEGIN
+      RecPhytoInterfaceSetup_L.GET;
+      CLEAR(RecItem_L);
+      CLEAR(RecSalesLine_L);
+      IF RecSalesLine_L.GET(RecSalesLine_L."Document Type" :: Order,RecWhseShptLine_P."Source No.",
+            // --> 20171129-LogA07-SCT00.00.00-3313-NED
+            //RecWhseShptLine_P."Source Line No.") AND RecItem_L.GET(RecWhseShptLine_P."Item No.")
+            RecWhseShptLine_P."Source Line No.") AND RecItem_L.GET(RecPhytoSalesImport_P."Item No.")
+            // <-- 20171129-LogA07-SCT00.00.00-3313-NED
+              AND (RecItem_L."Item Tracking Code" <> '') THEN
+      BEGIN
+        IF ((RecPhytoSalesImport_P."Lot No." = '') AND NOT RecPhytoInterfaceSetup_G."Lot Mandatory Tracking") OR
+            (FORMAT(RecPhytoSalesImport_P."Manufacturing Date") = '') THEN BEGIN
+          CLEAR(RecPhytoSalesImport_L);
+          RecPhytoSalesImport_L.GET(RecPhytoSalesImport_P."Entry No.");
+          RecPhytoSalesImport_L."Import Error"  := TRUE;
+          RecPhytoSalesImport_L."Import Status" := RecPhytoSalesImport_L."Import Status" :: Error;
+          RecPhytoSalesImport_L."Error Message" := Text60006;
+          RecPhytoSalesImport_L.MODIFY;
+        END;
+        IF RecPhytoSalesImport_P."Lot No." <> '' THEN BEGIN
+          RecReservEntry_L.INIT;
+          CLEAR(RecReservEntry1_L);
+          IF RecReservEntry1_L.FINDLAST THEN
+            RecReservEntry_L."Entry No." := RecReservEntry1_L."Entry No." + 1
+          ELSE
+            RecReservEntry_L."Entry No." := 1;
+          // --> 20171129-LogA07-SCT00.00.00-3313-NED
+          //RecReservEntry_L.VALIDATE("Item No.",RecWhseShptLine_P."Item No.");
+          RecReservEntry_L.VALIDATE("Item No.",RecPhytoSalesImport_P."Item No.");
+          // <-- 20171129-LogA07-SCT00.00.00-3313-NED
+          // --> 20171020-LogA07-SCT00.00.00-29990-NED
+          //RecReservEntry_L.VALIDATE("Location Code",RecWhseShptLine_P."Location Code");
+          //RecReservEntry_L.VALIDATE("Variant Code",RecWhseShptLine_P."Variant Code");
+          CLEAR(RecWhseShptHeader_L);
+          RecWhseShptHeader_L.GET(RecWhseShptLine_P."No.");
+          RecReservEntry_L.VALIDATE("Location Code",RecWhseShptHeader_L."Location Code");
+          RecReservEntry_L.VALIDATE("Variant Code",RecPhytoSalesImport_P."Variant Code");
+          // <-- 20171020-LogA07-SCT00.00.00-29990-NED
+          RecReservEntry_L."Qty. per Unit of Measure" := RecWhseShptLine_P."Qty. per Unit of Measure";
+          RecReservEntry_L."Item Tracking" := RecReservEntry_L."Item Tracking" :: "Lot No.";
+          RecReservEntry_L."Lot No." := RecPhytoSalesImport_P."Lot No.";
+          // --> 20171129-LogA07-SCT00.00.00-3313-NED
+          IF IsBuildKit_G THEN
+            RecReservEntry_L."Source Type" := 25000
+          ELSE
+          // <-- 20171129-LogA07-SCT00.00.00-3313-NED
+          RecReservEntry_L."Source Type" := RecWhseShptLine_P."Source Type";
+          RecReservEntry_L."Source Subtype" := RecWhseShptLine_P."Source Subtype";
+          RecReservEntry_L."Source ID" := RecWhseShptLine_P."Source No.";
+          // --> 20171129-LogA07-SCT00.00.00-3313-NED
+          IF IsBuildKit_G THEN BEGIN
+            RecReservEntry_L."Source Prod. Order Line" := RecPhytoSalesImport_P."Order Line No.";
+            RecReservEntry_L."Source Ref. No." := RecPhytoSalesImport_P."Quantity Handled (base)";
+          END ELSE
+          // <-- 20171129-LogA07-SCT00.00.00-3313-NED
+          RecReservEntry_L."Source Ref. No." := RecWhseShptLine_P."Source Line No.";
+          RecReservEntry_L."Reservation Status" := RecReservEntry_L."Reservation Status" :: Surplus;
+          RecReservEntry_L.VALIDATE("Quantity (Base)",- QtyToReserv_P);
+          RecReservEntry_L."Quantity Invoiced (Base)" := 0;
+          RecReservEntry_L.Positive := (RecReservEntry_L."Quantity (Base)" > 0);
+          RecReservEntry_L."Creation Date" := WORKDATE;
+          RecReservEntry_L."Created By" := USERID;
+          RecReservEntry_L.VALIDATE("Manufacturing Date",RecPhytoSalesImport_P."Manufacturing Date");
+          RecReservEntry_L.VALIDATE("Expiration Date",RecPhytoSalesImport_P."Expiration Date");
+          RecReservEntry_L."Shipment Date" := RecSalesLine_L."Shipment Date";
+          RecReservEntry_L.Description := RecSalesLine_L.Description;
+          RecReservEntry_L."Update Interface Terminal" := TRUE;
+          RecReservEntry_L.INSERT;
+          //MAJ quantit' r'partie par lot
+          // --> 20171129-LogA07-SCT00.00.00-3313-NED
+          IF NOT IsBuildKit_G THEN BEGIN
+          // <-- 20171129-LogA07-SCT00.00.00-3313-NED
+          CLEAR(RecPhytoSalesImport_L);
+          RecPhytoSalesImport_L.GET(RecPhytoSalesImport_P."Entry No.");
+          RecPhytoSalesImport_L."Quantity Distributed by Lot" += ABS(RecReservEntry_L."Quantity (Base)");
+          RecPhytoSalesImport_L.MODIFY;
+          // --> 20171129-LogA07-SCT00.00.00-3313-NED
+          END;
+          // <-- 20171129-LogA07-SCT00.00.00-3313-NED
+        END;
+      END;
+    END;
+
+    PROCEDURE UpdateSalesOrder@60003(RecPhytoSalesImport_P@60000 : Record 60075;QtyToHandle_P@60012 : Decimal);
+    VAR
+      RecWhseShptHeader_L@60001 : Record 7320;
+      RecWhseShptLine_L@60002 : Record 7321;
+      RecSalesHeader_L@60008 : Record 36;
+      RecSalesLine_L@60003 : Record 37;
+      RecSalesLine1_L@60004 : Record 37;
+      RecSalesLine2_L@60005 : Record 37;
+      RecItem_L@60016 : Record 27;
+      RecPhytoSalesImport_L@60006 : Record 60075;
+      RecPhytoSalesAdd_L@60011 : Record 60075;
+      RecDocCategory_L@60009 : Record 8061330;
+      RecItemCrossRef_L@1000000000 : Record 5717;
+      ReleaseSalesDoc@60007 : Codeunit 414;
+      FreezedDoc_L@60014 : Boolean;
+      CmdNo_L@60015 : Code[20];
+      UnitCode_L@1000000001 : Code[10];
+    BEGIN
+      //Ajout ligne commande vente
+      CmdNo_L := '';
+      UnitCode_L := '';
+      RecWhseShptHeader_L.GET(RecPhytoSalesImport_P."No.");
+      CLEAR(RecWhseShptLine_L);
+      RecWhseShptLine_L.SETRANGE("No.",RecPhytoSalesImport_P."No.");
+      RecWhseShptLine_L.SETRANGE("Source Type",37);
+      RecWhseShptLine_L.SETRANGE("Source Subtype",1);
+      RecWhseShptLine_L.SETRANGE("Source Document",RecWhseShptLine_L."Source Document" :: "Sales Order");
+      RecWhseShptLine_L.SETRANGE("Source No.",RecPhytoSalesImport_P."Charter Order No.");
+      IF NOT RecPhytoSalesImport_P."Generic Item" AND NOT RecPhytoSalesImport_P."Added Line" THEN
+        RecWhseShptLine_L.SETRANGE("Item No.",RecPhytoSalesImport_P."Item No.");
+      IF RecWhseShptLine_L.FINDFIRST THEN BEGIN
+        RecSalesHeader_L.GET(RecWhseShptLine_L."Source Subtype",RecWhseShptLine_L."Source No.");
+        CLEAR(RecSourceSalesLine_G);
+        RecSourceSalesLine_G.GET(RecWhseShptLine_L."Source Subtype",RecWhseShptLine_L."Source No.",RecWhseShptLine_L."Source Line No.");
+        CLEAR(RecItemCrossRef_L);
+        RecItemCrossRef_L.SETRANGE("Cross-Reference Type",RecItemCrossRef_L."Cross-Reference Type" :: "Bar Code");
+        RecItemCrossRef_L.SETRANGE("Cross-Reference No.",RecPhytoSalesImport_P."Item ID");
+        RecItemCrossRef_L.SETRANGE("Item No.",RecPhytoSalesImport_P."Item No.");
+        RecItemCrossRef_L.SETRANGE("Variant Code",RecPhytoSalesImport_P."Variant Code");
+        IF RecItemCrossRef_L.FINDFIRST THEN
+          UnitCode_L := RecItemCrossRef_L."Unit of Measure"
+        ELSE BEGIN
+          RecItem_L.GET(RecPhytoSalesImport_P."Item No.");
+          UnitCode_L := RecItem_L."Sales Unit of Measure";
+        END;
+        FreezedDoc_L := RecSalesHeader_L."Freezed Document";
+        IF FreezedDoc_L THEN BEGIN
+          RecSalesHeader_L."Freezed Document" := FALSE;
+          RecSalesHeader_L.MODIFY;
+        END;
+
+        //Si insertion OK
+        CLEAR(RecDocCategory_L);
+        RecDocCategory_L.GET(RecDocCategory_L."Sales/Purchase" :: Sales,RecDocCategory_L."Document Type" :: Order,
+            RecSalesHeader_L."Doc. Category Code");
+        IF NOT RecDocCategory_L."Insert Order if Add Item Scan" THEN BEGIN
+          IF RecSalesHeader_L.Status = RecSalesHeader_L.Status :: Open THEN
+            ReleaseSalesDoc.PerformManualRelease(RecSalesHeader_L);
+          // --> 20171020-LogA07-SCT00.00.00-29990-NED
+          SimulateInsertSalesLine(RecSalesHeader_L,RecPhytoSalesImport_P."Item No.",
+            //RecWhseShptLine_L."Location Code",RecWhseShptLine_L."Variant Code"
+            RecWhseShptHeader_L."Location Code",RecPhytoSalesImport_P."Variant Code",QtyToHandle_P);
+          // <-- 20171020-LogA07-SCT00.00.00-29990-NED
+          CLEAR(RecSalesLine_L);
+          RecSalesLine_L."Document Type" := RecWhseShptLine_L."Source Subtype";
+          RecSalesLine_L."Document No." := RecWhseShptLine_L."Source No.";
+
+          CLEAR(RecSalesLine1_L);
+          RecSalesLine1_L.SETRANGE("Document Type",RecWhseShptLine_L."Source Subtype");
+          RecSalesLine1_L.SETRANGE("Document No.",RecWhseShptLine_L."Source No.");
+          IF RecSalesLine1_L.FINDLAST THEN
+            RecSalesLine_L."Line No." := RecSalesLine1_L."Line No." + 10000
+          ELSE
+            RecSalesLine_L."Line No." := 10000;
+          RecSalesLine_L.SuspendStatusCheck(TRUE);
+
+          IF NOT RecSalesLine_L.INSERT(TRUE) THEN BEGIN
+            CmdNo_L := InsertSalesHeader(RecPhytoSalesImport_P,RecSalesHeader_L,RecPhytoSalesImport_P."Item No.",
+                          // --> 20171020-LogA07-SCT00.00.00-29990-NED
+                          //RecWhseShptLine_L."Location Code"
+                          QtyToHandle_P,RecWhseShptHeader_L."Location Code",RecPhytoSalesImport_P."Variant Code",UnitCode_L);
+                          // <-- 20171020-LogA07-SCT00.00.00-29990-NED
+
+            CLEAR(RecSalesLine2_L);
+            RecSalesLine2_L.GET(RecSalesLine2_L."Document Type" :: Order,CmdNo_L,10000);
+          END ELSE BEGIN
+            RecSalesLine_L.SuspendStatusCheck(TRUE);
+            RecSalesLine_L.VALIDATE(Type,RecSalesLine_L.Type :: Item);
+            RecSalesLine_L.CheckIfIsReserved(TRUE);
+            RecSalesLine_L.VALIDATE("No.",RecPhytoSalesImport_P."Item No.");
+            // --> 20171020-LogA07-SCT00.00.00-29990-NED
+            //RecSalesLine_L.VALIDATE("Location Code",RecWhseShptLine_L."Location Code");
+            RecSalesLine_L.VALIDATE("Location Code",RecWhseShptHeader_L."Location Code");
+            RecSalesLine_L.VALIDATE("Variant Code",RecPhytoSalesImport_P."Variant Code");
+            // <-- 20171020-LogA07-SCT00.00.00-29990-NED
+            RecSalesLine_L.UpdateQtyFromWhse(TRUE);
+            RecSalesLine_L.VALIDATE(Quantity,QtyToHandle_P);
+            RecSalesLine_L."Order Date" := WORKDATE;
+            IF RecSalesLine_L."Promised Delivery Date" = 0D THEN
+              RecSalesLine_L.VALIDATE("Requested Delivery Date",WORKDATE);
+            RecSalesLine_L.VALIDATE("Promised Delivery Date",WORKDATE);
+            IF NOT RecPhytoSalesImport_P."Generic Item" AND NOT RecPhytoSalesImport_P."Added Line" THEN BEGIN
+              RecSalesLine_L."Customer Price Group" := RecSourceSalesLine_G."Customer Price Group";
+              RecSalesLine_L."VisPrix Forced" := RecSourceSalesLine_G."VisPrix Forced";
+            END;
+            RecSalesLine_L."Splited Line" := TRUE;
+            RecSalesLine_L.MODIFY(TRUE);
+            CLEAR(RecSalesLine2_L);
+            RecSalesLine2_L := RecSalesLine_L;
+          END;
+        END ELSE BEGIN
+          CmdNo_L := InsertSalesHeader(RecPhytoSalesImport_P,RecSalesHeader_L,RecPhytoSalesImport_P."Item No.",
+                        // --> 20171020-LogA07-SCT00.00.00-29990-NED
+                        //RecWhseShptLine_L."Location Code"
+                        QtyToHandle_P,RecWhseShptHeader_L."Location Code",RecPhytoSalesImport_P."Variant Code",UnitCode_L);
+                        // <-- 20171020-LogA07-SCT00.00.00-29990-NED
+          CLEAR(RecSalesLine2_L);
+          RecSalesLine2_L.GET(RecSalesLine2_L."Document Type" :: Order,CmdNo_L,10000);
+        END;
+        GetSourceDoc(RecWhseShptHeader_L,RecSalesLine2_L,RecPhytoSalesImport_P);
+
+        CLEAR(RecPhytoSalesImport_L);
+        RecPhytoSalesImport_L.GET(RecPhytoSalesImport_P."Entry No.");
+        RecPhytoSalesImport_L."Order No." := RecSalesLine2_L."Document No.";
+        RecPhytoSalesImport_L."Order Line No." := RecSalesLine2_L."Line No.";
+        RecPhytoSalesImport_L.MODIFY;
+
+        IF FreezedDoc_L THEN BEGIN
+          RecSalesHeader_L."Freezed Document" := TRUE;
+          RecSalesHeader_L.MODIFY;
+        END;
+      END;
+    END;
+
+    PROCEDURE GetSourceDoc@60005(VAR RecWhseShptHeader_P@60001 : Record 7320;VAR RecSalesLine_P@60002 : Record 37;VAR RecPhytoSalesImport_P@60005 : Record 60075);
+    VAR
+      GetSourceDoc_L@60000 : Report 5753;
+      RecWhseRqst_L@60004 : Record 5765;
+      RecWhseShptLine_L@60006 : Record 7321;
+      RecSalesHeader_L@60007 : Record 36;
+    BEGIN
+      CLEAR(RecWhseRqst_L);
+      RecWhseRqst_L.GET(RecWhseRqst_L.Type::Outbound,RecSalesLine_P."Location Code",
+                          DATABASE :: "Sales Line",1,RecSalesLine_P."Document No.");
+      RecWhseRqst_L.SETRECFILTER;
+
+      GetSourceDoc_L.SetOneCreatedShptHeader(RecWhseShptHeader_P);
+      GetSourceDoc_L.SetLineFilter(RecSalesLine_P."Line No.");
+      GetSourceDoc_L.SetShowErrorMessage(FALSE);
+      GetSourceDoc_L.SetSkipBlocked(TRUE);
+      GetSourceDoc_L.USEREQUESTFORM(FALSE);
+      GetSourceDoc_L.SETTABLEVIEW(RecWhseRqst_L);
+      GetSourceDoc_L.RUNMODAL;
+
+      CLEAR(RecWhseShptLine_L);
+      RecWhseShptLine_L.SETCURRENTKEY("Source Type","Source Subtype","Source No.","Source Line No.");
+      RecWhseShptLine_L.SETRANGE("Source Type",37);
+      RecWhseShptLine_L.SETRANGE("Source Subtype",1);
+      RecWhseShptLine_L.SETRANGE("Source No.",RecSalesLine_P."Document No.");
+      RecWhseShptLine_L.SETRANGE("Source Line No.",RecSalesLine_P."Line No.");
+      RecWhseShptLine_L.FINDFIRST;
+      RecWhseShptLine_L.VALIDATE("Qty. to Ship",RecSalesLine_P.Quantity);
+      RecWhseShptLine_L."Update Interface Terminal" := TRUE;
+      RecWhseShptLine_L.MODIFY;
+      IF RecSalesLine_P."No." <> RecPhytoInterfaceSetup_G."Generic Item No." THEN
+        UpdateReservEntry(RecWhseShptLine_L,RecPhytoSalesImport_P,RecSalesLine_P.Quantity);
+    END;
+
+    PROCEDURE SetUpdateLine@60006(InsertLine_P@60000 : Boolean);
+    BEGIN
+      InsertLine_G := InsertLine_P;
+    END;
+
+    PROCEDURE InsertSalesHeader@60008(RecPhytoSalesImport_P@60001 : Record 60075;RecSalesHeader_P@60005 : Record 36;ItemNo_P@60007 : Code[20];QtyToHandle_P@60000 : Decimal;LocationCode_P@60002 : Code[10];VariantCode_P@60008 : Code[10];UnitMeasureCode_P@60009 : Code[10]) CmdNo_Res : Code[20];
+    VAR
+      RecSalesHeader_L@60003 : Record 36;
+      RecSalesLine_L@60004 : Record 37;
+      ReleaseSalesDoc_L@60006 : Codeunit 414;
+      RecCustDocDistrib_L@1000000000 : Record 60004;
+      RecCustDocDistrib1_L@1000000001 : Record 60004;
+    BEGIN
+      CLEAR(RecSalesHeader_L);
+      RecSalesHeader_L.SetHideValidationDialog(TRUE);
+      RecSalesHeader_L."Document Type" := RecSalesHeader_L."Document Type" :: Order;
+      RecSalesHeader_L.INSERT(TRUE);
+      IF RecSalesHeader_P."To Distribute" THEN BEGIN
+        RecSalesHeader_L."To Distribute" := RecSalesHeader_P."To Distribute";
+        CLEAR(RecCustDocDistrib_L);
+        RecCustDocDistrib_L.SETRANGE("Document Type",RecCustDocDistrib_L."Document Type" :: Order);
+        RecCustDocDistrib_L.SETRANGE("Document No.",RecSalesHeader_P."No.");
+        IF RecCustDocDistrib_L.FINDSET THEN
+        REPEAT
+          RecCustDocDistrib1_L.INIT;
+          RecCustDocDistrib1_L.TRANSFERFIELDS(RecCustDocDistrib_L);
+          RecCustDocDistrib1_L."Document No." := RecSalesHeader_L."No.";
+          RecCustDocDistrib1_L.INSERT;
+        UNTIL RecCustDocDistrib_L.NEXT = 0;
+      END;
+
+      RecSalesHeader_L.VALIDATE("Sell-to Customer No.",RecSalesHeader_P."Sell-to Customer No.");
+      RecSalesHeader_L.VALIDATE("Bill-to Customer No.",RecSalesHeader_P."Bill-to Customer No.");
+      RecSalesHeader_L.VALIDATE("Shipment Date",WORKDATE);
+      RecSalesHeader_L.VALIDATE("Requested Delivery Date",WORKDATE);
+      RecSalesHeader_L.VALIDATE("Promised Delivery Date",WORKDATE);
+      RecSalesHeader_L.VALIDATE("Posting Date",WORKDATE);
+      RecSalesHeader_L.VALIDATE("Document Date",WORKDATE);
+      RecSalesHeader_L.VALIDATE("Order Date",WORKDATE);
+      RecSalesHeader_L.VALIDATE("Due Date",WORKDATE);
+      RecSalesHeader_L."Assigned User ID" := USERID;
+
+      RecSalesHeader_L.VALIDATE("Location Code",LocationCode_P);
+      RecSalesHeader_L."Shipment Method Code":= RecSalesHeader_P."Shipment Method Code";
+      RecSalesHeader_L."Shipping Agent Code" := RecSalesHeader_P."Shipping Agent Code";
+      RecSalesHeader_L."Latest Req. Deliv. Date" := WORKDATE;
+      RecSalesHeader_L.MODIFY(TRUE);
+
+      RecSalesLine_L.INIT;
+      RecSalesLine_L."Document Type" := RecSalesHeader_L."Document Type";
+      RecSalesLine_L."Document No." := RecSalesHeader_L."No.";
+      RecSalesLine_L."Line No.":= RecSalesLine_L.GetLastLine + 10000;
+      RecSalesLine_L.INSERT(TRUE);
+
+      RecSalesLine_L."Sell-to Customer No." := RecSalesHeader_L."Sell-to Customer No.";
+      RecSalesLine_L."Bill-to Customer No." := RecSalesHeader_L."Sell-to Customer No.";
+      RecSalesLine_L.VALIDATE(Type,RecSalesLine_L.Type::Item);
+      RecSalesLine_L.CheckIfIsReserved(TRUE);
+      RecSalesLine_L.VALIDATE("No.",ItemNo_P);
+      RecSalesLine_L.VALIDATE("Variant Code",VariantCode_P);
+      RecSalesLine_L.VALIDATE("Location Code",LocationCode_P);
+      RecSalesLine_L.VALIDATE("Unit of Measure Code",UnitMeasureCode_P);
+      RecSalesLine_L.UpdateQtyFromWhse(TRUE);
+      RecSalesLine_L.VALIDATE(Quantity,QtyToHandle_P);
+      RecSalesLine_L.VALIDATE("Shipment Date",WORKDATE);
+      IF RecSalesLine_L."Promised Delivery Date" = 0D THEN
+        RecSalesLine_L.VALIDATE("Requested Delivery Date",WORKDATE);
+      RecSalesLine_L.VALIDATE("Promised Delivery Date",WORKDATE);
+      RecSalesLine_L."Shipment Method Code" := RecSalesHeader_L."Shipment Method Code";
+      RecSalesLine_L."CMC Campaign No." := RecSalesHeader_L."CMC Campaign No.";
+      RecSalesLine_L."Due Date" := WORKDATE;
+      RecSalesLine_L.VALIDATE("Payment Terms Code",RecSalesHeader_L."Payment Terms Code");
+      RecSalesLine_L.VALIDATE("Due Date",RecSalesHeader_L."Due Date");
+      RecSalesLine_L."Salesperson Code" := RecSalesHeader_L."Salesperson Code";
+      IF NOT RecPhytoSalesImport_P."Generic Item" AND NOT RecPhytoSalesImport_P."Added Line" THEN BEGIN
+        RecSalesLine_L."Customer Price Group" := RecSourceSalesLine_G."Customer Price Group";
+        RecSalesLine_L."VisPrix Forced" := RecSourceSalesLine_G."VisPrix Forced";
+      END;
+      RecSalesLine_L."Splited Line" := TRUE;
+      RecSalesLine_L.MODIFY(TRUE);
+
+      CLEAR(ReleaseSalesDoc_L);
+      // --> 20170907-LogA07-SCT00.00.00-3288-NED
+      //ReleaseSalesDoc_L.RUN(RecSalesHeader_L);
+      ReleaseSalesDoc_L.PerformManualRelease(RecSalesHeader_L);
+      // <-- 20170907-LogA07-SCT00.00.00-3288-NED
+      CmdNo_Res := RecSalesHeader_L."No.";
+    END;
+
+    PROCEDURE CreateWhseShipment@8053003(RecSalesHeader_P@60000 : Record 36;RecPhytoSalesImport_P@60001 : Record 60075);
+    VAR
+      RecLocation_L@8053005 : Record 14;
+      RecSalesLine_L@8053004 : Record 37;
+      TempLocation_L@8053003 : TEMPORARY Record 14;
+      Count_L@8053001 : Integer;
+      CduWMSManag_L@8053000 : Codeunit 7302;
+      GetSourceDocOutbound_L@8053008 : Codeunit 5752;
+    BEGIN
+      TempLocation_L.DELETEALL;
+      CLEAR(RecSalesLine_L);
+      RecSalesLine_L.SETRANGE("Document Type",RecSalesHeader_P."Document Type");
+      RecSalesLine_L.SETRANGE("Document No.",RecSalesHeader_P."No.");
+      IF RecSalesLine_L.FINDSET(FALSE, FALSE) THEN
+      REPEAT
+        IF NOT (TempLocation_L.GET(RecSalesLine_L."Location Code")) THEN BEGIN
+          IF RecLocation_L.GET(RecSalesLine_L."Location Code") AND RecLocation_L."Require Shipment" THEN BEGIN
+            IF CduWMSManag_L.LocationIsAllowed(RecSalesLine_L."Location Code") THEN BEGIN
+              TempLocation_L.INIT;
+              TempLocation_L.Code := RecSalesLine_L."Location Code";
+              TempLocation_L.INSERT;
+            END;
+          END;
+        END;
+      UNTIL RecSalesLine_L.NEXT = 0;
+
+      Count_L := TempLocation_L.COUNT;
+
+      IF Count_L = 0 THEN
+        MESSAGE(Text60007);
+      IF Count_L >= 1 THEN BEGIN
+        CLEAR(RecSalesLine_L);
+        RecSalesLine_L.SETCURRENTKEY("Document Type","Document No.","Line No.");
+        RecSalesLine_L.SETRANGE("Document Type",RecSalesHeader_P."Document Type");
+        RecSalesLine_L.SETRANGE("Document No.",RecSalesHeader_P."No.");
+        RecSalesLine_L.SETRANGE("Location Code",RecSalesHeader_P."Location Code");
+        IF NOT RecSalesLine_L.ISEMPTY THEN BEGIN
+          GetSourceDocOutbound_L.SetLocationFilter(RecSalesLine_L."Location Code");
+          CreateFromSalesOrder(RecSalesHeader_P,RecPhytoSalesImport_P);
+        END;
+      END;
+    END;
+
+    PROCEDURE CreateFromSalesOrder@3(RecSalesHeader_P@1000 : Record 36;RecPhytoSalesImport_P@60002 : Record 60075);
+    VAR
+      WhseRqst@1001 : Record 5765;
+      WhseShptHeader@1002 : Record 7320;
+      GetSourceDocuments@1003 : Report 5753;
+      RecWheShptLine_L@1000000000 : Record 7321;
+      RecWheShptHeader_L@1000000004 : Record 7320;
+      Count_L@1000000002 : Integer;
+      LastDoc_L@1000000003 : Code[20];
+      CduPostingCheck_G@60000 : Codeunit 8053034;
+      WhseNo_L@60001 : Code[20];
+      ReleaseWhseShptDoc@60003 : Codeunit 7310;
+    BEGIN
+      WITH RecSalesHeader_P DO BEGIN
+        TESTFIELD(Status,Status::Released);
+        CheckLocation(TRUE);
+
+        CduPostingCheck_G.CheckCreationWarehouseShipment(RecSalesHeader_P);
+
+        WhseRqst.SETRANGE(Type,WhseRqst.Type::Outbound);
+        WhseRqst.SETRANGE("Source Type",DATABASE::"Sales Line");
+        WhseRqst.SETRANGE("Source Subtype","Document Type");
+        WhseRqst.SETRANGE("Source No.","No.");
+        WhseRqst.SETRANGE("Document Status",WhseRqst."Document Status"::Released);
+        WhseRqst.SETRANGE("Completely Handled",FALSE);
+        WhseRqst.SETRANGE("Location Code","Location Code");
+
+        IF WhseRqst.FINDFIRST THEN BEGIN
+          GetSourceDocuments.USEREQUESTFORM(FALSE);
+          GetSourceDocuments.SETTABLEVIEW(WhseRqst);
+          GetSourceDocuments.RUNMODAL;
+          GetSourceDocuments.GetLastShptHeader(WhseShptHeader);
+          IF NOT GetSourceDocuments.GetLineCreated THEN BEGIN
+            Count_L := 0;
+            LastDoc_L := '';
+            CLEAR(RecWheShptHeader_L);
+            //RecWheShptHeader_L.CLEARMARKS;
+            CLEAR(RecWheShptLine_L);
+            RecWheShptLine_L.SETCURRENTKEY("No.","Source Document","Source No.");
+            IF "Document Type" = "Document Type" :: Order THEN
+              RecWheShptLine_L.SETRANGE("Source Document",RecWheShptLine_L."Source Document"::"Sales Order");
+            RecWheShptLine_L.SETRANGE("Source No.","No.");
+            RecWheShptLine_L.SETRANGE("Source Type",DATABASE::"Sales Line");
+            RecWheShptLine_L.SETRANGE("Location Code","Location Code");
+            IF RecWheShptLine_L.FINDSET(FALSE, FALSE) THEN
+            REPEAT
+              IF LastDoc_L <> RecWheShptLine_L."No." THEN BEGIN
+                Count_L := Count_L + 1;
+                RecWheShptHeader_L.GET(RecWheShptLine_L."No.");
+                RecWheShptHeader_L.MARK(TRUE);
+              END;
+              LastDoc_L := RecWheShptLine_L."No.";
+            UNTIL RecWheShptLine_L.NEXT = 0;
+
+            CLEAR(RecWheShptLine_L);
+            RecWheShptLine_L.SETRANGE("No.",RecWheShptHeader_L."No.");
+            RecWheShptLine_L.SETRANGE("Source No.","No.");
+            IF RecWheShptLine_L.FINDFIRST THEN BEGIN
+              RecWheShptLine_L.VALIDATE("Qty. to Ship",RecPhytoSalesImport_P."Qty. to Handle");
+              RecWheShptLine_L.MODIFY;
+              UpdateReservEntry(RecWheShptLine_L,RecPhytoSalesImport_P,RecPhytoSalesImport_P."Qty. to Handle");
+            END;
+            IF RecWheShptHeader_L.Status = RecWheShptHeader_L.Status :: Open THEN
+              ReleaseWhseShptDoc.Release(RecWheShptHeader_L);
+
+            IF Count_L = 1 THEN
+              PAGE.RUN(PAGE::"Warehouse Shipment",RecWheShptHeader_L);
+
+          END ELSE BEGIN
+            CLEAR(RecWheShptLine_L);
+            RecWheShptLine_L.SETRANGE("No.",WhseShptHeader."No.");
+            RecWheShptLine_L.SETRANGE("Source No.","No.");
+            IF RecWheShptLine_L.FINDFIRST THEN BEGIN
+              RecWheShptLine_L.VALIDATE("Qty. to Ship",RecPhytoSalesImport_P."Qty. to Handle");
+              RecWheShptLine_L.MODIFY;
+              UpdateReservEntry(RecWheShptLine_L,RecPhytoSalesImport_P,RecPhytoSalesImport_P."Qty. to Handle");
+            END;
+            ReleaseWhseShptDoc.Release(WhseShptHeader);
+
+            PAGE.RUN(PAGE::"Warehouse Shipment",WhseShptHeader);
+          END;
+        END ELSE
+          ERROR(Text60008);
+      END;
+    END;
+
+    PROCEDURE SimulateInsertSalesLine@60000(RecSalesHeader_P@60000 : Record 36;ItemNo_P@60005 : Code[20];LocationCode_P@60006 : Code[10];VariantCode_P@60007 : Code[10];Qty_P@60008 : Decimal);
+    VAR
+      RecSalesHeader_L@60001 : Record 36;
+      RecSalesHeader1_L@1000000000 : Record 36;
+      RecSalesLine_L@60002 : Record 37;
+      RecSalesLine1_L@60004 : Record 37;
+      CuReleaseSalesDoc_L@60003 : Codeunit 414;
+      i@1000000001 : Integer;
+    BEGIN
+      RecSalesHeader_L.INIT;
+      RecSalesHeader_L.TRANSFERFIELDS(RecSalesHeader_P);
+      SimOrderNo_G := COPYSTR(SIMULATION + RecSalesHeader_P."No.",1,20);
+      i := 0;
+      CLEAR(RecSalesHeader1_L);
+      IF RecSalesHeader1_L.GET(RecSalesHeader1_L."Document Type" :: Order,SimOrderNo_G) THEN BEGIN
+        SimOrderNo_G := COPYSTR(SimOrderNo_G + FORMAT(i),1,20);
+        i += i;
+      END;
+      RecSalesHeader_L."No." := SimOrderNo_G;
+      RecSalesHeader_L.INSERT;
+      IF RecSalesHeader_L.Status = RecSalesHeader_L.Status :: Released THEN
+        CuReleaseSalesDoc_L.PerformManualReopen(RecSalesHeader_L);
+      RecSalesHeader_L."Shipping No." := '';
+      RecSalesHeader_L."Released Once" := FALSE;
+      RecSalesHeader_L."Freezed Document" := FALSE;
+      RecSalesHeader_L.MODIFY;
+
+      RecSalesLine_L.INIT;
+      RecSalesLine_L."Document Type" := RecSalesLine_L."Document Type" :: Order;
+      RecSalesLine_L."Document No." := RecSalesHeader_L."No.";
+      RecSalesLine_L."Line No." := 10000;
+      RecSalesLine_L.INSERT(TRUE);
+
+      RecSalesLine_L.VALIDATE(Type,RecSalesLine_L.Type :: Item);
+      RecSalesLine_L.CheckIfIsReserved(TRUE);
+      RecSalesLine_L.VALIDATE("No.",ItemNo_P);
+      RecSalesLine_L.VALIDATE("Location Code",LocationCode_P);
+      RecSalesLine_L.VALIDATE("Variant Code",VariantCode_P);
+      RecSalesLine_L.UpdateQtyFromWhse(TRUE);
+      RecSalesLine_L.VALIDATE(Quantity,Qty_P);
+      RecSalesLine_L."Order Date" := WORKDATE;
+      IF RecSalesLine_L."Promised Delivery Date" = 0D THEN
+        RecSalesLine_L.VALIDATE("Requested Delivery Date",WORKDATE);
+      RecSalesLine_L.VALIDATE("Promised Delivery Date",WORKDATE);
+      RecSalesLine_L.MODIFY(TRUE);
+      CuReleaseSalesDoc_L.PerformManualRelease(RecSalesHeader_L);
+    END;
+
+    PROCEDURE UpdateWhseLine@60009(VAR RecWhseShptLine_P@60000 : TEMPORARY Record 7321;RecPhytoSalesImport_P@60003 : Record 60075) : Boolean;
+    VAR
+      QtyToShip_L@60001 : Decimal;
+    BEGIN
+      //MAJ exp'dition entrep"t
+
+      QtyToShip_L := RecWhseShptLine_P.Quantity - RecWhseShptLine_P."Qty. to Ship";
+      IF OutstandQty_G > QtyToShip_L THEN BEGIN
+        IF NOT IsBuildKit_G THEN BEGIN
+        RecWhseShptLine_P."Qty. to Ship" += QtyToShip_L;
+        RecWhseShptLine_P.VALIDATE("Qty. to Ship");
+        END;
+        // --> 20171129-LogA07-SCT00.00.00-3313-NED
+        IF IsBuildKit_G AND (OutstandKitQty_G <> 0) THEN
+          UpdateReservEntry(RecWhseShptLine_P,RecPhytoSalesImport_P,OutstandKitQty_G);
+        IF NOT IsBuildKit_G AND (QtyToShip_L <> 0) THEN
+        // <-- 20171129-LogA07-SCT00.00.00-3313-NED
+          UpdateReservEntry(RecWhseShptLine_P,RecPhytoSalesImport_P,QtyToShip_L);
+        OutstandQty_G -= QtyToShip_L;
+      END ELSE
+      IF OutstandQty_G <= QtyToShip_L THEN BEGIN
+        IF NOT IsBuildKit_G THEN BEGIN
+        RecWhseShptLine_P."Qty. to Ship" += OutstandQty_G;
+        RecWhseShptLine_P.VALIDATE("Qty. to Ship");
+        END;
+        // --> 20171129-LogA07-SCT00.00.00-3313-NED
+        IF IsBuildKit_G AND (OutstandKitQty_G <> 0) THEN
+          UpdateReservEntry(RecWhseShptLine_P,RecPhytoSalesImport_P,OutstandKitQty_G);
+        IF NOT IsBuildKit_G AND (OutstandQty_G <> 0) THEN
+        // <-- 20171129-LogA07-SCT00.00.00-3313-NED
+          UpdateReservEntry(RecWhseShptLine_P,RecPhytoSalesImport_P,OutstandQty_G);
+        OutstandQty_G := 0;
+      END;
+
+      RecWhseShptLine_P."Update Interface Terminal" := TRUE;
+      RecWhseShptLine_P.MODIFY;
+    END;
+
+    PROCEDURE DeleteOrderSimulation@1000000002(OrderNo_P@1000000000 : Code[20]);
+    VAR
+      RecSalesHeader_P@1000000001 : Record 36;
+    BEGIN
+      IF RecSalesHeader_P.GET(RecSalesHeader_P."Document Type" :: Order,OrderNo_P) THEN
+        RecSalesHeader_P.DELETE(TRUE);
+    END;
+
+    PROCEDURE GetSimOrderNo@1000000000() SimOrderNo_Res : Code[20];
+    BEGIN
+      EXIT(SimOrderNo_G);
+    END;
+
+    PROCEDURE IsBuildKit@60013(IsBuildKit_P@60000 : Boolean);
+    BEGIN
+      // --> 20171129-LogA07-SCT00.00.00-3313-NED
+      IsBuildKit_G := IsBuildKit_P;
+      // <-- 20171129-LogA07-SCT00.00.00-3313-NED
+    END;
+
+    PROCEDURE ImportKitAndItem@60011(RecWhseShptHeader_P@60010 : Record 7320;IsBuildkit_P@60001 : Boolean;ShptNo_P@60000 : Code[20]);
+    VAR
+      RecWhseShptLine_L@60011 : Record 7321;
+      RecPhytoSalesImport_L@60009 : Record 60075;
+      SourceFileName_L@60008 : Text[1024];
+      ResultFile_L@60007 : File;
+      FileInStream_L@60006 : InStream;
+      NotImported_L@60005 : Boolean;
+      ErrorImport_L@60004 : Boolean;
+      ToTreat_L@60003 : Boolean;
+      XmlImportWhsePhytoLogTour_L@60002 : XMLport 50025;
+      CmdNo_L@60012 : Code[20];
+      IsError_L@60013 : Boolean;
+      IsInserted_L@60014 : Boolean;
+    BEGIN
+      // --> 20171129-LogA07-SCT00.00.00-3313-NED
+      CLEAR(RecWhseShptLine_L);
+      RecWhseShptLine_L.SETCURRENTKEY("No.","Source Document","Source No.");
+      RecWhseShptLine_L.SETRANGE("Source Document",RecWhseShptLine_L."Source Document" :: "Sales Order");
+      RecWhseShptLine_L.SETRANGE("No.",RecWhseShptHeader_P."No.");
+      RecWhseShptLine_L.SETRANGE("Update Interface Terminal",FALSE);
+      IF RecWhseShptLine_L.ISEMPTY THEN
+        ErrorImport_L := TRUE;
+
+      IF ErrorImport_L THEN
+        ERROR(Text60005,RecWhseShptHeader_P."No.");
+
+      CmdNo_L := '';
+      CLEAR(RecWhseShptLine_L);
+      RecWhseShptLine_L.SETCURRENTKEY("No.","Source Document","Source No.");
+      RecWhseShptLine_L.SETRANGE("Source Document",RecWhseShptLine_L."Source Document" :: "Sales Order");
+      RecWhseShptLine_L.SETRANGE("No.",RecWhseShptHeader_P."No.");
+      RecWhseShptLine_L.SETRANGE("Build Kit",IsBuildkit_P);
+      IF RecWhseShptLine_L.FINDSET THEN
+      REPEAT
+        IF RecWhseShptLine_L."Source No." <> CmdNo_L THEN BEGIN
+          SourceFileName_L := GetFileName(ShptNo_P,RecWhseShptLine_L."Source No.");
+          NotImported_L := FALSE;
+          CLEAR(RecPhytoSalesImport_L);
+          RecPhytoSalesImport_L.SETRANGE("No.",RecWhseShptHeader_P."No.");
+          RecPhytoSalesImport_L.SETRANGE("Charter Order No.",RecWhseShptLine_L."Source No.");
+          RecPhytoSalesImport_L.SETRANGE("Kit Item",IsBuildkit_P);
+          IF RecPhytoSalesImport_L.ISEMPTY THEN
+            NotImported_L := TRUE;
+          IF NOT NotImported_L THEN BEGIN
+            RecPhytoSalesImport_L.SETRANGE("Import Status",RecPhytoSalesImport_L."Import Status" :: "To treat");
+            IF NOT RecPhytoSalesImport_L.ISEMPTY THEN
+              ToTreat_L := TRUE;
+          END;
+          IF (SourceFileName_L = '') AND NotImported_L THEN BEGIN
+            IF IsBuildkit_P THEN
+             MESSAGE(Text60013,RecWhseShptHeader_P."No.",RecWhseShptLine_L."Source No.")
+            ELSE
+             MESSAGE(Text60001,RecWhseShptHeader_P."No.",RecWhseShptLine_L."Source No.");
+            EXIT;
+          END;
+
+          IF (NotImported_L OR ToTreat_L) AND (SourceFileName_L <> '') THEN BEGIN
+            IF ToTreat_L THEN BEGIN
+              CLEAR(RecPhytoSalesImport_L);
+              RecPhytoSalesImport_L.SETRANGE("No.",RecWhseShptHeader_P."No.");
+              RecPhytoSalesImport_L.SETRANGE("Charter Order No.",RecWhseShptLine_L."Source No.");
+              RecPhytoSalesImport_L.SETRANGE("Kit Item",IsBuildkit_P);
+              RecPhytoSalesImport_L.DELETEALL;
+            END;
+            FinalFileName_G := UploadFileSilent(SourceFileName_L,RecPhytoInterfaceSetup_G."Shpt File Import Tour Extens.");
+
+            ResultFile_L.OPEN(FinalFileName_G);
+            ResultFile_L.CREATEINSTREAM(FileInStream_L);
+            CLEAR(XmlImportWhsePhytoLogTour_L);
+            XmlImportWhsePhytoLogTour_L.IsBuildKit(IsBuildkit_P);
+            XmlImportWhsePhytoLogTour_L.SETSOURCE(FileInStream_L);
+            IF NOT XmlImportWhsePhytoLogTour_L.IMPORT THEN BEGIN
+              MESSAGE(GETLASTERRORTEXT);
+              ResultFile_L.CLOSE;
+              IsError_L := TRUE;
+            END ELSE BEGIN
+              ResultFile_L.CLOSE;
+              ERASE(FinalFileName_G);
+              IsInserted_L := TRUE;
+            END;
+          END;
+          CmdNo_L := RecWhseShptLine_L."Source No.";
+        END;
+      UNTIL RecWhseShptLine_L.NEXT = 0;
+      IF IsInserted_L AND NOT IsError_L THEN
+        MESSAGE(Text60000);
+      IF NOT IsInserted_L AND IsError_L THEN
+        MESSAGE(Text60002,RecWhseShptHeader_P."No.");
+      IF IsInserted_L AND IsError_L THEN
+        MESSAGE(Text60009);
+      // <-- 20171129-LogA07-SCT00.00.00-3313-NED
+    END;
+
+    PROCEDURE UpdateKitLine@60012(RecPhytoSalesImport_P@60000 : Record 60075);
+    VAR
+      RecKitSalesLine_L@60001 : Record 25000;
+      RecWhseShptLine_L@60002 : Record 7321;
+      RecPhytoSalesImport_L@60006 : Record 60075;
+      TmpPhytoSalesImport_L@60005 : Record 60075;
+      TmpPhytoSalesImport1_L@1000000000 : Record 60075;
+      KitQty_L@60003 : Decimal;
+      OustandingQty_L@60004 : Decimal;
+      QtyToHandle_L@60008 : Decimal;
+      SumQtyHandled_L@60010 : Decimal;
+      NbKit_L@60009 : Integer;
+      OrderNo_L@1000000001 : Code[20];
+      OrderLineNo_L@1000000002 : Integer;
+    BEGIN
+      // --> 20171129-LogA07-SCT00.00.00-3313-NED
+      //MAJ Ligne Kit
+      CLEAR(RecWhseShptLine_L);
+      RecWhseShptLine_L.SETRANGE("No.",RecPhytoSalesImport_P."No.");
+      RecWhseShptLine_L.SETRANGE("Source Document",RecWhseShptLine_L."Source Document" :: "Sales Order");
+      RecWhseShptLine_L.SETRANGE("Build Kit",TRUE);
+      RecWhseShptLine_L.SETRANGE(RecWhseShptLine_L."Source No.",RecPhytoSalesImport_P."Charter Order No.");
+      IF RecWhseShptLine_L.FINDSET THEN
+      REPEAT
+        CLEAR(RecKitSalesLine_L);
+        RecKitSalesLine_L.SETRANGE("Document Type",RecKitSalesLine_L."Document Type" :: Order);
+        RecKitSalesLine_L.SETRANGE("Document No.",RecWhseShptLine_L."Source No.");
+        RecKitSalesLine_L.SETRANGE("Document Line No.",RecWhseShptLine_L."Source Line No.");
+        IF RecKitSalesLine_L.FINDSET THEN
+        REPEAT
+            TmpPhytoSalesImport_L.INIT;
+            TmpPhytoSalesImport_L."No." := RecWhseShptLine_L."No.";
+            TmpPhytoSalesImport_L."Source Entry No." := RecWhseShptLine_L."Line No."; //N› ligne exp'dition
+            TmpPhytoSalesImport_L."Order No." := RecKitSalesLine_L."Document No.";
+            TmpPhytoSalesImport_L."Order Line No." := RecKitSalesLine_L."Document Line No.";
+            TmpPhytoSalesImport_L."Quantity Handled (base)" := RecKitSalesLine_L."Line No."; //N› ligne kit
+            TmpPhytoSalesImport_L."Item No." := RecKitSalesLine_L."No.";
+            TmpPhytoSalesImport_L."Variant Code" := RecKitSalesLine_L."Variant Code";
+            TmpPhytoSalesImport_L."Qty. to Handle" := RecKitSalesLine_L."Extended Quantity";
+            TmpPhytoSalesImport_L."Indiv. Base Qty" := RecKitSalesLine_L."Quantity per";
+            TmpPhytoSalesImport_L."Item ID" := RecWhseShptLine_L."Item No."; //N› article Pack
+            TmpPhytoSalesImport_L."Build Kit" := TRUE;
+
+            CLEAR(RecPhytoSalesImport_L);
+            RecPhytoSalesImport_L.SETCURRENTKEY("No.","Item No.","Variant Code","Kit Item","Build Kit","Order No.","Charter Order No.");
+            RecPhytoSalesImport_L.SETRANGE("No.",RecWhseShptLine_L."No.");
+            RecPhytoSalesImport_L.SETRANGE("Item No.",RecKitSalesLine_L."No.");
+            RecPhytoSalesImport_L.SETRANGE("Variant Code",RecKitSalesLine_L."Variant Code");
+            RecPhytoSalesImport_L.SETRANGE("Kit Item",TRUE);
+            RecPhytoSalesImport_L.SETRANGE("Charter Order No.",RecPhytoSalesImport_P."Charter Order No.");
+            RecPhytoSalesImport_L.CALCSUMS("Quantity Handled");
+            TmpPhytoSalesImport_L."Quantity Distributed by Lot" := RecPhytoSalesImport_L."Quantity Handled";//Somme qt' pr'par'e par Art
+
+            TmpPhytoSalesImport_L.INSERT(TRUE);
+
+        UNTIL RecKitSalesLine_L.NEXT = 0;
+      UNTIL RecWhseShptLine_L.NEXT = 0;
+
+      CLEAR(RecPhytoSalesImport_L);
+      RecPhytoSalesImport_L.SETRANGE("No.",RecWhseShptLine_L."No.");
+      RecPhytoSalesImport_L.SETRANGE("Kit Item",TRUE);
+      RecPhytoSalesImport_L.SETRANGE("Charter Order No.",RecPhytoSalesImport_P."Charter Order No.");
+      IF RecPhytoSalesImport_L.FINDSET THEN
+      REPEAT
+        OustandingQty_L := RecPhytoSalesImport_L."Quantity Handled";
+
+        CLEAR(TmpPhytoSalesImport_L);
+        TmpPhytoSalesImport_L.SETRANGE("Kit Item",FALSE);
+        TmpPhytoSalesImport_L.SETRANGE("Build Kit",TRUE);
+        TmpPhytoSalesImport_L.SETRANGE("Item No.",RecPhytoSalesImport_L."Item No.");
+        TmpPhytoSalesImport_L.SETRANGE("Variant Code",RecPhytoSalesImport_L."Variant Code");
+        TmpPhytoSalesImport_L.SETRANGE("Order No.",RecPhytoSalesImport_P."Charter Order No.");
+        IF NOT TmpPhytoSalesImport_L.FINDFIRST THEN BEGIN   //Article ajout' dans fichier pack
+          RecPhytoSalesImport_L."Import Status" := RecPhytoSalesImport_L."Import Status" :: Error;
+          RecPhytoSalesImport_L."Import Error" := TRUE;
+          RecPhytoSalesImport_L."Error Message" := Text60012;
+          RecPhytoSalesImport_L.MODIFY;
+        END;
+        TmpPhytoSalesImport_L.SETRANGE("Import Status",TmpPhytoSalesImport_L."Import Status" :: " ");
+        IF TmpPhytoSalesImport_L.FINDSET THEN
+        REPEAT
+
+          QtyToHandle_L := TmpPhytoSalesImport_L."Qty. to Handle"
+                - (TmpPhytoSalesImport_L."Quantity Handled" * TmpPhytoSalesImport_L."Indiv. Base Qty");
+
+          IF TmpPhytoSalesImport_L."Quantity Handled" <=
+                  (TmpPhytoSalesImport_L."Qty. to Handle" / TmpPhytoSalesImport_L."Indiv. Base Qty")
+          THEN BEGIN
+
+            IF OustandingQty_L <= QtyToHandle_L THEN BEGIN
+              IF OustandingQty_L MOD TmpPhytoSalesImport_L."Indiv. Base Qty" = 0 THEN BEGIN
+                TmpPhytoSalesImport_L."Quantity Handled" += OustandingQty_L / TmpPhytoSalesImport_L."Indiv. Base Qty";
+                TmpPhytoSalesImport_L.MODIFY;
+
+                CLEAR(TmpPhytoSalesImport1_L);
+                TmpPhytoSalesImport1_L.SETCURRENTKEY("No.","Item No.","Variant Code","Kit Item","Build Kit",
+                     "Order No.","Charter Order No.");
+                TmpPhytoSalesImport1_L.SETRANGE("No.",TmpPhytoSalesImport_L."No.");
+                TmpPhytoSalesImport1_L.SETRANGE("Item No.",TmpPhytoSalesImport_L."Item No.");
+                TmpPhytoSalesImport1_L.SETRANGE("Variant Code",TmpPhytoSalesImport_L."Variant Code");
+                TmpPhytoSalesImport1_L.SETRANGE("Kit Item",FALSE);
+                TmpPhytoSalesImport1_L.SETRANGE("Build Kit",TRUE);
+                TmpPhytoSalesImport1_L.SETRANGE("Order No.",TmpPhytoSalesImport_L."Order No.");
+                TmpPhytoSalesImport1_L.CALCSUMS("Quantity Handled");
+
+                IF (TmpPhytoSalesImport_L."Quantity Handled" <
+                      TmpPhytoSalesImport_L."Qty. to Handle" / TmpPhytoSalesImport_L."Indiv. Base Qty")
+                        AND (TmpPhytoSalesImport1_L."Quantity Handled" * TmpPhytoSalesImport_L."Indiv. Base Qty" <
+                          TmpPhytoSalesImport_L."Quantity Distributed by Lot")
+                 THEN BEGIN
+                   //Ajout nouvelle ligne temporaire
+                   TmpPhytoSalesImport1_L.INIT;
+                   TmpPhytoSalesImport1_L.TRANSFERFIELDS(TmpPhytoSalesImport_L);
+                   TmpPhytoSalesImport1_L."Quantity Handled" := 0;
+                   TmpPhytoSalesImport1_L.INSERT(TRUE);
+                 END;
+                TmpPhytoSalesImport_L."Import Status" := TmpPhytoSalesImport_L."Import Status" :: "To treat";
+                TmpPhytoSalesImport_L."Manufacturing Date" := RecPhytoSalesImport_L."Manufacturing Date";
+                TmpPhytoSalesImport_L."Expiration Date" := RecPhytoSalesImport_L."Expiration Date";
+                TmpPhytoSalesImport_L."Lot No." := RecPhytoSalesImport_L."Lot No.";
+                TmpPhytoSalesImport_L.MODIFY;
+
+                OustandingQty_L := 0;
+              END;
+              // --> 20180305-LogA07-SCT00.00.00-33731-NED
+              {
+              END ELSE BEGIN
+                //MAJ ligne erreur
+                TmpPhytoSalesImport_L.SETRANGE("Item No.");
+                TmpPhytoSalesImport_L.SETRANGE("Variant Code");
+                TmpPhytoSalesImport_L.SETRANGE("Import Status");
+                TmpPhytoSalesImport_L.DELETEALL;
+
+                RecPhytoSalesImport_L.MODIFYALL("Import Status",RecPhytoSalesImport_L."Import Status" :: Error);
+                RecPhytoSalesImport_L.MODIFYALL("Import Error",TRUE);
+                RecPhytoSalesImport_L.MODIFYALL("Error Message",COPYSTR(STRSUBSTNO(Text60010,RecPhytoSalesImport_L."Quantity Handled",
+                  TmpPhytoSalesImport_L."Item No.",TmpPhytoSalesImport_L."Indiv. Base Qty"),1,250));
+                OustandingQty_L := 0;
+                EXIT;
+              END;
+              }
+              // <-- 20180305-LogA07-SCT00.00.00-33731-NED
+            END ELSE BEGIN
+              TmpPhytoSalesImport_L."Quantity Handled" += QtyToHandle_L / TmpPhytoSalesImport_L."Indiv. Base Qty";
+
+              TmpPhytoSalesImport_L."Import Status" := TmpPhytoSalesImport_L."Import Status" :: "To treat";
+              TmpPhytoSalesImport_L."Manufacturing Date" := RecPhytoSalesImport_L."Manufacturing Date";
+              TmpPhytoSalesImport_L."Expiration Date" := RecPhytoSalesImport_L."Expiration Date";
+              TmpPhytoSalesImport_L."Lot No." := RecPhytoSalesImport_L."Lot No.";
+              TmpPhytoSalesImport_L.MODIFY;
+
+              OustandingQty_L -= QtyToHandle_L;
+            END;
+          END;
+        UNTIL (TmpPhytoSalesImport_L.NEXT = 0) OR (OustandingQty_L = 0);
+
+      UNTIL RecPhytoSalesImport_L.NEXT = 0;
+
+      RecPhytoSalesImport_L.SETRANGE("Import Status",RecPhytoSalesImport_L."Import Status" :: "To treat");
+      IF RecPhytoSalesImport_L.FINDSET THEN
+      REPEAT
+        CLEAR(TmpPhytoSalesImport_L);
+        //TmpPhytoSalesImport_L.SETCURRENTKEY("No.","Item No.","Variant Code","Kit Item","Build Kit");
+        TmpPhytoSalesImport_L.SETCURRENTKEY("No.","Item ID","Order No.","Order Line No.");
+        TmpPhytoSalesImport_L.SETRANGE("No.",RecPhytoSalesImport_L."No.");
+        TmpPhytoSalesImport_L.SETRANGE("Item No.",RecPhytoSalesImport_L."Item No.");
+        TmpPhytoSalesImport_L.SETRANGE("Variant Code",RecPhytoSalesImport_L."Variant Code");
+        TmpPhytoSalesImport_L.SETRANGE("Kit Item",FALSE);
+        TmpPhytoSalesImport_L.SETRANGE("Build Kit",TRUE);
+        TmpPhytoSalesImport_L.SETRANGE("Import Status",TmpPhytoSalesImport_L."Import Status" :: " ");
+        IF TmpPhytoSalesImport_L.FINDFIRST THEN BEGIN
+          IF (OrderNo_L <> TmpPhytoSalesImport_L."Order No.") AND (OrderLineNo_L <> TmpPhytoSalesImport_L."Order Line No.") THEN BEGIN
+            OrderNo_L := TmpPhytoSalesImport_L."Order No.";
+            OrderLineNo_L := TmpPhytoSalesImport_L."Order Line No.";
+            TmpPhytoSalesImport_L.SETFILTER("Import Status",'<> %1',TmpPhytoSalesImport_L."Import Status" :: " ");
+            TmpPhytoSalesImport_L.SETRANGE("Order No.",OrderNo_L);
+            TmpPhytoSalesImport_L.SETRANGE("Order Line No.",OrderLineNo_L);
+            IF TmpPhytoSalesImport_L.FINDFIRST THEN BEGIN
+
+              TmpPhytoSalesImport_L.SETRANGE("Item No.");
+              TmpPhytoSalesImport_L.SETRANGE("Variant Code");
+              TmpPhytoSalesImport_L.SETRANGE("Import Status");
+              TmpPhytoSalesImport_L.DELETEALL;
+
+              RecPhytoSalesImport_L.MODIFYALL("Import Error",TRUE);
+              RecPhytoSalesImport_L.MODIFYALL("Error Message",Text60011);
+              RecPhytoSalesImport_L.MODIFYALL("Import Status",RecPhytoSalesImport_L."Import Status" :: Error);
+
+              EXIT;
+            END;
+          END;
+        END;
+        // --> 20180305-LogA07-SCT00.00.00-33731-NED
+        {
+        CLEAR(TmpPhytoSalesImport_L);
+        TmpPhytoSalesImport_L.SETCURRENTKEY("No.","Item No.","Variant Code","Kit Item","Build Kit");
+        TmpPhytoSalesImport_L.SETRANGE("No.",RecPhytoSalesImport_L."No.");
+        TmpPhytoSalesImport_L.SETRANGE("Item No.",RecPhytoSalesImport_L."Item No.");
+        TmpPhytoSalesImport_L.SETRANGE("Variant Code",RecPhytoSalesImport_L."Variant Code");
+        TmpPhytoSalesImport_L.SETRANGE("Kit Item",FALSE);
+        TmpPhytoSalesImport_L.SETRANGE("Build Kit",TRUE);
+        TmpPhytoSalesImport_L.CALCSUMS("Quantity Handled");
+        SumQtyHandled_L := TmpPhytoSalesImport_L."Quantity Handled";
+        TmpPhytoSalesImport_L.FINDFIRST;
+        IF SumQtyHandled_L * TmpPhytoSalesImport_L."Indiv. Base Qty" <> TmpPhytoSalesImport_L."Quantity Distributed by Lot" THEN BEGIN
+
+          TmpPhytoSalesImport_L.SETRANGE("Item No.");
+          TmpPhytoSalesImport_L.SETRANGE("Variant Code");
+          TmpPhytoSalesImport_L.DELETEALL;
+
+          RecPhytoSalesImport_L.MODIFYALL("Import Error",TRUE);
+          RecPhytoSalesImport_L.MODIFYALL("Error Message",Text60011);
+          RecPhytoSalesImport_L.MODIFYALL("Import Status",RecPhytoSalesImport_L."Import Status" :: Error);
+
+          EXIT;
+        END;
+        }
+        // <-- 20180305-LogA07-SCT00.00.00-33731-NED
+      UNTIL RecPhytoSalesImport_L.NEXT = 0;
+
+      CLEAR(RecWhseShptLine_L);
+      RecWhseShptLine_L.SETRANGE("No.",RecPhytoSalesImport_P."No.");
+      RecWhseShptLine_L.SETRANGE("Source Document",RecWhseShptLine_L."Source Document" :: "Sales Order");
+      RecWhseShptLine_L.SETRANGE("Build Kit",TRUE);
+      RecWhseShptLine_L.SETRANGE(RecWhseShptLine_L."Source No.",RecPhytoSalesImport_P."Charter Order No.");
+      IF RecWhseShptLine_L.FINDSET THEN
+      REPEAT
+        CLEAR(RecKitSalesLine_L);
+        RecKitSalesLine_L.SETRANGE("Document Type",RecKitSalesLine_L."Document Type" :: Order);
+        RecKitSalesLine_L.SETRANGE("Document No.",RecWhseShptLine_L."Source No.");
+        RecKitSalesLine_L.SETRANGE("Document Line No.",RecWhseShptLine_L."Source Line No.");
+        NbKit_L := RecKitSalesLine_L.COUNT;
+        // --> 20180305-LogA07-SCT00.00.00-33731-NED
+        IF RecKitSalesLine_L.FINDSET THEN
+        REPEAT
+          CLEAR(TmpPhytoSalesImport_L);
+          TmpPhytoSalesImport_L.SETCURRENTKEY("No.","Source Entry No.","Import Status","Build Kit",
+                "Item No.","Variant Code","Order No.","Order Line No.");
+          TmpPhytoSalesImport_L.SETRANGE("No.",RecWhseShptLine_L."No.");
+          TmpPhytoSalesImport_L.SETRANGE("Source Entry No.",RecWhseShptLine_L."Line No."); //N› ligne exp'dition
+          TmpPhytoSalesImport_L.SETRANGE("Import Status",TmpPhytoSalesImport_L."Import Status" :: "To treat");
+          TmpPhytoSalesImport_L.SETRANGE("Build Kit",TRUE);
+          TmpPhytoSalesImport_L.SETRANGE("Item No.",RecKitSalesLine_L."No.");
+          TmpPhytoSalesImport_L.SETRANGE("Variant Code",RecKitSalesLine_L."Variant Code");
+          TmpPhytoSalesImport_L.SETRANGE("Order No.",RecKitSalesLine_L."Document No.");
+          TmpPhytoSalesImport_L.SETRANGE("Order Line No.",RecKitSalesLine_L."Document Line No.");
+          TmpPhytoSalesImport_L.CALCSUMS("Quantity Handled");
+          // --> 20180403-LogA07-SCT00.00.00-34269-NED
+          //IF (TmpPhytoSalesImport_L."Quantity Handled" <> RecKitSalesLine_L."Quantity per" * RecWhseShptLine_L.Quantity)
+          IF (TmpPhytoSalesImport_L."Quantity Handled" <> RecWhseShptLine_L.Quantity)
+          // <-- 20180403-LogA07-SCT00.00.00-34269-NED
+               OR TmpPhytoSalesImport_L.ISEMPTY THEN
+            ERROR(Text60011);
+
+        UNTIL RecKitSalesLine_L.NEXT =0;
+        // <-- 20180305-LogA07-SCT00.00.00-33731-NED
+        CLEAR(TmpPhytoSalesImport_L);
+        TmpPhytoSalesImport_L.SETCURRENTKEY("No.","Source Entry No.","Import Status","Build Kit");
+        TmpPhytoSalesImport_L.SETRANGE("No.",RecWhseShptLine_L."No.");
+        TmpPhytoSalesImport_L.SETRANGE("Source Entry No.",RecWhseShptLine_L."Line No."); //N› ligne exp'dition
+        TmpPhytoSalesImport_L.SETRANGE("Import Status",TmpPhytoSalesImport_L."Import Status" :: "To treat");
+        TmpPhytoSalesImport_L.SETRANGE("Build Kit",TRUE);
+        TmpPhytoSalesImport_L.CALCSUMS("Quantity Handled");
+        // --> 20180305-LogA07-SCT00.00.00-33731-NED
+        IF TmpPhytoSalesImport_L."Quantity Handled" / NbKit_L = RecWhseShptLine_L.Quantity THEN BEGIN
+        // <-- 20180305-LogA07-SCT00.00.00-33731-NED
+          RecWhseShptLine_L."Qty. to Ship" := TmpPhytoSalesImport_L."Quantity Handled" / NbKit_L;
+          RecWhseShptLine_L.VALIDATE("Qty. to Ship");
+          RecWhseShptLine_L.MODIFY;
+        // --> 20180305-LogA07-SCT00.00.00-33731-NED
+        END;
+        // <-- 20180305-LogA07-SCT00.00.00-33731-NED
+        IF TmpPhytoSalesImport_L.FINDSET THEN
+        REPEAT
+          OutstandKitQty_G := TmpPhytoSalesImport_L."Quantity Handled" * TmpPhytoSalesImport_L."Indiv. Base Qty";
+          UpdateWhseLine(RecWhseShptLine_L,TmpPhytoSalesImport_L);
+        UNTIL TmpPhytoSalesImport_L.NEXT = 0;
+      UNTIL RecWhseShptLine_L.NEXT =0;
+
+      TmpPhytoSalesImport_L.SETRANGE("Source Entry No."); //N› ligne exp'dition
+      TmpPhytoSalesImport_L.SETRANGE("Import Status");
+      TmpPhytoSalesImport_L.DELETEALL;
+      // <-- 20171129-LogA07-SCT00.00.00-3313-NED
+    END;
+
+    PROCEDURE CheckFile@1000000003(InputFilename@1000000000 : Text[255];Extension@1000000001 : Text[30]) ReturnValue : Text[255];
+    VAR
+      InFile@1000000002 : File;
+      OutFile@1000000003 : File;
+      InStrFile@1000000004 : InStream;
+      OutStrFile@1000000005 : OutStream;
+      CharRead@1000000006 : Char;
+      AsciiValue@1000000007 : Integer;
+      ThirdTierMgt@1000000008 : Codeunit 419;
+    BEGIN
+      // --> 20200222-CLA93265-XPE1
+      ReturnValue := ThirdTierMgt.ServerTempFileName('',Extension);
+      InFile.OPEN(InputFilename);
+      InFile.CREATEINSTREAM(InStrFile);
+      OutFile.CREATE(ReturnValue);
+      OutFile.CREATEOUTSTREAM(OutStrFile);
+      WHILE (NOT InStrFile.EOS) DO BEGIN
+        InStrFile.READ(CharRead);
+        AsciiValue := CharRead;
+        IF (NOT ((AsciiValue > 13) AND (AsciiValue < 32))) THEN BEGIN
+          OutStrFile.WRITE(CharRead);
+        END;
+      END;
+      OutFile.CLOSE();
+      InFile.CLOSE();
+      EXIT(ReturnValue);
+      // <-- 20200222-CLA93265-XPE1
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20170907-LogA07-SCT00.00.00-3288-NED : ADDOBJ
+      20171020-LogA07-SCT00.00.00-29990-NED : MODCODE (Gestion des livraisons multi magasins)
+      20171129-LogA07-SCT00.00.00-3313-NED : ADDFUNCT (UpdateKitLine)
+      20171129-LogA07-SCT00.00.00-3313-NED : MODFUNCT (UpdateReservEntry,UpdateWhseLine : Adaptation import article kit)
+      20180305-LogA07-SCT00.00.00-33731-NED : ADDCODE (Correction bug article pack manquant)
+      20180403-LogA07-SCT00.00.00-34269-NED : MODCDOE (Correction bug article pack manquant)
+      20200222-CLA93265-XPE1 : Added new function CheckFile
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

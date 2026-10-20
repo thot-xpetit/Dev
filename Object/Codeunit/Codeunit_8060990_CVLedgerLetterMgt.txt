@@ -1,0 +1,412 @@
+OBJECT Codeunit 8060990 CVLedgerLetterMgt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=17/10/14;
+    Heure=00:00:00;
+    Liste versions=CMB6.00.01.01;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 21=rm,
+                TableData 25=rm;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+
+    PROCEDURE CustLastLetter@60011(CustNo_P@60000 : Code[20]) : Text[4];
+    VAR
+      CustLedgEntry2_L@60001 : Record 21;
+    BEGIN
+      CustLedgEntry2_L.RESET;
+      CustLedgEntry2_L.SETCURRENTKEY("Customer No.",Letter);
+      CustLedgEntry2_L.SETRANGE("Customer No.",CustNo_P);
+      IF CustLedgEntry2_L.FINDLAST THEN
+        EXIT(CustLedgEntry2_L.Letter);
+      EXIT('');
+    END;
+
+    PROCEDURE VendLastLetter@60010(VendNo_P@60000 : Code[20]) : Text[4];
+    VAR
+      VendLedgEntry2_L@60001 : Record 25;
+    BEGIN
+      VendLedgEntry2_L.RESET;
+      VendLedgEntry2_L.SETCURRENTKEY("Vendor No.",Letter);
+      VendLedgEntry2_L.SETRANGE("Vendor No.",VendNo_P);
+      IF VendLedgEntry2_L.FINDLAST THEN
+        EXIT(VendLedgEntry2_L.Letter);
+      EXIT('');
+    END;
+
+    PROCEDURE CustGetAppliedEntry@60009(CustLedgerEntry_P@60001 : Record 21;VAR ApplCustLedgEntry_P@60000 : Record 21);
+    BEGIN
+      ApplCustLedgEntry_P.RESET;
+      // --> 20141017- CMB6.00.01.01-SDE01
+      FindApplnEntriesDtldtLedgEntry(CustLedgerEntry_P,ApplCustLedgEntry_P);
+      // <-- 20141017- CMB6.00.01.01-SDE01
+      IF CustLedgerEntry_P."Closed by Entry No." <> 0 THEN BEGIN
+        ApplCustLedgEntry_P."Entry No." := CustLedgerEntry_P."Closed by Entry No.";
+        ApplCustLedgEntry_P.MARK(TRUE);
+      END;
+
+      ApplCustLedgEntry_P.SETCURRENTKEY("Closed by Entry No.");
+      ApplCustLedgEntry_P.SETRANGE("Closed by Entry No.",CustLedgerEntry_P."Entry No.");
+      IF ApplCustLedgEntry_P.FINDFIRST THEN
+        REPEAT
+          ApplCustLedgEntry_P.MARK(TRUE);
+        UNTIL ApplCustLedgEntry_P.NEXT = 0;
+
+      ApplCustLedgEntry_P.SETCURRENTKEY("Entry No.");
+      ApplCustLedgEntry_P.SETRANGE("Closed by Entry No.");
+      ApplCustLedgEntry_P.MARKEDONLY(TRUE);
+      ApplCustLedgEntry_P.SETRANGE("Customer No.",CustLedgerEntry_P."Customer No.");
+    END;
+
+    PROCEDURE VendGetAppliedEntry@60008(VendLedgerEntry_P@60001 : Record 25;VAR ApplVendLedgEntry_P@60000 : Record 25);
+    BEGIN
+      ApplVendLedgEntry_P.RESET;
+
+      IF VendLedgerEntry_P."Closed by Entry No." <> 0 THEN BEGIN
+        ApplVendLedgEntry_P."Entry No." := VendLedgerEntry_P."Closed by Entry No.";
+        ApplVendLedgEntry_P.MARK(TRUE);
+      END;
+
+      ApplVendLedgEntry_P.SETCURRENTKEY("Closed by Entry No.");
+      ApplVendLedgEntry_P.SETRANGE("Closed by Entry No.",VendLedgerEntry_P."Entry No.");
+      IF ApplVendLedgEntry_P.FIND('-') THEN
+        REPEAT
+          ApplVendLedgEntry_P.MARK(TRUE);
+        UNTIL ApplVendLedgEntry_P.NEXT = 0;
+
+      ApplVendLedgEntry_P.SETCURRENTKEY("Entry No.");
+      ApplVendLedgEntry_P.SETRANGE("Closed by Entry No.");
+      ApplVendLedgEntry_P.MARKEDONLY(TRUE);
+      ApplVendLedgEntry_P.SETRANGE("Vendor No.",VendLedgerEntry_P."Vendor No.");
+    END;
+
+    PROCEDURE SetCVLedgerEntryLetter@60036(GenJnlLine_P@60006 : Record 81;VAR OldCVLedgEntryBuf_P@60007 : Record 382;VAR NewCVLedgEntryBuf_P@60008 : Record 382);
+    VAR
+      AppliedToLetter_L@60005 : Text[4];
+      CustLedgerEntry_L@60004 : Record 21;
+      VendLedgerEntry_L@60003 : Record 25;
+      LetterApplMngt_L@60002 : Codeunit 10842;
+      TMP_VendLedgerEntry_L@60001 : TEMPORARY Record 25;
+      TMP_CustLedgerEntry_L@60000 : TEMPORARY Record 21;
+    BEGIN
+      AppliedToLetter_L := '';
+
+      IF GenJnlLine_P."Account Type" = GenJnlLine_P."Account Type"::Customer THEN BEGIN
+        IF (OldCVLedgEntryBuf_P.Letter <> '') AND (NewCVLedgEntryBuf_P.Letter <> '') AND
+           (OldCVLedgEntryBuf_P.Letter <> NewCVLedgEntryBuf_P.Letter) THEN BEGIN
+          CustLedgerEntry_L.RESET;
+          CustLedgerEntry_L.SETCURRENTKEY("Customer No.",Letter);
+          CustLedgerEntry_L.SETRANGE("Customer No.",OldCVLedgEntryBuf_P."CV No.");
+          CustLedgerEntry_L.SETRANGE(Letter,OldCVLedgEntryBuf_P.Letter);
+          IF NOT CustLedgerEntry_L.ISEMPTY THEN BEGIN
+             CustLedgerEntry_L.FIND('-');
+             TMP_CustLedgerEntry_L.DELETEALL;
+            REPEAT
+               IF NOT (((CustLedgerEntry_L."Applies-to ID" = NewCVLedgEntryBuf_P."Applies-to ID") AND CustLedgerEntry_L.Open) OR
+                        (CustLedgerEntry_L."Entry No." = OldCVLedgEntryBuf_P."Entry No.") )
+               THEN BEGIN
+                  // On ne mettra pas . jour les 'critures qui sont lettr'es ainsi que l''criture en cours
+                  TMP_CustLedgerEntry_L.INIT;
+                  TMP_CustLedgerEntry_L.TRANSFERFIELDS(CustLedgerEntry_L);
+                  TMP_CustLedgerEntry_L.INSERT;
+               END;
+            UNTIL CustLedgerEntry_L.NEXT = 0;
+            // passage par table temporaire pour 'viter mise . jour sur la cl' active
+            TMP_CustLedgerEntry_L.RESET;
+            CustLedgerEntry_L.RESET;
+            IF NOT TMP_CustLedgerEntry_L.ISEMPTY THEN BEGIN
+            // --> 20141017- CMB6.00.01.01-SDE01
+              TMP_CustLedgerEntry_L.FINDSET;
+            // <-- 20141017- CMB6.00.01.01-SDE01
+               REPEAT
+                  IF CustLedgerEntry_L.GET(TMP_CustLedgerEntry_L."Entry No.") THEN BEGIN
+                     CustLedgerEntry_L.Letter := NewCVLedgEntryBuf_P.Letter;
+                     CustLedgerEntry_L.MODIFY;
+                  END;
+               UNTIL TMP_CustLedgerEntry_L.NEXT = 0;
+            END;
+          END;
+        END;
+
+        IF OldCVLedgEntryBuf_P.Letter <> '' THEN
+          AppliedToLetter_L := OldCVLedgEntryBuf_P.Letter;
+        IF NewCVLedgEntryBuf_P.Letter <> '' THEN
+          AppliedToLetter_L := NewCVLedgEntryBuf_P.Letter;
+        IF AppliedToLetter_L = '' THEN
+          BEGIN
+            AppliedToLetter_L := CustLastLetter(NewCVLedgEntryBuf_P."CV No.");
+            LetterApplMngt_L.NextLetter(AppliedToLetter_L);
+          END;
+      END;
+
+      IF GenJnlLine_P."Account Type" = GenJnlLine_P."Account Type"::Vendor THEN BEGIN
+        IF (OldCVLedgEntryBuf_P.Letter <> '') AND (NewCVLedgEntryBuf_P.Letter <> '') AND
+           (OldCVLedgEntryBuf_P.Letter <> NewCVLedgEntryBuf_P.Letter) THEN BEGIN
+          VendLedgerEntry_L.RESET;
+          VendLedgerEntry_L.SETCURRENTKEY("Vendor No.",Letter);
+          VendLedgerEntry_L.SETRANGE("Vendor No.",OldCVLedgEntryBuf_P."CV No.");
+          VendLedgerEntry_L.SETRANGE(Letter,OldCVLedgEntryBuf_P.Letter);
+          IF NOT VendLedgerEntry_L.ISEMPTY THEN BEGIN
+             VendLedgerEntry_L.FIND('-');
+             TMP_VendLedgerEntry_L.DELETEALL;
+             REPEAT
+               IF NOT (((VendLedgerEntry_L."Applies-to ID" = NewCVLedgEntryBuf_P."Applies-to ID") AND VendLedgerEntry_L.Open ) OR
+                        (VendLedgerEntry_L."Entry No." = OldCVLedgEntryBuf_P."Entry No.") )
+               THEN BEGIN
+                  // On ne mettra pas . jour les 'critures qui sont lettr'es ainsi que l''criture en cours
+                  TMP_VendLedgerEntry_L.INIT;
+                  TMP_VendLedgerEntry_L.TRANSFERFIELDS(VendLedgerEntry_L);
+                  TMP_VendLedgerEntry_L.INSERT;
+               END;
+             UNTIL VendLedgerEntry_L.NEXT = 0;
+             // passage par table temporaire pour 'viter mise . jour sur la cl' active
+             TMP_VendLedgerEntry_L.RESET;
+             VendLedgerEntry_L.RESET;
+             IF NOT TMP_VendLedgerEntry_L.ISEMPTY THEN BEGIN
+             // --> 20141017- CMB6.00.01.01-SDE01
+              TMP_VendLedgerEntry_L.FINDSET;
+             // --> 20141017- CMB6.00.01.01-SDE01
+                REPEAT
+                  IF VendLedgerEntry_L.GET(TMP_VendLedgerEntry_L."Entry No.") THEN BEGIN
+                     VendLedgerEntry_L.Letter := NewCVLedgEntryBuf_P.Letter;
+                     VendLedgerEntry_L.MODIFY;
+                  END;
+                UNTIL TMP_VendLedgerEntry_L.NEXT = 0;
+             END;
+          END;
+
+        END;
+
+        IF OldCVLedgEntryBuf_P.Letter <> '' THEN
+          AppliedToLetter_L := OldCVLedgEntryBuf_P.Letter;
+        IF NewCVLedgEntryBuf_P.Letter <> '' THEN
+          AppliedToLetter_L := NewCVLedgEntryBuf_P.Letter;
+        IF AppliedToLetter_L = '' THEN
+          BEGIN
+            AppliedToLetter_L := VendLastLetter(NewCVLedgEntryBuf_P."CV No.");
+            LetterApplMngt_L.NextLetter(AppliedToLetter_L);
+          END;
+      END;
+
+      NewCVLedgEntryBuf_P.Letter := AppliedToLetter_L;
+      OldCVLedgEntryBuf_P.Letter := AppliedToLetter_L;
+    END;
+
+    PROCEDURE DelCustLetterUnApply@60037(VAR DtldCustLedgEntry_P@60000 : Record 379);
+    VAR
+      CustLedgEntry_L@60001 : Record 21;
+      ApplCustLedgEntry_L@60002 : Record 21;
+    BEGIN
+      DtldCustLedgEntry_P.FINDFIRST;
+      REPEAT
+        IF DtldCustLedgEntry_P."Entry Type" = DtldCustLedgEntry_P."Entry Type"::Application THEN BEGIN
+          CustLedgEntry_L.GET(DtldCustLedgEntry_P."Cust. Ledger Entry No.");
+          CustGetAppliedEntry(CustLedgEntry_L,ApplCustLedgEntry_L);
+          IF NOT ApplCustLedgEntry_L.FINDFIRST THEN BEGIN
+            CustLedgEntry_L.Letter := '';
+            CustLedgEntry_L.MODIFY;
+          END;
+        END;
+      UNTIL DtldCustLedgEntry_P.NEXT = 0;
+    END;
+
+    PROCEDURE DelVendLetterUnApply@60038(VAR DtldVendLedgEntry_P@60000 : Record 380);
+    VAR
+      VendLedgEntry_L@60002 : Record 25;
+      ApplVendLedgEntry_L@60001 : Record 25;
+    BEGIN
+      DtldVendLedgEntry_P.FINDFIRST;
+      REPEAT
+        IF DtldVendLedgEntry_P."Entry Type" = DtldVendLedgEntry_P."Entry Type"::Application THEN BEGIN
+          VendLedgEntry_L.GET(DtldVendLedgEntry_P."Vendor Ledger Entry No.");
+          VendGetAppliedEntry(VendLedgEntry_L,ApplVendLedgEntry_L);
+          IF NOT ApplVendLedgEntry_L.FINDFIRST THEN BEGIN
+            VendLedgEntry_L.Letter := '';
+            VendLedgEntry_L.MODIFY;
+          END;
+        END;
+      UNTIL DtldVendLedgEntry_P.NEXT = 0;
+    END;
+
+    PROCEDURE ShowCustAppliedLetter@1180250002(VAR CustLedgerEntry_P@1180250003 : Record 21);
+    VAR
+      ApplCustLedgEntry_L@1180250002 : Record 21;
+    BEGIN
+      WITH CustLedgerEntry_P DO BEGIN
+        ApplCustLedgEntry_L.RESET;
+        ApplCustLedgEntry_L.SETCURRENTKEY("Customer No.",Letter);
+        ApplCustLedgEntry_L.SETRANGE("Customer No.","Customer No.");
+        ApplCustLedgEntry_L.SETRANGE(Letter,Letter);
+        FORM.RUNMODAL(0,ApplCustLedgEntry_L);
+      END;
+    END;
+
+    PROCEDURE ShowVendAppliedLetter@1180250003(VAR VendLedgerEntry_P@1180250003 : Record 25);
+    VAR
+      ApplVendLedgEntry_L@1180250002 : Record 25;
+    BEGIN
+      WITH VendLedgerEntry_P DO BEGIN
+        ApplVendLedgEntry_L.RESET;
+        ApplVendLedgEntry_L.SETCURRENTKEY("Vendor No.",Letter);
+        ApplVendLedgEntry_L.SETRANGE("Vendor No.","Vendor No.");
+        ApplVendLedgEntry_L.SETRANGE(Letter,Letter);
+        FORM.RUNMODAL(0,ApplVendLedgEntry_L);
+      END;
+    END;
+
+    PROCEDURE CustLetterApplyEntry@1000000005(CustLedgEntry_P@1000000000 : Record 21);
+    VAR
+      ApplCustLedgEntry_L@1000000002 : Record 21;
+      AppliesToID_L@1000000001 : Text[20];
+      ExistAppliedToID_L@1000000004 : Text[20];
+      LetterApplMngt_L@1180250002 : Codeunit 10842;
+      ApplCustLedgEntry2_L@1000000003 : Record 21;
+    BEGIN
+      AppliesToID_L := CustLastLetter(CustLedgEntry_P."Customer No.");
+
+      CustLedgEntry_P.CALCFIELDS("Amount (LCY)","Remaining Amt. (LCY)");
+
+      IF (CustLedgEntry_P."Amount (LCY)" <> CustLedgEntry_P."Remaining Amt. (LCY)") THEN
+        BEGIN
+
+          CustGetAppliedEntry(CustLedgEntry_P,ApplCustLedgEntry_L);
+
+          IF ApplCustLedgEntry_L.FIND('-') THEN
+            ExistAppliedToID_L := ApplCustLedgEntry_L.Letter;
+
+          IF CustLedgEntry_P.Letter = '' THEN
+            BEGIN
+              IF ExistAppliedToID_L = '' THEN
+                LetterApplMngt_L.NextLetter(AppliesToID_L)
+              ELSE
+                AppliesToID_L := ExistAppliedToID_L;
+              CustLedgEntry_P.Letter := AppliesToID_L;
+              CustLedgEntry_P.MODIFY;
+            END
+          ELSE
+            AppliesToID_L := CustLedgEntry_P.Letter;
+
+          // --> 20141017- CMB6.00.01.01-SDE01
+          IF ApplCustLedgEntry_L.FINDSET THEN
+            REPEAT
+              IF (ApplCustLedgEntry_L.Letter<>'') AND (ApplCustLedgEntry_L.Letter<>AppliesToID_L)
+              THEN BEGIN
+                ApplCustLedgEntry2_L.RESET;
+                ApplCustLedgEntry2_L.SETRANGE("Customer No.",ApplCustLedgEntry_L."Customer No.");
+                ApplCustLedgEntry2_L.SETRANGE(Letter,ApplCustLedgEntry_L.Letter);
+                ApplCustLedgEntry2_L.MODIFYALL(Letter,AppliesToID_L);
+              END ELSE BEGIN
+                ApplCustLedgEntry_L.Letter := AppliesToID_L;
+                ApplCustLedgEntry_L.MODIFY;
+              END;
+            // <-- 20141017- CMB6.00.01.01-SDE01
+            UNTIL ApplCustLedgEntry_L.NEXT = 0;
+
+        END;
+    END;
+
+    PROCEDURE VendLetterApplyEntry@1000000006(VendLedgEntry_P@1000000000 : Record 25);
+    VAR
+      ApplVendLedgEntry_L@1000000002 : Record 25;
+      AppliesToID_L@1000000001 : Text[20];
+      ExistAppliedToID_L@1000000004 : Text[20];
+      LetterApplMngt_L@1180250002 : Codeunit 10842;
+    BEGIN
+      AppliesToID_L := VendLastLetter(VendLedgEntry_P."Vendor No.");
+
+      VendLedgEntry_P.CALCFIELDS("Amount (LCY)","Remaining Amt. (LCY)");
+
+      IF (VendLedgEntry_P."Amount (LCY)" <> VendLedgEntry_P."Remaining Amt. (LCY)") THEN
+        BEGIN
+
+          VendGetAppliedEntry(VendLedgEntry_P,ApplVendLedgEntry_L);
+
+          IF ApplVendLedgEntry_L.FIND('-') THEN
+            ExistAppliedToID_L := ApplVendLedgEntry_L.Letter;
+
+          IF VendLedgEntry_P.Letter = '' THEN
+            BEGIN
+              IF ExistAppliedToID_L = '' THEN
+                LetterApplMngt_L.NextLetter(AppliesToID_L)
+              ELSE
+                AppliesToID_L := ExistAppliedToID_L;
+              VendLedgEntry_P.Letter := AppliesToID_L;
+              VendLedgEntry_P.MODIFY;
+            END
+          ELSE
+            AppliesToID_L := VendLedgEntry_P.Letter;
+
+          IF ApplVendLedgEntry_L.FIND('-') THEN
+            REPEAT
+              IF ApplVendLedgEntry_L.Letter = '' THEN
+                BEGIN
+                  ApplVendLedgEntry_L.Letter := AppliesToID_L;
+                  ApplVendLedgEntry_L.MODIFY;
+                END;
+            UNTIL ApplVendLedgEntry_L.NEXT = 0;
+
+        END;
+    END;
+
+    PROCEDURE FindApplnEntriesDtldtLedgEntry@1(CreateCustLedgEntry@1000000001 : Record 21;VAR ApplCustLedgEntry_P@1000000000 : Record 21);
+    VAR
+      DtldCustLedgEntry1@1001 : Record 379;
+      DtldCustLedgEntry2@1000 : Record 379;
+    BEGIN
+      // --> 20141017- CMB6.00.01.01-SDE01
+      DtldCustLedgEntry1.SETCURRENTKEY("Cust. Ledger Entry No.");
+      DtldCustLedgEntry1.SETRANGE("Cust. Ledger Entry No.",CreateCustLedgEntry."Entry No.");
+      DtldCustLedgEntry1.SETRANGE(Unapplied,FALSE);
+      IF DtldCustLedgEntry1.FIND('-') THEN BEGIN
+        REPEAT
+          IF DtldCustLedgEntry1."Cust. Ledger Entry No." =
+            DtldCustLedgEntry1."Applied Cust. Ledger Entry No."
+          THEN BEGIN
+            DtldCustLedgEntry2.INIT;
+            DtldCustLedgEntry2.SETCURRENTKEY("Applied Cust. Ledger Entry No.","Entry Type");
+            DtldCustLedgEntry2.SETRANGE(
+              "Applied Cust. Ledger Entry No.",DtldCustLedgEntry1."Applied Cust. Ledger Entry No.");
+            DtldCustLedgEntry2.SETRANGE("Entry Type",DtldCustLedgEntry2."Entry Type"::Application);
+            DtldCustLedgEntry2.SETRANGE(Unapplied,FALSE);
+            IF DtldCustLedgEntry2.FIND('-') THEN BEGIN
+              REPEAT
+                IF DtldCustLedgEntry2."Cust. Ledger Entry No." <>
+                  DtldCustLedgEntry2."Applied Cust. Ledger Entry No."
+                THEN BEGIN
+                  ApplCustLedgEntry_P.SETCURRENTKEY("Entry No.");
+                  ApplCustLedgEntry_P.SETRANGE("Entry No.",DtldCustLedgEntry2."Cust. Ledger Entry No.");
+                  IF ApplCustLedgEntry_P.FIND('-') THEN
+                    ApplCustLedgEntry_P.MARK(TRUE);
+                END;
+              UNTIL DtldCustLedgEntry2.NEXT = 0;
+            END;
+          END ELSE BEGIN
+            ApplCustLedgEntry_P.SETCURRENTKEY("Entry No.");
+            ApplCustLedgEntry_P.SETRANGE("Entry No.",DtldCustLedgEntry1."Applied Cust. Ledger Entry No.");
+            IF ApplCustLedgEntry_P.FIND('-') THEN
+              ApplCustLedgEntry_P.MARK(TRUE);
+          END;
+        UNTIL DtldCustLedgEntry1.NEXT = 0;
+      END;
+      ApplCustLedgEntry_P.SETRANGE("Entry No.");
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20101213-8060990/006-CMB6.00.01-FEC01 : ADDOBJ (...).
+      20110401-8060990/006-CMB6.00.01.01-JDL01 : Ajout de permission sur les tables 21 et 25 (RM)
+      20141017- CMB6.00.01.01-SDE01  : Correction beug
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,1090 @@
+OBJECT Codeunit 60090 ACP Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=26/06/20;
+    Heure=00:00:00;
+    Liste versions=SP3446;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+
+    PROCEDURE ManageAcpPurchLine@1000000000(PurchLine_P@1000000000 : Record 39);
+    VAR
+      AcpPurchLines_L@1000000001 : Record 60120;
+      PurchaseHeader_L@1000000002 : Record 38;
+      AcpList_L@1000000003 : Record 60116;
+      AcpDetails_L@1000000004 : Record 60117;
+      TempAcpPurchLines_L@1000000005 : TEMPORARY Record 60120;
+      i_L@1000000006 : Integer;
+      j_L@1000000007 : Integer;
+      TotalDiscount_L@1000000008 : Decimal;
+      PreviousFinalPrice_L@1000000009 : Decimal;
+      AcpLedgerEntry_L@1000000010 : Record 60122;
+      TotalDiscountVerif_L@1000000011 : Decimal;
+    BEGIN
+      //principe g'n'ral :
+      //dans le cas d'une ligne retour ou avoir : on ne passe pas par le param'trage ACP mais :
+      //si il y a eu extraction on r'cupSre les lignes ACP existantes sur la ligne extraite
+      //si la ligne extraite n'a pas de ligne ACP, on ne cr'e pas non plus de ligne ACP sur la ligne retour/avoir
+
+      WITH PurchLine_P DO BEGIN
+        PurchaseHeader_L.GET("Document Type", "Document No.");
+        //on devra g'rer le cas des retours qui utiliseront les ACP li' . la r'ception originale afin de garantir
+        //la sym'trie entre r'ception et retour
+        IF ((PurchaseHeader_L."Document Type" <> PurchaseHeader_L."Document Type"::Order) AND
+          (PurchaseHeader_L."Document Type" <> PurchaseHeader_L."Document Type"::"Return Order") AND
+          (PurchaseHeader_L."Document Type" <> PurchaseHeader_L."Document Type"::Invoice) AND
+          (PurchaseHeader_L."Document Type" <> PurchaseHeader_L."Document Type"::"Credit Memo")) THEN
+            EXIT;
+
+        TempAcpPurchLines_L.RESET;
+        TempAcpPurchLines_L.DELETEALL;
+
+        AcpPurchLines_L.SETRANGE("Document Type", "Document Type");
+        AcpPurchLines_L.SETRANGE("Document No.", "Document No.");
+        AcpPurchLines_L.SETRANGE("Document Line No.", "Line No.");
+
+        //suppression des 'ventuelles lignes ACP avant re-cr'ation
+        IF NOT AcpPurchLines_L.ISEMPTY THEN
+          AcpPurchLines_L.DELETEALL(TRUE);
+        AcpPurchLines_L.RESET;
+
+        // --> 20200624-WI00-ADV01.01.00-3446-SCR01
+        TotalDiscountVerif_L := ROUND("Line Discount Amount" / ABS(Quantity), 0.00001);
+        IF PurchLine_P."Direct Unit Cost" - TotalDiscountVerif_L = 0 THEN
+          EXIT;
+        // <-- 20200624-WI00-ADV01.01.00-3446-SCR01
+
+        IF ((PurchaseHeader_L."Document Type" = PurchaseHeader_L."Document Type"::Order) OR
+          (PurchaseHeader_L."Document Type" = PurchaseHeader_L."Document Type"::Invoice)) THEN BEGIN
+            IF PurchaseHeader_L."Document Type" = PurchaseHeader_L."Document Type"::Order THEN
+              FindAcpWithSetup(PurchLine_P,TempAcpPurchLines_L,PurchaseHeader_L."Order Date",'')
+            ELSE
+              FindAcpWithSetup(PurchLine_P,TempAcpPurchLines_L,PurchLine_P."Order Date",'');
+
+        END
+        ELSE BEGIN
+
+          //cas des retours ou avoir non bas's sur le param'trage mais sur la ligne r'ception origininale
+          // --> 20190217-WI00-ADV01.01.00-3446-CJY01
+          {BEFORE
+          IF (("Doc Type Extraction" = "Doc Type Extraction"::Receipt) AND
+          AFTER}
+          IF (("Doc Type Extraction" <> "Doc Type Extraction"::" ") AND
+          // <-- 20190217-WI00-ADV01.01.00-3446-CJY01
+            ("No. Doc Extraction" <> '') AND ("No. Line Doc Extraction" <> 0)) THEN BEGIN
+              //recherches des lignes ACP g'n'r'es sur la ligne extraite
+              AcpLedgerEntry_L.RESET;
+              AcpLedgerEntry_L.SETRANGE("Item No.","No.");
+              AcpLedgerEntry_L.SETRANGE("Item Ledger Entry Type",AcpLedgerEntry_L."Item Ledger Entry Type"::Purchase);
+              IF "Doc Type Extraction" = "Doc Type Extraction"::Receipt THEN
+                AcpLedgerEntry_L.SETRANGE("Document Type",AcpLedgerEntry_L."Document Type"::"Purchase Receipt")
+              ELSE
+                // --> 20190217-WI00-ADV01.01.00-3446-CJY01
+                {BEFORE
+                AcpLedgerEntry_L.SETRANGE("Document Type",AcpLedgerEntry_L."Document Type"::"Purchase Credit Memo");
+                AFTER }
+                AcpLedgerEntry_L.SETRANGE("Document Type",AcpLedgerEntry_L."Document Type"::"Purchase Invoice");
+                // <-- 20190217-WI00-ADV01.01.00-3446-CJY01
+
+              AcpLedgerEntry_L.SETRANGE("Document No.","No. Doc Extraction");
+              AcpLedgerEntry_L.SETRANGE("Document Line No.","No. Line Doc Extraction");
+
+              // --> 20200313-WI00-ADV01.01.00-3446-CJY01
+              {BEFORE
+              AcpLedgerEntry_L.SETFILTER("ACP Code",'<>%1','');
+              AFTER}
+              AcpLedgerEntry_L.SETRANGE("ACP  No. final doc. purch.",0);
+              // <-- 20200313-WI00-ADV01.01.00-3446-CJY01
+              IF AcpLedgerEntry_L.FINDSET THEN REPEAT
+                TempAcpPurchLines_L.INIT;
+                TempAcpPurchLines_L.VALIDATE("Document Type", "Document Type");
+                TempAcpPurchLines_L.VALIDATE("Document No.", "Document No.");
+                TempAcpPurchLines_L.VALIDATE("Document Line No.", "Line No.");
+                TempAcpPurchLines_L.VALIDATE("ACP Code", AcpLedgerEntry_L."ACP Code");
+                IF Quantity <> 0 THEN BEGIN
+                  TotalDiscount_L := ROUND("Line Discount Amount" / ABS(Quantity), 0.00001);
+                  TempAcpPurchLines_L.VALIDATE("Base Value", "Direct Unit Cost" - TotalDiscount_L);
+                END
+                ELSE BEGIN
+                  TempAcpPurchLines_L.VALIDATE("Base Value", "Direct Unit Cost");
+                END;
+                TempAcpPurchLines_L.VALIDATE("ACP %", AcpLedgerEntry_L."ACP %");
+                TempAcpPurchLines_L.VALIDATE("ACP Amount", ROUND(AcpLedgerEntry_L."ACP value", 0.01, '='));
+                TempAcpPurchLines_L.VALIDATE("ACP vendor No.",AcpLedgerEntry_L."ACP Vendor No.");
+                TempAcpPurchLines_L.VALIDATE(Rank, AcpLedgerEntry_L.Rank);
+                IF TempAcpPurchLines_L.INSERT(TRUE) THEN;
+
+              UNTIL AcpLedgerEntry_L.NEXT = 0;
+
+          END
+          // --> 20200518-WI00-ADV01.01.00-3446-CJY01
+          ELSE BEGIN
+            //on gSre finalement ici le cas des retours/avoirs non extrait (saisi directement)
+            //dans ce cas on interroge le param'trage
+            IF PurchaseHeader_L."Document Type" = PurchaseHeader_L."Document Type"::"Return Order" THEN
+              FindAcpWithSetup(PurchLine_P,TempAcpPurchLines_L,PurchaseHeader_L."Order Date",'');
+            // --> 20200602-WI00-ADV01.01.00-3446-SCR01
+            IF PurchaseHeader_L."Document Type" = PurchaseHeader_L."Document Type"::"Credit Memo" THEN
+              FindAcpWithSetup(PurchLine_P,TempAcpPurchLines_L,PurchaseHeader_L."Document Date",'');
+            // <-- 202000602-WI00-ADV01.01.00-3446-SCR01
+
+
+          END;
+          // <-- 20200518-WI00-ADV01.01.00-3446-CJY01
+        END;
+        TempAcpPurchLines_L.RESET;
+        TempAcpPurchLines_L.SETCURRENTKEY(Rank);
+        IF NOT TempAcpPurchLines_L.FINDSET THEN
+          EXIT;
+
+        AcpPurchLines_L.INIT;
+        AcpPurchLines_L := TempAcpPurchLines_L;
+        AcpPurchLines_L."Final Price" := AcpPurchLines_L."Base Value" - AcpPurchLines_L."ACP Amount";
+        AcpPurchLines_L.INSERT(TRUE);
+
+        PreviousFinalPrice_L := AcpPurchLines_L."Final Price";
+        TotalDiscount_L += AcpPurchLines_L."ACP Amount";
+
+
+        IF TempAcpPurchLines_L.NEXT <> 0 THEN REPEAT
+          AcpPurchLines_L.INIT;
+          AcpPurchLines_L := TempAcpPurchLines_L;
+          //ligne ci-dessous incoh'rente, . supprimer une fois s-r
+          {IF AcpList_L."Valuation Type" = AcpList_L."Valuation Type"::"Unit Amount" THEN
+            AcpPurchLines_L.VALIDATE("ACP Amount",
+                                       ROUND(AcpPurchLines_L."Base Value" * AcpPurchLines_L."ACP %" /100, 0.01, '='));
+          }
+          AcpPurchLines_L.VALIDATE("Final Price", PreviousFinalPrice_L - AcpPurchLines_L."ACP Amount");
+          AcpPurchLines_L.INSERT(TRUE);
+
+          PreviousFinalPrice_L := AcpPurchLines_L."Final Price";
+          TotalDiscount_L += AcpPurchLines_L."ACP Amount";
+
+
+
+
+        UNTIL TempAcpPurchLines_L.NEXT = 0;
+
+      END;
+    END;
+
+    PROCEDURE CreateAcpLedgerEntry@1000000001(VAR ValueEntry_P_@1000000001 : Record 5802;AllowZeroValue_P@1000000000 : Boolean;ACPCode_P@1000000009 : Code[20]);
+    VAR
+      Item_L@1000000002 : Record 27;
+      ACPLedgerEntry_L@1000000003 : Record 60122;
+      AmtRndPrecision_L@1000000004 : Decimal;
+      CmcSetup_L@1000000005 : Record 8052982;
+      ACPValueEntryNo_L@1000000006 : Integer;
+      GLSetup_L@1000000007 : Record 98;
+      ValueEntryACP_L@1000000008 : Record 60124;
+      ItemLedgerEntry_L@1000000010 : Record 32;
+      UnitAmtRndPrecision_L@1000000012 : Decimal;
+      TbACPList_L@1000000011 : Record 60116;
+    BEGIN
+      GLSetup_L.GET;
+      AmtRndPrecision_L := GLSetup_L."Amount Rounding Precision";
+      UnitAmtRndPrecision_L := GLSetup_L."Unit-Amount Rounding Precision";
+
+      Item_L.GET(ValueEntry_P_."Item No.");
+      IF Item_L."Cereal Item" THEN
+        EXIT;
+
+
+      IF (ValueEntry_P_."Valued Quantity" <> 0) THEN BEGIN
+
+        ACPLedgerEntry_L.LOCKTABLE;
+        IF ACPLedgerEntry_L.FINDLAST THEN
+          ACPValueEntryNo_L := ACPLedgerEntry_L."Entry No.";
+
+        ACPLedgerEntry_L.INIT;
+        ACPLedgerEntry_L.TRANSFERFIELDS(ValueEntry_P_, FALSE);
+        ACPLedgerEntry_L."Entry No." := ACPValueEntryNo_L + 1;
+        ACPLedgerEntry_L."Value Entry No." := ValueEntry_P_."Entry No.";
+
+        //AmtRndPrecision_L := GLSetup_L."Amount Rounding Precision";
+
+        ValueEntryACP_L.RESET;
+        ValueEntryACP_L.SETCURRENTKEY("Value Entry No.",Rank);
+        ValueEntryACP_L.SETRANGE("Value Entry No.",ValueEntry_P_."Entry No.");
+        IF ACPCode_P <> '' THEN
+          ValueEntryACP_L.SETRANGE("Acp Code",ACPCode_P);
+
+        CASE ValueEntry_P_."Document Type" OF
+          // ----------------------------------------------------------------
+          ValueEntry_P_."Document Type"::"Purchase Receipt",                  // R'ception Commande Achat
+          ValueEntry_P_."Document Type"::"Purchase Return Shipment": BEGIN    // Livraison Retour Achat
+          //ValueEntry_P_."Document Type"::"Purchase Receipt" : BEGIN             // R'ception Commande Achat
+          // ----------------------------------------------------------------
+
+            IF ValueEntry_P_."Item Ledger Entry Quantity" <> 0 THEN BEGIN
+              IF ValueEntryACP_L.FINDSET THEN BEGIN
+                REPEAT
+                  ACPLedgerEntry_L."ACP Code" := ValueEntryACP_L."Acp Code";
+                  ACPLedgerEntry_L."ACP value" := ValueEntryACP_L."Acp Amount";
+                  ACPLedgerEntry_L."ACP %" := ValueEntryACP_L."Acp %";
+                  ACPLedgerEntry_L."ACP Vendor No." := ValueEntryACP_L."ACP Vendor No.";
+                  ACPLedgerEntry_L.Rank := ValueEntryACP_L.Rank;
+
+                  // --> 20200625-WI00-ADV01.01.00-3446-SCR01
+                  { BEFORE
+                  IF ValueEntryACP_L."Acp %" <> 0 THEN
+                    ACPLedgerEntry_L."Valuation Type" := ACPLedgerEntry_L."Valuation Type"::Percentage
+                  ELSE
+                    ACPLedgerEntry_L."Valuation Type" := ACPLedgerEntry_L."Valuation Type"::"Unit Amount";
+                  AFTER }
+                  TbACPList_L.GET(ValueEntryACP_L."Acp Code");
+                  IF TbACPList_L."Valuation Type" = TbACPList_L."Valuation Type"::Percentage THEN
+                      ACPLedgerEntry_L."Valuation Type" := ACPLedgerEntry_L."Valuation Type"::Percentage
+                  ELSE
+                    ACPLedgerEntry_L."Valuation Type" := ACPLedgerEntry_L."Valuation Type"::"Unit Amount";
+                  // <-- 20200625-WI00-ADV01.01.00-3446-SCR01
+
+                  //on r'cupSre la d'signation au niveau de l''criture article
+                  ItemLedgerEntry_L.GET(ValueEntry_P_."Item Ledger Entry No.");
+                  ACPLedgerEntry_L.Description := ItemLedgerEntry_L.Description;
+                  // --> 20200624-WI00-ADV01.01.00-3446-SCR01
+                  ACPLedgerEntry_L."Order Date" := ItemLedgerEntry_L."Order Date";
+                  // <-- 20200624-WI00-ADV01.01.00-3446-SCR01
+
+                  ACPLedgerEntry_L."ACP Unit Amount (Receipt)" :=
+                    ROUND(ValueEntryACP_L."Acp Amount",UnitAmtRndPrecision_L);
+
+                  ACPLedgerEntry_L."ACP Amount (Receipt)" :=
+                    ROUND(ACPLedgerEntry_L."ACP Unit Amount (Receipt)" * ValueEntry_P_."Valued Quantity",AmtRndPrecision_L);
+
+                  ACPLedgerEntry_L.INSERT(TRUE);
+                  ManageAcpDetailEntry(ACPLedgerEntry_L,0);
+                  //--------------------------------------------------------------
+                  ACPLedgerEntry_L.INIT;
+                  ACPLedgerEntry_L.TRANSFERFIELDS(ValueEntry_P_, FALSE);
+                  ACPValueEntryNo_L += 1;
+                  ACPLedgerEntry_L."Entry No." := ACPValueEntryNo_L + 1;
+                  ACPLedgerEntry_L."Value Entry No." := ValueEntry_P_."Entry No.";
+                  //---------------------------------------------------------------
+                UNTIL ValueEntryACP_L.NEXT = 0;
+              END;
+            END;
+          END;
+          // ----------------------------------------------------------------
+          ValueEntry_P_."Document Type"::"Purchase Credit Memo",
+          ValueEntry_P_."Document Type"::"Purchase Invoice" : BEGIN
+          // ----------------------------------------------------------------
+              IF ValueEntry_P_."Invoiced Quantity" <> 0 THEN BEGIN
+                //gestion de la g'n'ration 'criture ACP sur ligne facture ou avoir
+                IF ValueEntryACP_L.FINDSET THEN BEGIN
+                  REPEAT
+                    ACPLedgerEntry_L."ACP Code" := ValueEntryACP_L."Acp Code";
+                    ACPLedgerEntry_L."ACP value" := ValueEntryACP_L."Acp Amount";
+                    ACPLedgerEntry_L."ACP %" := ValueEntryACP_L."Acp %";
+                    ACPLedgerEntry_L."ACP Vendor No." := ValueEntryACP_L."ACP Vendor No.";
+                    // --> 20190217-WI00-ADV01.01.00-3446-CJY01
+                    ACPLedgerEntry_L.Rank := ValueEntryACP_L.Rank;
+                    // <-- 20190217-WI00-ADV01.01.00-3446-CJY01
+
+                    // --> 20200626-WI00-ADV01.01.00-3446-CJY01
+                    {BEFORE
+                    IF ValueEntryACP_L."Acp %" <> 0 THEN
+                      ACPLedgerEntry_L."Valuation Type" := ACPLedgerEntry_L."Valuation Type"::Percentage
+                    ELSE
+                      ACPLedgerEntry_L."Valuation Type" := ACPLedgerEntry_L."Valuation Type"::"Unit Amount";
+                    AFTER}
+                    TbACPList_L.GET(ValueEntryACP_L."Acp Code");
+                    IF TbACPList_L."Valuation Type" = TbACPList_L."Valuation Type"::Percentage THEN
+                        ACPLedgerEntry_L."Valuation Type" := ACPLedgerEntry_L."Valuation Type"::Percentage
+                    ELSE
+                      ACPLedgerEntry_L."Valuation Type" := ACPLedgerEntry_L."Valuation Type"::"Unit Amount";
+                    // <-- 20200626-WI00-ADV01.01.00-3446-CJY01
+                    //on r'cupSre la d'signation au niveau de l''criture article
+                    ItemLedgerEntry_L.GET(ValueEntry_P_."Item Ledger Entry No.");
+                    ACPLedgerEntry_L.Description := ItemLedgerEntry_L.Description;
+                    // --> 20200624-WI00-ADV01.01.00-3446-SCR01
+                    ACPLedgerEntry_L."Order Date" := ItemLedgerEntry_L."Order Date";
+                    // <-- 20200624-WI00-ADV01.01.00-3446-SCR01
+
+                    ACPLedgerEntry_L."ACP Unit Amount (Invoice)" :=
+                      ROUND(ValueEntryACP_L."Acp Amount",UnitAmtRndPrecision_L);
+
+                    ACPLedgerEntry_L."ACP Amount (Invoice)" :=
+                      ROUND(ACPLedgerEntry_L."ACP Unit Amount (Invoice)" * ValueEntry_P_."Valued Quantity",AmtRndPrecision_L);
+
+                    ACPLedgerEntry_L."ACP Unit Price Outstanding" :=
+                      ROUND(ACPLedgerEntry_L."ACP Unit Amount (Invoice)",UnitAmtRndPrecision_L);
+
+                    CalcRevPurchACPExpAmtToBalance(ACPLedgerEntry_L, ValueEntry_P_."Invoiced Quantity");
+
+                    ACPLedgerEntry_L.INSERT(TRUE);
+                    ManageAcpDetailEntry(ACPLedgerEntry_L,0);
+                    //--------------------------------------------------------------
+                    ACPLedgerEntry_L.INIT;
+                    ACPLedgerEntry_L.TRANSFERFIELDS(ValueEntry_P_, FALSE);
+                    ACPValueEntryNo_L += 1;
+                    ACPLedgerEntry_L."Entry No." := ACPValueEntryNo_L + 1;
+                    ACPLedgerEntry_L."Value Entry No." := ValueEntry_P_."Entry No.";
+                    //---------------------------------------------------------------
+
+                  UNTIL ValueEntryACP_L.NEXT = 0;
+                END;
+              END;
+
+          END;
+        END; //END CASE
+      END;
+    END;
+
+    PROCEDURE FindAcpWithSetup@1000000002(PurchLine_P@1000000000 : Record 39;VAR TempAcpPurchLines_P@1000000003 : TEMPORARY Record 60120;OrderDate_P@1000000009 : Date;AcpCode_P@1000000007 : Code[20]);
+    VAR
+      PurchaseHeader_L@1000000006 : Record 38;
+      AcpList_L@1000000005 : Record 60116;
+      AcpDetails_L@1000000004 : Record 60117;
+      i_L@1000000002 : Integer;
+      j_L@1000000001 : Integer;
+      TotalDiscount_L@1000000008 : Decimal;
+    BEGIN
+      WITH PurchLine_P DO BEGIN
+        //PurchaseHeader_L.GET("Document Type","Document No.");
+        IF AcpCode_P <> '' THEN
+          AcpList_L.SETRANGE(Code,AcpCode_P);
+        IF AcpList_L.FINDSET THEN REPEAT
+          FOR j_L := 0 TO 0 DO BEGIN
+            AcpDetails_L.RESET;
+            AcpDetails_L.SETRANGE("Code ACP",AcpList_L.Code);
+            AcpDetails_L.SETFILTER("Campaign No.",'%1|%2',"CMC Campaign No.",'');
+            // --> 20200622-WI00-ADV01.01.00-3446-CJY01
+            //on prend en compte les possibles paramStrages . 0
+            {BEFORE
+            AcpDetails_L.SETFILTER("ACP Value",'<>%1',0);
+            }
+            // <-- 20200622-WI00-ADV01.01.00-3446-CJY01
+            AcpDetails_L.SETFILTER("Starting Date",'<=%1', OrderDate_P);
+            AcpDetails_L.SETFILTER("Ending Date", '>=%1', OrderDate_P);
+            AcpDetails_L.SETFILTER("Unit of Measure Code",'%1|%2',"Unit of Measure Code",'');
+            CASE j_L OF
+              0 : AcpDetails_L.SETRANGE("ACP Vendor No.", "Buy-from Vendor No.");
+            END;
+
+
+            IF AcpDetails_L.FINDFIRST THEN BEGIN
+              FOR i_L := 0 TO 4 DO BEGIN
+                AcpDetails_L.SETRANGE(Type, i_L);
+                CASE i_L OF
+                  0 :
+                  BEGIN
+                    AcpDetails_L.SETRANGE(Code, "No.");
+                    AcpDetails_L.SETFILTER("Variant Code",'%1|%2',"Variant Code",'');
+                  END;
+                  1 : AcpDetails_L.SETRANGE(Code, "Species Code");
+                  2 : AcpDetails_L.SETRANGE(Code, "Sub-Family Code");
+                  3 : AcpDetails_L.SETRANGE(Code, "Family Code");
+                  4 : AcpDetails_L.SETRANGE(Code, "Activity Code");
+                END;
+                IF AcpDetails_L.FINDLAST THEN BEGIN
+
+                  j_L := 1;
+                  i_L := 4;
+                  TempAcpPurchLines_P.INIT;
+                  TempAcpPurchLines_P.VALIDATE("Document Type", "Document Type");
+                  TempAcpPurchLines_P.VALIDATE("Document No.", "Document No.");
+                  TempAcpPurchLines_P.VALIDATE("Document Line No.", "Line No.");
+                  TempAcpPurchLines_P.VALIDATE("ACP Code", AcpDetails_L."Code ACP");
+                  TempAcpPurchLines_P.VALIDATE(Rank, AcpDetails_L.Rank);
+
+                  IF Quantity <> 0 THEN BEGIN
+                    TotalDiscount_L := ROUND("Line Discount Amount" / ABS(Quantity), 0.00001);
+                    TempAcpPurchLines_P.VALIDATE("Base Value", "Direct Unit Cost" - TotalDiscount_L);
+                  END ELSE
+                    TempAcpPurchLines_P.VALIDATE("Base Value", "Direct Unit Cost");
+
+                  CASE AcpDetails_L."Valuation Type" OF
+                    AcpDetails_L."Valuation Type"::Percentage:
+                      BEGIN
+                        TempAcpPurchLines_P.VALIDATE("ACP %", AcpDetails_L."ACP Value");
+                        TempAcpPurchLines_P.VALIDATE("ACP Amount",
+                                   ROUND(TempAcpPurchLines_P."Base Value" * TempAcpPurchLines_P."ACP %" /100, 0.01, '='));
+                      END;
+                    AcpDetails_L."Valuation Type"::"Unit Amount":
+                      BEGIN
+
+                        TempAcpPurchLines_P.VALIDATE("ACP Amount", AcpDetails_L."ACP Value");
+                      END;
+                  END;
+
+
+                  TempAcpPurchLines_P.VALIDATE("ACP vendor No.",AcpDetails_L."ACP Vendor No.");
+                  IF TempAcpPurchLines_P.INSERT(TRUE) THEN;
+                END;
+              END;
+            END;
+          END;
+        UNTIL AcpList_L.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE ManageAcpDetailEntry@1000000003(AcpEntry_P@1000000003 : Record 60122;EntryType_P@1000000002 : 'Initial,Update,Cancel,User Update');
+    VAR
+      DetACPEntry_L@1000000000 : Record 60074;
+      DetACPEntry2_L@1000000004 : Record 60074;
+      NextEntryNo_L@1000000005 : Integer;
+    BEGIN
+      DetACPEntry_L.RESET;
+      DetACPEntry_L.SETCURRENTKEY("Sales / Purchase","ACP Entry No.");
+      DetACPEntry_L.SETRANGE("Sales / Purchase",DetACPEntry_L."Sales / Purchase"::Purchase);
+      DetACPEntry_L.SETRANGE("ACP Entry No.",AcpEntry_P."Entry No.");
+      DetACPEntry_L.CALCSUMS("Amount (Shpmt/Rcpt)");
+      DetACPEntry_L.CALCSUMS("Amount (Invoice)");
+
+      // --> 20200625-WI00-ADV01.01.00-3446-SCR01
+      //modification pour permettre la g'n'ration d'une 'criture origine . 0 si le param'trage
+      //de l'ACP utilis' le veut
+
+      { BEFORE
+      IF (AcpEntry_P."ACP Amount (Receipt)" <> DetACPEntry_L."Amount (Shpmt/Rcpt)") OR
+         (AcpEntry_P."ACP Amount (Invoice)" <> DetACPEntry_L."Amount (Invoice)") THEN BEGIN
+       AFTER }
+      IF (EntryType_P = EntryType_P::Initial) OR
+         (AcpEntry_P."ACP Amount (Receipt)" <> DetACPEntry_L."Amount (Shpmt/Rcpt)") OR
+         (AcpEntry_P."ACP Amount (Invoice)" <> DetACPEntry_L."Amount (Invoice)") THEN BEGIN
+      // <-- 20200625-WI00-ADV01.01.00-3446-SCR01
+
+        DetACPEntry2_L.RESET;
+        IF DetACPEntry2_L.FINDLAST THEN
+          NextEntryNo_L := DetACPEntry2_L."Entry No." + 1
+        ELSE
+          NextEntryNo_L := 1;
+
+        DetACPEntry2_L.INIT;
+        DetACPEntry2_L."Entry No." := NextEntryNo_L;
+        DetACPEntry2_L."Sales / Purchase" := DetACPEntry_L."Sales / Purchase"::Purchase;
+        DetACPEntry2_L."ACP Entry No." := AcpEntry_P."Entry No.";
+        DetACPEntry2_L."Amount (Shpmt/Rcpt)" := AcpEntry_P."ACP Amount (Receipt)" - DetACPEntry_L."Amount (Shpmt/Rcpt)";
+        DetACPEntry2_L."Amount (Invoice)" := AcpEntry_P."ACP Amount (Invoice)" - DetACPEntry_L."Amount (Invoice)";
+        DetACPEntry2_L."Entry Type" := EntryType_P;
+        DetACPEntry2_L."Posting Date" := AcpEntry_P."Posting Date";
+        DetACPEntry2_L."User ID" := USERID;
+        DetACPEntry2_L."Creation Date" := TODAY;
+        DetACPEntry2_L."Creation Time" := TIME;
+        //gestion de la date 'criture compta article
+        DetACPEntry2_L."Item Ledger Entry Posting Date" := AcpEntry_P."Item Ledger Entry Posting Date";
+        DetACPEntry2_L.INSERT;
+
+      END;
+    END;
+
+    PROCEDURE GetTmpRcptShptDiscount@8053015(ValueEntry_P@8053000 : Record 5802;VAR TmpPurchDisc_P@8053003 : Record 8053247;DiscountCode_P@1000000001 : Code[20]);
+    VAR
+      ValueEntryDisc_L@8053002 : Record 8053252;
+      PurchECDLedgerEntry_L@1000000000 : Record 8053088;
+    BEGIN
+      {
+      WITH PurchECDLedgerEntry_L DO BEGIN
+        SETCURRENTKEY("Item Ledger Entry No.","Entry Type");
+        SETRANGE("Item Ledger Entry No.",ValueEntry_P."Item Ledger Entry No.");
+        SETRANGE("Entry Type","Entry Type"::"Direct Cost");
+        SETFILTER("Document Type", '%1|%2', "Document Type"::"Purchase Receipt", "Document Type"::"Purchase Return Shipment");
+        SETRANGE("Item Charge No.",'');
+        IF DiscountCode_P <> '' THEN
+          SETRANGE("Discount Code",DiscountCode_P);
+        IF FINDFIRST THEN
+          REPEAT
+            TmpPurchDisc_P.INIT;
+            TmpPurchDisc_P.Code := "Discount Code";
+            IF TmpPurchDisc_P.INSERT THEN ;
+          UNTIL NEXT = 0;
+      END;
+
+      }
+    END;
+
+    PROCEDURE CalcRevPurchACPExpAmtToBalance@8053011(VAR ACPLedgerEntry_P@8053001 : Record 60122;InvoicedQty_P@8053000 : Decimal);
+    VAR
+      ItemLedgerEntry_L@8053005 : Record 32;
+      OldExpectedQty_L@8053003 : Decimal;
+      OldExpectedAmount_L@8053002 : ARRAY [3] OF Decimal;
+      InvoicedQty_L@60000 : Decimal;
+      CMCPurchDiscount_L@60001 : Record 8053247;
+      EcdEntryVerifInvoice_L@1000000000 : Record 8053088;
+      GLSetup_L@1000000001 : Record 98;
+      AmtRndPrecision_L@1000000002 : Decimal;
+      UnitAmtRndPrecision_L@1000000003 : Decimal;
+      ACPLedgerEntry_L@1000000004 : Record 60122;
+    BEGIN
+
+      CLEAR(OldExpectedAmount_L);
+      GLSetup_L.GET;
+      AmtRndPrecision_L := GLSetup_L."Amount Rounding Precision";
+      UnitAmtRndPrecision_L := GLSetup_L."Unit-Amount Rounding Precision";
+
+      WITH ACPLedgerEntry_L DO BEGIN
+        SETCURRENTKEY("Item Ledger Entry No.","Entry Type");
+        SETRANGE("Item Ledger Entry No.",ACPLedgerEntry_P."Item Ledger Entry No.");
+        SETRANGE("Entry Type","Entry Type"::"Direct Cost");
+        SETFILTER("Document Type", '%1|%2', "Document Type"::"Purchase Receipt", "Document Type"::"Purchase Return Shipment");
+        //SETFILTER("Entry No.",'<%1',ECDLedgerEntry_P."Entry No.");
+        SETRANGE("Resource No.",'');
+        SETRANGE("ACP Code",ACPLedgerEntry_P."ACP Code");
+        IF FINDSET THEN
+          REPEAT
+            OldExpectedQty_L := OldExpectedQty_L + "Valued Quantity";
+            //OldExpectedAmount_L[1] := OldExpectedAmount_L[1] + ACPLedgerEntry_L."Net Amount (Receipt)";
+            OldExpectedAmount_L[2] := OldExpectedAmount_L[2] + ACPLedgerEntry_L."ACP Amount (Receipt)";
+            OldExpectedAmount_L[3] := OldExpectedAmount_L[3] + ACPLedgerEntry_L."ACP Unit Amount (Receipt)";
+          UNTIL NEXT = 0;
+        IF OldExpectedQty_L <> 0 THEN BEGIN
+          //ECDLedgerEntry_P."Net Amount (Receipt)" :=
+            //-ROUND((InvoicedQty_P * OldExpectedAmount_L[1]) / OldExpectedQty_L, GLSetup_L."Amount Rounding Precision");
+
+          ACPLedgerEntry_P."ACP Amount (Receipt)" :=
+            -ROUND((InvoicedQty_P * OldExpectedAmount_L[2]) / OldExpectedQty_L, AmtRndPrecision_L);
+
+          ACPLedgerEntry_P."ACP Unit Amount (Receipt)" :=
+            -ROUND((InvoicedQty_P * OldExpectedAmount_L[3]) / OldExpectedQty_L, UnitAmtRndPrecision_L);
+        END;
+      END;
+    END;
+
+    PROCEDURE DeleteACPPurchLines@1000000004(DocumentType_P@1000000000 : 'Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order';DocumentNo_P@1000000001 : Code[20];DocumentLineNo_P@1000000003 : Integer);
+    VAR
+      TbACPPurchLines_L@1000000002 : Record 60120;
+    BEGIN
+      // --> 20200113-WI00-ADV01.01.00-3446-SCR01
+      TbACPPurchLines_L.SETRANGE("Document Type",DocumentType_P);
+      TbACPPurchLines_L.SETRANGE("Document No.",DocumentNo_P);
+      TbACPPurchLines_L.SETRANGE("Document Line No.",DocumentLineNo_P);
+      IF NOT TbACPPurchLines_L.ISEMPTY THEN
+        TbACPPurchLines_L.DELETEALL;
+      // <-- 20200113-WI00-ADV01.01.00-3446-SCR01
+    END;
+
+    PROCEDURE fct_recup_RFC_problable_delete@8053013(VAR ValueEntry_P_@8053001 : Record 5802;AcpCode_P@8053006 : Code[20];Cancel_P@8053000 : Boolean;CancelDiscCode_P@8053007 : Code[20]);
+    VAR
+      AmtRndPrecision_L@1000000004 : Decimal;
+      GLSetup_L@1000000003 : Record 98;
+      UnitAmtRndPrecision_L@1000000002 : Decimal;
+      AcpEntryDiscount_L@1000000005 : Record 60124;
+      AcpLedgerEntry_L@1000000006 : Record 60122;
+      AcpValueEntryNo_L@1000000007 : Integer;
+    BEGIN
+      {
+      GLSetup_L.GET;
+      AmtRndPrecision_L := GLSetup_L."Amount Rounding Precision";
+      UnitAmtRndPrecision_L := GLSetup_L."Unit-Amount Rounding Precision";
+
+
+      AcpEntryDiscount_L.RESET;
+      AcpEntryDiscount_L.SETRANGE("Value Entry No.",ValueEntry_P_."Entry No.");
+      IF AcpCode_P <> '' THEN
+        AcpEntryDiscount_L.SETRANGE("Acp Code",AcpCode_P);
+
+      CASE ValueEntry_P_."Document Type" OF
+        // ----------------------------------------------------------------
+        ValueEntry_P_."Document Type"::"Purchase Receipt": BEGIN                  // R'ception Commande Achat
+        //ValueEntry_P_."Document Type"::"Purchase Return Shipment": BEGIN    // Livraison Retour Achat
+        // ----------------------------------------------------------------
+          IF AcpEntryDiscount_L.FINDSET THEN BEGIN
+            REPEAT
+              AcpLedgerEntry_L.RESET;
+              AcpLedgerEntry_L.SETCURRENTKEY("Value Entry No.","Acp Code");
+              AcpLedgerEntry_L.SETRANGE("Value Entry No.",ValueEntry_P_."Entry No.");
+              AcpLedgerEntry_L.SETRANGE("Acp Code",ValueEntryDiscount_L."Acp Code");
+              IF AcpLedgerEntry_L.FINDLAST THEN BEGIN
+                //Normalement, On ne recalcul que si la RFC en question n'est pas sold'
+                //a voir quand cette notion sera g'r' dans ACP (situation toujours pas propre niveau RFC)
+                  //IF NOT AcpLedgerEntry_L."Acp Purch Cancelled" THEN BEGIN
+                  //ECDLedgerEntry_L."Net Unit Price (Receipt)" :=
+                    //ROUND(ValueEntry_P_."Budgeted Unit Cost", AmtRndPrecision_L);
+
+                  //ECDLedgerEntry_L."Net Amount (Receipt)" :=
+                    //ROUND(ValueEntry_P_."Valued Quantity" * ECDLedgerEntry_L."Net Unit Price (Receipt)", AmtRndPrecision_L);
+                  ACPLedgerEntry_L."ACP Unit Amount (Receipt)" :=
+                    ROUND(ValueEntryACP_L."Acp Amount",UnitAmtRndPrecision_L);
+
+                  ACPLedgerEntry_L."ACP Amount (Receipt)" :=
+                    ROUND(ACPLedgerEntry_L."ACP Unit Amount (Receipt)" * ValueEntry_P_."Valued Quantity",AmtRndPrecision_L);
+
+
+                  ACPLedgerEntry_L."ACP Vendor No." := ValueEntryDiscount_L."ACP Vendor No.";
+
+                  // --> 20141006-APP33-CMC02.02.00-FDA01
+                  IF ValueEntryDiscount_L."Discount %" <> 0 THEN BEGIN
+                    ECDLedgerEntry_L."Valuation Type" := ECDLedgerEntry_L."Valuation Type"::Percentage;
+                    ECDLedgerEntry_L."Discount %" := ValueEntryDiscount_L."Discount %";
+                  END ELSE BEGIN
+                    ECDLedgerEntry_L."Valuation Type" := ECDLedgerEntry_L."Valuation Type"::"Unit Amount";
+                    ECDLedgerEntry_L."Discount %" := 0;
+                  END;
+                  // <-- 20141006-APP33-CMC02.02.00-FDA01
+
+                  ECDLedgerEntry_L.MODIFY(TRUE);
+
+                  IF (Cancel_P = FALSE) THEN
+                    MaintainPurchDetECDEntry(ECDLedgerEntry_L,1,ECDValueDate_G)
+                  ELSE
+                    MaintainPurchDetECDEntry(ECDLedgerEntry_L,2,ECDValueDate_G)
+               //END;
+              END ELSE
+                ERROR(Text8053001,ECDLedgerEntry_L.TABLECAPTION);
+            UNTIL AcpEntryDiscount_L.NEXT = 0;
+          END ELSE BEGIN
+           { // Detailed ECD does not exist
+            ECDLedgerEntry_L.RESET;
+            ECDLedgerEntry_L.SETCURRENTKEY("Value Entry No.","Discount Code");
+            ECDLedgerEntry_L.SETRANGE("Value Entry No.",ValueEntry_P_."Entry No.");
+            ECDLedgerEntry_L.SETRANGE("Discount Code",'');
+            IF ECDLedgerEntry_L.FINDLAST THEN BEGIN
+              ECDLedgerEntry_L."Net Unit Price (Receipt)" :=
+                ROUND(ValueEntry_P_."Budgeted Unit Cost", AmtRndPrecision_L);
+
+              ECDLedgerEntry_L."Net Amount (Receipt)" :=
+                ROUND(ValueEntry_P_."Valued Quantity" * ECDLedgerEntry_L."Net Unit Price (Receipt)", AmtRndPrecision_L);
+
+              ECDLedgerEntry_L."ECD Unit Amount (Receipt)" :=
+                ROUND(ValueEntry_P_."ECD Unit Amount",AmtRndPrecision_L);
+
+              ECDLedgerEntry_L."ECD Amount (Receipt)" :=
+                ROUND(ECDLedgerEntry_L."ECD Unit Amount (Receipt)" * ValueEntry_P_."Valued Quantity",AmtRndPrecision_L);
+
+              ECDLedgerEntry_L."ECD Vendor No." := ValueEntry_P_."ECD Vendor No.";
+
+              // --> 20141006-APP33-CMC02.02.00-FDA01
+              ECDLedgerEntry_L."Valuation Type" := ECDLedgerEntry_L."Valuation Type"::"Unit Amount";
+              // <-- 20141006-APP33-CMC02.02.00-FDA01
+
+              ECDLedgerEntry_L.MODIFY(TRUE);
+
+              // --> 20140912-APP33-CMC02.02.00-FDA01
+              {
+              IF (Cancel_P = FALSE) THEN
+                MaintainPurchDetECDEntry(ECDLedgerEntry_L,1,ECDValueDate_G)
+              ELSE
+                MaintainPurchDetECDEntry(ECDLedgerEntry_L,2,ECDValueDate_G)
+              }
+              // <-- 20140912-APP33-CMC02.02.00-FDA01
+
+            END ELSE
+
+              // --> 20140912-APP33-CMC02.02.00-FDA01
+              IF ValueEntry_P_."ECD Unit Amount" <> 0 THEN
+                InsertPurchECDLedgerEntry(ValueEntry_P_,FALSE,'')
+              ELSE
+              // <-- 20140912-APP33-CMC02.02.00-FDA01
+                ERROR(Text8053001,ECDLedgerEntry_L.TABLECAPTION);
+
+            // --> 20140912-APP33-CMC02.02.00-FDA01
+            IF (Cancel_P = FALSE) THEN
+              MaintainPurchDetECDEntry(ECDLedgerEntry_L,1,ECDValueDate_G)
+            ELSE
+              MaintainPurchDetECDEntry(ECDLedgerEntry_L,2,ECDValueDate_G)
+            // <-- 20140912-APP33-CMC02.02.00-FDA01
+          }
+          END;
+        END;
+
+        // ----------------------------------------------------------------
+        ValueEntry_P_."Document Type"::"Purchase Invoice",
+        ValueEntry_P_."Document Type"::"Purchase Credit Memo": BEGIN
+        // ----------------------------------------------------------------
+          IF NOT isPurchaseECDCrMemo(ValueEntry_P_) THEN BEGIN
+            // --------------------------------------------------------------
+            // CAS : FACTURE Achat ou FACTURE EXPEDITION RETOUR Achat
+            // --------------------------------------------------------------
+            IF ValueEntryDiscount_L.FINDSET THEN BEGIN
+              REPEAT
+                ECDLedgerEntry_L.RESET;
+                ECDLedgerEntry_L.SETCURRENTKEY("Value Entry No.","Discount Code");
+                ECDLedgerEntry_L.SETRANGE("Value Entry No.",ValueEntry_P_."Entry No.");
+                ECDLedgerEntry_L.SETRANGE("Discount Code",ValueEntryDiscount_L."Discount Code");
+                IF ECDLedgerEntry_L.FINDLAST THEN BEGIN
+                  // --> 20160331-WI00-ADV01.01.00-2756-CJY01
+                  IF NOT ECDLedgerEntry_L."ECD Purch Cancelled" THEN BEGIN
+                  // <-- 20160331-WI00-ADV01.01.00-2756-CJY01
+                  ECDLedgerEntry_L."Net Unit Price (Invoice)" :=
+                    ROUND(ValueEntry_P_."Budgeted Unit Cost", AmtRndPrecision_L);
+
+                  ECDLedgerEntry_L."Net Amount (Invoice)" :=
+                    ROUND(ValueEntry_P_."Valued Quantity" * ECDLedgerEntry_L."Net Unit Price (Invoice)", AmtRndPrecision_L);
+
+                  ECDLedgerEntry_L.CALCFIELDS(ECDLedgerEntry_L."Invoiced ECD Amount");
+
+                  IF (ECDLedgerEntry_L."Invoiced ECD Amount" <> 0) THEN BEGIN
+                    IF (ValueEntryDiscount_L."Discount Amount" = 0) THEN BEGIN
+                      IF ValueEntryDiscount_L."Discount Code" <> CMCSetup_L."Except. Purch. ECD Disc. Code" THEN BEGIN
+                        IF ValueEntry_P_."Valued Quantity" <> 0 THEN BEGIN
+                          ECDLedgerEntry_L."ECD Unit Amount (Invoice)" :=
+                            ROUND(ECDLedgerEntry_L."Invoiced ECD Amount" / ValueEntry_P_."Valued Quantity",AmtRndPrecision_L);
+                          ECDLedgerEntry_L."ECD Amount (Invoice)" :=
+                            ROUND(ECDLedgerEntry_L."Invoiced ECD Amount",AmtRndPrecision_L);
+                        END;
+                      END ELSE
+                        ERROR(Text8053003,ValueEntry_P_.FIELDCAPTION("Budgeted Unit Cost"),
+                                ECDLedgerEntry_L.FIELDCAPTION("Invoiced ECD Amount"),ECDLedgerEntry_L.TABLECAPTION,
+                                ECDLedgerEntry_L.FIELDCAPTION("Entry No."),FORMAT(ECDLedgerEntry_L."Entry No."));
+                    END ELSE BEGIN
+                      ECDLedgerEntry_L."ECD Unit Amount (Invoice)" :=
+                        ROUND(ValueEntryDiscount_L."Discount Amount",AmtRndPrecision_L);
+                      ECDLedgerEntry_L."ECD Amount (Invoice)" :=
+                        ROUND(ECDLedgerEntry_L."ECD Unit Amount (Invoice)" * ValueEntry_P_."Valued Quantity",AmtRndPrecision_L);
+                      CheckECDLedgerEntry(ECDLedgerEntry_L);
+                    END;
+                  END ELSE BEGIN
+                    ECDLedgerEntry_L."ECD Unit Amount (Invoice)" :=
+                      ROUND(ValueEntryDiscount_L."Discount Amount",AmtRndPrecision_L);
+                    ECDLedgerEntry_L."ECD Amount (Invoice)" :=
+                      ROUND(ECDLedgerEntry_L."ECD Unit Amount (Invoice)" * ValueEntry_P_."Valued Quantity",AmtRndPrecision_L);
+                  END;
+                  // --> 20160608-Wi00-ADV01.01.00-3056-CJY01
+                  IF ECDLedgerEntry_L."Discount Code" = IncludeCodeEcdOutstand_G THEN
+                  // <-- 20160608-Wi00-ADV01.01.00-3056-CJY01
+                  ECDLedgerEntry_L."ECD Unit Price Outstanding" :=
+                    ROUND(ECDLedgerEntry_L."ECD Unit Amount (Invoice)",AmtRndPrecision_L);
+
+                  ECDLedgerEntry_L."Net Unit Price (Receipt)" := 0;
+
+                  CalcRevPurchECDExpAmtToBalance(ECDLedgerEntry_L, ValueEntry_P_."Invoiced Quantity");
+
+                  ECDLedgerEntry_L."ECD Vendor No." := ValueEntryDiscount_L."ECD Vendor No.";
+
+                  // --> 20141006-APP33-CMC02.02.00-FDA01
+                  IF ValueEntryDiscount_L."Discount %" <> 0 THEN BEGIN
+                    ECDLedgerEntry_L."Valuation Type" := ECDLedgerEntry_L."Valuation Type"::Percentage;
+                    ECDLedgerEntry_L."Discount %" := ValueEntryDiscount_L."Discount %";
+                  END ELSE BEGIN
+                    ECDLedgerEntry_L."Valuation Type" := ECDLedgerEntry_L."Valuation Type"::"Unit Amount";
+                    ECDLedgerEntry_L."Discount %" := 0;
+                  END;
+                  // <-- 20141006-APP33-CMC02.02.00-FDA01
+
+                  ECDLedgerEntry_L.MODIFY(TRUE);
+
+                  IF (Cancel_P = FALSE) THEN
+                    MaintainPurchDetECDEntry(ECDLedgerEntry_L,1,ECDValueDate_G)
+                  ELSE
+                    MaintainPurchDetECDEntry(ECDLedgerEntry_L,2,ECDValueDate_G)
+                  // --> 20160331-WI00-ADV01.01.00-2756-CJY01
+                  END;
+                  // <-- 20160331-WI00-ADV01.01.00-2756-CJY01
+
+                END ELSE
+                  ERROR(Text8053001,ECDLedgerEntry_L.TABLECAPTION);
+              UNTIL ValueEntryDiscount_L.NEXT = 0;
+            END ELSE BEGIN
+            // Detailed ECD does not exist
+              ECDLedgerEntry_L.RESET;
+              ECDLedgerEntry_L.SETCURRENTKEY("Value Entry No.","Discount Code");
+              ECDLedgerEntry_L.SETRANGE("Value Entry No.",ValueEntry_P_."Entry No.");
+              ECDLedgerEntry_L.SETRANGE("Discount Code",'');
+              IF ECDLedgerEntry_L.FINDLAST THEN BEGIN
+
+                ECDLedgerEntry_L.CALCFIELDS(ECDLedgerEntry_L."Invoiced ECD Amount");
+
+                IF (ECDLedgerEntry_L."Invoiced ECD Amount" <> 0) THEN BEGIN
+                  IF ValueEntry_P_."Valued Quantity" <> 0 THEN BEGIN
+                    ECDLedgerEntry_L."ECD Unit Amount (Invoice)" :=
+                      ROUND(ECDLedgerEntry_L."Invoiced ECD Amount" / ValueEntry_P_."Valued Quantity",AmtRndPrecision_L);
+                    IF ECDLedgerEntry_L."ECD Unit Amount (Invoice)" < ValueEntry_P_."ECD Unit Amount" THEN
+                      ECDLedgerEntry_L."ECD Unit Amount (Invoice)" := ValueEntry_P_."ECD Unit Amount";
+                    ECDLedgerEntry_L."ECD Amount (Invoice)" :=
+                      ROUND(ECDLedgerEntry_L."ECD Unit Amount (Invoice)" * ValueEntry_P_."Valued Quantity",AmtRndPrecision_L);
+                    CheckECDLedgerEntry(ECDLedgerEntry_L);
+                  END;
+                END ELSE BEGIN
+                  // --> 20140912-APP33-CMC02.02.00-FDA01
+                  IF ValueEntry_P_."ECD Unit Amount" <> 0 THEN BEGIN
+                    ECDLedgerEntry_L."ECD Unit Amount (Invoice)" := ValueEntry_P_."ECD Unit Amount";
+                    ECDLedgerEntry_L."ECD Amount (Invoice)" :=
+                      ROUND(ECDLedgerEntry_L."ECD Unit Amount (Invoice)" * -ValueEntry_P_."Valued Quantity",AmtRndPrecision_L);
+                  END ELSE BEGIN
+                  // <-- 20140912-APP33-CMC02.02.00-FDA01
+                    ECDLedgerEntry_L."ECD Unit Amount (Invoice)" := 0;
+                    ECDLedgerEntry_L."ECD Amount (Invoice)" := 0;
+                  // --> 20140912-APP33-CMC02.02.00-FDA01
+                  END;
+                  CheckECDLedgerEntry(ECDLedgerEntry_L);
+                  // <-- 20140912-APP33-CMC02.02.00-FDA01
+                END;
+
+                ValueEntry_P_."ECD Unit Amount" := ECDLedgerEntry_L."ECD Unit Amount (Invoice)";
+                ValueEntry_P_."Budgeted Unit Cost" := ValueEntry_P_."Cost per Unit" - ValueEntry_P_."ECD Unit Amount";
+                ValueEntry_P_.MODIFY;
+
+                ECDLedgerEntry_L."Net Unit Price (Invoice)" :=
+                  ROUND(ValueEntry_P_."Budgeted Unit Cost", AmtRndPrecision_L);
+
+                ECDLedgerEntry_L."Net Amount (Invoice)" :=
+                  ROUND(ValueEntry_P_."Valued Quantity" * ECDLedgerEntry_L."Net Unit Price (Invoice)", AmtRndPrecision_L);
+
+                ECDLedgerEntry_L."ECD Unit Price Outstanding" :=
+                  ROUND(ECDLedgerEntry_L."ECD Unit Amount (Invoice)",AmtRndPrecision_L);
+
+                ECDLedgerEntry_L."Net Unit Price (Receipt)" := 0;
+
+                CalcRevPurchECDExpAmtToBalance(ECDLedgerEntry_L, ValueEntry_P_."Invoiced Quantity");
+
+                ECDLedgerEntry_L."ECD Vendor No." := ValueEntry_P_."ECD Vendor No.";
+
+                // --> 20141006-APP33-CMC02.02.00-FDA01
+                ECDLedgerEntry_L."Valuation Type" := ECDLedgerEntry_L."Valuation Type"::"Unit Amount";
+                // <-- 20141006-APP33-CMC02.02.00-FDA01
+
+                ECDLedgerEntry_L.MODIFY(TRUE);
+
+                IF (Cancel_P = FALSE) THEN
+                  MaintainPurchDetECDEntry(ECDLedgerEntry_L,1,ECDValueDate_G)
+                ELSE
+                  MaintainPurchDetECDEntry(ECDLedgerEntry_L,2,ECDValueDate_G)
+              END ELSE
+                ERROR(Text8053001,ECDLedgerEntry_L.TABLECAPTION);
+            END;
+          END;
+        END;
+      END; // CASE
+      // <-- 20140818-APP33-CMC02.02.00-FDA01
+      }
+    END;
+
+    PROCEDURE ManageNextAcpEntry@1000000006(VAR AcpValueEntry_P@1000000001 : Record 60124);
+    VAR
+      AcpValueEntry_L@1000000002 : Record 60124;
+      AcpLedgerEntry_L@1000000003 : Record 60122;
+      PreviousPrice_L@1000000005 : Decimal;
+      ValueEntry_L@1000000006 : Record 5802;
+    BEGIN
+      PreviousPrice_L := AcpValueEntry_P."Final Price";
+      //ValueEntry_L.GET(AcpValueEntry_P."Value Entry No.");
+      //mise . jour de  Value Entry Acp enchain' avec la mise . jour de Purch ACP Ledger Entry (et de Detailled ACP Entry)
+
+      AcpValueEntry_L.SETCURRENTKEY("Value Entry No.",Rank);
+      AcpValueEntry_L.SETRANGE("Value Entry No.",AcpValueEntry_P."Value Entry No.");
+      AcpValueEntry_L.SETFILTER("Acp Code",'<>%1',AcpValueEntry_P."Acp Code");
+      AcpValueEntry_L.SETFILTER(Rank,'%1..',AcpValueEntry_P.Rank);
+      IF AcpValueEntry_L.FINDSET THEN REPEAT
+        //on ne cherche . g'rer que les cas suivant notre code ACP, donc on l'exclue
+        IF AcpValueEntry_L."Acp Code" <> AcpValueEntry_P."Acp Code" THEN BEGIN
+          AcpValueEntry_L."Final Price" := PreviousPrice_L - AcpValueEntry_L."Acp Amount";
+          AcpValueEntry_L.MODIFY;
+          PreviousPrice_L := AcpValueEntry_L."Final Price";
+        END;
+      UNTIL AcpValueEntry_L.NEXT = 0;
+    END;
+
+    PROCEDURE GetPreviousFinalPrice@1000000008(VAR ValueEntryAcp_P@8053000 : Record 60124) : Decimal;
+    VAR
+      ValueEntryAcp_L@8053001 : Record 60124;
+      PurchDisc_L@8053002 : Record 8053247;
+      ValueEntry_L@8053003 : Record 5802;
+    BEGIN
+      ValueEntry_L.GET(ValueEntryAcp_P."Value Entry No.");
+      ValueEntryAcp_L.RESET;
+      ValueEntryAcp_L.SETCURRENTKEY("Value Entry No.",Rank);
+      ValueEntryAcp_L.SETRANGE("Value Entry No.",ValueEntryAcp_P."Value Entry No.");
+      ValueEntryAcp_L.SETFILTER(Rank,'<=%1',ValueEntryAcp_P.Rank);
+      ValueEntryAcp_L.SETFILTER("Acp Code",'<>%1',ValueEntryAcp_P."Acp Code");
+      IF ValueEntryAcp_L.FINDLAST THEN
+        EXIT(ValueEntryAcp_L."Final Price")
+      ELSE
+        EXIT(ValueEntryAcp_P."Base Value");
+    END;
+
+    PROCEDURE RecalcACPEntry@1000000007(VAR PurchACPLedgerEntry_P@1000000000 : Record 60122;Amount_P@1000000001 : Decimal);
+    VAR
+      ValueEntryACP_L@1000000002 : Record 60124;
+      ValueEntry_L@1000000003 : Record 5802;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Permet de mettre . jour une 'criture ACP
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //    -  PurchACPLedgerEntry_P : le record que l'on doit mettre . jour
+      //    -  Amount_P                   : le montant . ajouter (peut ^tre positif ou n'gatif)
+      // Sorties:
+      //    -
+      //----------------------------------------------------------------------------------------------------------
+      //mise . jour de la sous table : "Ecritures valeur ACP"
+      ValueEntryACP_L.GET(PurchACPLedgerEntry_P."Value Entry No.",PurchACPLedgerEntry_P."ACP Code");
+      //mise . jour "Value Entry ACP"
+      RecalcValueEntryACP(ValueEntryACP_L,Amount_P);
+      //mise . jour de l''criture ACP elle-m^me
+      ValueEntry_L.GET(ValueEntryACP_L."Value Entry No.");
+      RefreshACPLedgerEntry(ValueEntry_L,FALSE,ValueEntryACP_L."Acp Code",Amount_P,3);
+      //enfin, mise . jour 'ventuelle du prix final des "Value Entry ACP" suivantes
+      ManageNextAcpEntry(ValueEntryACP_L);
+    END;
+
+    PROCEDURE RecalcValueEntryACP@1000000009(VAR ValueEntryACP_P@1000000000 : Record 60124;Amount_P@1000000001 : Decimal);
+    VAR
+      AmtRndPrecision_L@1000000004 : Decimal;
+      GLSetup_L@1000000003 : Record 98;
+      UnitAmtRndPrecision_L@1000000002 : Decimal;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Permet de mettre . jour une sous ligne "Value entry ACP"
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //    -  ValueEntryACP_P       : le record que l'on doit mettre . jour
+      //    -  Amount_P              : le montant . ajouter (peut ^tre positif ou n'gatif)
+      // Sorties:
+      //    -
+      //----------------------------------------------------------------------------------------------------------
+      GLSetup_L.GET;
+      AmtRndPrecision_L := GLSetup_L."Amount Rounding Precision";
+      UnitAmtRndPrecision_L := GLSetup_L."Unit-Amount Rounding Precision";
+
+      //mise . jour monant ACP
+      ValueEntryACP_P."Acp Amount" := ROUND(ValueEntryACP_P."Acp Amount" + Amount_P,UnitAmtRndPrecision_L);
+
+      //mise . jour du pourcentage ?
+      IF ValueEntryACP_P."Acp %" <> 0 THEN BEGIN
+        ValueEntryACP_P."Acp %" := (100 * ValueEntryACP_P."Acp Amount")/ValueEntryACP_P."Base Value";
+        ValueEntryACP_P."Acp %" := ROUND(ValueEntryACP_P."Acp %",UnitAmtRndPrecision_L);
+      END;
+
+      //mise . jour "prix final"
+      ValueEntryACP_P."Final Price" := GetPreviousFinalPrice(ValueEntryACP_P) -
+                                                  ValueEntryACP_P."Acp Amount";
+
+
+      ValueEntryACP_P.MODIFY(TRUE);
+    END;
+
+    PROCEDURE RefreshACPLedgerEntry@1000000010(VAR ValueEntry_P_@1000000001 : Record 5802;AllowZeroValue_P@1000000000 : Boolean;ACPCode_P@1000000009 : Code[20];Amount_P@1000000014 : Decimal;ModificationType_P@1000000015 : Integer);
+    VAR
+      Item_L@1000000002 : Record 27;
+      ACPLedgerEntry_L@1000000003 : Record 60122;
+      AmtRndPrecision_L@1000000004 : Decimal;
+      CmcSetup_L@1000000005 : Record 8052982;
+      ACPValueEntryNo_L@1000000006 : Integer;
+      GLSetup_L@1000000007 : Record 98;
+      ValueEntryACP_L@1000000008 : Record 60124;
+      ItemLedgerEntry_L@1000000010 : Record 32;
+      UnitAmtRndPrecision_L@1000000012 : Decimal;
+      PurchACPLedgerSelected_L@1000000011 : Record 60122;
+      ACPLedgerEntryMaj_L@1000000013 : Record 60122;
+    BEGIN
+      GLSetup_L.GET;
+      AmtRndPrecision_L := GLSetup_L."Amount Rounding Precision";
+      UnitAmtRndPrecision_L := GLSetup_L."Unit-Amount Rounding Precision";
+
+      Item_L.GET(ValueEntry_P_."Item No.");
+      IF Item_L."Cereal Item" THEN
+        EXIT;
+
+
+      IF (ValueEntry_P_."Valued Quantity" <> 0) THEN BEGIN
+
+        ACPLedgerEntry_L.LOCKTABLE;
+        IF ACPLedgerEntry_L.FINDLAST THEN
+          ACPValueEntryNo_L := ACPLedgerEntry_L."Entry No.";
+
+
+        //AmtRndPrecision_L := GLSetup_L."Amount Rounding Precision";
+
+        ValueEntryACP_L.RESET;
+        ValueEntryACP_L.SETCURRENTKEY("Value Entry No.",Rank);
+        ValueEntryACP_L.SETRANGE("Value Entry No.",ValueEntry_P_."Entry No.");
+        IF ACPCode_P <> '' THEN
+          ValueEntryACP_L.SETRANGE("Acp Code",ACPCode_P);
+
+        CASE ValueEntry_P_."Document Type" OF
+          // ----------------------------------------------------------------
+          ValueEntry_P_."Document Type"::"Purchase Receipt",                  // R'ception Commande Achat
+          ValueEntry_P_."Document Type"::"Purchase Return Shipment": BEGIN    // Livraison Retour Achat
+          //ValueEntry_P_."Document Type"::"Purchase Receipt" : BEGIN             // R'ception Commande Achat
+          // ----------------------------------------------------------------
+
+            IF ValueEntry_P_."Item Ledger Entry Quantity" <> 0 THEN BEGIN
+              IF ValueEntryACP_L.FINDSET THEN BEGIN
+                REPEAT
+                  ACPLedgerEntry_L.RESET;
+                  ACPLedgerEntry_L.SETRANGE("Value Entry No.",ValueEntryACP_L."Value Entry No.");
+                  ACPLedgerEntry_L.SETRANGE("ACP Code",ValueEntryACP_L."Acp Code");
+                  IF ACPLedgerEntry_L.FINDFIRST THEN BEGIN
+                    ACPLedgerEntry_L."ACP value" := ValueEntryACP_L."Acp Amount";
+                    ACPLedgerEntry_L."ACP %" := ValueEntryACP_L."Acp %";
+
+
+                    ACPLedgerEntry_L."ACP Unit Amount (Receipt)" :=
+                      ROUND(ValueEntryACP_L."Acp Amount",UnitAmtRndPrecision_L);
+
+                    ACPLedgerEntry_L."ACP Amount (Receipt)" :=
+                      ROUND(ACPLedgerEntry_L."ACP Unit Amount (Receipt)" * ValueEntry_P_."Valued Quantity",AmtRndPrecision_L);
+
+
+                    ACPLedgerEntry_L.INSERT(TRUE);
+                    //gestion de l''criture d'taill'e de type "mise . jour utilisateur" (valeur option = 3)
+                    ManageAcpDetailEntry(ACPLedgerEntry_L,ModificationType_P);
+                  END;
+                UNTIL ValueEntryACP_L.NEXT = 0;
+              END;
+            END;
+          END;
+          // ----------------------------------------------------------------
+          ValueEntry_P_."Document Type"::"Purchase Credit Memo",
+          ValueEntry_P_."Document Type"::"Purchase Invoice" : BEGIN
+          // ----------------------------------------------------------------
+
+                IF ValueEntry_P_."Invoiced Quantity" <> 0 THEN BEGIN
+                  IF ValueEntryACP_L.FINDSET THEN BEGIN
+                    REPEAT
+                      //nous sommes ici sur un recalcul d'une 'criture existante
+                      ACPLedgerEntry_L.RESET;
+                      ACPLedgerEntry_L.SETRANGE("Value Entry No.",ValueEntryACP_L."Value Entry No.");
+                      ACPLedgerEntry_L.SETRANGE("ACP Code",ValueEntryACP_L."Acp Code");
+                      IF ACPLedgerEntry_L.FINDFIRST THEN BEGIN
+                        ACPLedgerEntry_L."ACP value" := ValueEntryACP_L."Acp Amount";
+                        ACPLedgerEntry_L."ACP %" := ValueEntryACP_L."Acp %";
+
+
+                        ACPLedgerEntry_L."ACP Unit Amount (Invoice)" :=
+                          ROUND(ValueEntryACP_L."Acp Amount",UnitAmtRndPrecision_L);
+
+                        ACPLedgerEntry_L."ACP Amount (Invoice)" :=
+                          ROUND(ACPLedgerEntry_L."ACP Unit Amount (Invoice)" * ValueEntry_P_."Valued Quantity",AmtRndPrecision_L)
+        ;
+                        ACPLedgerEntry_L."ACP Unit Price Outstanding" :=
+                          ROUND(ACPLedgerEntry_L."ACP Unit Price Outstanding" + Amount_P,UnitAmtRndPrecision_L);
+
+                        CalcRevPurchACPExpAmtToBalance(ACPLedgerEntry_L, ValueEntry_P_."Invoiced Quantity");
+
+                        ACPLedgerEntry_L.MODIFY(TRUE);
+
+                        //gestion de l''criture d'taill'es de type "mise . jour utilisateur" (valeur option = 3)
+                        ManageAcpDetailEntry(ACPLedgerEntry_L,ModificationType_P);
+                      END;
+                    UNTIL ValueEntryACP_L.NEXT = 0;
+                  END;
+                END;
+          END;
+        END; //END CASE
+      END;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20191212-WI00-ADV01.01.00-3446-CJY01 : CREATE Object
+      20200113-WI00-ADV01.01.00-3446-SCR01 : ADDFUNC DeleteACPPurchLines
+      20190217-WI00-ADV01.01.00-3446-CJY01 : MODCODE (correction cas extraction bas' sur facture et non r'ception)
+      20190217-WI00-ADV01.01.00-3446-CJY01 : MODCODE (correction passage rang lors de la validation facture/avoir ACP)
+      20200313-WI00-ADV01.01.00-3446-CJY01 : MODCODE (conservation du code Cost Plus lors de la g'n'ration ligne doc final)
+      20200518-WI00-ADV01.01.00-3446-CJY01 : MODCODE (changement logique : retour si pas d'acp issu d'extraction, on test le param)
+      20200602-WI00-ADV01.01.00-3446-SCR01 : MODCODE (changement logique : avoir si pas d'acp issu d'extraction, on test le param)
+      20200622-WI00-ADV01.01.00-3446-CJY01 : MODCODE (Nettoyage)
+      20200622-WI00-ADV01.01.00-3446-CJY01 : MODCODE (prise en compte des param'trage . 0)
+      20200624-WI00-ADV01.01.00-3446-SCR01 : MODCODE (maj Order Date sur ACP Ledger Entry)
+                                                     (test sur cout direct = 0 : pas de cr'ation)
+      20200625-WI00-ADV01.01.00-3446-SCR01 : MODCODE (ManageAcpDetailEntry cas cr'ation . 0)
+                                                     (CreateAcpLedgerEntry lecture ACP liste pour r'cup'rer le type de valorisation)
+
+      20200626-WI00-ADV01.01.00-3446-CJY01 : MODCODE (CreateAcpLedgerEntry lecture ACP liste dans la partie facture/avoir)
+      // <-- 3LI BEGIN
+    }
+    END.
+  }
+}
+

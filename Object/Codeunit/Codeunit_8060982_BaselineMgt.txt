@@ -1,0 +1,816 @@
+OBJECT Codeunit 8060982 BaselineMgt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=15/09/15;
+    Heure=00:00:00;
+    Liste versions=CMB6.00.10.09,CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      PurchSetup_G@60000 : Record 312;
+      SalesSetup_G@60001 : Record 311;
+      GLSetup_G@60002 : Record 98;
+      SaveItemNoFor_DataMigration_G@8060982 : Code[20];
+
+    PROCEDURE ShowPurchDocOnPosting@60000(CreatedDoc_P@60002 : Text[250]);
+    VAR
+      PurchPost_L@60001 : Codeunit 90;
+      Text60000_L@60000 : TextConst 'ENU=Generated Documents : %1;FRA=Documents g'n'r's : %1';
+    BEGIN
+      PurchSetup_G.GET;
+      IF PurchSetup_G."Show Posted Doc. on Validate" THEN BEGIN
+        IF CreatedDoc_P <> '' THEN
+          MESSAGE(Text60000_L,CreatedDoc_P);
+      END;
+    END;
+
+    PROCEDURE GetPostedPurchDocNo@60001(PurchRcptNo_P@60000 : Code[20];PurchInvNo_P@60001 : Code[20];PurchCrMemoNo_P@60002 : Code[20];ReturnShptNo_P@60003 : Code[20]) : Text[250];
+    VAR
+      CreatedDoc_L@60004 : Text[250];
+      PurchRcptHeader_L@60005 : Record 120;
+      PurchInvHeader_L@60006 : Record 122;
+      PurchCrMemoHeader_L@60007 : Record 124;
+      ReturnShptHeader_L@60008 : Record 6650;
+    BEGIN
+      CreatedDoc_L := '';
+
+      IF PurchRcptNo_P <> '' THEN
+        CreatedDoc_L := STRSUBSTNO('%1 \ %2 %3',CreatedDoc_L,PurchRcptHeader_L.TABLECAPTION,PurchRcptNo_P);
+
+      IF PurchInvNo_P <> '' THEN
+        CreatedDoc_L := STRSUBSTNO('%1 \ %2 %3',CreatedDoc_L,PurchInvHeader_L.TABLECAPTION,PurchInvNo_P);
+
+      IF PurchCrMemoNo_P <> '' THEN
+        CreatedDoc_L := STRSUBSTNO('%1 \ %2 %3',CreatedDoc_L,PurchCrMemoHeader_L.TABLECAPTION,PurchCrMemoNo_P);
+
+      IF ReturnShptNo_P <> '' THEN
+        CreatedDoc_L := STRSUBSTNO('%1 \ %2 %3',CreatedDoc_L,ReturnShptHeader_L.TABLECAPTION,ReturnShptNo_P);
+
+      CreatedDoc_L := DELSTR(CreatedDoc_L,1,3);
+
+      EXIT(CreatedDoc_L);
+    END;
+
+    PROCEDURE ShowCommentOnDocument@60013(CustLedgerEntry_P@60000 : Record 21);
+    VAR
+      SalesCommentLine_L@60002 : Record 44;
+      SalesCommentSheet_L@60001 : Form 67;
+      Text60000_L@60003 : TextConst 'FRA=Cette fonction est disponible uniquement pour les documents facture et avoir.';
+    BEGIN
+      IF NOT (CustLedgerEntry_P."Document Type" IN
+               [CustLedgerEntry_P."Document Type"::Invoice,CustLedgerEntry_P."Document Type"::"Credit Memo"]) THEN
+        ERROR(Text60000_L);
+
+      SalesCommentLine_L.RESET;
+      IF CustLedgerEntry_P."Document Type" = CustLedgerEntry_P."Document Type"::Invoice THEN
+        SalesCommentLine_L.SETRANGE("Document Type",SalesCommentLine_L."Document Type"::"Posted Invoice")
+      ELSE
+        SalesCommentLine_L.SETRANGE("Document Type",SalesCommentLine_L."Document Type"::"Posted Credit Memo");
+      SalesCommentLine_L.SETRANGE("No.",CustLedgerEntry_P."Document No.");
+      SalesCommentLine_L.SETRANGE("Document Line No.",0);
+      SalesCommentSheet_L.SETTABLEVIEW(SalesCommentLine_L);
+      SalesCommentSheet_L.RUNMODAL;
+    END;
+
+    PROCEDURE UpdateDefShipToCode@60017(VAR SalesHeader_P@60000 : Record 36;DefShipToCode_P@60001 : Code[20]);
+    VAR
+      recAddr_L@8053000 : Record 222;
+      RecCMCSetup_L@60002 : Record 8052982;
+    BEGIN
+      // --> 20150617-WI00-CMC02.02.00-3068-FHS01
+      //BEFORE
+      {
+      WITH SalesHeader_P DO
+      IF DefShipToCode_P <> '' THEN
+        VALIDATE("Ship-to Code",DefShipToCode_P)
+      ELSE
+        VALIDATE("Ship-to Code",'');
+      }
+      //AFTER
+      // --> 20150915-WI00-ADV01.01.00-2243-FBE01
+      RecCMCSetup_L.GET;
+      IF NOT RecCMCSetup_L."No Use Def. Cust. Ship-To-Code" THEN BEGIN
+        WITH SalesHeader_P DO
+        IF DefShipToCode_P <> '' THEN
+          VALIDATE("Ship-to Code",DefShipToCode_P)
+        ELSE
+          VALIDATE("Ship-to Code",'');
+      END ELSE BEGIN
+      // <-- 20150915-WI00-ADV01.01.00-2243-FBE01
+        recAddr_L.RESET;
+        recAddr_L.SETRANGE("Customer No.", SalesHeader_P."Sell-to Customer No.");
+        CASE recAddr_L.COUNT OF
+          0: BEGIN
+            SalesHeader_P.VALIDATE("Ship-to Code", '');
+          END;
+          1: BEGIN
+            recAddr_L.FINDFIRST;
+            SalesHeader_P.VALIDATE("Ship-to Code", recAddr_L.Code);
+          END;
+          ELSE BEGIN
+            SalesHeader_P.VALIDATE("Ship-to Code", '');
+          END;
+        END;
+        // <-- 20150617-WI00-CMC02.02.00-3068-FHS01
+      // --> 20150915-WI00-ADV01.01.00-2243-FBE01
+      END;
+      // <-- 20150915-WI00-ADV01.01.00-2243-FBE01
+    END;
+
+    PROCEDURE SalesUpdatePostingDesc@60018(VAR SalesHeader_P@60000 : Record 36);
+    BEGIN
+      SalesSetup_G.GET;
+      WITH SalesHeader_P DO
+        IF SalesSetup_G."Doc. Posting Desc. Format" <> '' THEN
+          "Posting Description" := COPYSTR(
+                                     STRSUBSTNO(SalesSetup_G."Doc. Posting Desc. Format",
+                                     "Sell-to Customer No.",
+                                     "Sell-to Customer Name",
+                                     "Bill-to Customer No.",
+                                     "Bill-to Name"),
+                                     1,50);
+    END;
+
+    PROCEDURE PurchUpdatePostingDesc@60019(VAR PurchHeader_P@60000 : Record 38);
+    BEGIN
+      PurchSetup_G.GET;
+      WITH PurchHeader_P DO
+        IF PurchSetup_G."Doc. Posting Desc. Format" <> '' THEN
+          "Posting Description" := COPYSTR(
+                                     STRSUBSTNO(PurchSetup_G."Doc. Posting Desc. Format",
+                                     "Buy-from Vendor No.",
+                                     "Buy-from Vendor Name",
+                                     "Pay-to Vendor No.",
+                                     "Pay-to Name"),
+                                     1,50);
+    END;
+
+    PROCEDURE ServUpdatePostingDesc@60032(VAR ServHeader_P@60000 : Record 5900);
+    BEGIN
+      SalesSetup_G.GET;
+      WITH ServHeader_P DO
+        IF SalesSetup_G."Doc. Posting Desc. Format" <> '' THEN
+          "Posting Description" := COPYSTR(
+                                     STRSUBSTNO(SalesSetup_G."Doc. Posting Desc. Format",
+                                     "Customer No.",
+                                     Name,
+                                     "Bill-to Customer No.",
+                                     "Bill-to Name"),
+                                     1,50);
+    END;
+
+    PROCEDURE CheckPriorYearEntry@60021(VAR GenJnlLine_P@60000 : Record 81);
+    VAR
+      Text60000_L@60001 : TextConst 'ENU=is not within your range of allowed posting dates;FRA=Appartient . une p'riode clotur'e.';
+    BEGIN
+      GLSetup_G.GET;
+      WITH GenJnlLine_P DO
+        IF IsNormalDate("Posting Date") THEN
+          IF (NOT GLSetup_G."Allow Prior-Year Entry") AND PriorYearEntry("Posting Date") THEN
+            FIELDERROR("Posting Date",Text60000_L);
+    END;
+
+    PROCEDURE PriorYearEntry@60020(PostingDate_P@60000 : Date) : Boolean;
+    VAR
+      FiscalYearStartDate_L@60001 : Date;
+      AccountingPeriod_L@60002 : Record 50;
+    BEGIN
+      AccountingPeriod_L.RESET;
+      AccountingPeriod_L.SETCURRENTKEY(Closed);
+      AccountingPeriod_L.SETRANGE(Closed,FALSE);
+      AccountingPeriod_L.FIND('-');
+      FiscalYearStartDate_L := AccountingPeriod_L."Starting Date";
+      EXIT(PostingDate_P < FiscalYearStartDate_L);
+    END;
+
+    PROCEDURE IsNormalDate@60022(DatetoCheck_P@60000 : Date) : Boolean;
+    BEGIN
+      EXIT(DatetoCheck_P <> NORMALDATE(DatetoCheck_P));
+    END;
+
+    PROCEDURE ReportSelect@60023(VAR ReportSelections_P@60000 : Record 77);
+    VAR
+      QueryString_L@60003 : Text[250];
+      ReportID_L@60002 : ARRAY [10] OF Integer;
+      i_L@60001 : Integer;
+      Text60000_L@60004 : TextConst 'ENU=All;FRA=Tous';
+      Selected_L@60005 : Integer;
+    BEGIN
+      QueryString_L := Text60000_L;
+      CLEAR(ReportID_L);
+      i_L := 1;
+
+      ReportSelections_P.FINDFIRST;
+
+      REPEAT
+        i_L := i_L + 1;
+        ReportSelections_P.CALCFIELDS("Report Name");
+        ReportID_L[i_L] := ReportSelections_P."Report ID";
+        QueryString_L := STRSUBSTNO('%1,%2',QueryString_L,ReportSelections_P."Report Name");
+      UNTIL ReportSelections_P.NEXT = 0;
+
+      IF ReportSelections_P.COUNT > 1 THEN BEGIN
+        Selected_L := STRMENU(QueryString_L,1);
+        IF Selected_L = 0 THEN
+          ERROR('');
+        IF Selected_L > 1 THEN
+          ReportSelections_P.SETRANGE("Report ID",ReportID_L[Selected_L]);
+      END;
+    END;
+
+    PROCEDURE ManageIncludeField@1180250004(VAR Rec_P@60002 : Record 8616;Filtre_P@60001 : Boolean;Value_P@60000 : Boolean);
+    VAR
+      MigrationTableField_L@60004 : Record 8616;
+    BEGIN
+      Rec_P.MODIFYALL(Include, Value_P);
+
+      IF NOT Value_P THEN BEGIN
+        MigrationTableField_L.SETRANGE(TableID, Rec_P.TableID);
+        MigrationTableField_L.FINDFIRST;
+          REPEAT
+            IF IsKeyField(MigrationTableField_L.TableID, MigrationTableField_L.FieldID) THEN BEGIN
+              MigrationTableField_L.Include := TRUE;
+              MigrationTableField_L.MODIFY;
+            END;
+          UNTIL MigrationTableField_L.NEXT= 0;
+      END;
+    END;
+
+    PROCEDURE ManageValidateField@1180250003(VAR Rec_P@60002 : Record 8616;Filtre_P@60001 : Boolean;Value_P@60000 : Boolean);
+    VAR
+      MigrationTableField_L@60003 : Record 8616;
+    BEGIN
+      Rec_P.MODIFYALL(Validate, Value_P);
+
+      IF NOT Value_P THEN BEGIN
+        MigrationTableField_L.SETRANGE(TableID, Rec_P.TableID);
+        MigrationTableField_L.FINDFIRST;
+          REPEAT
+            IF IsKeyField(MigrationTableField_L.TableID, MigrationTableField_L.FieldID) THEN BEGIN
+              MigrationTableField_L.Validate := TRUE;
+              MigrationTableField_L.MODIFY;
+            END;
+          UNTIL MigrationTableField_L.NEXT= 0;
+      END;
+    END;
+
+    PROCEDURE IsKeyField@1180250002(TableID_P@60001 : Integer;FieldID_P@60000 : Integer) : Boolean;
+    VAR
+      RecRef_L@60005 : RecordRef;
+      KeyRef_L@60004 : KeyRef;
+      FieldRef_L@60003 : FieldRef;
+      KeyFieldCount_L@60002 : Integer;
+    BEGIN
+      RecRef_L.OPEN(TableID_P);
+      KeyRef_L := RecRef_L.KEYINDEX(1);
+      FOR KeyFieldCount_L := 1 TO KeyRef_L.FIELDCOUNT DO BEGIN
+        FieldRef_L := KeyRef_L.FIELDINDEX(KeyFieldCount_L);
+        IF FieldRef_L.NUMBER = FieldID_P THEN
+          EXIT(TRUE);
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE ManageFilter@1180250006(MigrationTable_P@60001 : Record 8613;VAR RecRef_P@60000 : RecordRef);
+    VAR
+      Field_L@60005 : Record 2000000041;
+      MigrationTableField_L@60004 : Record 8616;
+      FieldRef_L@60003 : FieldRef;
+      Filter_L@60002 : Text[30];
+    BEGIN
+      MigrationTableField_L.SETCURRENTKEY(TableID, Include, Priority);
+      MigrationTableField_L.ASCENDING(TRUE);
+      MigrationTableField_L.SETRANGE(TableID, MigrationTable_P.TableID);
+      MigrationTableField_L.SETRANGE(Include,TRUE);
+      IF MigrationTableField_L.FIND('-') THEN
+        REPEAT
+          FieldRef_L := RecRef_P.FIELD(MigrationTableField_L.FieldID);
+          IF Field_L.GET(RecRef_P.NUMBER,FieldRef_L.NUMBER) THEN BEGIN
+            Filter_L := MigrationTableField_L.Filter;
+            IF Filter_L <> '' THEN
+              FieldRef_L.SETFILTER(Filter_L)
+            ELSE
+              FieldRef_L.SETRANGE();
+          END;
+        UNTIL MigrationTableField_L.NEXT = 0;
+    END;
+
+    PROCEDURE ManageSpecifValidation@1180250005(VAR RecRef_P@60002 : RecordRef;VAR FieldRef_P@60001 : FieldRef;Value_P@60000 : Text[250]);
+    VAR
+      Field_L@60005 : Record 2000000041;
+      ItemUnitOfMeasure_L@60004 : Record 5404;
+      UnitOfMeasure_L@60003 : Record 204;
+      SaveItemNo_L@1180250002 : Code[20];
+    BEGIN
+      Field_L.GET(RecRef_P.NUMBER,FieldRef_P.NUMBER);
+      IF Value_P <> '' THEN BEGIN
+        IF (Field_L.TableNo = DATABASE::Item) AND (Field_L."No." = 1) THEN
+          // --> 20110311-8060990/015-CMB6.00.01.01-JDL01 avant:
+          //SaveItemNo_L := Value_P;
+          //apres
+          SaveItemNoFor_DataMigration_G := Value_P;
+          // <-- 20110311-8060990/015-CMB6.00.01.01-JDL01
+        IF (Field_L.TableNo = DATABASE::Item) AND (Field_L."No." = 8) THEN BEGIN
+          // --> 20110311-8060990/015-CMB6.00.01.01-JDL01 BEFORE:
+          //IF (NOT ItemUnitOfMeasure_L.GET(SaveItemNo_L,Value_P)) AND (UnitOfMeasure_L.GET(Value_P)) THEN BEGIN
+            //ItemUnitOfMeasure_L."Item No." := SaveItemNo_L;
+          //AFTER
+          IF (NOT ItemUnitOfMeasure_L.GET(SaveItemNoFor_DataMigration_G,Value_P)) AND (UnitOfMeasure_L.GET(Value_P)) THEN BEGIN
+            ItemUnitOfMeasure_L."Item No." := SaveItemNoFor_DataMigration_G;
+          // <-- 20110311-8060990/015-CMB6.00.01.01-JDL01
+            ItemUnitOfMeasure_L.Code := Value_P;
+            ItemUnitOfMeasure_L.VALIDATE("Qty. per Unit of Measure", 1);
+            ItemUnitOfMeasure_L.INSERT;
+            COMMIT;
+          END;
+        END;
+
+      END;
+    END;
+
+    PROCEDURE MigrTabFieldChangeKey@1180250007(VAR MigrationTableField_P@1180250002 : Record 8616);
+    BEGIN
+      MigrationTableField_P.SETCURRENTKEY(TableID, Include, Priority);
+      MigrationTableField_P.ASCENDING(TRUE);
+    END;
+
+    PROCEDURE PaymentLineGetAccountName@60033(VAR PaymentLine_P@60000 : Record 10866);
+    VAR
+      TempAccountName_L@60006 : Text[50];
+      Customer_L@60001 : Record 18;
+      Vendor_L@60002 : Record 23;
+      GLAccount_L@60003 : Record 15;
+      BankAccount_L@60004 : Record 270;
+      FixedAsset_L@60005 : Record 5600;
+    BEGIN
+      WITH PaymentLine_P DO BEGIN
+        TempAccountName_L := '';
+        IF "Account No." <> '' THEN
+          CASE "Account Type" OF
+            "Account Type" :: "G/L Account" : BEGIN
+              GLAccount_L.RESET;
+              IF GLAccount_L.GET("Account No.") THEN
+                TempAccountName_L := GLAccount_L.Name;
+            END;
+            "Account Type" :: Customer : BEGIN
+              Customer_L.RESET;
+              IF Customer_L.GET("Account No.") THEN
+                TempAccountName_L := Customer_L.Name;
+            END;
+            "Account Type" :: Vendor : BEGIN
+              Vendor_L.RESET;
+              IF Vendor_L.GET("Account No.") THEN
+                TempAccountName_L := Vendor_L.Name;
+            END;
+            "Account Type" :: "Bank Account" : BEGIN
+              BankAccount_L.RESET;
+              IF BankAccount_L.GET("Account No.") THEN
+                TempAccountName_L := BankAccount_L.Name;
+            END;
+            "Account Type" :: "Fixed Asset" : BEGIN
+              FixedAsset_L.RESET;
+              IF FixedAsset_L.GET("Account No.") THEN
+                TempAccountName_L := FixedAsset_L.Description;
+            END;
+          END;
+        "Account Name" := TempAccountName_L;
+      END;
+    END;
+
+    PROCEDURE AccScheBudgEntryBudgetFilter@60034(VAR GLBudgEntry_P@60002 : Record 96;VAR AccSchedLine_P@60001 : Record 85;ColumnLayout_P@60000 : Record 334);
+    BEGIN
+      WITH GLBudgEntry_P DO BEGIN
+        IF ColumnLayout_P."Budget Filter" <> '' THEN
+          SETRANGE("Budget Name",ColumnLayout_P."Budget Filter")
+        ELSE
+          AccSchedLine_P.COPYFILTER("Budget Filter","Budget Name");
+      END;
+    END;
+
+    PROCEDURE AccScheGLAccBudgetFilter@60046(VAR GLAcc_P@60002 : Record 15;VAR AccSchedLine_P@60001 : Record 85;ColumnLayout_P@60000 : Record 334);
+    BEGIN
+      WITH GLAcc_P DO BEGIN
+        IF ColumnLayout_P."Budget Filter" <> '' THEN
+          SETFILTER("Budget Filter",ColumnLayout_P."Budget Filter")
+        ELSE
+          AccSchedLine_P.COPYFILTER("Budget Filter","Budget Filter");
+      END;
+    END;
+
+    PROCEDURE AccScheAnaViewBudgetFilter@60047(VAR GLAnalysisView_P@60002 : Record 376;VAR AccSchedLine_P@60001 : Record 85;ColumnLayout_P@60000 : Record 334);
+    BEGIN
+      WITH GLAnalysisView_P DO BEGIN
+        IF ColumnLayout_P."Budget Filter" <> '' THEN
+          SETFILTER("Budget Filter",ColumnLayout_P."Budget Filter")
+        ELSE
+          AccSchedLine_P.COPYFILTER("Budget Filter","Budget Filter");
+      END;
+    END;
+
+    PROCEDURE AddAlwaysDim@60035(GLAccNo_P@60001 : Code[20];VAR TempJnlLineDim_P@60003 : Record 356);
+    VAR
+      DefaultDim_L@60000 : Record 352;
+      Text60000_L@60002 : TextConst 'FRA=<>''''';
+    BEGIN
+      DefaultDim_L.RESET;
+      DefaultDim_L.SETRANGE("Table ID",DATABASE::"G/L Account");
+      DefaultDim_L.SETRANGE("No.",GLAccNo_P);
+      DefaultDim_L.SETFILTER("Dimension Value Code",Text60000_L);
+      DefaultDim_L.SETRANGE("Value Posting",DefaultDim_L."Value Posting"::Always);
+      IF DefaultDim_L.FINDFIRST THEN
+        REPEAT
+          TempJnlLineDim_P.SETRANGE("Dimension Code",DefaultDim_L."Dimension Code");
+          IF TempJnlLineDim_P.FINDFIRST THEN BEGIN
+            TempJnlLineDim_P."Dimension Value Code" := DefaultDim_L."Dimension Value Code";
+            TempJnlLineDim_P.MODIFY;
+          END ELSE BEGIN
+            TempJnlLineDim_P.INIT;
+            TempJnlLineDim_P.VALIDATE("Dimension Code",DefaultDim_L."Dimension Code");
+            TempJnlLineDim_P.VALIDATE("Dimension Value Code",DefaultDim_L."Dimension Value Code");
+            TempJnlLineDim_P.INSERT;
+          END;
+        UNTIL DefaultDim_L.NEXT = 0;
+
+      TempJnlLineDim_P.SETRANGE("Dimension Code");
+    END;
+
+    PROCEDURE CalcBalanceAmount@1000000001(VAR GenJnlLine_P@1000000000 : Record 81);
+    VAR
+      TempGenJnlLine_L@1000000001 : Record 81;
+      TempAmount_L@1000000002 : Decimal;
+    BEGIN
+      IF GenJnlLine_P.ISEMPTY THEN
+        EXIT;
+
+      // <-- 20140521-Wi00-CMC02.02.00-2119-BRA01
+      IF GenJnlLine_P."Bal. Account No."<>'' THEN
+        EXIT;
+      // <-- 20140521-Wi00-CMC02.02.00-2119-BRA01
+
+      TempGenJnlLine_L.COPYFILTERS(GenJnlLine_P);
+
+      TempAmount_L := 0;
+      TempGenJnlLine_L.SETRANGE("Posting Date",GenJnlLine_P."Posting Date");
+      TempGenJnlLine_L.SETRANGE("Document Type",GenJnlLine_P."Document Type");
+      TempGenJnlLine_L.SETRANGE("Document No.",GenJnlLine_P."Document No.");
+      IF TempGenJnlLine_L.FINDFIRST THEN
+        REPEAT
+          IF TempGenJnlLine_L."Line No." <> GenJnlLine_P."Line No." THEN
+            TempAmount_L := TempAmount_L + TempGenJnlLine_L.Amount;
+        UNTIL TempGenJnlLine_L.NEXT = 0;
+
+      GenJnlLine_P.VALIDATE(Amount,-TempAmount_L);
+      GenJnlLine_P.MODIFY;
+    END;
+
+    PROCEDURE GenJournTestInitError@1180250009(VAR TextShowError_P@1180250003 : Text[250];ShowErrorsOnly_P@1180250004 : Boolean);
+    VAR
+      Text60000_L@1180250002 : TextConst 'ENU=Show Error Only : %1.;FRA=Afficher uniquement les erreurs : %1';
+    BEGIN
+      TextShowError_P := STRSUBSTNO(Text60000_L,ShowErrorsOnly_P);
+    END;
+
+    PROCEDURE GenJournTestShowOutput1@1180250010(ShowErrorsOnly_P@1180250002 : Boolean;ErrorCounter_P@1180250003 : Integer) : Boolean;
+    BEGIN
+      IF ShowErrorsOnly_P THEN
+        EXIT(ErrorCounter_P <> 0)
+      ELSE
+        EXIT(TRUE);
+    END;
+
+    PROCEDURE GenJournTestShowOutput2@1180250008(PageNo_P@1180250002 : Integer;GenJnlLineFilter_P@1180250003 : Text[250];TextShowError_P@1180250004 : Text[250]) : Boolean;
+    BEGIN
+      EXIT((PageNo_P = 1) AND ((GenJnlLineFilter_P <> '') OR (TextShowError_P <> '')));
+    END;
+
+    PROCEDURE TrialBalanceAddHeader@1180250011(VAR ExcelBuf_P@1180250002 : Record 370);
+    VAR
+      Text60000_L@1180250003 : TextConst 'ENU=Accounting Balance;FRA=Solde comptable';
+    BEGIN
+      ExcelBuf_P.AddColumn(
+        FORMAT(Text60000_L),FALSE,'',TRUE,FALSE,TRUE,'');
+    END;
+
+    PROCEDURE TrialBalanceAddLine@1180250012(VAR GLAcc_P@1180250002 : Record 15;VAR ExcelBuf_P@1180250003 : Record 370;CurrFormat_P@1180250004 : Text[30]);
+    BEGIN
+      WITH GLAcc_P DO
+        IF "Income/Balance" = "Income/Balance"::"Income Statement" THEN
+          ExcelBuf_P.AddColumn(
+            "Net Change",FALSE,'',"Account Type" <> "Account Type"::Posting,FALSE,FALSE,CurrFormat_P)
+        ELSE
+          ExcelBuf_P.AddColumn(
+            "Balance at Date",FALSE,'',"Account Type" <> "Account Type"::Posting,FALSE,FALSE,CurrFormat_P);
+    END;
+
+    PROCEDURE GLTrialBalInitText@1180250013(VAR ShowDetEntryText_P@1180250002 : Text[250];OpenEntryFilter_P@1180250004 : 'All,Applied,Non Applied');
+    VAR
+      Text60000_L@1180250003 : TextConst 'ENU=D'tailed Ledger Entries : %1Applied. Be carefull : Total amount are not calculated with this option.;FRA=Affichage d'tail 'critures : %1lettr'es. NB : Attention les totaux ne sont pas calcul's en fonction de cet affichage.';
+    BEGIN
+      ShowDetEntryText_P := '';
+      IF (OpenEntryFilter_P = OpenEntryFilter_P :: "Non Applied") THEN
+         ShowDetEntryText_P := STRSUBSTNO(Text60000_L,'non ');
+      IF (OpenEntryFilter_P = OpenEntryFilter_P :: Applied) THEN
+         ShowDetEntryText_P := STRSUBSTNO(Text60000_L,'');
+    END;
+
+    PROCEDURE GLTrialBalShowoutput@1180250014(OpenEntryFilter_P@1180250002 : 'All,Applied,Non Applied';GLEntry_P@1180250003 : Record 17) : Boolean;
+    BEGIN
+      EXIT((OpenEntryFilter_P = OpenEntryFilter_P::All) OR
+          ((OpenEntryFilter_P = OpenEntryFilter_P::Applied) AND GLEntry_P.Applied) OR
+          ((OpenEntryFilter_P = OpenEntryFilter_P::"Non Applied") AND NOT GLEntry_P.Applied));
+    END;
+
+    PROCEDURE GetDefPaymFile@1180250017(FileType_P@1180250006 : 'ETEBAC Files,Transfer,Withdraw,International Transfer,SEPA Transfer';VAR ExportFileName_P@1180250004 : Text[260]);
+    VAR
+      DefaultPath_L@1180250002 : Text[260];
+      DefaultName_L@1180250003 : Text[260];
+    BEGIN
+      GetDefPaymFilePath(FileType_P,DefaultPath_L);
+      GetDefPaymFileName(FileType_P,DefaultName_L);
+      ExportFileName_P := STRSUBSTNO('%1%2',DefaultPath_L,DefaultName_L);
+    END;
+
+    PROCEDURE GetDefPaymFilePath@1180250016(FileType_P@1180250006 : 'ETEBAC Files,Transfer,Withdraw,International Transfer,SEPA Transfer';VAR ExportFileName_P@1180250004 : Text[260]);
+    VAR
+      GLSetup_L@1180250005 : Record 98;
+    BEGIN
+      GLSetup_L.GET;
+      CASE FileType_P OF
+        FileType_P::"ETEBAC Files" :
+          IF GLSetup_L."ETEBAC File Default Path" <> '' THEN
+            ExportFileName_P := GLSetup_L."ETEBAC File Default Path";
+        FileType_P::Transfer:
+          IF GLSetup_L."Transfer File Default Path" <> '' THEN
+            ExportFileName_P := GLSetup_L."Transfer File Default Path";
+        FileType_P::Withdraw:
+          IF GLSetup_L."Withdraw File Default Path" <> '' THEN
+            ExportFileName_P := GLSetup_L."Withdraw File Default Path";
+        FileType_P::"International Transfer":
+          IF GLSetup_L."Int. Transf. File Default Path" <> '' THEN
+            ExportFileName_P := GLSetup_L."Int. Transf. File Default Path";
+        // --> 3LI-20111021-8060990/086-CMB6.00.10.04-JDL01
+        FileType_P::"SEPA Transfer":
+          IF GLSetup_L."SEPA Transf. File Default Path" <> '' THEN
+            ExportFileName_P := GLSetup_L."SEPA Transf. File Default Path";
+        // <-- 3LI-20111021-8060990/086-CMB6.00.10.04-JDL01
+
+      END;
+    END;
+
+    PROCEDURE GetDefPaymFileName@1180250015(FileType_P@1180250006 : 'ETEBAC Files,Transfer,Withdraw,International Transfer,SEPA Transfer';VAR ExportFileName_P@1180250004 : Text[260]);
+    VAR
+      DateTag_L@1180250002 : Text[10];
+      TimeTag_L@1180250003 : Text[10];
+      GLSetup_L@1180250005 : Record 98;
+    BEGIN
+      DateTag_L := FORMAT(WORKDATE,0,'<Year><Month,2><Day,2>');
+      TimeTag_L := FORMAT(020625T,0,'<Hours24><Minute,2><Second,2>');
+      IF STRLEN(TimeTag_L)=5 THEN
+        TimeTag_L := STRSUBSTNO('0%1',TimeTag_L);
+
+      GLSetup_L.GET;
+      CASE FileType_P OF
+        FileType_P::"ETEBAC Files" :
+          IF GLSetup_L."ETEBAC File Default File" <> '' THEN
+            ExportFileName_P := STRSUBSTNO(GLSetup_L."ETEBAC File Default File",DateTag_L,TimeTag_L);
+        FileType_P::Transfer:
+          IF GLSetup_L."Transfer File Default File" <> '' THEN
+            ExportFileName_P := STRSUBSTNO(GLSetup_L."Transfer File Default File",DateTag_L,TimeTag_L);
+        FileType_P::Withdraw:
+          IF GLSetup_L."Withdraw File Default File" <> '' THEN
+            ExportFileName_P := STRSUBSTNO(GLSetup_L."Withdraw File Default File",DateTag_L,TimeTag_L);
+        FileType_P::"International Transfer":
+          IF GLSetup_L."Int. Transf. File Default File" <> '' THEN
+            ExportFileName_P := STRSUBSTNO(GLSetup_L."Int. Transf. File Default File",DateTag_L,TimeTag_L);
+        // --> 3LI-20111021-8060990/086-CMB6.00.10.04-JDL01
+        FileType_P::"SEPA Transfer":
+          IF GLSetup_L."SEPA Transf. File Default File" <> '' THEN
+            ExportFileName_P := STRSUBSTNO(GLSetup_L."SEPA Transf. File Default File",DateTag_L,TimeTag_L);
+        // <-- 3LI-20111021-8060990/086-CMB6.00.10.04-JDL01
+      END;
+    END;
+
+    PROCEDURE AddAlwaysDimOnGLEntry@8060982(GLAccNo_P@60001 : Code[20];VAR GLEntry_P@8060983 : Record 17;VAR TempJnlLineDim_P@8060984 : Record 356);
+    VAR
+      DefaultDim_L@60000 : Record 352;
+      Text60000_L@60002 : TextConst 'FRA=<>''''';
+      GeneralLedgerSetup_L@8060982 : Record 98;
+    BEGIN
+      // --> 3LI-20110401-8060990/056-CMB6.00.01.01-JDL01
+      GeneralLedgerSetup_L.GET;
+      IF NOT TempJnlLineDim_P.ISEMPTY THEN BEGIN
+        TempJnlLineDim_P.FIND('-');
+        REPEAT
+          IF (TempJnlLineDim_P."Dimension Code" = GeneralLedgerSetup_L."Global Dimension 1 Code") OR
+             (TempJnlLineDim_P."Dimension Code" = GeneralLedgerSetup_L."Global Dimension 2 Code")
+          THEN BEGIN
+            DefaultDim_L.RESET;
+            DefaultDim_L.SETRANGE("Table ID",DATABASE::"G/L Account");
+            DefaultDim_L.SETRANGE("No.",GLAccNo_P);
+
+            //-->20140513-8060990/1968-CMB6.00.10.09-BDN01
+            //BEFORE
+            //DefaultDim_L.SETFILTER("Dimension Value Code",TempJnlLineDim_P."Dimension Value Code");
+            //AFTER
+            DefaultDim_L.SETRANGE("Dimension Code",TempJnlLineDim_P."Dimension Code");
+            //<--20140513-8060990/1968-CMB6.00.10.09-BDN01
+
+            DefaultDim_L.SETRANGE("Value Posting",DefaultDim_L."Value Posting"::Always);
+            IF NOT DefaultDim_L.ISEMPTY THEN BEGIN
+              DefaultDim_L.FIND('-');
+              CASE TRUE OF
+                DefaultDim_L."Dimension Code" = GeneralLedgerSetup_L."Global Dimension 1 Code" :
+                  GLEntry_P."Global Dimension 1 Code" := DefaultDim_L."Dimension Value Code";
+                DefaultDim_L."Dimension Code" = GeneralLedgerSetup_L."Global Dimension 2 Code" :
+                  GLEntry_P."Global Dimension 2 Code" := DefaultDim_L."Dimension Value Code";
+              END;
+            END;
+          END;
+        UNTIL TempJnlLineDim_P.NEXT = 0;
+      END;
+      // <-- 3LI-20110401-8060990/056-CMB6.00.01.01-JDL01
+    END;
+
+    PROCEDURE UpdJnlLineDimBeforePost@1180250018(VAR GLEntry_P@1180250002 : Record 17;VAR TempJnlLineDim_P@1180250003 : Record 356);
+    VAR
+      DefaultDim_L@1180250004 : Record 352;
+      GeneralLedgerSetup_L@1180250005 : Record 98;
+    BEGIN
+      // --> 3LI-20110624-8060990/056-CMB6.00.01.02-JDL01
+      GeneralLedgerSetup_L.GET;
+      IF NOT TempJnlLineDim_P.ISEMPTY THEN BEGIN
+        TempJnlLineDim_P.FIND('-');
+        REPEAT
+          CASE TRUE OF
+            TempJnlLineDim_P."Dimension Code" = GeneralLedgerSetup_L."Global Dimension 1 Code" : BEGIN
+              TempJnlLineDim_P."Dimension Value Code" := GLEntry_P."Global Dimension 1 Code";
+              TempJnlLineDim_P.MODIFY;
+            END;
+            TempJnlLineDim_P."Dimension Code" = GeneralLedgerSetup_L."Global Dimension 2 Code" : BEGIN
+              TempJnlLineDim_P."Dimension Value Code" := GLEntry_P."Global Dimension 2 Code";
+              TempJnlLineDim_P.MODIFY;
+            END;
+
+          END;
+        UNTIL TempJnlLineDim_P.NEXT = 0;
+      END;
+      // <-- 3LI-20110624-8060990/056-CMB6.00.01.02-JDL01
+    END;
+
+    PROCEDURE UpdRepSelectionWith3LIReport@8060983();
+    VAR
+      ReportSelection_L@8060982 : Record 77;
+    BEGIN
+      // --> 3LI-20111115-8060990/071-CMB6.00.10.04-JDL01
+      WITH ReportSelection_L DO BEGIN
+        CreateModifyReportSelection(Usage::"S.Quote",'1',REPORT::"CMB Sales - Quote");
+        CreateModifyReportSelection(Usage::"S.Order",'1',REPORT::"CMB Sales - Order");
+        CreateModifyReportSelection(Usage::"S.Invoice",'1',REPORT::"CMB Sales - Invoice");
+        CreateModifyReportSelection(Usage::"S.Cr.Memo",'1',REPORT::"CMB Sales - Credit Memo");
+        CreateModifyReportSelection(Usage::"S.Shipment",'1',REPORT::"CMB Sales - Shipment");
+        CreateModifyReportSelection(Usage::"S.Ret.Rcpt.",'1',REPORT::"CMB Sales - Return Receipt");
+        CreateModifyReportSelection(Usage::"P.Quote",'1',REPORT::"CMB Purchase - Quote");
+        CreateModifyReportSelection(Usage::"P.Order",'1',REPORT::"CMB Order");
+        CreateModifyReportSelection(Usage::"P.Ret.Shpt.",'1',REPORT::"CMB Purchase - Return Shipment");
+        CreateModifyReportSelection(Usage::Inv1,'1',REPORT::"CMB Transfer Order");
+        CreateModifyReportSelection(Usage::Reminder,'1',REPORT::"Sales - Reminder");
+        // --> 3LI-20111209-8060990/071-CMB6.00.10.05-JDL01
+        CreateModifyReportSelection(Usage::"P.Receipt",'1',REPORT::"CMB Purchase - Receipt");
+        // <-- 3LI-20111209-8060990/071-CMB6.00.10.05-JDL01
+      END;
+      // <-- 3LI-20111115-8060990/071-CMB6.00.10.04-JDL01
+    END;
+
+    PROCEDURE CreateModifyReportSelection@8060984(ReportUsage_P@8060984 : Integer;Sequence_P@8060983 : Code[10];ReportID_P@8060982 : Integer);
+    VAR
+      ReportSelection_L@8060985 : Record 77;
+    BEGIN
+      // --> 3LI-20111115-8060990/071-CMB6.00.10.04-JDL01
+      ReportSelection_L.RESET;
+      ReportSelection_L.SETFILTER(Usage,'=%1',ReportUsage_P);
+      ReportSelection_L.SETFILTER(Sequence,'=%1',Sequence_P);
+      IF ReportSelection_L.ISEMPTY THEN BEGIN
+        ReportSelection_L.INIT;
+        ReportSelection_L.Usage := ReportUsage_P;
+        ReportSelection_L.Sequence := Sequence_P;
+        ReportSelection_L.INSERT;
+      END;
+      ReportSelection_L.FIND('-');
+
+      ReportSelection_L."Report ID" := ReportID_P;
+      ReportSelection_L.MODIFY;
+
+      // <-- 3LI-20111115-8060990/071-CMB6.00.10.04-JDL01
+    END;
+
+    PROCEDURE UpdateBillToAddress@8060985(VAR SalesHeader_P@8060982 : Record 36);
+    VAR
+      BilltoAddress_L@8060983 : Record 8060987;
+      Cust_L@8060984 : Record 18;
+    BEGIN
+      WITH SalesHeader_P DO
+        IF "Bill-to Address Code" <> '' THEN BEGIN
+          BilltoAddress_L.GET("Bill-to Customer No.","Bill-to Address Code");
+          "Bill-to Name" := BilltoAddress_L.Name;
+          "Bill-to Name 2" := BilltoAddress_L."Name 2";
+          "Bill-to Address" := BilltoAddress_L.Address;
+          "Bill-to Address 2" := BilltoAddress_L."Address 2";
+          "Bill-to City" := BilltoAddress_L.City;
+          "Bill-to Contact" := BilltoAddress_L.Contact;
+          "Bill-to Post Code" := BilltoAddress_L."Post Code";
+          "Bill-to County" := BilltoAddress_L.County;
+          "Bill-to Country/Region Code" := BilltoAddress_L."Country/Region Code";
+          "VAT Country/Region Code" := BilltoAddress_L."Country/Region Code";
+          "Salesperson Code" := BilltoAddress_L."Salesperson Code";
+        END ELSE BEGIN
+          Cust_L.GET("Bill-to Customer No.");
+          "Bill-to Name" := Cust_L.Name;
+          "Bill-to Name 2" := Cust_L."Name 2";
+          "Bill-to Address" := Cust_L.Address;
+          "Bill-to Address 2" := Cust_L."Address 2";
+          "Bill-to City" := Cust_L.City;
+          "Bill-to Contact" := Cust_L.Contact;
+          "Bill-to Post Code" := Cust_L."Post Code";
+          "Bill-to County" := Cust_L.County;
+          "Bill-to Country/Region Code" := Cust_L."Country/Region Code";
+          "VAT Country/Region Code" := Cust_L."Country/Region Code";
+          "Salesperson Code" := Cust_L."Salesperson Code";
+        END;
+    END;
+
+    PROCEDURE UpdateDefBillToAddress@8060986(VAR SalesHeader_P@60000 : Record 36;DefBillToAddress_P@60001 : Code[10]);
+    BEGIN
+      WITH SalesHeader_P DO
+      IF DefBillToAddress_P <> '' THEN
+        VALIDATE("Bill-to Address Code",DefBillToAddress_P)
+      ELSE
+        VALIDATE("Bill-to Address Code",'');
+    END;
+
+    PROCEDURE LocationIsAllowed@17(LocationCode_P@1001 : Code[10]) : Boolean;
+    VAR
+      WhseEmployee_L@1002 : Record 7301;
+      Text001@1000000000 : TextConst 'ENU=You are not allowed to use location code %1.;FRA=Vous n''^tes pas autoris' . utiliser le code magasin %1.';
+    BEGIN
+      IF NOT (WhseEmployee_L.GET(USERID,LocationCode_P) OR (USERID = '')) THEN
+        ERROR(Text001,LocationCode_P);
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20101213-8060990/000-CMB6.00.01-FEC01 : ADDOBJ (Nouvel objet permettant de g'rer les fonctionnalit's baseline).
+      20101213-8060990/008-CMB6.00.01-FEC02 : ADDFUNCT (ShowPurchDocOnPosting).
+      20101213-8060990/008-CMB6.00.01-FEC03 : ADDFUNCT (GetPostedPurchDocNo).
+      20101213-8060990/031-CMB6.00.01-FEC04 : ADDFUNCT (ShowCommentOnDocument).
+      20101213-8060990/009-CMB6.00.01-FEC05 : ADDFUNCT (UpdateDefShipToCode).
+      20101213-8060990/010-CMB6.00.01-FEC06 : ADDFUNCT (SalesUpdatePostingDesc,PurchUpdatePostingDesc,ServUpdatePostingDesc).
+      20101213-8060990/002-CMB6.00.01-FEC07 : ADDFUNCT (CheckPriorYearEntry,PriorYearEntry).
+      20101213-8060990/004-CMB6.00.01-FEC08 : ADDFUNCT (IsNormalDate).
+      20101213-8060990/014-CMB6.00.01-FEC09 : ADDFUNCT (ReportSelect).
+      20101213-8060990/053-CMB6.00.01-FEC10 : ADDFUNCT (PaymentLineGetAccountName).
+      20101213-8060990/058-CMB6.00.01-FEC11 : ADDFUNCT (AccScheBudgEntryBudgetFilter,AccScheGLAccBudgetFilter,AccScheAnaViewBudgetFilter).
+      20101213-8060990/056-CMB6.00.01-FEC12 : ADDFUNCT (AddAlwaysDim).
+      20101213-8060990/064-CMB6.00.01-FEC13 : ADDFUNCT (CalcBalanceAmount).
+      20101213-8060990/005-CMB6.00.01-FEC14 : ADDFUNCT (GenJournTestInitError).
+      20101213-8060990/005-CMB6.00.01-FEC15 : ADDFUNCT (GenJournTestShowOutput1).
+      20101213-8060990/005-CMB6.00.01-FEC16 : ADDFUNCT (GenJournTestShowOutput2).
+      20101213-8060990/057-CMB6.00.01-FEC17 : ADDFUNCT (TrialBalanceAddHeader).
+      20101213-8060990/057-CMB6.00.01-FEC18 : ADDFUNCT (TrialBalanceAddLine).
+      20101213-8060990/001-CMB6.00.01-FEC19 : ADDFUNCT (GLTrialBalInitText).
+      20101213-8060990/001-CMB6.00.01-FEC20 : ADDFUNCT (GLTrialBalShowoutput).
+      20101213-8060990/015-CMB6.00.01-FEC21 : ADDFUNCT (ManageIncludeField).
+      20101213-8060990/015-CMB6.00.01-FEC22 : ADDFUNCT (ManageValidateField).
+      20101213-8060990/015-CMB6.00.01-FEC23 : ADDFUNCT (IsKeyField).
+      20101213-8060990/015-CMB6.00.01-FEC24 : ADDFUNCT (ManageFilter).
+      20101213-8060990/015-CMB6.00.01-FEC25 : ADDFUNCT (ManageSpecifValidation).
+      20101213-8060990/015-CMB6.00.01-FEC26 : ADDFUNCT (MigrTabFieldChangeKey).
+      20101213-8060990/086-CMB6.00.01-FEC27 : ADDFUNCT (GetDefPaymFile,GetDefPaymFilePath,GetDefPaymFileName).
+      20110311-8060990/015-CMB6.00.01.01-JDL01 : Modification C/AL code pour import fichier article et base unit'
+      20110401-8060990/056-CMB6.00.01.01-JDL01 : Ajout d'un fonction pour g'rer l'axe syst'matique sur axes principaux
+      20110624-8060990/056-CMB6.00.01.02-JDL01 : Ajout C/AL code pour corriger d'phasege axe 1 et 2 ecr compta et dimension table
+      20110914-8060990/086-CMB6.00.10.04-JDL01 : MODOBJ (Modification commentaire et version du d'v 069 -> 086).
+      20111021-8060990/086-CMB6.00.10.04-JDL01 : ADDCODE (Correction de la gestion du fichier SEPA)
+      20111115-8060990/071-CMB6.00.10.04-JDL01 : ADDCODE (Pour g'rer les reports 3LI+ dans s'lection des 'tats)
+      20111128-8060990/090-CMB6.00.10.05-FEC01 : ADDFUNCT (UpdateBillToAddress & UpdateDefBillToAddress)
+      20111209-8060990/071-CMB6.00.10.05-JDL01 : ADDCODE (pour g'rer le report bon r'ception dans s'lection 'tats)
+      20130528-8060990/114-CMB6.00.10.09-FEC01 : ADDFUNC (LocationIsAllowed)
+      20140513-8060990/1968-CMB6.00.10.09-BDN01 : MODCODE (Correction filtre default dimension)
+      20140521-Wi00-CMC02.02.00-2119-BRA01 : ADDCODE (Ne pas equilibrer si contrepartie renseign'e)
+      20150617-WI00-CMC02.02.00-3068-FHS01 : MODCODE (Changement du mode de d'termination automatique de l'adresse destinataire)
+      20150915-WI00-ADV01.01.00-2243-FBE01 : MODCODE (Changement du mode de d'termination automatique de l'adresse destinataire)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

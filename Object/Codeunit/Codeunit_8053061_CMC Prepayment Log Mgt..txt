@@ -1,0 +1,209 @@
+OBJECT Codeunit 8053061 CMC Prepayment Log Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=30/10/14;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 8053510=rimd;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      PrepLogEntry_G@1000000000 : Record 8053510;
+
+    PROCEDURE InsertPrepInvLogEntry@1000000000(PrepmtInvBuffer_P@1000000001 : TEMPORARY Record 461;SalesHeader_P@1000000002 : Record 36;DocumentType_P@1000000003 : 'Invoice,Credit Memo';DocumentNo_P@1000000004 : Code[20];DocLineNo_P@1000000005 : Integer);
+    VAR
+      NextEntryNo_L@1000000000 : Integer;
+      SalesLine_L@1000000006 : Record 37;
+    BEGIN
+      WITH PrepLogEntry_G DO BEGIN
+
+        LOCKTABLE;
+        IF FINDLAST THEN
+          NextEntryNo_L := "Entry No." + 1
+        ELSE
+          NextEntryNo_L := 1;
+
+        SalesLine_L.GET(SalesHeader_P."Document Type"::Order,SalesHeader_P."No.",PrepmtInvBuffer_P."Line No.");
+
+        INIT;
+        "Entry No." := NextEntryNo_L;
+        "Document Type" := DocumentType_P;
+        "Document No." := DocumentNo_P;
+        "Document Line No." := DocLineNo_P;
+        "Order No." := SalesHeader_P."No.";
+        "Order Line No." := PrepmtInvBuffer_P."Line No.";
+        "Entry Type" := PrepLogEntry_G."Entry Type"::Prepayment;
+        IF DocumentType_P = DocumentType_P::Invoice THEN
+          Amount := PrepmtInvBuffer_P.Amount
+        ELSE
+          Amount := -PrepmtInvBuffer_P.Amount;
+        Type := SalesLine_L.Type;
+        "No." := SalesLine_L."No.";
+        "Variant Code" := SalesLine_L."Variant Code";
+        "Location Code" := SalesLine_L."Location Code";
+        Description := SalesLine_L.Description;
+        "Description 2" := SalesLine_L."Description 2";
+        Quantity := SalesLine_L.Quantity;
+        "Source Order No." := SalesHeader_P."No.";
+        "Source Order Line No." := PrepmtInvBuffer_P."Line No.";
+        "Posting Date" := SalesHeader_P."Posting Date";
+        "Bill-to Customer No." := SalesHeader_P."Bill-to Customer No.";
+        INSERT;
+
+      END;
+    END;
+
+    PROCEDURE InsertPrepDedLogEntry@1000000001(SalesHeader_P@1000000005 : Record 36;SourceSalesLine_P@1000000000 : Record 37;PrepSalesLine_P@1000000004 : Record 37;VAR PrepLogEntry_P@1000000007 : Record 8053510);
+    VAR
+      NextEntryNo_L@1000000001 : Integer;
+      SalesShipHead_L@1000000003 : Record 110;
+      SalesLine_L@1000000002 : Record 37;
+      TransRemQty_L@1000000006 : Decimal;
+      SourceSalesLine_L@1000000008 : Record 37;
+    BEGIN
+      WITH PrepLogEntry_P DO BEGIN
+
+        IF FINDLAST THEN
+          NextEntryNo_L := "Entry No." + 1
+        ELSE
+          NextEntryNo_L := 1;
+
+        INIT;
+        "Entry No." := NextEntryNo_L;
+        IF SalesHeader_P."Document Type" IN [SalesHeader_P."Document Type"::Invoice,SalesHeader_P."Document Type"::Order] THEN
+          "Document Type" := "Document Type"::Invoice
+        ELSE
+          "Document Type" := "Document Type"::"Credit Memo";
+        "Document Line No." := PrepSalesLine_P."Line No.";
+         SalesShipHead_L.GET(SourceSalesLine_P."Shipment No.");
+        "Order No." := SalesShipHead_L."Order No.";
+        "Order Line No." := SourceSalesLine_P."Shipment Line No.";
+        "Entry Type" := PrepLogEntry_G."Entry Type"::Deduction;
+        Type := SourceSalesLine_P.Type;
+        "No." := SourceSalesLine_P."No.";
+        "Variant Code" := SourceSalesLine_P."Variant Code";
+        "Location Code" := SourceSalesLine_P."Location Code";
+        Description := SourceSalesLine_P.Description;
+        "Description 2" := SourceSalesLine_P."Description 2";
+        SalesLine_L.GET(SalesLine_L."Document Type"::Order,"Order No.","Order Line No.");
+
+        IF SalesLine_L."Source Order No." <> '' THEN BEGIN
+          SourceSalesLine_L.GET(SourceSalesLine_L."Document Type"::Order,SalesLine_L."Source Order No.",
+                                SalesLine_L."Source Order Line No.");
+          IF SourceSalesLine_L."Prepmt. Amt. Inv." = 0 THEN BEGIN
+            "Source Order No." := "Order No.";
+            "Source Order Line No." := "Order Line No.";
+          END ELSE BEGIN
+            "Source Order No." := SalesLine_L."Source Order No.";
+            "Source Order Line No." := SalesLine_L."Source Order Line No.";
+          END;
+        END ELSE BEGIN
+          "Source Order No." := "Order No.";
+          "Source Order Line No." := "Order Line No.";
+        END;
+
+        "Posting Date" := SalesHeader_P."Posting Date";
+        "Bill-to Customer No." := SalesHeader_P."Bill-to Customer No.";
+
+        Quantity := SourceSalesLine_P.Quantity;
+        Amount := PrepSalesLine_P."Line Amount";
+
+        INSERT;
+
+      END;
+    END;
+
+    PROCEDURE FlushPrepDedLogEntryToPost@1000000002(PostDocNo_P@1000000001 : Code[20];VAR PrepLogEntry_P@1000000000 : Record 8053510);
+    VAR
+      NextEntryNo_L@1000000002 : Integer;
+      TransRemQty_L@1000000003 : Decimal;
+    BEGIN
+      WITH PrepLogEntry_G DO BEGIN
+
+        LOCKTABLE;
+        IF FINDLAST THEN
+          NextEntryNo_L := "Entry No." + 1
+        ELSE
+          NextEntryNo_L := 1;
+
+        PrepLogEntry_P.RESET;
+        IF PrepLogEntry_P.FINDSET THEN
+          REPEAT
+
+            INIT;
+            TRANSFERFIELDS(PrepLogEntry_P);
+            "Entry No." := NextEntryNo_L;
+            "Document No." := PostDocNo_P;
+
+            TransRemQty_L := GetTransQty(PrepLogEntry_G);
+
+            IF "Document Type" = "Document Type"::Invoice THEN BEGIN
+              IF PrepLogEntry_P.Quantity < TransRemQty_L THEN
+                Quantity := - PrepLogEntry_P.Quantity
+              ELSE
+                Quantity := - TransRemQty_L;
+              Amount := PrepLogEntry_P.Amount;
+            END ELSE BEGIN
+              Quantity := PrepLogEntry_P.Quantity;
+              Amount := - PrepLogEntry_P.Amount;
+            END;
+
+            INSERT;
+
+            NextEntryNo_L := NextEntryNo_L + 1;
+
+          UNTIL PrepLogEntry_P.NEXT = 0;
+
+      END;
+    END;
+
+    PROCEDURE GetTransQty@1000000003(FromPrepLogEntry_P@1000000000 : Record 8053510) : Decimal;
+    BEGIN
+      WITH PrepLogEntry_G DO BEGIN
+        RESET;
+        SETCURRENTKEY("Bill-to Customer No.",Type,"No.","Source Order No.","Source Order Line No.","Entry Type");
+        SETRANGE("Bill-to Customer No.",FromPrepLogEntry_P."Bill-to Customer No.");
+        SETRANGE(Type,FromPrepLogEntry_P.Type);
+        SETRANGE("No.",FromPrepLogEntry_P."No.");
+        SETRANGE("Source Order No.",FromPrepLogEntry_P."Source Order No.");
+        SETRANGE("Source Order Line No.",FromPrepLogEntry_P."Source Order Line No.");
+        CALCSUMS(Quantity);
+        EXIT(Quantity);
+      END;
+    END;
+
+    PROCEDURE GetTransAmount@1000000004(FromPrepLogEntry_P@1000000000 : Record 8053510) : Decimal;
+    BEGIN
+      WITH PrepLogEntry_G DO BEGIN
+        RESET;
+        SETCURRENTKEY("Bill-to Customer No.",Type,"No.","Source Order No.","Source Order Line No.","Entry Type");
+        SETRANGE("Bill-to Customer No.",FromPrepLogEntry_P."Bill-to Customer No.");
+        SETRANGE(Type,FromPrepLogEntry_P.Type);
+        SETRANGE("No.",FromPrepLogEntry_P."No.");
+        SETRANGE("Source Order No.",FromPrepLogEntry_P."Source Order No.");
+        SETRANGE("Source Order Line No.",FromPrepLogEntry_P."Source Order Line No.");
+        CALCSUMS(Amount);
+        EXIT(Amount);
+      END;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+
+      20140722-APP39-CMC02.02.00-FEC01 : ADDOBJ.
+
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

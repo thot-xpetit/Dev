@@ -1,0 +1,214 @@
+OBJECT Report 6651 Delete Invd Sales Ret. Orders
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27/01/26;
+    Heure=00:00:00;
+    Liste versions=NAVW16.00,CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Delete Invd Sales Ret. Orders;
+               FRA=Suppr. retours vente factur's];
+    ProcessingOnly=Oui;
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table36;
+        DataItemTableView=SORTING(Document Type,No.)
+                          WHERE(Document Type=CONST(Return Order));
+        ReqFilterHeadingML=[ENU=Sales Return Order;
+                            FRA=Retour vente];
+        OnPreDataItem=BEGIN
+                        Window.OPEN(Text000);
+                        // --> 20130904-Wi00-CMC02.02.00-BRA01
+                        SalesSetup_G.GET;
+                        // <-- 20130904-Wi00-CMC02.02.00-BRA01
+                      END;
+
+        OnAfterGetRecord=VAR
+                           "<-- 3LI LOCALS-->"@8053000 : Integer;
+                           ArchiveMgt_L@8053002 : Codeunit 5063;
+                           KitLines_L@1000000000 : Record 25000;
+                           cduSalesPriceDiscMgt_L@1000000001 : Codeunit 8053017;
+                         BEGIN
+                           Window.UPDATE(1,"No.");
+
+                           AllLinesDeleted := TRUE;
+                           DocDim.RESET;
+                           DocDim.SETRANGE("Document Type","Document Type");
+                           DocDim.SETRANGE("Document No.","No.");
+                           ItemChargeAssgntSales.RESET;
+                           ItemChargeAssgntSales.SETRANGE("Document Type","Document Type");
+                           ItemChargeAssgntSales.SETRANGE("Document No.","No.");
+                           SalesOrderLine.RESET;
+                           SalesOrderLine.SETRANGE("Document Type","Document Type");
+                           SalesOrderLine.SETRANGE("Document No.","No.");
+                           SalesOrderLine.SETFILTER("Quantity Invoiced",'<>0');
+                           IF SalesOrderLine.FIND('-') THEN BEGIN
+                             SalesOrderLine.SETRANGE("Quantity Invoiced");
+                             SalesOrderLine.SETFILTER("Outstanding Quantity",'<>0');
+                             IF NOT SalesOrderLine.FIND('-') THEN BEGIN
+                               SalesOrderLine.SETRANGE("Outstanding Quantity");
+                               SalesOrderLine.SETFILTER("Return Qty. Rcd. Not Invd.",'<>0');
+                               IF NOT SalesOrderLine.FIND('-') THEN BEGIN
+                                 SalesOrderLine.LOCKTABLE;
+                                 IF NOT SalesOrderLine.FIND('-') THEN BEGIN
+                                   SalesOrderLine.SETRANGE("Return Qty. Rcd. Not Invd.");
+                                   DocDim.SETRANGE("Table ID",DATABASE::"Sales Line");
+                                   IF SalesOrderLine.FIND('-') THEN
+                                   // --> 20130904-Wi00-CMC02.02.00-BRA01
+                                   BEGIN
+                                     IF SalesSetup_G."Archive Quotes and Orders" THEN
+                                      BEGIN
+                                       CLEAR(ArchiveMgt_L);
+                                       ArchiveMgt_L.StoreSalesDocument("Sales Header",FALSE);
+                                      END;
+                                   // <-- 20130904-Wi00-CMC02.02.00-BRA01
+                                     REPEAT
+                                       SalesOrderLine.CALCFIELDS("Qty. Assigned");
+                                       // <-- 20110601-Wi00-CMC01.04
+                                       // BEFORE
+                                       //IF ((SalesOrderLine."Qty. Assigned" = SalesOrderLine."Quantity Invoiced") OR
+                                       //   (SalesOrderLine.Type <> SalesOrderLine.Type::"Charge (Item)")) AND
+                                       //   (SalesOrderLine."Qty. Assigned" <> 0)
+                                       // AFTER
+                                       IF (SalesOrderLine.Type <> SalesOrderLine.Type::"Charge (Item)") OR
+                                          ((SalesOrderLine."Qty. Assigned" = SalesOrderLine."Quantity Invoiced") OR
+                                           (SalesOrderLine."Qty. Assigned" <> 0))
+                                       // --> 20110601-Wi00-CMC01.04
+                                       THEN BEGIN
+                                         DocDim.SETRANGE("Line No.",SalesOrderLine."Line No.");
+                                         DocDim.DELETEALL;
+                                         IF SalesOrderLine.Type = SalesOrderLine.Type::"Charge (Item)" THEN BEGIN
+                                           ItemChargeAssgntSales.SETRANGE("Document Line No.",SalesOrderLine."Line No.");
+                                           ItemChargeAssgntSales.DELETEALL;
+                                         END;
+                                         // --> 20251222-WI00-ADV01.01.00-42801-CJY01
+                                         KitLines_L.RESET;
+                                         KitLines_L.SETRANGE("Document Type","Document Type");
+                                         KitLines_L.SETRANGE("Document No.","No.");
+                                         KitLines_L.SETRANGE("Document Line No.",SalesOrderLine."Line No.");
+                                         KitLines_L.SetSkipPricing;
+                                         KitLines_L.SuspendQtyShippedCheck(TRUE);
+                                         KitLines_L.SuspendStatusCheck(TRUE);
+                                         IF KitLines_L.FINDSET THEN
+                                           REPEAT
+                                             KitLines_L.DELETE(TRUE);
+                                           UNTIL KitLines_L.NEXT = 0;
+                                         cduSalesPriceDiscMgt_L.DeleteSalesDocDisc(SalesOrderLine);
+
+                                         // <-- 20251222-WI00-ADV01.01.00-42801-CJY01
+                                         SalesOrderLine.DELETE;
+                                       END ELSE
+                                         AllLinesDeleted := FALSE;
+
+                                     UNTIL SalesOrderLine.NEXT = 0;
+                                    // --> 20130904-Wi00-CMC02.02.00-BRA01
+                                    END;
+                                    // <-- 20130904-Wi00-CMC02.02.00-BRA01
+                                   IF AllLinesDeleted THEN BEGIN
+                                     SalesPost.DeleteHeader(
+                                       "Sales Header",SalesShptHeader,SalesInvHeader,SalesCrMemoHeader,ReturnRcptHeader,
+                                       PrepmtSalesInvHeader,PrepmtSalesCrMemoHeader);
+                                     ReserveSalesLine.DeleteInvoiceSpecFromHeader("Sales Header");
+
+                                     SalesCommentLine.SETRANGE("Document Type","Document Type");
+                                     SalesCommentLine.SETRANGE("No.","No.");
+                                     SalesCommentLine.DELETEALL;
+
+                                     DocDim.SETRANGE("Table ID",DATABASE::"Sales Header");
+                                     DocDim.SETRANGE("Line No.",0);
+                                     DocDim.DELETEALL;
+
+                                     WhseRequest.SETRANGE("Source Type",DATABASE::"Sales Line");
+                                     WhseRequest.SETRANGE("Source Subtype","Document Type");
+                                     WhseRequest.SETRANGE("Source No.","No.");
+                                     WhseRequest.DELETEALL(TRUE);
+
+                                     DELETE;
+                                   END;
+                                   COMMIT;
+                                 END;
+                               END;
+                             END;
+                           END;
+                         END;
+
+        ReqFilterFields=No.,Sell-to Customer No.,Bill-to Customer No.;
+      }
+      SECTIONS
+      {
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=Processing sales return orders #1##########;FRA=Traitement des retours vente #1##########';
+      ReserveSalesLine@1013 : Codeunit 99000832;
+      SalesOrderLine@1001 : Record 37;
+      SalesShptHeader@1011 : Record 110;
+      SalesInvHeader@1010 : Record 112;
+      SalesCrMemoHeader@1009 : Record 114;
+      ReturnRcptHeader@1005 : Record 6660;
+      PrepmtSalesInvHeader@1015 : Record 112;
+      PrepmtSalesCrMemoHeader@1014 : Record 114;
+      SalesCommentLine@1002 : Record 44;
+      DocDim@1003 : Record 357;
+      ItemChargeAssgntSales@1007 : Record 5809;
+      WhseRequest@1008 : Record 5765;
+      SalesPost@1012 : Codeunit 80;
+      Window@1004 : Dialog;
+      AllLinesDeleted@1006 : Boolean;
+      "<-- 3LI GLOBALS-->"@8053000 : Integer;
+      SalesSetup_G@8053001 : Record 311;
+
+    PROCEDURE ShouldDeleteSalesOrderLine@1000000000(VAR SalesOrderLine_L@1000000000 : Record 37) : Boolean;
+    BEGIN
+
+      IF SalesOrderLine_L.Type <> SalesOrderLine_L.Type::"Charge (Item)" THEN
+          EXIT(TRUE);
+      SalesOrderLine_L.CALCFIELDS("Qty. Assigned");
+      IF ((SalesOrderLine_L."Qty. Assigned" = SalesOrderLine_L."Quantity Invoiced") AND (SalesOrderLine_L."Qty. Assigned" <> 0)) THEN
+          EXIT(TRUE);
+      EXIT(FALSE);
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+
+      20110601-Wi00-CMC01.04 : Version RTM 01.04 - NavAgri
+      20130904-Wi00-CMC02.02.00-BRA01 : ADDCODE (Archivage avant suppression)
+      20251222-WI00-ADV01.01.00-42801-CJY01 : ADDCODE (corrections bugs suppressions)
+
+      // --> 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

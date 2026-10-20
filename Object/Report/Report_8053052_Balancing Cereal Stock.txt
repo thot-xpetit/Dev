@@ -1,0 +1,289 @@
+OBJECT Report 8053052 Balancing Cereal Stock
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27/09/12;
+    Heure=00:00:00;
+    Liste versions=CMC01.04.05;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Balancing Cereal Stock;
+               FRA=Equilibrer stock c'r'ale];
+    ProcessingOnly=Oui;
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table27;
+        OnPreDataItem=BEGIN
+                        IF BalancingDate_G = 0D THEN
+                          ERROR(Text50000);
+                        IF CampaignNo_G = '' THEN
+                          ERROR(Text50002);
+
+                        Window_G.OPEN(Text50001);
+                        RecItemLdgEntry_G.SETCURRENTKEY("Item No.","Location Code","Posting Date","Vendor Storage");
+                        RecLocation_G.SETRANGE("Use As In-Transit",FALSE);
+                        RecCMCSetup_G.GET;
+                        RecCMCSetup_G.TESTFIELD(RecCMCSetup_G."Transfer Cereal Stock Nos");
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           Window_G.UPDATE(1,"No.");
+                           RecBalCerealInvBuffer1_G.DELETEALL;
+                           RecBalCerealInvBuffer2_G.DELETEALL;
+                           RecItemBuffer_G.DELETEALL;
+                           // Calcul du stock . la date d''quilibrage pour chaque d'p"t hors transit
+                           NegStock_G := FALSE;
+                           IF RecLocation_G.FINDSET THEN
+                             REPEAT
+                               //Calcul du stock global du d'p"t
+                               RecItemLdgEntry_G.SETRANGE("Item No.","No.");
+                               RecItemLdgEntry_G.SETRANGE("Location Code",RecLocation_G.Code);
+                               RecItemLdgEntry_G.SETRANGE("Posting Date",0D,BalancingDate_G);
+                               RecItemLdgEntry_G.CALCSUMS(Quantity);
+                               NegStock_G := RecItemLdgEntry_G.Quantity < 0;
+                               IF RecItemLdgEntry_G.Quantity >= 0 THEN BEGIN
+                                 //Calcul du stock soci't' non lettr' du d'p"t
+                                 RecItemLdgEntry_G.SETRANGE("Vendor Storage",FALSE);
+                                 RecItemLdgEntry_G.CALCSUMS("Remaining Quantity");
+                                 //Buffer 1 -> D'p"t ayant un stock soci't' > 0
+                                 IF RecItemLdgEntry_G."Remaining Quantity" > 0 THEN BEGIN
+                                   RecBalCerealInvBuffer1_G."Location Code" := RecLocation_G.Code;
+                                   RecBalCerealInvBuffer1_G."Cereal Inventory" := RecItemLdgEntry_G."Remaining Quantity";
+                                   RecBalCerealInvBuffer1_G.INSERT;
+                                 //Buffer 2 -> D'p"t ayant un stock soci't' < 0
+                                 END ELSE IF RecItemLdgEntry_G."Remaining Quantity" < 0 THEN BEGIN
+                                   RecBalCerealInvBuffer2_G."Location Code" := RecLocation_G.Code;
+                                   RecBalCerealInvBuffer2_G."Cereal Inventory" := RecItemLdgEntry_G."Remaining Quantity";
+                                   RecBalCerealInvBuffer2_G.INSERT;
+                                 END;
+                               END;
+                               RecItemLdgEntry_G.SETRANGE("Vendor Storage");
+                             UNTIL (RecLocation_G.NEXT = 0); //OR NegStock_G;
+
+                           //Si le stock d'un d'p"t est n'gatif , on affiche l'article en fin de traitement
+                           IF NegStock_G THEN BEGIN
+                             RecItemBuffer_G := Item;
+                             RecItemBuffer_G.INSERT;
+                           END;
+                           //Si aucun d'p"t n'a de stock soci't' n'gatif, on ne traite pas l'article
+                           //IF NegStock_G OR RecBalCerealInvBuffer2_G.ISEMPTY THEN
+                           IF RecBalCerealInvBuffer2_G.ISEMPTY THEN
+                             CurrReport.SKIP;
+
+                           IF RecBalCerealInvBuffer1_G.FINDSET THEN
+                             REPEAT
+                               IF RecBalCerealInvBuffer2_G.FINDSET THEN
+                                 REPEAT
+                                   //Le stock soci't' du d'p"t Buffer 1 couvre entiSrement le stock soci't' du d'p"t Buffer 2
+                                   IF RecBalCerealInvBuffer1_G."Cereal Inventory" >= ABS(RecBalCerealInvBuffer2_G."Cereal Inventory") THEN BEGIN
+                                     //Transfert de stock soci't' d'p"t Buffer 1 -> d'p"t Buffer 2
+                                     PostTransfer(ABS(RecBalCerealInvBuffer2_G."Cereal Inventory"));
+                                     //On d'duit du d'p"t Buffer 1 le stock soci't' du d'p"t Buffer 2
+                                     RecBalCerealInvBuffer1_G."Cereal Inventory" += RecBalCerealInvBuffer2_G."Cereal Inventory";
+                                     RecBalCerealInvBuffer1_G.MODIFY;
+                                     //Suppression du d'p"t Buffer 2
+                                     RecBalCerealInvBuffer2_G.DELETE;
+                                   //Le stock soci't' du d'p"t Buffer 1 couvre partiellement le stock soci't' du d'p"t Buffer 2
+                                   END ELSE BEGIN
+                                     //Transfert de stock soci't' d'p"t Buffer 1 -> d'p"t Buffer 2
+                                     PostTransfer(RecBalCerealInvBuffer1_G."Cereal Inventory");
+                                     //On d'duit du d'p"t Buffer 2 la quantit' transf'r'e
+                                     RecBalCerealInvBuffer2_G."Cereal Inventory" += RecBalCerealInvBuffer1_G."Cereal Inventory";
+                                     RecBalCerealInvBuffer2_G.MODIFY;
+                                     //On d'duit du d'p"t Buffer 1 le stock soci't' du d'p"t Buffer 2
+                                     RecBalCerealInvBuffer1_G."Cereal Inventory" := 0;
+                                     RecBalCerealInvBuffer1_G.MODIFY;
+                                   END;
+                                 UNTIL (RecBalCerealInvBuffer2_G.NEXT = 0) OR (RecBalCerealInvBuffer1_G."Cereal Inventory" = 0);
+                             UNTIL RecBalCerealInvBuffer1_G.NEXT = 0;
+                         END;
+
+        OnPostDataItem=BEGIN
+                         Window_G.CLOSE;
+                         COMMIT;
+                         IF NOT RecItemBuffer_G.ISEMPTY THEN
+                           IF CONFIRM(Text50003,FALSE) THEN
+                             FORM.RUNMODAL(0,RecItemBuffer_G);
+                       END;
+
+        ReqFilterFields=No.,Field64000;
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=9020;
+      Height=3410;
+      SaveValues=Oui;
+      OnOpenForm=BEGIN
+                   BalancingDate_G := WORKDATE;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1000000000;TextBox;3630 ;220  ;1700 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Balancing Date;
+                                                              FRA=Date d''quilibrage];
+                                                   SourceExpr=BalancingDate_G }
+      { 1000000001;Label  ;220  ;220  ;3300 ;440  ;ParentControl=1000000000 }
+      { 1000000002;TextBox;3630 ;770  ;1700 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Campaign No.;
+                                                              FRA=N› campagne];
+                                                   SourceExpr=CampaignNo_G;
+                                                   TableRelation="CMC Campaign" }
+      { 1000000003;Label  ;220  ;770  ;3300 ;440  ;ParentControl=1000000002 }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      OnOpenPage=BEGIN
+                   BalancingDate_G := WORKDATE;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1000000000;;Container;
+                  ContainerType=ContentArea }
+
+      { 1000000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             FRA=Options];
+                  GroupType=Group }
+
+      { 1000000001;2;Field  ;
+                  CaptionML=[ENU=Balancing Date;
+                             FRA=Date d''quilibrage];
+                  SourceExpr=BalancingDate_G }
+
+      { 1000000003;2;Field  ;
+                  CaptionML=[ENU=Campaign No.;
+                             FRA=N› campagne];
+                  SourceExpr=CampaignNo_G;
+                  TableRelation="CMC Campaign";
+                  LookupFormID=CMC Campains }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      BalancingDate_G@1000000000 : Date;
+      Text50000@1000000001 : TextConst 'ENU=Enter the balancing date.;FRA=Saisissez une date d'''quilibrage.';
+      Window_G@1000000002 : Dialog;
+      Text50001@1000000004 : TextConst 'ENU=Processing items    #1##########;FRA=Traitement des articles #1##########';
+      RecLocation_G@1000000003 : Record 14;
+      RecItemLdgEntry_G@1000000005 : Record 32;
+      NegStock_G@1000000006 : Boolean;
+      RecBalCerealInvBuffer1_G@1000000007 : TEMPORARY Record 8053118;
+      RecBalCerealInvBuffer2_G@1000000008 : TEMPORARY Record 8053118;
+      RecItemBuffer_G@1000000016 : TEMPORARY Record 27;
+      RecItemJnlLine_G@1000000009 : Record 83;
+      RecCMCSetup_G@1000000010 : Record 8052982;
+      CduNoSeriesMgt_G@1000000011 : Codeunit 396;
+      cduItemJnlPostLine_G@1000000012 : Codeunit 22;
+      cduCMCDimension_G@1000000013 : Codeunit 8053004;
+      CampaignNo_G@1000000014 : Code[20];
+      Text50002@1000000015 : TextConst 'ENU=Enter the Campaign No.;FRA=Saisissez une campagne.';
+      Text50003@1000000017 : TextConst 'ENU=Some Items with a negative stock on a location were not processed. Would you like to display the list ?;FRA=Des articles avec un stock n'gatif sur un d'p"t n''ont pas 't' trait's. Souhaitez-vous afficher la liste ?';
+
+    PROCEDURE PostTransfer@1000000012(QtyToTransfer_P@1000000000 : Decimal);
+    VAR
+      RecTempJnlLineDim_L@1000000001 : TEMPORARY Record 356;
+    BEGIN
+      WITH Item DO BEGIN
+        //Transfert du stock soci't' Buffer 1 -> Buffer 2
+        RecItemJnlLine_G.INIT;
+        RecItemJnlLine_G."Posting Date" := BalancingDate_G;
+        RecItemJnlLine_G."Document Date" := BalancingDate_G;
+        RecItemJnlLine_G."Document No." := CduNoSeriesMgt_G.GetNextNo(RecCMCSetup_G."Transfer Cereal Stock Nos",WORKDATE,TRUE);
+        RecItemJnlLine_G."Entry Type" := RecItemJnlLine_G."Entry Type"::Transfer;
+        RecItemJnlLine_G."Item No." := "No.";
+        RecItemJnlLine_G."Location Code" := RecBalCerealInvBuffer1_G."Location Code";
+        RecItemJnlLine_G."New Location Code" := RecBalCerealInvBuffer2_G."Location Code";
+        RecItemJnlLine_G.Quantity := QtyToTransfer_P;
+        RecItemJnlLine_G."Invoiced Quantity" := QtyToTransfer_P;
+        RecItemJnlLine_G."Quantity (Base)" := QtyToTransfer_P;
+        RecItemJnlLine_G."Invoiced Qty. (Base)" := QtyToTransfer_P;
+        RecItemJnlLine_G."Gen. Prod. Posting Group" := "Gen. Prod. Posting Group";
+        RecItemJnlLine_G."Inventory Posting Group" := "Inventory Posting Group";
+        RecItemJnlLine_G."Unit of Measure Code" := "Base Unit of Measure";
+        RecItemJnlLine_G."Qty. per Unit of Measure" := 1;
+        RecItemJnlLine_G."Product Group Code" := "Product Group Code";
+        RecItemJnlLine_G."Item Category Code" := "Item Category Code";
+        RecItemJnlLine_G."Cell Code" := 'NC';
+        RecItemJnlLine_G."New Cell Code" := 'NC';
+        RecItemJnlLine_G."Movement Type" := RecItemJnlLine_G."Movement Type"::S05;
+        RecItemJnlLine_G."Stock Type" := RecItemJnlLine_G."Stock Type"::Company;
+        RecItemJnlLine_G."Vendor Storage" := FALSE;
+        RecItemJnlLine_G."Campaign No." := CampaignNo_G;
+
+        cduCMCDimension_G.DimFromItemJnl(RecTempJnlLineDim_L,RecItemJnlLine_G,TRUE);
+        cduItemJnlPostLine_G.RunWithCheck(RecItemJnlLine_G,RecTempJnlLineDim_L);
+
+        //Transfert du stock apporteur Buffer 2 -> Buffer 1
+        RecItemJnlLine_G.INIT;
+        RecItemJnlLine_G."Posting Date" := BalancingDate_G;
+        RecItemJnlLine_G."Document Date" := BalancingDate_G;
+        RecItemJnlLine_G."Document No." := CduNoSeriesMgt_G.GetNextNo(RecCMCSetup_G."Transfer Cereal Stock Nos",WORKDATE,TRUE);
+        RecItemJnlLine_G."Entry Type" := RecItemJnlLine_G."Entry Type"::Transfer;
+        RecItemJnlLine_G."Item No." := "No.";
+        RecItemJnlLine_G."Location Code" := RecBalCerealInvBuffer2_G."Location Code";
+        RecItemJnlLine_G."New Location Code" := RecBalCerealInvBuffer1_G."Location Code";
+        RecItemJnlLine_G.Quantity := QtyToTransfer_P;
+        RecItemJnlLine_G."Invoiced Quantity" := QtyToTransfer_P;
+        RecItemJnlLine_G."Quantity (Base)" := QtyToTransfer_P;
+        RecItemJnlLine_G."Invoiced Qty. (Base)" := QtyToTransfer_P;
+        RecItemJnlLine_G."Gen. Prod. Posting Group" := "Gen. Prod. Posting Group";
+        RecItemJnlLine_G."Inventory Posting Group" := "Inventory Posting Group";
+        RecItemJnlLine_G."Unit of Measure Code" := "Base Unit of Measure";
+        RecItemJnlLine_G."Qty. per Unit of Measure" := 1;
+        RecItemJnlLine_G."Product Group Code" := "Product Group Code";
+        RecItemJnlLine_G."Item Category Code" := "Item Category Code";
+        RecItemJnlLine_G."Cell Code" := 'NC';
+        RecItemJnlLine_G."New Cell Code" := 'NC';
+        RecItemJnlLine_G."Movement Type" := RecItemJnlLine_G."Movement Type"::S05;
+        RecItemJnlLine_G."Stock Type" := RecItemJnlLine_G."Stock Type"::Storage;
+        RecItemJnlLine_G."Vendor Storage" := TRUE;
+        RecItemJnlLine_G."Campaign No." := CampaignNo_G;
+
+        cduCMCDimension_G.DimFromItemJnl(RecTempJnlLineDim_L,RecItemJnlLine_G,TRUE);
+        cduItemJnlPostLine_G.RunWithCheck(RecItemJnlLine_G,RecTempJnlLineDim_L);
+      END;
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+      20120419-Cout01-CMC01.04.05-DRN01 : NEWOBJ (Traitement de r''quilibrage des stocks c'r'ales)
+      // --> 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

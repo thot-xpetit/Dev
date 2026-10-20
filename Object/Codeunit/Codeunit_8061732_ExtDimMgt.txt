@@ -1,0 +1,1125 @@
+OBJECT Codeunit 8061732 ExtDimMgt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=10/07/17;
+    Heure=00:00:00;
+    Liste versions=CMB6.00.01,CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 17=m;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      HasGotGLSetup_G@8061735 : Boolean;
+      GLSetupShortcutDimCode_G@8061734 : ARRAY [8] OF Code[20];
+      DimMgt_G@8061733 : Codeunit 408;
+      GLSetup_G@8061732 : Record 98;
+      PostingDate_G@8053000 : Date;
+      ExtDimBaseQty_G@8053001 : Decimal;
+
+    LOCAL PROCEDURE GetGLSetup@8061775();
+    BEGIN
+      IF NOT HasGotGLSetup_G THEN BEGIN
+        GLSetup_G.GET;
+        GLSetupShortcutDimCode_G[1] := GLSetup_G."Shortcut Dimension 1 Code";
+        GLSetupShortcutDimCode_G[2] := GLSetup_G."Shortcut Dimension 2 Code";
+        GLSetupShortcutDimCode_G[3] := GLSetup_G."Shortcut Dimension 3 Code";
+        GLSetupShortcutDimCode_G[4] := GLSetup_G."Shortcut Dimension 4 Code";
+        GLSetupShortcutDimCode_G[5] := GLSetup_G."Shortcut Dimension 5 Code";
+        GLSetupShortcutDimCode_G[6] := GLSetup_G."Shortcut Dimension 6 Code";
+        GLSetupShortcutDimCode_G[7] := GLSetup_G."Shortcut Dimension 7 Code";
+        GLSetupShortcutDimCode_G[8] := GLSetup_G."Shortcut Dimension 8 Code";
+        HasGotGLSetup_G := TRUE;
+      END;
+    END;
+
+    PROCEDURE GenerateDimLedgerEntry@8061774(VAR GLEntry_P@8061732 : Record 17);
+    VAR
+      RemainingAmountLCY_L@8061743 : Decimal;
+      RemainingAmountACY_L@8061742 : Decimal;
+      LedgerEntryDim_L@8061741 : Record 355;
+      LedgerEntryDim2_L@8061740 : Record 355;
+      LedgerEntryDim3_L@8061739 : Record 355;
+      DimLedgerEntry_L@8061738 : Record 8061732;
+      NextEntryNo_L@8061737 : Integer;
+      DimAllocTemplate_L@8061736 : Record 8061733;
+      DefaultDim_L@8061735 : Record 352;
+      GlobalDimCode1_L@8061734 : Code[20];
+      GlobalDimCode2_L@8061733 : Code[20];
+    BEGIN
+      GLSetup_G.GET;
+
+      RemainingAmountLCY_L := GLEntry_P.Amount;
+      RemainingAmountACY_L := GLEntry_P."Additional-Currency Amount";
+
+      LedgerEntryDim_L.RESET;
+      LedgerEntryDim_L.SETRANGE("Table ID",DATABASE::"G/L Entry");
+      LedgerEntryDim_L.SETRANGE("Entry No.",GLEntry_P."Entry No.");
+      LedgerEntryDim_L.SETRANGE(Type,LedgerEntryDim_L.Type::"Ext. Dimension");
+
+      // --> 20150520-Wi00-CMC02.02.00-3003-FHS01
+      //BEFORE
+      //IF LedgerEntryDim_L.FINDFIRST THEN BEGIN
+      //AFTER
+      IF LedgerEntryDim_L.FINDSET(FALSE, FALSE) THEN BEGIN
+      // <-- 20150520-Wi00-CMC02.02.00-3003-FHS01
+        DimLedgerEntry_L.RESET;
+        IF DimLedgerEntry_L.FINDLAST THEN
+          NextEntryNo_L := DimLedgerEntry_L."Entry No." + 1
+        ELSE
+          NextEntryNo_L := 1;
+
+        REPEAT
+
+          DimAllocTemplate_L.GET(LedgerEntryDim_L."Dimension Code");
+          GlobalDimCode1_L := '';
+          GlobalDimCode2_L := '';
+
+          // Cr'ation de l''criture analytique
+          DimLedgerEntry_L.INIT;
+          DimLedgerEntry_L.TRANSFERFIELDS(GLEntry_P);
+          DimLedgerEntry_L."Entry No." := NextEntryNo_L;
+          DimLedgerEntry_L."G/L Entry No." := GLEntry_P."Entry No.";
+          DimLedgerEntry_L."Dim. Alloc. Template Code" := LedgerEntryDim_L."Dimension Code";
+          DimLedgerEntry_L."Dim. Alloc. Template Alloc.%" := LedgerEntryDim_L."Allocation %";
+          DimLedgerEntry_L."Global Dimension 1 Code" := DimAllocTemplate_L."Shortcut Dimension 1 Code";
+          DimLedgerEntry_L."Global Dimension 2 Code" := DimAllocTemplate_L."Shortcut Dimension 2 Code";
+          // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+          //Before
+          //CalcAllocAmount(GLEntry_P.Amount,LedgerEntryDim_L."Allocation %",DimLedgerEntry_L.Amount,FALSE);
+          //After
+          CalcAllocAmount(GLEntry_P.Amount,LedgerEntryDim_L."Allocation %",DimLedgerEntry_L.Amount,FALSE
+          ,GLEntry_P.Quantity,DimLedgerEntry_L.Quantity);
+          DimLedgerEntry_L.Quantity := LedgerEntryDim_L.Quantity;
+          // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+          IF DimLedgerEntry_L.Amount < 0 THEN BEGIN
+            DimLedgerEntry_L."Debit Amount" := 0;
+            DimLedgerEntry_L."Credit Amount" := ABS(DimLedgerEntry_L.Amount)
+          END ELSE BEGIN
+            DimLedgerEntry_L."Debit Amount" := ABS(DimLedgerEntry_L.Amount);
+            DimLedgerEntry_L."Credit Amount" := 0;
+          END;
+
+          DimLedgerEntry_L.INSERT;
+
+          RemainingAmountLCY_L := RemainingAmountLCY_L - DimLedgerEntry_L.Amount;
+          RemainingAmountACY_L := RemainingAmountACY_L - DimLedgerEntry_L."Additional-Currency Amount";
+
+          // Cr'ation des axes analytiques pour l''criture analytique
+          DefaultDim_L.RESET;
+          DefaultDim_L.SETRANGE("Table ID",DATABASE::"Dim. Allocation Combination");
+          DefaultDim_L.SETRANGE("No.",LedgerEntryDim_L."Dimension Code");
+          DefaultDim_L.SETRANGE(Type,DefaultDim_L.Type::"Regular Dimension");
+          // --> 20150520-Wi00-CMC02.02.00-3003-FHS01
+          //BEFORE
+          //IF DefaultDim_L.FINDFIRST THEN
+          //AFTER
+          IF DefaultDim_L.FINDSET(FALSE, FALSE) THEN
+          // <-- 20150520-Wi00-CMC02.02.00-3003-FHS01
+            REPEAT
+              LedgerEntryDim2_L.INIT;
+              LedgerEntryDim2_L."Table ID" := DATABASE::"Dim. Ledger Entry";
+              LedgerEntryDim2_L."Entry No." := DimLedgerEntry_L."Entry No.";
+              LedgerEntryDim2_L."Dimension Code" := DefaultDim_L."Dimension Code";
+              LedgerEntryDim2_L."Dimension Value Code" := DefaultDim_L."Dimension Value Code";
+              LedgerEntryDim2_L.INSERT;
+
+              IF LedgerEntryDim2_L."Dimension Code" = GLSetup_G."Global Dimension 1 Code" THEN
+                GlobalDimCode1_L := LedgerEntryDim2_L."Dimension Value Code";
+              IF LedgerEntryDim2_L."Dimension Code" = GLSetup_G."Global Dimension 2 Code" THEN
+                GlobalDimCode2_L := LedgerEntryDim2_L."Dimension Value Code";
+
+            UNTIL DefaultDim_L.NEXT = 0;
+
+          // Ajout de l'analytique "standard" de l''criture comptable . l''criture analytique
+          LedgerEntryDim3_L.RESET;
+          LedgerEntryDim3_L.SETRANGE("Table ID",DATABASE::"G/L Entry");
+          LedgerEntryDim3_L.SETRANGE("Entry No.",GLEntry_P."Entry No.");
+          LedgerEntryDim3_L.SETRANGE(Type,LedgerEntryDim3_L.Type::"Regular Dimension");
+          // --> 20150520-Wi00-CMC02.02.00-3003-FHS01
+          //BEFORE
+          //IF LedgerEntryDim3_L.FINDFIRST THEN
+          //AFTER
+          IF LedgerEntryDim3_L.FINDSET(FALSE, FALSE) THEN
+          // <-- 20150520-Wi00-CMC02.02.00-3003-FHS01
+            REPEAT
+              LedgerEntryDim2_L.INIT;
+              LedgerEntryDim2_L."Table ID" := DATABASE::"Dim. Ledger Entry";
+              LedgerEntryDim2_L."Entry No." := DimLedgerEntry_L."Entry No.";
+              LedgerEntryDim2_L."Dimension Code" := LedgerEntryDim3_L."Dimension Code";
+              LedgerEntryDim2_L."Dimension Value Code" := LedgerEntryDim3_L."Dimension Value Code";
+              IF LedgerEntryDim2_L.INSERT THEN BEGIN
+                IF LedgerEntryDim2_L."Dimension Code" = GLSetup_G."Global Dimension 1 Code" THEN
+                  GlobalDimCode1_L := LedgerEntryDim2_L."Dimension Value Code";
+                IF LedgerEntryDim2_L."Dimension Code" = GLSetup_G."Global Dimension 2 Code" THEN
+                  GlobalDimCode2_L := LedgerEntryDim2_L."Dimension Value Code";
+              END;
+            UNTIL LedgerEntryDim3_L.NEXT = 0;
+
+          NextEntryNo_L := NextEntryNo_L + 1;
+
+          DimLedgerEntry_L."Global Dimension 1 Code" := GlobalDimCode1_L;
+          DimLedgerEntry_L."Global Dimension 2 Code" := GlobalDimCode2_L;
+          DimLedgerEntry_L.MODIFY;
+        UNTIL LedgerEntryDim_L.NEXT = 0;
+
+        // Mise . jour de la derniSre 'criture si la somme des 'critures analytiques n'est pas bonne
+        IF RemainingAmountLCY_L <> 0 THEN BEGIN
+          DimLedgerEntry_L.Amount := DimLedgerEntry_L.Amount + RemainingAmountLCY_L;
+          DimLedgerEntry_L."Debit Amount" := 0;
+          DimLedgerEntry_L."Credit Amount" := 0;
+          IF DimLedgerEntry_L.Amount < 0 THEN
+            DimLedgerEntry_L."Credit Amount" := ABS(DimLedgerEntry_L.Amount)
+          ELSE
+            DimLedgerEntry_L."Debit Amount" := ABS(DimLedgerEntry_L.Amount);
+          DimLedgerEntry_L.MODIFY;
+        END;
+
+        IF RemainingAmountACY_L <> 0 THEN BEGIN
+          DimLedgerEntry_L."Additional-Currency Amount" := DimLedgerEntry_L."Additional-Currency Amount" + RemainingAmountACY_L;
+          DimLedgerEntry_L."Add.-Currency Debit Amount" := 0;
+          DimLedgerEntry_L."Add.-Currency Credit Amount" := 0;
+          IF DimLedgerEntry_L."Additional-Currency Amount" < 0 THEN
+            DimLedgerEntry_L."Add.-Currency Credit Amount" := ABS(DimLedgerEntry_L."Additional-Currency Amount")
+          ELSE
+            DimLedgerEntry_L."Add.-Currency Debit Amount" := ABS(DimLedgerEntry_L."Additional-Currency Amount");
+          DimLedgerEntry_L.MODIFY;
+        END;
+
+      END ELSE BEGIN
+
+        LedgerEntryDim3_L.RESET;
+        LedgerEntryDim3_L.SETRANGE("Table ID",DATABASE::"G/L Entry");
+        LedgerEntryDim3_L.SETRANGE("Entry No.",GLEntry_P."Entry No.");
+        LedgerEntryDim3_L.SETRANGE(Type,LedgerEntryDim3_L.Type::"Regular Dimension");
+        IF LedgerEntryDim3_L.FINDFIRST THEN BEGIN
+
+          DimLedgerEntry_L.RESET;
+          IF DimLedgerEntry_L.FINDLAST THEN
+            NextEntryNo_L := DimLedgerEntry_L."Entry No." + 1
+          ELSE
+            NextEntryNo_L := 1;
+
+          DimLedgerEntry_L.INIT;
+          DimLedgerEntry_L.TRANSFERFIELDS(GLEntry_P);
+          DimLedgerEntry_L."Entry No." := NextEntryNo_L;
+          DimLedgerEntry_L."G/L Entry No." := GLEntry_P."Entry No.";
+          DimLedgerEntry_L.INSERT;
+
+          // --> 20150520-Wi00-CMC02.02.00-3003-FHS01
+          //BEFORE
+          //IF LedgerEntryDim3_L.FINDFIRST THEN
+          //AFTER
+          IF LedgerEntryDim3_L.FINDSET(FALSE, FALSE) THEN
+          // <-- 20150520-Wi00-CMC02.02.00-3003-FHS01
+            REPEAT
+              LedgerEntryDim2_L.INIT;
+              LedgerEntryDim2_L."Table ID" := DATABASE::"Dim. Ledger Entry";
+              LedgerEntryDim2_L."Entry No." := DimLedgerEntry_L."Entry No.";
+              LedgerEntryDim2_L."Dimension Code" := LedgerEntryDim3_L."Dimension Code";
+              LedgerEntryDim2_L."Dimension Value Code" := LedgerEntryDim3_L."Dimension Value Code";
+              LedgerEntryDim2_L.INSERT;
+            UNTIL LedgerEntryDim3_L.NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE UpdateGenJnlLineExtDim@8061773(GenJnlLine_P@8061733 : Record 81;BaseAmount_P@8061732 : Decimal;BaseQty_P@8053000 : Decimal);
+    VAR
+      JnlLineDim_L@8061734 : Record 356;
+    BEGIN
+      // Fonction de MAJ de l'analytique sur feuille de saisie.
+
+      JnlLineDim_L.RESET;
+      JnlLineDim_L.SETRANGE("Table ID",DATABASE::"Gen. Journal Line");
+      JnlLineDim_L.SETRANGE("Journal Template Name",GenJnlLine_P."Journal Template Name");
+      JnlLineDim_L.SETRANGE("Journal Batch Name",GenJnlLine_P."Journal Batch Name");
+      JnlLineDim_L.SETRANGE("Journal Line No.",GenJnlLine_P."Line No.");
+      JnlLineDim_L.SETRANGE("Allocation Line No.",0);
+      JnlLineDim_L.SETRANGE(Type,JnlLineDim_L.Type::"Ext. Dimension");
+      // --> 20150520-Wi00-CMC02.02.00-3003-FHS01
+      //BEFORE
+      //IF JnlLineDim_L.FINDFIRST THEN
+      //AFTER
+      IF JnlLineDim_L.FINDSET(FALSE, FALSE) THEN
+      // <-- 20150520-Wi00-CMC02.02.00-3003-FHS01
+        REPEAT
+
+          // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+          //Before
+          //CalcAllocAmount(BaseAmount_P,JnlLineDim_L."Allocation %",JnlLineDim_L."Allocation Amount",FALSE);
+          //After
+          CalcAllocAmount(BaseAmount_P,JnlLineDim_L."Allocation %",JnlLineDim_L."Allocation Amount",FALSE,
+          BaseQty_P,JnlLineDim_L.Quantity);
+          // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+          JnlLineDim_L.MODIFY;
+        UNTIL JnlLineDim_L.NEXT = 0;
+    END;
+
+    PROCEDURE UpdateDocumentExtDim@8061772(TableID_P@8061736 : Integer;DocType_P@8061735 : Option;DocNo_P@8061734 : Code[20];LineNo_P@8061733 : Integer;BaseAmount_P@8061732 : Decimal;BaseQty_P@8053000 : Decimal);
+    VAR
+      DocDim_L@8061737 : Record 357;
+    BEGIN
+      DocDim_L.RESET;
+      DocDim_L.SETRANGE("Table ID",TableID_P);
+      DocDim_L.SETRANGE("Document Type",DocType_P);
+      DocDim_L.SETRANGE("Document No.",DocNo_P);
+      DocDim_L.SETRANGE("Line No.",LineNo_P);
+      // --> 20150520-Wi00-CMC02.02.00-3003-FHS01
+      //BEFORE
+      //IF DocDim_L.FINDFIRST THEN
+      //AFTER
+      IF DocDim_L.FINDSET(FALSE, FALSE) THEN
+      // <-- 20150520-Wi00-CMC02.02.00-3003-FHS01
+        REPEAT
+        // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+        //Before
+        //CalcAllocAmount(BaseAmount_P,DocDim_L."Allocation %",DocDim_L."Allocation Amount",FALSE);
+        //After
+          CalcAllocAmount(BaseAmount_P,DocDim_L."Allocation %",DocDim_L."Allocation Amount",FALSE,BaseQty_P,DocDim_L.Quantity);
+        // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+          DocDim_L.MODIFY;
+        UNTIL DocDim_L.NEXT = 0;
+    END;
+
+    PROCEDURE ShowExtDimDefault@8061771(VAR DefaultDim_P@8061732 : Record 352);
+    VAR
+      DefaultDim2_L@8061733 : Record 352;
+      Text8061732@8061734 : TextConst 'ENU=Extended Dimensions are not allowed on this table.;FRA=La saisie d''axes 'tendus n''est pas autoris'e sur cette table.';
+    BEGIN
+      IF DefaultDim_P."Table ID" IN [DATABASE::"Dim. Allocation Combination"] THEN
+        ERROR(Text8061732);
+
+      DefaultDim2_L.RESET;
+      DefaultDim2_L.SETRANGE("Table ID",DefaultDim_P."Table ID");
+      DefaultDim2_L.SETRANGE("No.",DefaultDim_P."No.");
+      DefaultDim2_L.SETRANGE(Type,DefaultDim2_L.Type::"Ext. Dimension");
+      FORM.RUNMODAL(FORM::Form8061734,DefaultDim2_L);
+    END;
+
+    PROCEDURE ShowExtDimLedgerEntry@8061770(VAR LedgerEntryDim_P@8061732 : Record 355);
+    VAR
+      LedgerEntryDim2_L@8061733 : Record 355;
+      Text8061732@8061734 : TextConst 'ENU=Extended Dimensions are not allowed on this table.;FRA=La consultation des axes 'tendus n''est pas autoris'e sur cette table.';
+    BEGIN
+      IF LedgerEntryDim_P."Table ID" IN [DATABASE::"Dim. Ledger Entry"] THEN
+        ERROR(Text8061732);
+
+      LedgerEntryDim2_L.RESET;
+      LedgerEntryDim2_L.SETRANGE("Table ID",LedgerEntryDim_P."Table ID");
+      LedgerEntryDim2_L.SETRANGE("Entry No.",LedgerEntryDim_P."Entry No.");
+      FORM.RUNMODAL(FORM::Form8061735,LedgerEntryDim2_L);
+    END;
+
+    PROCEDURE ShowExtDimJnlLine@8061769(VAR JnlLineDim_P@8061732 : Record 356);
+    VAR
+      JnlLineDim2_L@8061733 : Record 356;
+    BEGIN
+      JnlLineDim2_L.RESET;
+      JnlLineDim2_L.SETRANGE("Table ID",JnlLineDim_P."Table ID");
+      JnlLineDim2_L.SETRANGE("Journal Template Name",JnlLineDim_P."Journal Template Name");
+      JnlLineDim2_L.SETRANGE("Journal Batch Name",JnlLineDim_P."Journal Batch Name");
+      JnlLineDim2_L.SETRANGE("Journal Line No.",JnlLineDim_P."Journal Line No.");
+      JnlLineDim2_L.SETRANGE(Type,JnlLineDim_P.Type::"Ext. Dimension");
+      FORM.RUNMODAL(FORM::Form8061736,JnlLineDim2_L);
+    END;
+
+    PROCEDURE ShowExtDimDocument@8061768(VAR DocDim_P@8061732 : Record 357);
+    VAR
+      DocDim2_L@8061733 : Record 357;
+    BEGIN
+      DocDim2_L.RESET;
+      DocDim2_L.SETRANGE("Table ID",DocDim_P."Table ID");
+      DocDim2_L.SETRANGE("Document Type",DocDim_P."Document Type");
+      DocDim2_L.SETRANGE("Document No.",DocDim_P."Document No.");
+      DocDim2_L.SETRANGE("Line No.",DocDim_P."Line No.");
+      DocDim2_L.SETRANGE(Type,DocDim2_L.Type::"Ext. Dimension");
+      FORM.RUNMODAL(FORM::Form8061737,DocDim2_L);
+    END;
+
+    PROCEDURE ShowExtDimPostedDoc@8061767(VAR PostedDocDim_P@8061732 : Record 359);
+    VAR
+      PostedDocDim2_L@8061733 : Record 359;
+    BEGIN
+      PostedDocDim2_L.RESET;
+      PostedDocDim2_L.SETRANGE("Table ID",PostedDocDim_P."Table ID");
+      PostedDocDim2_L.SETRANGE("Document No.",PostedDocDim_P."Document No.");
+      PostedDocDim2_L.SETRANGE("Line No.",PostedDocDim_P."Line No.");
+      PostedDocDim2_L.SETRANGE(Type,PostedDocDim2_L.Type::"Ext. Dimension");
+      FORM.RUNMODAL(FORM::Form8061738,PostedDocDim2_L);
+    END;
+
+    PROCEDURE ShowExtDimFAAlloc@8061766(VAR FAAllocDim_P@8061732 : Record 5648);
+    VAR
+      FAAllocDim2_L@8061733 : Record 5648;
+    BEGIN
+      FAAllocDim2_L.RESET;
+      FAAllocDim2_L.SETRANGE(Code,FAAllocDim_P.Code);
+      FAAllocDim2_L.SETRANGE("Allocation Type",FAAllocDim_P."Allocation Type");
+      FAAllocDim2_L.SETRANGE("Line No.",FAAllocDim_P."Line No.");
+      FAAllocDim2_L.SETRANGE(Type,FAAllocDim2_L.Type::"Ext. Dimension");
+      FORM.RUNMODAL(FORM::Form8061742,FAAllocDim2_L);
+    END;
+
+    PROCEDURE SetFilterDimBufferFilter@8061765(VAR DimBuffer_P@8061733 : Record 360;VAR WithDimBuffer_P@8061732 : Record 360);
+    BEGIN
+      DimBuffer_P.SETRANGE(Type,WithDimBuffer_P.Type);
+      DimBuffer_P.SETRANGE("Allocation %",WithDimBuffer_P."Allocation %");
+    END;
+
+    PROCEDURE CopyExtDimDocToDimBuf@8061764(VAR FromDocDim_P@8061733 : Record 357;VAR ToDimBuf_P@8061732 : Record 360);
+    BEGIN
+      ToDimBuf_P.Type := FromDocDim_P.Type;
+      ToDimBuf_P."Allocation Amount" := FromDocDim_P."Allocation Amount";
+      ToDimBuf_P."Allocation %" := FromDocDim_P."Allocation %";
+      // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+      ToDimBuf_P.Quantity := FromDocDim_P.Quantity;
+      // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+    END;
+
+    PROCEDURE CopyExtDimJnlLineToLedgerEntry@8061763(VAR FromJnlLineDim_P@8061733 : Record 356;VAR ToLedgerEntryDim_P@8061732 : Record 355);
+    BEGIN
+      ToLedgerEntryDim_P.Type := FromJnlLineDim_P.Type;
+      ToLedgerEntryDim_P."Allocation %" := FromJnlLineDim_P."Allocation %";
+      ToLedgerEntryDim_P."Allocation Amount" := FromJnlLineDim_P."Allocation Amount";
+      // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+      ToLedgerEntryDim_P.Quantity := FromJnlLineDim_P.Quantity;
+      // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+    END;
+
+    PROCEDURE CopyExtDimJnlLineToDoc@8061762(VAR FromJnlLineDim_P@8061733 : Record 356;VAR ToDocDim_P@8061732 : Record 357);
+    BEGIN
+      ToDocDim_P.Type := FromJnlLineDim_P.Type;
+      ToDocDim_P."Allocation %" := FromJnlLineDim_P."Allocation %";
+      ToDocDim_P."Allocation Amount" := FromJnlLineDim_P."Allocation Amount";
+      // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+      ToDocDim_P.Quantity := FromJnlLineDim_P.Quantity;
+      // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+    END;
+
+    PROCEDURE CopyExtDimDimBufToDoc@8061761(VAR FromDimBuf_P@8061733 : Record 360;VAR ToDocDim_P@8061732 : Record 357);
+    BEGIN
+      ToDocDim_P.Type := FromDimBuf_P.Type;
+      ToDocDim_P."Allocation Amount" := FromDimBuf_P."Allocation Amount";
+      ToDocDim_P."Allocation %" := FromDimBuf_P."Allocation %";
+      // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+      ToDocDim_P.Quantity := FromDimBuf_P.Quantity;
+      // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+    END;
+
+    PROCEDURE CopyExtDimDocArchToDoc@8061760(VAR FromDocDimArch_P@8061733 : Record 5106;VAR ToDocDim_P@8061732 : Record 357);
+    BEGIN
+      ToDocDim_P.Type := FromDocDimArch_P.Type;
+      ToDocDim_P."Allocation Amount" := FromDocDimArch_P."Allocation Amount";
+      ToDocDim_P."Allocation %" := FromDocDimArch_P."Allocation %";
+      // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+      ToDocDim_P.Quantity := FromDocDimArch_P.Quantity;
+      // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+    END;
+
+    PROCEDURE CopyExtDimDimBufToPostedDoc@8061759(VAR FromDimBuf_P@8061733 : Record 360;VAR ToPostedDocDim_P@8061732 : Record 359);
+    BEGIN
+      ToPostedDocDim_P.Type := FromDimBuf_P.Type;
+      ToPostedDocDim_P."Allocation Amount" := FromDimBuf_P."Allocation Amount";
+      ToPostedDocDim_P."Allocation %" := FromDimBuf_P."Allocation %";
+      // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+      ToPostedDocDim_P.Quantity := FromDimBuf_P.Quantity;
+      // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+    END;
+
+    PROCEDURE CopyExtDimDocToPostedDoc@8061758(VAR FromDocDim_P@8061733 : Record 357;VAR ToPostedDocDim_P@8061732 : Record 359);
+    BEGIN
+      ToPostedDocDim_P.Type := FromDocDim_P.Type;
+      ToPostedDocDim_P."Allocation Amount" := FromDocDim_P."Allocation Amount";
+      ToPostedDocDim_P."Allocation %" := FromDocDim_P."Allocation %";
+      // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+      ToPostedDocDim_P.Quantity := FromDocDim_P.Quantity;
+      // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+    END;
+
+    PROCEDURE CopyExtDimDocToJnlLine@8061757(VAR FromDocDim_P@8061733 : Record 357;VAR ToJnlLineDim_P@8061732 : Record 356);
+    BEGIN
+      ToJnlLineDim_P.Type := FromDocDim_P.Type;
+      ToJnlLineDim_P."Allocation Amount" := FromDocDim_P."Allocation Amount";
+      ToJnlLineDim_P."Allocation %" := FromDocDim_P."Allocation %";
+      // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+      ToJnlLineDim_P.Quantity := FromDocDim_P.Quantity;
+      // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+    END;
+
+    PROCEDURE CopyExtDimDimBufToJnlLine@8061756(VAR FromDimBuf_P@8061733 : Record 360;VAR ToJnlLineDim_P@8061732 : Record 356);
+    BEGIN
+      ToJnlLineDim_P.Type := FromDimBuf_P.Type;
+      ToJnlLineDim_P."Allocation Amount" := FromDimBuf_P."Allocation Amount";
+      ToJnlLineDim_P."Allocation %" := FromDimBuf_P."Allocation %";
+      // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+      ToJnlLineDim_P.Quantity := FromDimBuf_P.Quantity;
+      // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+    END;
+
+    PROCEDURE CopyExtDimJnlLineToDimBuf@8061755(VAR FromJnlLineDim_P@8061733 : Record 356;VAR ToDimBuf_P@8061732 : Record 360);
+    BEGIN
+      ToDimBuf_P.Type := FromJnlLineDim_P.Type;
+      ToDimBuf_P."Allocation Amount" := FromJnlLineDim_P."Allocation Amount";
+      ToDimBuf_P."Allocation %" :=FromJnlLineDim_P."Allocation %";
+      // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+      ToDimBuf_P.Quantity := FromJnlLineDim_P.Quantity;
+      // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+    END;
+
+    PROCEDURE CopyExtDimDocToLedgerEntry@8061754(VAR FromDocDim_P@8061733 : Record 357;VAR ToLedgerEntryDim_P@8061732 : Record 355);
+    BEGIN
+      ToLedgerEntryDim_P.Type := FromDocDim_P.Type;
+      ToLedgerEntryDim_P."Allocation Amount" := FromDocDim_P."Allocation Amount";
+      ToLedgerEntryDim_P."Allocation %" := FromDocDim_P."Allocation %";
+      // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+      ToLedgerEntryDim_P.Quantity := FromDocDim_P.Quantity;
+      // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+    END;
+
+    PROCEDURE CopyExtDimLedgerEntryToDoc@8061753(VAR FromLedgerEntryDim_P@8061733 : Record 355;VAR ToDocDim_P@8061732 : Record 357);
+    BEGIN
+      ToDocDim_P.Type := FromLedgerEntryDim_P.Type;
+      ToDocDim_P."Allocation Amount" := FromLedgerEntryDim_P."Allocation Amount";
+      ToDocDim_P."Allocation %" := FromLedgerEntryDim_P."Allocation %";
+      // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+      ToDocDim_P.Quantity := FromLedgerEntryDim_P.Quantity;
+      // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+    END;
+
+    PROCEDURE CopyExtDimDocToDoc@8061752(VAR FromDocDim_P@8061733 : Record 357;VAR ToDocDim_P@8061732 : Record 357);
+    BEGIN
+      ToDocDim_P.Type := FromDocDim_P.Type;
+      ToDocDim_P."Allocation Amount" := FromDocDim_P."Allocation Amount";
+      ToDocDim_P."Allocation %" := FromDocDim_P."Allocation %";
+      // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+      ToDocDim_P.Quantity := FromDocDim_P.Quantity;
+      // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+    END;
+
+    PROCEDURE CopyExtDefaultToDimBuf@8061751(VAR FromDefaultDim_P@8061733 : Record 352;VAR ToDimBuf_P@8061732 : Record 360);
+    BEGIN
+      ToDimBuf_P.Type := FromDefaultDim_P.Type;
+      ToDimBuf_P."Allocation %" := FromDefaultDim_P."Allocation %";
+    END;
+
+    PROCEDURE CopyExtLedgerEntryToDimBuf@8061750(VAR FromLedgerEntryDim_P@8061733 : Record 355;VAR ToDimBuf_P@8061732 : Record 360);
+    BEGIN
+      ToDimBuf_P.Type := FromLedgerEntryDim_P.Type;
+      ToDimBuf_P."Allocation %" := FromLedgerEntryDim_P."Allocation %";
+      ToDimBuf_P."Allocation Amount" := FromLedgerEntryDim_P."Allocation Amount";
+      // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+      ToDimBuf_P.Quantity := FromLedgerEntryDim_P.Quantity;
+      // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+    END;
+
+    PROCEDURE CopyExtDimDimBufToLedgerEntry@8061749(VAR FromDimBuf_P@8061733 : Record 360;VAR ToLedgerEntryDim_P@8061732 : Record 355);
+    BEGIN
+      ToLedgerEntryDim_P.Type := FromDimBuf_P.Type;
+      ToLedgerEntryDim_P."Allocation %" := FromDimBuf_P."Allocation %";
+      ToLedgerEntryDim_P."Allocation Amount" := FromDimBuf_P."Allocation Amount";
+      // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+      ToLedgerEntryDim_P.Quantity := FromDimBuf_P.Quantity;
+      // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+    END;
+
+    PROCEDURE CopyExtDimFAAllocToJnlLine@8061748(VAR FromFAAllocDim_P@8061733 : Record 5648;VAR ToJnlLineDim_P@8061732 : Record 356);
+    BEGIN
+      ToJnlLineDim_P.Type := FromFAAllocDim_P.Type;
+      ToJnlLineDim_P."Allocation %" := FromFAAllocDim_P."Allocation %";
+    END;
+
+    PROCEDURE CopyExtDimJnlLineToJnlLine@8061747(VAR FromJnlLineDim_P@8061733 : Record 356;VAR ToJnlLineDim_P@8061732 : Record 356);
+    BEGIN
+      ToJnlLineDim_P.Type := FromJnlLineDim_P.Type;
+      ToJnlLineDim_P."Allocation %" := FromJnlLineDim_P."Allocation %";
+      ToJnlLineDim_P."Allocation Amount" := FromJnlLineDim_P."Allocation Amount";
+      // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+      ToJnlLineDim_P.Quantity := FromJnlLineDim_P.Quantity;
+      // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+    END;
+
+    PROCEDURE CopyExtDimLedgerEntryToJnlLine@8061746(VAR FromLedgerEntryDim_P@8061733 : Record 355;VAR ToJnlLineDim_P@8061732 : Record 356);
+    BEGIN
+      ToJnlLineDim_P.Type := FromLedgerEntryDim_P.Type;
+      ToJnlLineDim_P."Allocation %" := FromLedgerEntryDim_P."Allocation %";
+      ToJnlLineDim_P."Allocation Amount" := FromLedgerEntryDim_P."Allocation Amount";
+      // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+      ToJnlLineDim_P.Quantity := FromLedgerEntryDim_P.Quantity;
+      // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+    END;
+
+    PROCEDURE ShowDefaultDim@8061745(TableID_P@8061734 : Integer;RecNo_P@8061733 : Code[20];VAR ShortcutDimCode_P@8061732 : ARRAY [8] OF Code[20]);
+    VAR
+      DefaultDim_L@8061736 : Record 352;
+      i_L@8061735 : Integer;
+    BEGIN
+      GetGLSetup;
+      FOR i_L := 1 TO 8 DO BEGIN
+        ShortcutDimCode_P[i_L] := '';
+        IF GLSetupShortcutDimCode_G[i_L] <> '' THEN
+          IF DefaultDim_L.GET(
+               TableID_P,RecNo_P,DefaultDim_L.Type::"Regular Dimension",GLSetupShortcutDimCode_G[i_L])
+          THEN
+            ShortcutDimCode_P[i_L] := DefaultDim_L."Dimension Value Code";
+      END;
+    END;
+
+    PROCEDURE ShowLedgerEntryDim@8061744(TableID_P@8061734 : Integer;EntryNo_P@8061733 : Integer;VAR ShortcutDimCode_P@8061732 : ARRAY [8] OF Code[20]);
+    VAR
+      i_L@8061736 : Integer;
+      LedgerEntryDim_L@8061735 : Record 355;
+    BEGIN
+      GetGLSetup;
+      FOR i_L := 1 TO 8 DO BEGIN
+        ShortcutDimCode_P[i_L] := '';
+        IF GLSetupShortcutDimCode_G[i_L] <> '' THEN BEGIN
+          LedgerEntryDim_L.RESET;
+          LedgerEntryDim_L.SETRANGE("Table ID",TableID_P);
+          LedgerEntryDim_L.SETRANGE("Entry No.",EntryNo_P);
+          LedgerEntryDim_L.SETRANGE("Dimension Code",GLSetupShortcutDimCode_G[i_L]);
+          IF LedgerEntryDim_L.FINDFIRST THEN
+            ShortcutDimCode_P[i_L] := LedgerEntryDim_L."Dimension Value Code";
+        END;
+      END;
+    END;
+
+    PROCEDURE LaunchUpdateDimAlloc@8061743(VAR GLEntry_P@8061732 : Record 17);
+    VAR
+      UpdateDimAlloc_L@8061734 : Page 8061739;
+      LedgerEntryDim_L@8061733 : Record 355;
+    BEGIN
+      UpdateDimAlloc_L.SetGLEntry(GLEntry_P);
+
+      LedgerEntryDim_L.RESET;
+      LedgerEntryDim_L.SETRANGE("Table ID",DATABASE::"G/L Entry");
+      LedgerEntryDim_L.SETRANGE("Entry No.",GLEntry_P."Entry No.");
+      UpdateDimAlloc_L.SetLedgerEntryDim(LedgerEntryDim_L);
+
+      UpdateDimAlloc_L.RUNMODAL;
+    END;
+
+    PROCEDURE UpdateDimAllocation@8061742(VAR GLEntry2_P@8061733 : Record 17;VAR LedgerEntryDim3_P@8061732 : Record 355);
+    VAR
+      NextEntryNo_L@8061742 : Integer;
+      DimLedgerEntry_L@8061741 : Record 8061732;
+      DimLedgerEntry2_L@8061740 : Record 8061732;
+      LedgerEntryDim_L@8061739 : Record 355;
+      LedgerEntryDim2_L@8061738 : Record 355;
+      TableID_L@8061737 : ARRAY [10] OF Integer;
+      No_L@8061736 : ARRAY [10] OF Code[20];
+      UpdateGLEntry_L@8061735 : Boolean;
+      Modification_L@1000000000 : Boolean;
+      GLEntry3_L@8061734 : Record 17;
+      BaseQty_L@8053000 : Decimal;
+    BEGIN
+      // --> 20100126-8061020-CMB6.00.01-FEC03
+      GetGLSetup;
+      // <-- 20100126-8061020-CMB6.00.01-FEC03
+      // --> 20131002-FINA17-CMC02.02.00-AKH01
+      PostingDate_G := 0D;
+      // <-- 20131002-FINA17-CMC02.02.00-AKH01
+
+      // --> 20140121-8061020-CMB6.00.01-1483-BDN01
+      //BEFORE
+      //IF GLEntry2_P.FINDFIRST THEN
+      //AFTER
+      // --> 20150520-Wi00-CMC02.02.00-3003-FHS01
+      //BEFORE
+      //IF GLEntry2_P.FINDFIRST THEN BEGIN
+      //AFTER
+      IF GLEntry2_P.FINDSET(FALSE, FALSE) THEN BEGIN
+      // <-- 20150520-Wi00-CMC02.02.00-3003-FHS01
+      // <-- 20140121-8061020-CMB6.00.01-1483-BDN01
+
+        // --> 20140121-8061020-CMB6.00.01-1483-BDN01
+        //Any modifications (check from buffer to reality) ?
+        Modification_L := FALSE;
+        // --> 20150520-Wi00-CMC02.02.00-3003-FHS01
+        //BEFORE
+        //IF LedgerEntryDim3_P.FINDFIRST THEN
+        //AFTER
+        IF LedgerEntryDim3_P.FINDSET(FALSE, FALSE) THEN
+        // <-- 20150520-Wi00-CMC02.02.00-3003-FHS01
+          REPEAT
+            IF NOT LedgerEntryDim_L.GET(LedgerEntryDim3_P."Table ID",LedgerEntryDim3_P."Entry No.",
+                                        LedgerEntryDim3_P.Type,LedgerEntryDim3_P."Dimension Code") THEN
+              //Something has been added in buffer
+              Modification_L := TRUE
+            ELSE
+              CASE LedgerEntryDim_L.Type OF
+                LedgerEntryDim_L.Type::"Regular Dimension" :
+                  IF LedgerEntryDim_L."Dimension Value Code" <> LedgerEntryDim3_P."Dimension Value Code" THEN Modification_L := TRUE;
+                LedgerEntryDim_L.Type::"Ext. Dimension" :
+                  IF LedgerEntryDim_L."Allocation %" <> LedgerEntryDim3_P."Allocation %" THEN Modification_L := TRUE;
+              END;
+          UNTIL LedgerEntryDim3_P.NEXT = 0;
+        //Any modifications (check from reality to buffer) ?
+        IF NOT Modification_L THEN BEGIN
+          LedgerEntryDim_L.RESET;
+          LedgerEntryDim_L.SETRANGE("Table ID",17);
+          LedgerEntryDim_L.SETRANGE("Entry No.",GLEntry2_P."Entry No.");
+          // --> 20150520-Wi00-CMC02.02.00-3003-FHS01
+          //BEFORE
+          //IF LedgerEntryDim_L.FINDFIRST THEN
+          //AFTER
+          IF LedgerEntryDim_L.FINDSET(FALSE, FALSE) THEN
+          // <-- 20150520-Wi00-CMC02.02.00-3003-FHS01
+            REPEAT
+              IF NOT LedgerEntryDim3_P.GET(LedgerEntryDim_L."Table ID",LedgerEntryDim_L."Entry No.",
+                                           LedgerEntryDim_L.Type,LedgerEntryDim_L."Dimension Code") THEN
+                //Something has been deleted in buffer
+                Modification_L := TRUE
+              ELSE
+                CASE LedgerEntryDim3_P.Type OF
+                  LedgerEntryDim3_P.Type::"Regular Dimension" :
+                  // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+                  //BEFORE
+                  //IF LedgerEntryDim_L."Dimension Value Code" <> LedgerEntryDim3_P."Dimension Value Code" THEN Modification_L := TRUE;
+                  //AFTER
+                   BEGIN
+                    IF LedgerEntryDim_L."Dimension Value Code" <> LedgerEntryDim3_P."Dimension Value Code" THEN Modification_L := TRUE;
+                    IF  LedgerEntryDim_L.Quantity <> LedgerEntryDim3_P.Quantity THEN Modification_L := TRUE;
+                   END;
+                  // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+                  LedgerEntryDim3_P.Type::"Ext. Dimension" :
+                    IF LedgerEntryDim_L."Allocation %" <> LedgerEntryDim3_P."Allocation %" THEN Modification_L := TRUE;
+                END;
+            UNTIL LedgerEntryDim_L.NEXT=0;
+        END;
+
+        IF Modification_L THEN
+        // <-- 20140121-8061020-CMB6.00.01-1483-BDN01
+
+        REPEAT
+          // --> 20131002-FINA17-CMC02.02.00-AKH01
+          PostingDate_G := GLEntry2_P."Posting Date";
+          // <-- 20131002-FINA17-CMC02.02.00-AKH01
+          // V'rification
+          TableID_L[1] := DATABASE::"G/L Account";
+          No_L[1] := GLEntry2_P."G/L Account No.";
+          CheckUpdateDimAllocation(LedgerEntryDim3_P,TableID_L,No_L);
+
+          // Annulation des 'critures analytiques existantes
+
+          DimLedgerEntry_L.RESET;
+          IF DimLedgerEntry_L.FINDLAST THEN
+            NextEntryNo_L := DimLedgerEntry_L."Entry No." + 1
+          ELSE
+            NextEntryNo_L := 1;
+
+          DimLedgerEntry_L.RESET;
+          DimLedgerEntry_L.SETRANGE("G/L Entry No.",GLEntry2_P."Entry No.");
+          DimLedgerEntry_L.SETRANGE(Canceled,FALSE);
+          // --> 20150520-Wi00-CMC02.02.00-3003-FHS01
+          //BEFORE
+          //IF DimLedgerEntry_L.FINDFIRST THEN BEGIN
+          //AFTER
+          IF DimLedgerEntry_L.FINDSET(FALSE, FALSE) THEN BEGIN
+          // <-- 20150520-Wi00-CMC02.02.00-3003-FHS01
+            REPEAT
+
+              DimLedgerEntry_L.Canceled := TRUE;
+              DimLedgerEntry_L."Cancellation Date" := WORKDATE;
+              DimLedgerEntry_L."User ID" := USERID;
+              DimLedgerEntry_L.MODIFY;
+
+              DimLedgerEntry2_L.INIT;
+              DimLedgerEntry2_L := DimLedgerEntry_L;
+              DimLedgerEntry2_L."Entry No." := NextEntryNo_L;
+              DimLedgerEntry2_L.Amount *= -1;
+              DimLedgerEntry2_L."Debit Amount" *= -1;
+              DimLedgerEntry2_L."Credit Amount" *= -1;
+              DimLedgerEntry2_L."Additional-Currency Amount" *= -1;
+              DimLedgerEntry2_L."Add.-Currency Debit Amount" *= -1;
+              DimLedgerEntry2_L."Add.-Currency Credit Amount" *= -1;
+              DimLedgerEntry2_L.INSERT;
+
+              LedgerEntryDim_L.RESET;
+              LedgerEntryDim_L.SETRANGE("Table ID",DATABASE::"Dim. Ledger Entry");
+              LedgerEntryDim_L.SETRANGE("Entry No.",DimLedgerEntry_L."Entry No.");
+              // --> 20150520-Wi00-CMC02.02.00-3003-FHS01
+              //BEFORE
+              //IF LedgerEntryDim_L.FINDFIRST THEN
+              //AFTER
+              IF LedgerEntryDim_L.FINDSET(FALSE, FALSE) THEN
+              // <-- 20150520-Wi00-CMC02.02.00-3003-FHS01
+                REPEAT
+                  LedgerEntryDim2_L.INIT;
+                  LedgerEntryDim2_L := LedgerEntryDim_L;
+                  LedgerEntryDim2_L."Entry No." := DimLedgerEntry2_L."Entry No.";
+                  LedgerEntryDim2_L.INSERT;
+                UNTIL LedgerEntryDim_L.NEXT = 0;
+
+              NextEntryNo_L := NextEntryNo_L + 1;
+
+            UNTIL DimLedgerEntry_L.NEXT = 0;
+
+          END;
+
+          // Remplacement de l'analytique de l''criture comptable.
+
+          LedgerEntryDim_L.RESET;
+          LedgerEntryDim_L.SETRANGE("Table ID",DATABASE::"G/L Entry");
+          LedgerEntryDim_L.SETRANGE("Entry No.",GLEntry2_P."Entry No.");
+          LedgerEntryDim_L.DELETEALL;
+
+          // --> 20140130-8061020-CMB6.00.01-1106-BDN02
+          GLEntry2_P."Global Dimension 1 Code" := '';
+          GLEntry2_P."Global Dimension 2 Code" := '';
+          // <-- 20140130-8061020-CMB6.00.01-1106-BDN02
+
+          // --> 20150520-Wi00-CMC02.02.00-3003-FHS01
+          //BEFORE
+          //IF LedgerEntryDim3_P.FINDFIRST THEN
+          //AFTER
+          IF LedgerEntryDim3_P.FINDSET(FALSE, FALSE) THEN
+          // <-- 20150520-Wi00-CMC02.02.00-3003-FHS01
+            REPEAT
+              LedgerEntryDim2_L.INIT;
+              LedgerEntryDim2_L."Table ID" := DATABASE::"G/L Entry";
+              LedgerEntryDim2_L."Entry No." := GLEntry2_P."Entry No.";
+              LedgerEntryDim2_L.Type := LedgerEntryDim3_P.Type;
+              LedgerEntryDim2_L."Dimension Code" := LedgerEntryDim3_P."Dimension Code";
+              LedgerEntryDim2_L."Dimension Value Code" := LedgerEntryDim3_P."Dimension Value Code";
+              LedgerEntryDim2_L."Allocation %" := LedgerEntryDim3_P."Allocation %";
+              // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+              //Before
+              //CalcAllocAmount(GetLedgerEntryAllocBaseAmount(LedgerEntryDim2_L),
+              //               LedgerEntryDim2_L."Allocation %",LedgerEntryDim2_L."Allocation Amount",FALSE);
+              //After
+              CalcAllocAmount(GetLedgerEntryAllocBaseAmount(LedgerEntryDim2_L,BaseQty_L),
+                              LedgerEntryDim2_L."Allocation %",LedgerEntryDim2_L."Allocation Amount",FALSE,
+                              BaseQty_L,LedgerEntryDim2_L.Quantity);
+              LedgerEntryDim2_L.Quantity := LedgerEntryDim3_P.Quantity;
+              // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+              LedgerEntryDim2_L.INSERT;
+              // --> 20100126-8061020-CMB6.00.01-FEC02
+              UpdateGLEntry_L := FALSE;
+              IF LedgerEntryDim2_L."Dimension Code" = GLSetupShortcutDimCode_G[1] THEN BEGIN
+                GLEntry2_P."Global Dimension 1 Code" := LedgerEntryDim2_L."Dimension Value Code";
+                UpdateGLEntry_L := TRUE;
+              END;
+              IF LedgerEntryDim2_L."Dimension Code" = GLSetupShortcutDimCode_G[2] THEN BEGIN
+                GLEntry2_P."Global Dimension 2 Code" := LedgerEntryDim2_L."Dimension Value Code";
+                UpdateGLEntry_L := TRUE;
+              END;
+              IF UpdateGLEntry_L THEN BEGIN
+                GLEntry3_L.GET(GLEntry2_P."Entry No.");
+                GLEntry3_L."Global Dimension 1 Code" := GLEntry2_P."Global Dimension 1 Code";
+                GLEntry3_L."Global Dimension 2 Code" := GLEntry2_P."Global Dimension 2 Code";
+                GLEntry3_L.MODIFY;
+              END;
+              // <-- 20100126-8061020-CMB6.00.01-FEC02
+
+            UNTIL LedgerEntryDim3_P.NEXT = 0;
+
+          // Lancement de la g'n'ration des nouvelles 'critures analytiques
+          GenerateDimLedgerEntry(GLEntry2_P);
+
+        UNTIL GLEntry2_P.NEXT = 0;
+
+      // --> 20140121-8061020-CMB6.00.01-1483-BDN01
+      END;
+      // <-- 20140121-8061020-CMB6.00.01-1483-BDN01
+    END;
+
+    PROCEDURE UpdateExtJnlLineAmount@8061741(BaseAmount_P@8061733 : Decimal;VAR JnlLineDim_P@8061732 : Record 356);
+    VAR
+      RemainingAmountLCY_L@8061734 : Decimal;
+    BEGIN
+      RemainingAmountLCY_L := BaseAmount_P;
+
+      JnlLineDim_P.SETRANGE(Type,JnlLineDim_P.Type::"Ext. Dimension");
+
+      // --> 20150520-Wi00-CMC02.02.00-3003-FHS01
+      //BEFORE
+      //IF JnlLineDim_P.FINDFIRST THEN BEGIN
+      //AFTER
+      IF JnlLineDim_P.FINDSET(FALSE, FALSE) THEN BEGIN
+      // <-- 20150520-Wi00-CMC02.02.00-3003-FHS01
+
+        REPEAT
+          JnlLineDim_P."Allocation Amount" := ROUND((JnlLineDim_P."Allocation %" * BaseAmount_P) / 100,0.01);
+          JnlLineDim_P.MODIFY;
+          RemainingAmountLCY_L := RemainingAmountLCY_L - JnlLineDim_P."Allocation Amount";
+        UNTIL JnlLineDim_P.NEXT = 0;
+
+        IF RemainingAmountLCY_L <> 0 THEN BEGIN
+          JnlLineDim_P."Allocation Amount" := JnlLineDim_P."Allocation Amount" + RemainingAmountLCY_L;
+          JnlLineDim_P.MODIFY;
+        END;
+
+      END;
+
+      JnlLineDim_P.SETRANGE(Type);
+    END;
+
+    PROCEDURE CalcAllocAmount@8061740(BaseAmount_P@8061735 : Decimal;VAR Percent_P@8061734 : Decimal;VAR Amount_P@8061733 : Decimal;FromAmount_P@8061732 : Boolean;BaseQty_P@8053002 : Decimal;VAR Qty_P@8053000 : Decimal);
+    BEGIN
+      IF NOT FromAmount_P THEN
+        Amount_P := ROUND(BaseAmount_P * Percent_P / 100,0.01)
+      ELSE
+        // --> 20100126-8061020-CMB6.00.01-FEC04
+        // BEFORE
+        {
+        Percent_P := ROUND(100 * Amount_P / BaseAmount_P,0.01);
+        }
+        // --> 20170710-WI00-ADV01.01.00-28234-CJY01
+        IF BaseAmount_P <> 0 THEN BEGIN
+        // <-- 20170710-WI00-ADV01.01.00-28234-CJY01
+        Percent_P := ROUND(100 * Amount_P / BaseAmount_P,0.00001);
+        // --> 20170710-WI00-ADV01.01.00-28234-CJY01
+        END
+        ELSE BEGIN
+          Percent_P := 0;
+        END;
+        // <-- 20170710-WI00-ADV01.01.00-28234-CJY01
+        // <-- 20100126-8061020-CMB6.00.01-FEC04
+      // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+      IF Percent_P<>0 THEN
+       Qty_P :=ROUND(BaseQty_P * Percent_P / 100,0.01);
+      // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+    END;
+
+    PROCEDURE GetJnlLineAllocBaseAmount@8061739(JnlLineDim_P@8061732 : Record 356;VAR BaseQty_P@8053000 : Decimal) : Decimal;
+    VAR
+      GenJnlLine_L@8061734 : Record 81;
+      ItemJnlLine_L@8061733 : Record 83;
+    BEGIN
+      WITH JnlLineDim_P DO
+        CASE "Table ID" OF
+          DATABASE::"Gen. Journal Line" :
+            BEGIN
+              GenJnlLine_L.GET("Journal Template Name","Journal Batch Name","Journal Line No.");
+              // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+               BaseQty_P := GenJnlLine_L.Quantity;
+              // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+              EXIT(GenJnlLine_L."VAT Base Amount");
+            END;
+          DATABASE::"Item Journal Line" :
+            BEGIN
+              ItemJnlLine_L.GET("Journal Template Name","Journal Batch Name","Journal Line No.");
+              EXIT(GenJnlLine_L."VAT Base Amount");
+            END;
+        END;
+      EXIT(0);
+    END;
+
+    PROCEDURE GetDocDimAllocBaseAmount@8061738(DocDim_P@8061732 : Record 357;VAR BaseQty_P@8053000 : Decimal) : Decimal;
+    VAR
+      SalesLine_L@8061734 : Record 37;
+      PurchLine_L@8061733 : Record 39;
+      PaymentLine_L@8053001 : Record 10866;
+    BEGIN
+      WITH DocDim_P DO
+        CASE "Table ID" OF
+          DATABASE::"Sales Line" :
+            BEGIN
+              SalesLine_L.GET("Document Type","Document No.","Line No.");
+              // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+               BaseQty_P := SalesLine_L."Analytical Quantity";
+              // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+              EXIT(SalesLine_L."Line Amount");
+            END;
+          DATABASE::"Purchase Line" :
+            BEGIN
+              PurchLine_L.GET("Document Type","Document No.","Line No.");
+              // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+               BaseQty_P := PurchLine_L."Analytical Quantity";
+              // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+              EXIT(PurchLine_L."Line Amount");
+            END;
+          // --> 20150311-CMB6/8061020-CMC02.02.00-2809-FHS01
+          DATABASE::"Payment Line" :
+            BEGIN
+              PaymentLine_L.GET("Document No.","Line No.");
+              EXIT(PaymentLine_L.Amount);
+            END;
+          // <-- 20150311-CMB6/8061020-CMC02.02.00-2809-FHS01
+        END;
+      EXIT(0);
+    END;
+
+    PROCEDURE GetLedgerEntryAllocBaseAmount@8061737(LedgerEntryDim_P@8061732 : Record 355;VAR BaseQty_P@8053000 : Decimal) : Decimal;
+    VAR
+      GLEntry_L@8061733 : Record 17;
+    BEGIN
+      WITH LedgerEntryDim_P DO
+        CASE "Table ID" OF
+          DATABASE::"G/L Entry" :
+            BEGIN
+              GLEntry_L.GET("Entry No.");
+              // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+               BaseQty_P := GLEntry_L.Quantity;
+              // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+              EXIT(GLEntry_L.Amount);
+
+            END;
+        END;
+      EXIT(0);
+    END;
+
+    PROCEDURE UpdateDimTableArray@8061736(DimAllocTemplateCode_P@8061734 : Code[20];VAR TableID_P@8061733 : ARRAY [10] OF Integer;VAR No_P@8061732 : ARRAY [10] OF Code[20]);
+    VAR
+      i@8061735 : Integer;
+    BEGIN
+      IF DimAllocTemplateCode_P <> '' THEN BEGIN
+        FOR i:=9 DOWNTO 1 DO BEGIN
+          TableID_P[i+1] := TableID_P[i];
+          No_P[i+1] := No_P[i];
+        END;
+        TableID_P[1] := DATABASE::"Dim. Allocation Template";
+        No_P[1] := DimAllocTemplateCode_P;
+      END;
+    END;
+
+    PROCEDURE CheckUpdateDimAllocation@8061735(VAR LedgerEntryDim_P@8061734 : Record 355;TableID_P@8061733 : ARRAY [10] OF Integer;No_P@8061732 : ARRAY [10] OF Code[20]);
+    VAR
+      TmpJnlLineDim_L@8061735 : TEMPORARY Record 356;
+    BEGIN
+      // Fonction utilis'e pour v'rifier l'analytique dans le cadre de la modification de l'analytique.
+
+      TmpJnlLineDim_L.DELETEALL;
+
+      // --> 20150520-Wi00-CMC02.02.00-3003-FHS01
+      //BEFORE
+      //IF LedgerEntryDim_P.FINDFIRST THEN
+      //AFTER
+      IF LedgerEntryDim_P.FINDSET(FALSE, FALSE) THEN
+      // <-- 20150520-Wi00-CMC02.02.00-3003-FHS01
+        REPEAT
+          TmpJnlLineDim_L.INIT;
+          TmpJnlLineDim_L.Type := LedgerEntryDim_P.Type;
+          TmpJnlLineDim_L."Dimension Code" := LedgerEntryDim_P."Dimension Code";
+          TmpJnlLineDim_L."Dimension Value Code" := LedgerEntryDim_P."Dimension Value Code";
+          TmpJnlLineDim_L."Allocation %" := LedgerEntryDim_P."Allocation %";
+          // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+          TmpJnlLineDim_L.Quantity := LedgerEntryDim_P.Quantity;
+          // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+          TmpJnlLineDim_L.INSERT;
+        UNTIL LedgerEntryDim_P.NEXT = 0;
+
+      IF NOT DimMgt_G.CheckJnlLineDimValuePosting(TmpJnlLineDim_L,TableID_P,No_P) THEN
+        ERROR(DimMgt_G.GetDimValuePostingErr);
+      // --> 20131002-FINA17-CMC02.02.00-AKH01
+      DimMgt_G.SetPostingDate(PostingDate_G);
+      // <-- 20131002-FINA17-CMC02.02.00-AKH01
+      IF NOT DimMgt_G.CheckJnlLineExtDim(TmpJnlLineDim_L,TableID_P,No_P) THEN
+        ERROR(DimMgt_G.GetDimValuePostingErr);
+    END;
+
+    PROCEDURE CalcJnlLineRemainingDimAlloc@8061734(VAR JnlLineDim_P@8061733 : Record 356;UpdatePercent_P@8061732 : Boolean);
+    VAR
+      JnlLineDim2_L@8061737 : Record 356;
+      ExistingAmount_L@8061736 : Decimal;
+      ExistingPercent_L@8061735 : Decimal;
+      TargetAmount_L@8061734 : Decimal;
+      BaseQty_L@8053000 : Decimal;
+    BEGIN
+      JnlLineDim2_L.COPY(JnlLineDim_P);
+      // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+      //BEFORE
+      //TargetAmount_L := GetJnlLineAllocBaseAmount(JnlLineDim_P);
+      //AFTER
+      TargetAmount_L := GetJnlLineAllocBaseAmount(JnlLineDim_P,BaseQty_L);
+      // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+
+      ExistingAmount_L := 0;
+      ExistingPercent_L := 0;
+      // --> 20150520-Wi00-CMC02.02.00-3003-FHS01
+      //BEFORE
+      //IF JnlLineDim2_L.FINDFIRST THEN
+      //AFTER
+      IF JnlLineDim2_L.FINDSET(FALSE, FALSE) THEN
+      // <-- 20150520-Wi00-CMC02.02.00-3003-FHS01
+        REPEAT
+          IF JnlLineDim_P.GETPOSITION <> JnlLineDim2_L.GETPOSITION THEN BEGIN
+            ExistingAmount_L := ExistingAmount_L + JnlLineDim2_L."Allocation Amount";
+            ExistingPercent_L := ExistingPercent_L + JnlLineDim2_L."Allocation %";
+          END;
+        UNTIL JnlLineDim2_L.NEXT = 0;
+
+      IF UpdatePercent_P THEN BEGIN
+        JnlLineDim_P.VALIDATE("Allocation %",100 - ExistingPercent_L);
+        JnlLineDim_P.MODIFY;
+      END ELSE BEGIN;
+        JnlLineDim_P.VALIDATE("Allocation Amount",TargetAmount_L - ExistingAmount_L);
+        JnlLineDim_P.MODIFY;
+      END;
+    END;
+
+    PROCEDURE CalcDocRemainingDimAlloc@8061733(VAR DocDim_P@8061733 : Record 357;UpdatePercent_P@8061732 : Boolean);
+    VAR
+      DocDim2_L@8061737 : Record 357;
+      ExistingAmount_L@8061736 : Decimal;
+      ExistingPercent_L@8061735 : Decimal;
+      TargetAmount_L@8061734 : Decimal;
+      BaseQty_L@8053000 : Decimal;
+    BEGIN
+      DocDim2_L.COPY(DocDim_P);
+      // --> 20140429-FINA25/001-CMC02.02.00-KEM01
+      //BEFORE
+      //TargetAmount_L := GetDocDimAllocBaseAmount(DocDim_P);
+      //AFTER
+      TargetAmount_L := GetDocDimAllocBaseAmount(DocDim_P,BaseQty_L);
+      // <-- 20140429-FINA25/001-CMC02.02.00-KEM01
+      ExistingAmount_L := 0;
+      ExistingPercent_L := 0;
+      // --> 20150520-Wi00-CMC02.02.00-3003-FHS01
+      //BEFORE
+      //IF DocDim2_L.FINDFIRST THEN
+      //AFTER
+      IF DocDim2_L.FINDSET(FALSE, FALSE) THEN
+      // <-- 20150520-Wi00-CMC02.02.00-3003-FHS01
+        REPEAT
+          IF DocDim_P.GETPOSITION <> DocDim2_L.GETPOSITION THEN BEGIN
+            ExistingAmount_L := ExistingAmount_L + DocDim2_L."Allocation Amount";
+            ExistingPercent_L := ExistingPercent_L + DocDim2_L."Allocation %";
+          END;
+        UNTIL DocDim2_L.NEXT = 0;
+
+      IF UpdatePercent_P THEN BEGIN
+        DocDim_P.VALIDATE("Allocation %",100 - ExistingPercent_L);
+        DocDim_P.MODIFY;
+      END ELSE BEGIN;
+        DocDim_P.VALIDATE("Allocation Amount",TargetAmount_L - ExistingAmount_L);
+        DocDim_P.MODIFY;
+      END;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20090302-8061020-CMB6.00.01-FEC01 : Nouvel objet.
+      20090511-8061020-CMB6.00.01-FEC01 : Correctifs sur la fonctionnalit'.
+      20091016-8061020-CMB6.00.01-FEC01 : MODOBJ (Changement IDs et VersionList).
+      20100126-8061020-CMB6.00.01-FEC01 : MODOBJ (Changement IDs, VersionList et normes de d'v.).
+      20100126-8061020-CMB6.00.01-FEC02 : ADDOBJ (MAJ analytique principale de l''criture).
+      20100126-8061020-CMB6.00.01-FEC03 : ADDCODE (Code).
+      20100126-8061020-CMB6.00.01-FEC04 : MODCODE (Code).
+      20100126-8061020-CMB6.00.01-FEC05 : MODOBJ (Ajout de la permission sur la table 17).
+      20100126-8061020-CMB6.00.01-FEC06 : ADDFUNC (CalcJnlLineRemainingDimAlloc).
+      20100126-8061020-CMB6.00.01-FEC07 : ADDFUNC (CalcDocRemainingDimAlloc).
+      20101210-8061020-CMB6.00.01-PRD01 : RENUMBERING
+      20110201-8061020-CMB6.00.01-FEC01 : UPDATEVL(Mise . jour Version List PCK007.04.01.00 > CMB6.00.01).
+      20131002-FINA17-CMC02.02.00-AKH01 : ADDCODE (Contr"le sur la date de comptabilisation: inclus dans la date effet du combin analy )
+      20140121-8061020-CMB6.00.01-1483-BDN01 : ADDCODE(Contr"le si modifications analytiques effectu'es)
+      20140130-8061020-CMB6.00.01-1106-BDN02 : ADDCODE(Reset des valeurs analytiques sur 'criture comptable)
+      20140429-FINA25/001-CMC02.02.00-KEM01 : ADDCODE(Move Quantity Value).
+      20150311-CMB6/8061020-CMC02.02.00-2809-FHS01 : ADDCODE (corrige le problSme de quantit')
+      20150520-Wi00-CMC02.02.00-3003-FHS01 : MODCODE (Optimisation)
+      20170710-WI00-ADV01.01.00-28234-CJY01 : ADDCODE (correction division par 0)
+
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

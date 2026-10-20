@@ -1,0 +1,985 @@
+OBJECT Codeunit 60053 Purch ECD External Proc Test
+{
+  OBJECT-PROPERTIES
+  {
+    Date=01/02/17;
+    Heure=00:00:00;
+    Liste versions=ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    TableNo=60083;
+    OnRun=VAR
+            ValueEntryDisc_L@1000000005 : Record 60085;
+            PurchDiscount_L@1000000004 : Record 8053247;
+            PrevFinalPrice_L@1000000003 : Decimal;
+            NextFinalPrice_L@1000000002 : Decimal;
+            ECDLedgerEntry_L@1000000001 : Record 60084;
+            ECDLedgerEntryComplementaire_L@1000000000 : Record 60084;
+            ECDLedgerEntryModeTest_L@1000000006 : Record 60084;
+          BEGIN
+
+            CMCSetup_G.GET;
+            BooCurrReportSkip_G := FALSE;
+            UniqueId_G := FctReturnUniqueId;
+            IF Test_G THEN BEGIN
+              //MODE TEST
+              ValueEntryReference_G.GET("Unique Id","Entry No.");
+              WasCreated_G := FALSE;
+              CLEAR(ValueEntryDiscForUpdate_G);
+
+              IF DetailedECDExist_G THEN BEGIN
+                CASE UpdateType_G OF
+                  UpdateType_G::"ECD Update" : BEGIN
+                    IF NOT ValueEntryDisc_G.GET("Unique Id","Entry No.",DiscountCode_G) THEN BEGIN
+                      WasCreated_G := TRUE;
+                      ValueEntryDiscForUpdate_G.INIT;
+                      ValueEntryDiscForUpdate_G."Unique Id" := UniqueId_G;
+                      ValueEntryDiscForUpdate_G."Value Entry No." := "Entry No.";
+                      ValueEntryDiscForUpdate_G."Discount Code" := DiscountCode_G;
+                      PurchDiscount_G.GET(DiscountCode_G);
+                      ValueEntryDiscForUpdate_G.Rank := PurchDiscount_G.Rank;
+                      ValueEntryDiscForUpdate_G."Base Value" := GetDiscountBaseValue(ValueEntryDiscForUpdate_G,0);
+                      PrevFinalPrice_L := GetDiscountPreviousPrice(ValueEntryDiscForUpdate_G);
+                      NextFinalPrice_L := InsertNewDiscount(PrevFinalPrice_L);
+                      IF NextFinalPrice_L > 0 THEN BEGIN
+                        "Budgeted Unit Cost" := UpdateRemainingValueEntryDisc(ValueEntryDiscForUpdate_G,Rec,NextFinalPrice_L);
+                        "ECD Unit Amount" := "Cost per Unit" - "Budgeted Unit Cost";
+                        MODIFY(TRUE);
+
+                        CLEAR(ECDMgt_G);
+                        IF BooUseOriginalPostingDate_G THEN
+                          ECDMgt_G.SetECDValueDate(0D)
+                        ELSE
+                          ECDMgt_G.SetECDValueDate(WORKDATE);
+                        ECDMgt_G.InsertPurchECDLedgerEntryTest(Rec,FALSE,DiscountCode_G);
+                        IF FctRFCExist(Rec,'') THEN BEGIN
+                          ECDMgt_G.FctInitEcdOutstand(DiscountCode_G);
+                          ECDMgt_G.RefreshPurchECDLedgerEntryTest(Rec,'',FALSE,'');
+                        END;
+                      END;
+                    END ELSE BEGIN
+                      //On ne doit essayer de mettre . jour une RFC que si elle n'a pas 't' sold'e
+                      ECDLedgerEntry_L.RESET;
+                      ECDLedgerEntry_L.SETCURRENTKEY("Unique Id","Value Entry No.","Discount Code");
+                      ECDLedgerEntry_L.SETRANGE("Value Entry No.","Entry No.");
+                      ECDLedgerEntry_L.SETRANGE("Discount Code",DiscountCode_G);
+                      ECDLedgerEntry_L.SETRANGE("Unique Id",UniqueId_G);
+
+                      IF ECDLedgerEntry_L.FINDLAST THEN
+                        IF ECDLedgerEntry_L."ECD Purch Cancelled" = FALSE THEN BEGIN
+                          ValueEntryDiscForUpdate_G := ValueEntryDisc_G;
+                          PrevFinalPrice_L := GetDiscountPreviousPrice(ValueEntryDiscForUpdate_G);
+                          NextFinalPrice_L := UpdateDiscount(ValueEntryDiscForUpdate_G,ValuationType_G,ModificationValue_G,PrevFinalPrice_L);
+                          "Budgeted Unit Cost" := UpdateRemainingValueEntryDisc(ValueEntryDiscForUpdate_G,Rec,NextFinalPrice_L);
+                          "ECD Unit Amount" := "Cost per Unit" - "Budgeted Unit Cost";
+                          MODIFY(TRUE);
+
+                          CLEAR(ECDMgt_G);
+                          IF BooUseOriginalPostingDate_G THEN
+                            ECDMgt_G.SetECDValueDate(0D)
+                          ELSE
+                            ECDMgt_G.SetECDValueDate(WORKDATE);
+                          IF FctRFCExist(Rec,'') THEN BEGIN
+                            ECDMgt_G.FctInitEcdOutstand(DiscountCode_G);
+                            ECDMgt_G.RefreshPurchECDLedgerEntryTest(Rec,'',FALSE,'');
+                          END;
+
+                        END;
+                      END;
+                    END;
+                  UpdateType_G::"Cancel ECD" : BEGIN
+                    IF ValueEntryDisc_G.GET(UniqueId_G,"Entry No.",DiscountCode_G) THEN BEGIN
+                      ValueEntryDiscForUpdate_G := ValueEntryDisc_G;
+                      PrevFinalPrice_L := GetDiscountBaseValue(ValueEntryDisc_G,0);
+                      NextFinalPrice_L := UpdateDiscount(ValueEntryDiscForUpdate_G,0,0,PrevFinalPrice_L);
+                      "Budgeted Unit Cost" := UpdateRemainingValueEntryDisc(ValueEntryDiscForUpdate_G,Rec,NextFinalPrice_L);
+                      "ECD Unit Amount" := "Cost per Unit" - "Budgeted Unit Cost";
+                      MODIFY(TRUE);
+
+                      CLEAR(ECDMgt_G);
+                      IF BooUseOriginalPostingDate_G THEN
+                        ECDMgt_G.SetECDValueDate(0D)
+                      ELSE
+                        ECDMgt_G.SetECDValueDate(WORKDATE);
+                      IF FctRFCExist(Rec,DiscountCode_G) THEN
+                        ECDMgt_G.RefreshPurchECDLedgerEntryTest(Rec,'',TRUE,DiscountCode_G);
+                        ECDLedgerEntry_L.RESET;
+                        ECDLedgerEntry_L.SETCURRENTKEY("Unique Id","Value Entry No.","Discount Code");
+                        ECDLedgerEntry_L.SETRANGE("Value Entry No.","Entry No.");
+                        ECDLedgerEntry_L.SETRANGE("Discount Code",DiscountCode_G);
+                        ECDLedgerEntry_L.SETRANGE("Unique Id",UniqueId_G);
+                        IF ECDLedgerEntry_L.FINDLAST THEN BEGIN
+                          ECDLedgerEntry_L."ECD Unit Price Outstanding" := 0;
+                          ECDLedgerEntry_L."ECD Purch Cancelled" := TRUE;
+                          //Si nous sommmes sur une facture/avoir on tag
+                          //la reception/retour associ'e
+                          IF ECDLedgerEntry_L."Document Type" = ECDLedgerEntry_L."Document Type"::"Purchase Invoice" THEN
+                            ECDMgt_G.FindPurchReceiptOrRetToTagTest(0,ECDLedgerEntry_L."Document No.",
+                          ECDLedgerEntry_L."Document Line No.",ECDLedgerEntry_L."Discount Code",ECDLedgerEntryComplementaire_L);
+                          IF ECDLedgerEntry_L."Document Type" = ECDLedgerEntry_L."Document Type"::"Purchase Credit Memo" THEN
+                            ECDMgt_G.FindPurchReceiptOrRetToTagTest(1,ECDLedgerEntry_L."Document No.",
+                          ECDLedgerEntry_L."Document Line No.",ECDLedgerEntry_L."Discount Code",ECDLedgerEntryComplementaire_L);
+                          IF ((ECDLedgerEntryComplementaire_L."Entry No." <> 0) AND
+                            (ECDLedgerEntryComplementaire_L."ECD Purch Cancelled" = FALSE)) THEN BEGIN
+                              ECDLedgerEntryComplementaire_L."ECD Purch Cancelled" := TRUE;
+                              ECDLedgerEntryComplementaire_L.MODIFY;
+                          END;
+                          ECDLedgerEntry_L.MODIFY;
+                        END;
+                      END ELSE
+                        BooCurrReportSkip_G := TRUE;;
+                    END;
+                  UpdateType_G::"Apply Budgeted Unit Cost" : BEGIN
+                    ValueEntryDisc_G.RESET;
+                    ValueEntryDisc_G.SETCURRENTKEY("Unique Id","Value Entry No.",Rank);
+                    ValueEntryDisc_G.SETRANGE("Value Entry No.","Entry No.");
+                    ValueEntryDisc_G.SETRANGE("Unique Id",UniqueId_G);
+
+                    IF ValueEntryDisc_G.FINDLAST THEN BEGIN
+                      //On ne doit essayer de mettre . jour une RFC que si elle n'a pas 't' sold'e
+                      ECDLedgerEntry_L.RESET;
+                      ECDLedgerEntry_L.SETCURRENTKEY("Unique Id","Value Entry No.","Discount Code");
+                      ECDLedgerEntry_L.SETRANGE("Value Entry No.","Entry No.");
+                      ECDLedgerEntry_L.SETRANGE("Discount Code",DiscountCode_G);
+                      ECDLedgerEntry_L.SETRANGE("Unique Id",UniqueId_G);
+                      IF ECDLedgerEntry_L.FINDLAST THEN
+                        IF ECDLedgerEntry_L."ECD Purch Cancelled" = FALSE THEN BEGIN
+                          IF ValueEntryDisc_G."Discount Code" = CMCSetup_G."Except. Purch. ECD Disc. Code" THEN BEGIN
+                            IF ValueEntryDisc_G."Base Value" >= ModificationValue_G THEN BEGIN
+                              ValueEntryDisc_G."Final Price" := ModificationValue_G;
+                              ValueEntryDisc_G."Discount Amount" := ValueEntryDisc_G."Base Value" - ValueEntryDisc_G."Final Price";
+                              ValueEntryDisc_G.MODIFY(TRUE);
+                            END ELSE
+                              ERROR(Text004, ValueEntryDisc_G."Value Entry No.");
+
+                            "Budgeted Unit Cost" := UpdateRemainingValueEntryDisc(ValueEntryDisc_G,Rec,0);
+                            "ECD Calculation Priority" := "ECD Calculation Priority"::"Budgeted Unit Cost";
+                            "ECD Unit Amount" := "Cost per Unit" - "Budgeted Unit Cost";
+                            MODIFY(TRUE);
+
+                            CLEAR(ECDMgt_G);
+                            ECDMgt_G.SetECDValueDate(WORKDATE);
+                            IF FctRFCExist(Rec,'') THEN
+                              ECDMgt_G.RefreshPurchECDLedgerEntryTest(Rec,'',FALSE,'');
+                          END ELSE BEGIN
+                            IF ValueEntryDisc_G."Final Price" > ModificationValue_G THEN BEGIN
+                              DiscountCode_G := CMCSetup_G."Except. Purch. ECD Disc. Code";
+                              ValueEntryDiscForUpdate_G.INIT;
+                              ValueEntryDiscForUpdate_G."Unique Id" := UniqueId_G;
+                              ValueEntryDiscForUpdate_G."Value Entry No." := "Entry No.";
+                              ValueEntryDiscForUpdate_G."Discount Code" := DiscountCode_G;
+                              PurchDiscount_G.GET(DiscountCode_G);
+                              ValueEntryDiscForUpdate_G.Rank := PurchDiscount_G.Rank;
+                              ValueEntryDiscForUpdate_G."Base Value" := ValueEntryDisc_G."Final Price";
+                              ValueEntryDiscForUpdate_G."Final Price" := ModificationValue_G;
+                              ValueEntryDiscForUpdate_G."Discount Amount" := ValueEntryDiscForUpdate_G."Base Value" -
+                                ValueEntryDiscForUpdate_G."Final Price";
+                              ValueEntryDiscForUpdate_G."ECD Vendor No." := VendorNo_G;
+                              ValueEntryDiscForUpdate_G.INSERT(TRUE);
+
+                              IF PrintToExcel_G THEN
+                                //MakeExcelDataBody3;
+                                PrepareExcelDataBody;
+
+                              "Budgeted Unit Cost" := UpdateRemainingValueEntryDisc(ValueEntryDiscForUpdate_G,Rec,0);
+                              "ECD Calculation Priority" := "ECD Calculation Priority"::"Budgeted Unit Cost";
+                              "ECD Unit Amount" := "Cost per Unit" - "Budgeted Unit Cost";
+                              MODIFY(TRUE);
+
+                              CLEAR(ECDMgt_G);
+                              ECDMgt_G.SetECDValueDate(WORKDATE);
+                              ECDMgt_G.InsertPurchECDLedgerEntryTest(Rec,FALSE,DiscountCode_G);
+                              IF FctRFCExist(Rec,'') THEN
+                                ECDMgt_G.RefreshPurchECDLedgerEntryTest(Rec,'',FALSE,'');
+                            END ELSE
+                              IF ValueEntryDisc_G."Final Price" < ModificationValue_G THEN
+                                ERROR(Text004, ValueEntryDisc_G."Value Entry No.");
+                          END;
+                        END ELSE BEGIN
+                          "Budgeted Unit Cost" := ModificationValue_G;
+                          "ECD Calculation Priority" := "ECD Calculation Priority"::"Budgeted Unit Cost";
+                          "ECD Unit Amount" := "Cost per Unit" - "Budgeted Unit Cost";
+                          MODIFY(TRUE);
+                        END;
+                      END;
+                    END;
+                  UpdateType_G::"Unapply Budgeted Unit Cost" : BEGIN
+                    IF  "ECD Calculation Priority" = "ECD Calculation Priority"::"Budgeted Unit Cost" THEN BEGIN
+                      DiscountCode_G := CMCSetup_G."Except. Purch. ECD Disc. Code";
+                      //On ne doit essayer de mettre . jour une RFC que si elle n'a pas 't' sold'e
+                      ECDLedgerEntry_L.RESET;
+                      ECDLedgerEntry_L.SETCURRENTKEY("Unique Id","Value Entry No.","Discount Code");
+                      ECDLedgerEntry_L.SETRANGE("Value Entry No.","Entry No.");
+                      ECDLedgerEntry_L.SETRANGE("Discount Code",DiscountCode_G);
+                      ECDLedgerEntry_L.SETRANGE("Unique Id",UniqueId_G);
+                      IF ECDLedgerEntry_L.FINDLAST THEN
+                        IF ECDLedgerEntry_L."ECD Purch Cancelled" = FALSE THEN BEGIN
+                          IF ValueEntryDisc_G.GET(UniqueId_G,"Entry No.",DiscountCode_G) THEN BEGIN
+                            UpdateDiscount(ValueEntryDisc_G,0,0,0);
+                            "Budgeted Unit Cost" := UpdateRemainingValueEntryDisc(ValueEntryDisc_G,Rec,0);
+                            "ECD Calculation Priority" := "ECD Calculation Priority"::"ECD Value";
+                            "ECD Unit Amount" := "Cost per Unit" - "Budgeted Unit Cost";
+                            MODIFY(TRUE);
+
+                            CLEAR(ECDMgt_G);
+                            ECDMgt_G.SetECDValueDate(WORKDATE);
+                            IF FctRFCExist(Rec,DiscountCode_G) THEN
+                              ECDMgt_G.RefreshPurchECDLedgerEntryTest(Rec,'',TRUE,DiscountCode_G);
+                          END ELSE BEGIN
+                            "ECD Calculation Priority" := "ECD Calculation Priority"::"ECD Value";
+                            MODIFY(TRUE);
+                          END;
+                        END;
+                    END ELSE
+                      BooCurrReportSkip_G := TRUE;
+                    END;
+                END;
+              END ELSE BEGIN
+                CASE UpdateType_G OF
+                  UpdateType_G::"ECD Update" : BEGIN
+                    IF "ECD Calculation Priority" = "ECD Calculation Priority"::"ECD Value" THEN BEGIN
+                      CASE ValuationType_G OF
+                        ValuationType_G::"New ECD Amount" : BEGIN
+                          "ECD Unit Amount" := ModificationValue_G;
+                          "Budgeted Unit Cost" := "Cost per Unit" - "ECD Unit Amount";
+                          IF "Budgeted Unit Cost" < 0 THEN
+                            ERROR(Text8053021,FIELDCAPTION("Budgeted Unit Cost"),TABLECAPTION,FIELDCAPTION("Entry No."),FORMAT("Entry No."));
+                          MODIFY(TRUE);
+                          ValueEntryDisc_L.INIT;
+                          StoreBeforeECDLedgerEntry(PurchECDLedgEntryTmp_G,ValueEntryDisc_L,Rec);
+                          CLEAR(ECDMgt_G);
+                          IF BooUseOriginalPostingDate_G THEN
+                            ECDMgt_G.SetECDValueDate(0D)
+                          ELSE
+                            ECDMgt_G.SetECDValueDate(WORKDATE);
+                          IF FctRFCExist(Rec,'') THEN
+                            ECDMgt_G.RefreshPurchECDLedgerEntryTest(Rec,'',FALSE,'');
+                        END;
+                        ValuationType_G::"Change ECD amount" : BEGIN
+                          "ECD Unit Amount" := "ECD Unit Amount" + ModificationValue_G;
+                          "Budgeted Unit Cost" := "Cost per Unit" - "ECD Unit Amount";
+                          IF "Budgeted Unit Cost" < 0 THEN
+                            ERROR(Text8053021,FIELDCAPTION("Budgeted Unit Cost"),TABLECAPTION,FIELDCAPTION("Entry No."),FORMAT("Entry No."));
+                          MODIFY(TRUE);
+                          ValueEntryDisc_L.INIT;
+                          StoreBeforeECDLedgerEntry(PurchECDLedgEntryTmp_G,ValueEntryDisc_L,Rec);
+                          CLEAR(ECDMgt_G);
+                          IF BooUseOriginalPostingDate_G THEN
+                            ECDMgt_G.SetECDValueDate(0D)
+                          ELSE
+                            ECDMgt_G.SetECDValueDate(WORKDATE);
+                          IF FctRFCExist(Rec,'') THEN
+                            ECDMgt_G.RefreshPurchECDLedgerEntryTest(Rec,'',FALSE,'');
+                        END;
+                        ELSE
+                          ERROR(Text8053020)
+                      END;
+                    END ELSE
+                      BooCurrReportSkip_G := TRUE;
+                END;
+                  UpdateType_G::"Cancel ECD" : BEGIN
+                    "ECD Unit Amount" := 0;
+                    "Budgeted Unit Cost" := "Cost per Unit";
+                    MODIFY(TRUE);
+                    ValueEntryDisc_L.INIT;
+                    StoreBeforeECDLedgerEntry(PurchECDLedgEntryTmp_G,ValueEntryDisc_L,Rec);
+                    CLEAR(ECDMgt_G);
+                    IF BooUseOriginalPostingDate_G THEN
+                      ECDMgt_G.SetECDValueDate(0D)
+                    ELSE
+                      ECDMgt_G.SetECDValueDate(WORKDATE);
+                    IF FctRFCExist(Rec,'') THEN
+                      ECDMgt_G.RefreshPurchECDLedgerEntryTest(Rec,'',TRUE,'');
+                  END;
+                  UpdateType_G::"Apply Budgeted Unit Cost" : BEGIN
+                    "ECD Calculation Priority" := "ECD Calculation Priority"::"Budgeted Unit Cost";
+                    "Budgeted Unit Cost" := ModificationValue_G;
+                     "ECD Unit Amount" := "Cost per Unit" - "Budgeted Unit Cost";
+                     IF "ECD Unit Amount" < 0 THEN
+                      ERROR(Text8053021,FIELDCAPTION("ECD Unit Amount"),TABLECAPTION,FIELDCAPTION("Entry No."),FORMAT("Entry No."));
+                     MODIFY(TRUE);
+                     ValueEntryDisc_L.INIT;
+                     StoreBeforeECDLedgerEntry(PurchECDLedgEntryTmp_G,ValueEntryDisc_L,Rec);
+                     CLEAR(ECDMgt_G);
+                     ECDMgt_G.SetECDValueDate(WORKDATE);
+                     IF FctRFCExist(Rec,'') THEN
+                       ECDMgt_G.RefreshPurchECDLedgerEntryTest(Rec,'',FALSE,'');
+                  END;
+                  UpdateType_G::"Unapply Budgeted Unit Cost" : BEGIN
+                    IF "ECD Calculation Priority" = "ECD Calculation Priority"::"Budgeted Unit Cost" THEN BEGIN
+                      "ECD Calculation Priority" := "ECD Calculation Priority"::"ECD Value";
+                      MODIFY(TRUE);
+                      ValueEntryDisc_L.INIT;
+                      StoreBeforeECDLedgerEntry(PurchECDLedgEntryTmp_G,ValueEntryDisc_L,Rec);
+                      CLEAR(ECDMgt_G);
+                      ECDMgt_G.SetECDValueDate(WORKDATE);
+                      IF FctRFCExist(Rec,'') THEN
+                        ECDMgt_G.RefreshPurchECDLedgerEntryTest(Rec,'',TRUE,'');
+                      END ELSE
+                        BooCurrReportSkip_G := TRUE;
+                    END;
+                  END;
+              END;
+
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      WasCreated_G@1000000000 : Boolean;
+      DetailedECDExist_G@1000000001 : Boolean;
+      ValueEntryDiscForUpdate_G@1000000002 : Record 60085;
+      UpdateType_G@1000000003 : 'ECD Update,Cancel ECD,Apply Budgeted Unit Cost,Unapply Budgeted Unit Cost';
+      VendorNo_G@1000000005 : Code[20];
+      DiscountCode_G@1000000004 : Code[20];
+      PurchDiscount_G@1000000006 : Record 8053247;
+      ECDMgt_G@1000000007 : Codeunit 8053038;
+      BooUseOriginalPostingDate_G@1000000008 : Boolean;
+      ValueEntryDisc_G@1000000009 : Record 60085;
+      ValuationType_G@1000000010 : 'New ECD Amount,New ECD Percentage,Change ECD amount,Apply Purch. Discount';
+      ModificationValue_G@1000000011 : Decimal;
+      Text001@1000000052 : TextConst 'ENU="Discount already exists for Discount Code=%1, Value Entry No. =%2 !";FRA="Remise existe d'j. pour le code de remise =%1, 'criture valeur =%2!"';
+      Text002@1000000051 : TextConst 'ENU=Field "Value" must be filled!;FRA=Champ "Valeur" doit ^tre rempli!';
+      Text003@1000000050 : TextConst 'ENU=Field "Discount Code" must be filled!;FRA=Champ "Code remise" doit ^tre rempli!';
+      Text004@1000000049 : TextConst 'ENU=Discount is greater than Base Value for Value Entry No. %1!;FRA=La remise est sup'rieure . la valeur de base pour l''ecriture valeur n› %1!';
+      Text005@1000000048 : TextConst 'ENU=Report successfully run!;FRA=Rapport ex'cute avec succSs!';
+      Text006@1000000047 : TextConst 'ENU="In order to test you need Send To Excel = Yes";FRA="Pour tester vous devez mettre Envoyer . Excel = Oui"';
+      Text007@1000000046 : TextConst 'ENU=Period: %1;FRA=P'riode : %1';
+      Text008@1000000045 : TextConst 'ENU=Company Name;FRA=Nom de la soci't'';
+      Text009@1000000044 : TextConst 'ENU=Report No.;FRA=N› 'tat';
+      Text010@1000000043 : TextConst 'ENU=Report Name;FRA=Nom 'tat';
+      Text011@1000000042 : TextConst 'ENU=User ID;FRA=Code utilisateur';
+      Text012@1000000041 : TextConst 'ENU=Date;FRA=Date';
+      Text013@1000000040 : TextConst 'ENU=Item No. Filter;FRA=Filtre article';
+      Text014@1000000039 : TextConst 'ENU=Period Filter;FRA=Filtre p'riode';
+      Text015@1000000038 : TextConst 'ENU=Quantity;FRA=Quantit'';
+      Text016@1000000037 : TextConst 'ENU=ECD Unit Amount (before);FRA=Montant unitaire RFC r'ception (avant)';
+      Text017@1000000036 : TextConst 'ENU=ECD Amount (before);FRA=Montant RFC r'ception (avant)';
+      Text018@1000000035 : TextConst 'ENU=ECD Unit Amount (after);FRA=Montant unitaire RFC r'ception (aprSs)';
+      Text019@1000000034 : TextConst 'ENU=ECD Amount (after);FRA=Montant RFC r'ception (aprSs)';
+      Text020@1000000033 : TextConst 'ENU=Data;FRA=Donn'es';
+      Text021@1000000032 : TextConst 'ENU=Update Purchase ECD;FRA=Mise . jour achat RFC';
+      Text022@1000000031 : TextConst 'ENU=Vendor No.;FRA=N› du fournisseur';
+      Text023@1000000030 : TextConst 'ENU=Discount Code;FRA=Code remise';
+      Text024@1000000029 : TextConst 'ENU=Modification Type;FRA=Type de modification';
+      Text025@1000000028 : TextConst 'ENU=Value;FRA=Valeur';
+      Text026@1000000027 : TextConst 'ENU=Send to Excel;FRA=Envoyer . Excel';
+      Text027@1000000026 : TextConst 'ENU=Test;FRA=Test';
+      Text028@1000000025 : TextConst 'ENU='';FRA=''';
+      Text029@1000000024 : TextConst 'ENU=Purchase ECD Ledger Entry Filter;FRA=Filtre Ecritures RFC achat';
+      Text030@1000000023 : TextConst 'ENU=It is not possible to add an ECD amount when the ECD is created for the first time.;FRA=Il n''est pas possible d''ajouter un montant de RFC quand la RFC est cr'e pour la premiSre fois.';
+      Text8053017@1000000022 : TextConst 'ENU=The changes will be posted on %1. Do you want to continue?;FRA=Les modifications vont ^tre comptabilis'es en date du %1. Voulez-vous continuer ?';
+      Text8053018@1000000021 : TextConst 'ENU=Final Price is greater than Base Value for Value Entry No. %1!;FRA=Le prix final est sup'rieure . la valeur de base pour l''ecriture valeur n› %1!';
+      Text8053019@1000000020 : TextConst 'ENU="%1 not found for %2 = %3 ";FRA="%1 pas trouv' de %2 = %3"';
+      Text8053020@1000000019 : TextConst 'ENU=Incorrect Valuation Type;FRA=Type valorisation incorrect';
+      Text8053021@1000000018 : TextConst 'ENU="%1 < 0 for %2, %3 = %4.";FRA="%1 < 0 pour %2, %3 = %4."';
+      Text031@1000000017 : TextConst 'ENU=ECD Unit Amount (before);FRA=Montant unitaire RFC facture (avant)';
+      Text032@1000000016 : TextConst 'ENU=ECD Amount (before);FRA=Montant RFC facture (avant)';
+      Text033@1000000015 : TextConst 'ENU=ECD Unit Amount (after);FRA=Montant unitaire RFC facture (aprSs)';
+      Text034@1000000014 : TextConst 'ENU=ECD Amount (after);FRA=Montant RFC facture (aprSs)';
+      Text60000@1000000013 : TextConst 'ENU=Discount is greater than Base Value for Value Entry No. %1!;FRA=La remise est sup'rieure . la valeur de base pour l''ecriture valeur n› %1 (Type document : %2, N› document : %3, ligne document : %4)!';
+      Text60001@1000000012 : TextConst 'ENU=The changes will be posted original transaction posting date. Do you want to continue?;FRA=Les modifications vont ^tre comptabilis'es en date de compta de l'''criture d''origine. Voulez-vous continuer ?';
+      BooCurrReportSkip_G@1000000053 : Boolean;
+      PurchECDLedgEntryTmp_G@1000000054 : TEMPORARY Record 60084;
+      ValueEntryReference_G@1000000055 : Record 60083;
+      CMCSetup_G@1000000056 : Record 8052982;
+      Test_G@1000000057 : Boolean;
+      PurchECDLedgEntryTmpTestMode_G@1000000058 : TEMPORARY Record 60084;
+      TempValueEntryDisc_G@1000000059 : TEMPORARY Record 60085;
+      TempValueEntryDiscForUpdate_G@1000000060 : TEMPORARY Record 60085;
+      TempValueEntryDisc2_G@1000000061 : TEMPORARY Record 60085;
+      TempECDLedgerEntry_G@1000000062 : TEMPORARY Record 60084;
+      Test60004@1000000063 : TextConst 'FRA=Erreur, impossible de d'terminer un identifiant unique pour le mode test.';
+      UniqueId_G@1000000064 : Code[100];
+      PrintToExcel_G@1000000066 : Boolean;
+      TempValueEntryDiscForExcel_G@1000000065 : TEMPORARY Record 60085;
+      Text60005@1000000067 : TextConst 'ENU=Company : #1####################\\Progress : @2@@@@@@@@@@@@@@@@@@@@\\No. Of Update : #3####################;FRA=Pr'paration des donn'es de test \\Table :     #1####################\\Enreg. :      #2####################\\Total : #3####################';
+      Text60006@1000000068 : TextConst 'FRA=Traitement en cours, veuillez patienter svp.';
+
+    PROCEDURE GetDiscountBaseValue@8053012(VAR ValueEntryDiscount_P@8053000 : Record 60085;PrevFinalPrice_P@8053004 : Decimal) : Decimal;
+    VAR
+      ValueEntryDisc_L@8053001 : Record 60085;
+      PurchDisc_L@8053002 : Record 8053247;
+      ValueEntry_L@8053003 : Record 60083;
+    BEGIN
+      PurchDisc_L.GET(ValueEntryDiscount_P."Discount Code");
+
+      CASE PurchDisc_L."Disc. Calculation Type" OF
+        PurchDisc_L."Disc. Calculation Type"::"Chain Discount" : BEGIN
+          IF PrevFinalPrice_P <> 0 THEN
+            EXIT(PrevFinalPrice_P)
+          ELSE BEGIN
+            ValueEntryDisc_L.RESET;
+            ValueEntryDisc_L.SETCURRENTKEY("Unique Id","Value Entry No.",Rank);
+            ValueEntryDisc_L.SETRANGE("Value Entry No.",ValueEntryDiscount_P."Value Entry No.");
+            ValueEntryDisc_L.SETFILTER(Rank,'<=%1',ValueEntryDiscount_P.Rank);
+            ValueEntryDisc_L.SETRANGE("Unique Id",UniqueId_G);
+
+            IF ValueEntryDisc_L.FINDLAST THEN
+              EXIT(ValueEntryDisc_L."Final Price")
+            ELSE BEGIN
+              ValueEntry_L.GET(UniqueId_G,ValueEntryDiscount_P."Value Entry No.");
+              EXIT(ValueEntry_L."Cost per Unit");
+            END;
+          END;
+        END;
+        PurchDisc_L."Disc. Calculation Type"::"Sum Discount" : BEGIN
+          ValueEntry_L.GET(UniqueId_G,ValueEntryDiscount_P."Value Entry No.");
+          EXIT(ValueEntry_L."Cost per Unit");
+        END;
+      END;
+
+      EXIT(0);
+    END;
+
+    PROCEDURE InsertNewDiscount@8053009(PrevFinalPrice_P@8053001 : Decimal) : Decimal;
+    VAR
+      CMCPurchDiscValue_L@8053000 : Record 8053248;
+    BEGIN
+      CASE ValuationType_G OF
+        ValuationType_G::"New ECD Amount": BEGIN
+          ValueEntryDiscForUpdate_G.VALIDATE("Discount Amount",ModificationValue_G);
+        END;
+        ValuationType_G::"New ECD Percentage": BEGIN
+          ValueEntryDiscForUpdate_G.VALIDATE("Discount %",ModificationValue_G);
+          ValueEntryDiscForUpdate_G.VALIDATE("Discount Amount",
+                        ROUND(ValueEntryDiscForUpdate_G."Base Value" * ModificationValue_G/100, 0.01, '='));
+        END;
+        ValuationType_G::"Change ECD amount": BEGIN
+          ERROR(Text030);
+        END;
+        ValuationType_G::"Apply Purch. Discount": BEGIN
+          IF GetPurchDiscount(CMCPurchDiscValue_L) THEN BEGIN
+            CASE PurchDiscount_G."Valuation Type" OF
+              PurchDiscount_G."Valuation Type"::Percentage: BEGIN
+                ValueEntryDiscForUpdate_G.VALIDATE("Discount %",CMCPurchDiscValue_L."Discount Value");
+                ValueEntryDiscForUpdate_G.VALIDATE("Discount Amount",
+                              ROUND(ValueEntryDiscForUpdate_G."Base Value" * CMCPurchDiscValue_L."Discount Value"/100, 0.01, '='));
+              END;
+              PurchDiscount_G."Valuation Type"::"Unit Amount": BEGIN
+                ValueEntryDiscForUpdate_G.VALIDATE("Discount Amount",CMCPurchDiscValue_L."Discount Value");
+              END;
+            END;
+          END ELSE
+            BooCurrReportSkip_G := TRUE;
+        END;
+      END;
+
+      IF BooCurrReportSkip_G = TRUE THEN
+        EXIT(0);
+
+      ValueEntryDiscForUpdate_G.VALIDATE("Final Price",
+                  PrevFinalPrice_P - ValueEntryDiscForUpdate_G."Discount Amount");
+
+
+      IF ValueEntryDiscForUpdate_G."Final Price" < 0 THEN
+        ERROR(Text004,ValueEntryDiscForUpdate_G."Value Entry No.");
+      ValueEntryDiscForUpdate_G."ECD Vendor No." := VendorNo_G;
+      IF ValueEntryDiscForUpdate_G."Final Price" > 0 THEN BEGIN
+        ValueEntryDiscForUpdate_G.INSERT(TRUE);
+        IF Test_G THEN BEGIN
+          TempValueEntryDisc_G.INIT;
+          TempValueEntryDisc_G := ValueEntryDiscForUpdate_G;
+          TempValueEntryDisc_G.INSERT(TRUE);
+        END;
+        IF PrintToExcel_G THEN
+          //MakeExcelDataBody3;
+          PrepareExcelDataBody;
+      // --> 20151110-APP33-ADV01.01.00-2025-CJY01
+      END;
+      // <-- 20151110-APP33-ADV01.01.00-2025-CJY01
+      EXIT(ValueEntryDiscForUpdate_G."Final Price");
+    END;
+
+    PROCEDURE GetDiscountPreviousPrice@1000000003(VAR ValueEntryDiscount_P@8053000 : Record 60085) : Decimal;
+    VAR
+      ValueEntryDisc_L@8053001 : Record 60085;
+      PurchDisc_L@8053002 : Record 8053247;
+      ValueEntry_L@8053003 : Record 60083;
+    BEGIN
+      ValueEntry_L.GET(UniqueId_G,ValueEntryDiscount_P."Value Entry No.");
+      ValueEntryDisc_L.RESET;
+      ValueEntryDisc_L.SETCURRENTKEY("Unique Id","Value Entry No.",Rank);
+      ValueEntryDisc_L.SETRANGE("Value Entry No.",ValueEntryDiscount_P."Value Entry No.");
+      ValueEntryDisc_L.SETFILTER(Rank,'<=%1',ValueEntryDiscount_P.Rank);
+      ValueEntryDisc_L.SETFILTER("Discount Code",'<>%1',ValueEntryDiscount_P."Discount Code");
+      ValueEntryDisc_L.SETRANGE("Unique Id",UniqueId_G);
+      IF ValueEntryDisc_L.FINDLAST THEN
+        EXIT(ValueEntryDisc_L."Final Price")
+      ELSE
+        EXIT(ValueEntry_L."Cost per Unit");
+    END;
+
+    PROCEDURE UpdateRemainingValueEntryDisc@8053007(ValueEntryDisc_P@8053001 : Record 60085;ValueEntry_P@8053004 : Record 60083;PrevFinalPrice_P@8053005 : Decimal) : Decimal;
+    VAR
+      ValueEntryDisc_L@8053000 : Record 60085;
+      Found_L@8053002 : Boolean;
+      PreviousFinalPrice_L@8053003 : Decimal;
+      PurchDiscount_L@1000000000 : Record 8053247;
+    BEGIN
+      PurchECDLedgEntryTmp_G.RESET;
+      PurchECDLedgEntryTmp_G.DELETEALL;
+
+      Found_L := FALSE;
+      PreviousFinalPrice_L := 0;
+
+      ValueEntryDisc_L.RESET;
+      ValueEntryDisc_L.SETCURRENTKEY("Unique Id","Value Entry No.",Rank);
+      ValueEntryDisc_L.SETRANGE("Value Entry No.",ValueEntry_P."Entry No.");
+      ValueEntryDisc_L.SETRANGE("Unique Id",UniqueId_G);
+      IF ValueEntryDisc_L.FINDSET THEN
+        REPEAT
+          IF ValueEntryDisc_L."Discount Code" = ValueEntryDisc_P."Discount Code" THEN BEGIN
+            Found_L := TRUE;
+            PreviousFinalPrice_L := PrevFinalPrice_P;
+            StoreBeforeECDLedgerEntry(PurchECDLedgEntryTmp_G,ValueEntryDisc_L,ValueEntry_P);
+            //UpdatePurchDocDiscount(ValueEntryDisc_L);
+          END ELSE BEGIN
+            IF Found_L THEN BEGIN
+              ValueEntryDisc_L."Base Value" := GetDiscountBaseValue(ValueEntryDisc_L,PreviousFinalPrice_L);
+              PurchDiscount_L.GET(ValueEntryDisc_L."Discount Code");
+              IF ValueEntryDisc_L."Discount %" <> 0 THEN
+                IF PurchDiscount_L."Disc. Calculation Type" = PurchDiscount_L."Disc. Calculation Type"::"Chain Discount" THEN
+                  UpdateDiscount(ValueEntryDisc_L,1,ValueEntryDisc_L."Discount %",ValueEntryDisc_L."Base Value")
+                ELSE
+                  UpdateDiscount(ValueEntryDisc_L,1,ValueEntryDisc_L."Discount %",PreviousFinalPrice_L)
+              ELSE
+                IF PurchDiscount_L."Disc. Calculation Type" = PurchDiscount_L."Disc. Calculation Type"::"Chain Discount" THEN
+                  UpdateDiscount(ValueEntryDisc_L,0,ValueEntryDisc_L."Discount Amount",ValueEntryDisc_L."Base Value")
+                ELSE
+                  UpdateDiscount(ValueEntryDisc_L,0,ValueEntryDisc_L."Discount Amount",PreviousFinalPrice_L);
+
+              PreviousFinalPrice_L := ValueEntryDisc_L."Final Price";
+              StoreBeforeECDLedgerEntry(PurchECDLedgEntryTmp_G,ValueEntryDisc_L,ValueEntry_P);
+              //UpdatePurchDocDiscount(ValueEntryDisc_L);
+            END;
+          END;
+        UNTIL ValueEntryDisc_L.NEXT = 0
+      ELSE
+        ERROR(Text8053019,ValueEntryDisc_L.TABLECAPTION,
+                          ValueEntryDisc_L.FIELDCAPTION("Value Entry No."),
+                          FORMAT(ValueEntry_P."Entry No."));
+
+      EXIT(PreviousFinalPrice_L);
+    END;
+
+    PROCEDURE FctRFCExist@1000000007(ValueEntry_P@1000000001 : Record 60083;DiscountCode_P@1000000002 : Code[20]) : Boolean;
+    VAR
+      ECDLedgerEntry_L@1000000000 : Record 60084;
+      CmcValueEntryDiscount_L@1000000003 : Record 60085;
+    BEGIN
+      CmcValueEntryDiscount_L.RESET;
+      CmcValueEntryDiscount_L.SETRANGE("Value Entry No.",ValueEntry_P."Entry No.");
+      CmcValueEntryDiscount_L.SETRANGE("Unique Id",UniqueId_G);
+
+      IF DiscountCode_P <> '' THEN
+         CmcValueEntryDiscount_L.SETRANGE("Discount Code",DiscountCode_P);
+      IF CmcValueEntryDiscount_L.FINDSET THEN REPEAT
+          ECDLedgerEntry_L.RESET;
+          ECDLedgerEntry_L.SETCURRENTKEY("Unique Id","Value Entry No.","Discount Code");
+          ECDLedgerEntry_L.SETRANGE("Value Entry No.",ValueEntry_P."Entry No.");
+          ECDLedgerEntry_L.SETRANGE("Discount Code",CmcValueEntryDiscount_L."Discount Code");
+          ECDLedgerEntry_L.SETRANGE("Unique Id",UniqueId_G);
+          IF ECDLedgerEntry_L.ISEMPTY THEN
+            EXIT(FALSE);
+
+      UNTIL CmcValueEntryDiscount_L.NEXT = 0;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE GetPurchDiscount@1000000000(VAR CMCPurchDiscValue_P@8053003 : Record 8053248) Result_L : Boolean;
+    VAR
+      j_L@1000000001 : Integer;
+      i_L@8053001 : Integer;
+      ItemLedgerEntry_L@8053000 : Record 32;
+      Item_L@8053002 : Record 27;
+    BEGIN
+      ItemLedgerEntry_L.GET(ValueEntryReference_G."Item Ledger Entry No.");
+      Item_L.GET(ValueEntryReference_G."Item No.");
+
+      CMCPurchDiscValue_P.RESET;
+
+      FOR j_L := 0 TO 1 DO BEGIN
+
+        CMCPurchDiscValue_P.RESET;
+        CMCPurchDiscValue_P.SETRANGE("Purch. Discount Code", DiscountCode_G);
+        CMCPurchDiscValue_P.SETFILTER("Campaign No.",'%1|%2',ValueEntryReference_G."Campaign No.",'');
+        CMCPurchDiscValue_P.SETRANGE("Vendor Type",j_L);
+        CASE j_L OF
+          0 : CMCPurchDiscValue_P.SETRANGE("Vendor No.", ValueEntryReference_G."Buy-from Vendor No.");
+          1 : CMCPurchDiscValue_P.SETRANGE("Vendor No.", ValueEntryReference_G."Source No.");
+          2 : CMCPurchDiscValue_P.SETRANGE("Vendor No.", ValueEntryReference_G."Origin Vendor No.");
+        END;
+        CMCPurchDiscValue_P.SETFILTER("Starting Date",'<=%1', ItemLedgerEntry_L."Order Date");
+        CMCPurchDiscValue_P.SETFILTER("Ending Date", '>=%1', ItemLedgerEntry_L."Order Date");
+        CMCPurchDiscValue_P.SETFILTER("Blanket Order No.",'%1|%2',ItemLedgerEntry_L."Purch. Blanket Order No.",'');
+        CMCPurchDiscValue_P.SETFILTER("Minimum Quantity",'<=%1|0',ItemLedgerEntry_L.Quantity);
+        CMCPurchDiscValue_P.SETFILTER("Unit of Measure Code",'%1|%2',ItemLedgerEntry_L."Unit of Measure Code",'');
+        CMCPurchDiscValue_P.SETFILTER("Discount Value",'<>%1',0);
+        IF CMCPurchDiscValue_P.FINDFIRST THEN BEGIN
+          FOR i_L := 0 TO 5 DO BEGIN
+            CMCPurchDiscValue_P.SETRANGE(Type, i_L);
+            CASE i_L OF
+              0 : BEGIN
+                CMCPurchDiscValue_P.SETRANGE(Code,ValueEntryReference_G."Item No.");
+                CMCPurchDiscValue_P.SETFILTER("Variant Code",'%1|%2',ValueEntryReference_G."Variant Code",'');
+              END;
+              1 : CMCPurchDiscValue_P.SETRANGE(Code, Item_L."Item Disc. Group");
+              2 : CMCPurchDiscValue_P.SETRANGE(Code, Item_L."Species Code");
+              3 : CMCPurchDiscValue_P.SETRANGE(Code, Item_L."Sub-Family Code");
+              4 : CMCPurchDiscValue_P.SETRANGE(Code, Item_L."Family Code");
+              5 : CMCPurchDiscValue_P.SETRANGE(Code, Item_L."Activity Code");
+            END;
+
+            IF CMCPurchDiscValue_P.FINDLAST THEN BEGIN
+              i_L := 5;
+              j_L := 1;
+              Result_L := TRUE;
+            END;
+
+          END;
+
+          IF NOT CMCPurchDiscValue_P.FINDLAST THEN
+            CMCPurchDiscValue_P.INIT;
+
+        END;
+      END;
+    END;
+
+    PROCEDURE StoreBeforeECDLedgerEntry@8053011(VAR PurchECDLedgerEntry_P@8053000 : Record 60084;ValueEntryDisc_P@8053001 : Record 60085;ValueEntry_P@8053003 : Record 60083);
+    VAR
+      PurchECDLedgerEntry_L@8053002 : Record 60084;
+    BEGIN
+      IF DetailedECDExist_G THEN BEGIN
+        PurchECDLedgerEntry_L.RESET;
+        PurchECDLedgerEntry_L.SETCURRENTKEY("Unique Id","Value Entry No.","Discount Code");
+        PurchECDLedgerEntry_L.SETRANGE("Value Entry No.",ValueEntryDisc_P."Value Entry No.");
+        PurchECDLedgerEntry_L.SETRANGE("Discount Code",ValueEntryDisc_P."Discount Code");
+        PurchECDLedgerEntry_L.SETRANGE("ECD Vendor No.",ValueEntryDisc_P."ECD Vendor No.");
+        PurchECDLedgerEntry_L.SETRANGE("Unique Id",UniqueId_G);
+
+        IF PurchECDLedgerEntry_L.FINDLAST THEN BEGIN
+          PurchECDLedgerEntry_P := PurchECDLedgerEntry_L;
+          PurchECDLedgerEntry_P.INSERT;
+        END;
+      END ELSE BEGIN
+        PurchECDLedgerEntry_L.RESET;
+        PurchECDLedgerEntry_L.SETCURRENTKEY("Unique Id","Value Entry No.","Discount Code");
+        PurchECDLedgerEntry_L.SETRANGE("Value Entry No.",ValueEntry_P."Entry No.");
+        PurchECDLedgerEntry_L.SETRANGE("Discount Code",'');
+        PurchECDLedgerEntry_L.SETRANGE("ECD Vendor No.",ValueEntry_P."ECD Vendor No.");
+        PurchECDLedgerEntry_L.SETRANGE("Unique Id",UniqueId_G);
+
+        IF PurchECDLedgerEntry_L.FINDLAST THEN BEGIN
+          PurchECDLedgerEntry_P := PurchECDLedgerEntry_L;
+          PurchECDLedgerEntry_P.INSERT;
+        END;
+      END;
+    END;
+
+    PROCEDURE UpdatePurchDocDiscount@8053010(ValueEntryDisc_P@8053001 : Record 8053252);
+    VAR
+      PurchRcptLine_L@8053000 : Record 121;
+      PurchDocDiscount_L@8053002 : Record 8053249;
+      PostedPurchDocDiscount_L@8053003 : Record 8053250;
+      PurchInvLine_L@8053004 : Record 123;
+      PurchLine_L@8053005 : Record 39;
+      ReturnShptLine_L@8053007 : Record 6651;
+      PurchCrMemoLine_L@8053006 : Record 125;
+      ValueEntry_L@8053008 : Record 5802;
+      DiscountUnitAmount_L@8053009 : Decimal;
+    BEGIN
+      EXIT;
+    END;
+
+    PROCEDURE UpdateDiscount@8053004(VAR ValueEntryDisc_P@8053000 : Record 60085;ValuationType_P@8053001 : 'New ECD Amount,New ECD Percentage,Change ECD amount,Apply Purch. Discount';ModificationValue_P@8053002 : Decimal;PrevFinalPrice_P@8053003 : Decimal) : Decimal;
+    VAR
+      CMCPurchDiscValue_L@8053004 : Record 8053248;
+    BEGIN
+      CASE ValuationType_P OF
+        ValuationType_P::"New ECD Amount" : BEGIN
+          IF ValueEntryDisc_P."Discount Code" <> CMCSetup_G."Except. Purch. ECD Disc. Code" THEN BEGIN
+            ValueEntryDisc_P."Discount Amount" := ModificationValue_P;
+            ValueEntryDisc_P."Discount %" := 0;
+            SetFinalPrice(ValueEntryDisc_P,PrevFinalPrice_P);
+          END ELSE BEGIN
+            IF UpdateType_G <> UpdateType_G::"Unapply Budgeted Unit Cost" THEN BEGIN
+              IF ValueEntryDisc_P."Discount Amount" <> 0 THEN BEGIN
+                IF ValueEntryDisc_P."Base Value" > ValueEntryDisc_P."Final Price" THEN
+                  ValueEntryDisc_P."Discount Amount" := ValueEntryDisc_P."Base Value" - ValueEntryDisc_P."Final Price"
+                ELSE
+                  IF ValueEntryDisc_P."Base Value" < ValueEntryDisc_P."Final Price" THEN
+                    ERROR(Text8053018,ValueEntryReference_G."Entry No.")
+                  ELSE BEGIN
+                    ValueEntryDisc_P."Discount %" := 0;
+                    ValueEntryDisc_P."Discount Amount" := 0;
+                  END;
+              END ELSE BEGIN
+                ValueEntryDisc_P."Discount Amount" := ModificationValue_P;
+                SetFinalPrice(ValueEntryDisc_P,PrevFinalPrice_P);
+              END;
+            END ELSE BEGIN
+              ValueEntryDisc_P."Discount %" := 0;
+              ValueEntryDisc_P."Discount Amount" := 0;
+              ValueEntryDisc_P."Final Price" := ValueEntryDisc_P."Base Value";
+            END;
+          END;
+        END;
+        ValuationType_P::"New ECD Percentage" : BEGIN
+          ValueEntryDisc_P."Discount Amount" :=
+                                   ROUND(ValueEntryDisc_P."Base Value" * ModificationValue_P / 100, 0.01, '=');
+          ValueEntryDisc_P."Discount %" := ModificationValue_P;
+          SetFinalPrice(ValueEntryDisc_P,PrevFinalPrice_P);
+        END;
+        ValuationType_P::"Change ECD amount" : BEGIN
+          ValueEntryDisc_P."Discount Amount" := ValueEntryDisc_P."Discount Amount" + ModificationValue_P;
+          SetFinalPrice(ValueEntryDisc_P,PrevFinalPrice_P);
+        END;
+        ValuationType_P::"Apply Purch. Discount": BEGIN
+          GetPurchDiscount(CMCPurchDiscValue_L);
+          CASE CMCPurchDiscValue_L."Valuation Type" OF
+            CMCPurchDiscValue_L."Valuation Type" ::Percentage : BEGIN
+              ValueEntryDisc_P."Discount %" := CMCPurchDiscValue_L."Discount Value";
+              ValueEntryDisc_P."Discount Amount" :=
+                                 ROUND(ValueEntryDisc_P."Base Value" * CMCPurchDiscValue_L."Discount Value"/100, 0.01, '=');
+            END;
+            CMCPurchDiscValue_L."Valuation Type" ::"Unit Amount" : BEGIN
+              ValueEntryDisc_P."Discount Amount" := CMCPurchDiscValue_L."Discount Value";
+            END;
+          END;
+          SetFinalPrice(ValueEntryDisc_P,PrevFinalPrice_P);
+        END;
+      END;
+
+      ValueEntryDisc_P.MODIFY(TRUE);
+
+      EXIT(ValueEntryDisc_P."Final Price");
+    END;
+
+    PROCEDURE SetFinalPrice@8053013(VAR ValueEntryDiscount_P@8053000 : Record 60085;PrevFinalPrice_P@8053001 : Decimal);
+    VAR
+      RecValueEntry_L@1000000000 : Record 60083;
+    BEGIN
+      UniqueId_G := FctReturnUniqueId;
+      RecValueEntry_L.GET(UniqueId_G,ValueEntryDiscount_P."Value Entry No.");
+      ValueEntryDiscount_P."Final Price" := PrevFinalPrice_P - ValueEntryDiscount_P."Discount Amount";
+      IF ValueEntryDiscount_P."Final Price" < 0 THEN
+        ERROR(Text60000, ValueEntryDiscount_P."Value Entry No.",STRSUBSTNO('%1',RecValueEntry_L."Document Type"),
+          RecValueEntry_L."Document No.",RecValueEntry_L."Document Line No.");
+    END;
+
+    PROCEDURE UpdateDocumentLine@8053006(ValueEntry_P@8053005 : Record 5802);
+    VAR
+      PurchLine_L@8053001 : Record 39;
+      PurchRcptLine_L@8053004 : Record 121;
+      ReturnShptLine_L@8053002 : Record 6651;
+      PurchInvLine_L@8053003 : Record 123;
+      PurchCrMemoLine_L@8053000 : Record 125;
+      DiscountUnitAmount_L@8053006 : Decimal;
+    BEGIN
+      EXIT;
+
+      CASE ValueEntry_P."Document Type" OF
+        ValueEntry_P."Document Type"::"Purchase Receipt" : BEGIN
+          IF PurchRcptLine_L.GET(ValueEntry_P."Document No.",ValueEntry_P."Document Line No.") THEN
+            IF PurchLine_L.GET(PurchLine_L."Document Type"::Order,PurchRcptLine_L."Order No.",
+                                                                PurchRcptLine_L."Order Line No.") THEN
+              UpdatePurchLine(PurchLine_L,ValueEntry_P);
+        END;
+        ValueEntry_P."Document Type"::"Purchase Invoice" : BEGIN
+          IF PurchInvLine_L.GET(ValueEntry_P."Document No.",ValueEntry_P."Document Line No.") THEN BEGIN
+            PurchInvLine_L."ECD Calculation Priority" := ValueEntry_P."ECD Calculation Priority";
+            PurchInvLine_L."Budgeted Unit Cost" := ValueEntry_P."Budgeted Unit Cost";
+            PurchInvLine_L."ECD Unit Amount" := ValueEntry_P."ECD Unit Amount";
+            PurchInvLine_L.MODIFY;
+          END;
+        END;
+        ValueEntry_P."Document Type"::"Purchase Return Shipment" : BEGIN
+          IF ReturnShptLine_L.GET(ValueEntry_P."Document No.",ValueEntry_P."Document Line No.") THEN
+            IF PurchLine_L.GET(PurchLine_L."Document Type"::"Return Order",ReturnShptLine_L."Return Order No.",
+                                                                      ReturnShptLine_L."Return Order Line No.") THEN
+              UpdatePurchLine(PurchLine_L,ValueEntry_P);
+        END;
+        ValueEntry_P."Document Type"::"Purchase Credit Memo" : BEGIN
+          IF PurchCrMemoLine_L.GET(ValueEntry_P."Document No.",ValueEntry_P."Document Line No.") THEN BEGIN
+            PurchCrMemoLine_L."ECD Calculation Priority" := ValueEntry_P."ECD Calculation Priority";
+            PurchCrMemoLine_L."Budgeted Unit Cost" := ValueEntry_P."Budgeted Unit Cost";
+            PurchCrMemoLine_L."ECD Unit Amount" := ValueEntry_P."ECD Unit Amount";
+            PurchCrMemoLine_L.MODIFY;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE UpdatePurchLine@8053022(PurchLine_P@8053000 : Record 39;ValueEntry_P@8053002 : Record 5802);
+    BEGIN
+      WITH PurchLine_P DO BEGIN
+        "ECD Calculation Priority" := ValueEntry_P."ECD Calculation Priority";
+        "Budgeted Unit Cost" := ValueEntry_P."Budgeted Unit Cost";
+        "ECD Unit Amount" := ValueEntry_P."ECD Unit Amount";
+        MODIFY;
+      END;
+    END;
+
+    PROCEDURE FctSetValue@1000000001(VAR DetailedECDExist_P@1000000000 : Boolean;VAR UpdateType_P@1000000001 : 'ECD Update,Cancel ECD,Apply Budgeted Unit Cost,Unapply Budgeted Unit Cost';VAR VendorNo_P@1000000003 : Code[20];VAR DiscountCode_P@1000000002 : Code[20];VAR ValuationType_P@1000000004 : 'New ECD Amount,New ECD Percentage,Change ECD amount,Apply Purch. Discount';VAR ModificationValue_P@1000000005 : Decimal;VAR Test_P@1000000006 : Boolean;VAR PrintToExcel_P@1000000007 : Boolean);
+    BEGIN
+      DetailedECDExist_G := DetailedECDExist_P;
+      UpdateType_G := UpdateType_P;
+      VendorNo_G := VendorNo_P;
+      DiscountCode_G := DiscountCode_P;
+      ValuationType_G := ValuationType_P;
+      ModificationValue_G := ModificationValue_P;
+      Test_G := Test_P;
+      PrintToExcel_G := PrintToExcel_P;
+    END;
+
+    PROCEDURE FctSetDateMethod@1000000005(VAR BooUseOriginalPostingDate_P@1000000000 : Boolean);
+    BEGIN
+      BooUseOriginalPostingDate_G := BooUseOriginalPostingDate_P;
+    END;
+
+    PROCEDURE FctGetBooCurrReportSkip@1000000004(VAR BooCurrReportSkip_P@1000000000 : Boolean);
+    BEGIN
+      BooCurrReportSkip_P := BooCurrReportSkip_G;
+    END;
+
+    PROCEDURE FctGetTempPurchEcd@1000000002(VAR PurchECDLedgEntryTmp_P@1000000000 : TEMPORARY Record 60084);
+    BEGIN
+      PurchECDLedgEntryTmp_G.RESET;
+      IF PurchECDLedgEntryTmp_G.FINDSET THEN REPEAT
+        PurchECDLedgEntryTmp_P := PurchECDLedgEntryTmp_G;
+        PurchECDLedgEntryTmp_P.INSERT;
+      UNTIL PurchECDLedgEntryTmp_G.NEXT = 0;
+    END;
+
+    PROCEDURE FctGetTempPurchEcdTestMode@1000000015(VAR PurchECDLedgEntryTmp_P@1000000000 : TEMPORARY Record 60084);
+    BEGIN
+      PurchECDLedgEntryTmpTestMode_G.RESET;
+      IF PurchECDLedgEntryTmpTestMode_G.FINDSET THEN REPEAT
+        PurchECDLedgEntryTmp_P := PurchECDLedgEntryTmpTestMode_G;
+        PurchECDLedgEntryTmp_P.INSERT;
+      UNTIL PurchECDLedgEntryTmpTestMode_G.NEXT = 0;
+    END;
+
+    PROCEDURE FctReturnUniqueId@1000000012() : Code[100];
+    VAR
+      Session_L@1000000000 : Record 2000000009;
+    BEGIN
+      Session_L.RESET;
+      Session_L.SETRANGE("Ma session",TRUE);
+      IF Session_L.FINDSET THEN
+        EXIT(COPYSTR(STRSUBSTNO('%1',Session_L."ID connexion") + Session_L."Code utilisateur",1,250))
+      ELSE
+        ERROR(Test60004);
+    END;
+
+    PROCEDURE PrepareExcelDataBody@8053000();
+    VAR
+      BlankFiller@1000 : Text[250];
+    BEGIN
+      TempValueEntryDiscForExcel_G.INIT;
+      TempValueEntryDiscForExcel_G := ValueEntryDiscForUpdate_G;
+      TempValueEntryDiscForExcel_G.INSERT;
+    END;
+
+    PROCEDURE FctGetTempValueEntryDisc@1000000006(VAR TempValueEntryDisc_P@1000000000 : TEMPORARY Record 60085);
+    BEGIN
+      TempValueEntryDiscForExcel_G.RESET;
+      IF TempValueEntryDiscForExcel_G.FINDSET THEN REPEAT
+        TempValueEntryDisc_P := TempValueEntryDiscForExcel_G;
+        TempValueEntryDisc_P.INSERT;
+      UNTIL TempValueEntryDiscForExcel_G.NEXT = 0;
+    END;
+
+    PROCEDURE FctRemplissageTables@1000000008(VAR ValueEntry_P@1000000006 : Record 5802);
+    VAR
+      ValueEntry_L@1000000000 : Record 5802;
+      PurchEcd_L@1000000003 : Record 8053088;
+      DetailedEcdEntry_L@1000000002 : Record 8053334;
+      ValueEntryDiscount_L@1000000001 : Record 8053252;
+      NbEnregCopie_L@1000000004 : Integer;
+      CompteurCopie_L@1000000005 : Integer;
+      DialogBox_L@1000000007 : Dialog;
+      ValueEntryCopie_L@1000000011 : Record 60083;
+      PurchEcdEntryCopie_L@1000000010 : Record 60084;
+      ValueEntryDiscCopie_L@1000000009 : Record 60085;
+      DetailedEcdEntryCopie_L@1000000008 : Record 60086;
+    BEGIN
+      // --> 20161110-Wi00-ADV01.01.00-2684-CJY01
+      UniqueId_G := FctReturnUniqueId;
+      NbEnregCopie_L := 0;
+      CompteurCopie_L := 0;
+
+
+      //Remplissage des tables
+      ValueEntry_L.COPYFILTERS(ValueEntry_P);
+      NbEnregCopie_L := ValueEntry_L.COUNT;
+      DialogBox_L.OPEN(Text60005);
+      DialogBox_L.UPDATE(1,'Ecritures Valeurs');
+      DialogBox_L.UPDATE(2,0);
+      DialogBox_L.UPDATE(3,NbEnregCopie_L);
+      IF ValueEntry_L.FINDSET THEN REPEAT
+        ValueEntryCopie_L.TRANSFERFIELDS(ValueEntry_L);
+        ValueEntryCopie_L."Unique Id" := UniqueId_G;
+        ValueEntryCopie_L.INSERT;
+        //Value entry discount
+        ValueEntryDiscount_L.RESET;
+        ValueEntryDiscount_L.SETRANGE("Value Entry No.",ValueEntry_L."Entry No.");
+        IF ValueEntryDiscount_L.FINDSET THEN REPEAT
+          ValueEntryDiscCopie_L.TRANSFERFIELDS(ValueEntryDiscount_L);
+          ValueEntryDiscCopie_L."Unique Id" := UniqueId_G;
+          ValueEntryDiscCopie_L.INSERT(TRUE);
+
+        UNTIL ValueEntryDiscount_L.NEXT = 0;
+
+        //Ecritures RFC achat
+        PurchEcd_L.RESET;
+        //PurchEcd_L.SETRANGE("Value Entry No.",ValueEntry_L."Entry No.");
+        PurchEcd_L.SETRANGE("Item Ledger Entry No.",ValueEntry_L."Item Ledger Entry No.");
+        //PurchEcd_L.SETFILTER("Discount Code",'%1|%2',DiscountCode_G,'');
+        IF PurchEcd_L.FINDSET THEN REPEAT
+          PurchEcdEntryCopie_L.TRANSFERFIELDS(PurchEcd_L);
+          PurchEcdEntryCopie_L."Unique Id" := UniqueId_G;
+          IF PurchEcdEntryCopie_L.INSERT(TRUE) THEN BEGIN
+            //Ecriture d'taill'es
+            DetailedEcdEntry_L.RESET;
+            DetailedEcdEntry_L.SETRANGE("Sales / Purchase",DetailedEcdEntry_L."Sales / Purchase"::Purchase);
+            DetailedEcdEntry_L.SETRANGE("ECD Entry No.",PurchEcd_L."Entry No.");
+            IF DetailedEcdEntry_L.FINDSET THEN REPEAT
+              DetailedEcdEntryCopie_L.TRANSFERFIELDS(DetailedEcdEntry_L);
+              DetailedEcdEntryCopie_L."Unique Id" := UniqueId_G;
+              DetailedEcdEntryCopie_L.INSERT;
+            UNTIL DetailedEcdEntry_L.NEXT = 0;
+          END;
+        UNTIL PurchEcd_L.NEXT = 0;
+        CompteurCopie_L := CompteurCopie_L +1 ;
+        DialogBox_L.UPDATE(2,CompteurCopie_L);
+        COMMIT;
+      UNTIL  ValueEntry_L.NEXT = 0;
+      //DialogBox_L.UPDATE(1,'Donn'es test pr^tes, veuillez patientez svp');
+      //DialogBox_L.UPDATE(2,0);
+      //DialogBox_L.UPDATE(3,0);
+      DialogBox_L.CLOSE;
+      //DialogBox_L.OPEN(Text60006);
+      //DialogBox_L.CLOSE;
+      COMMIT;
+      CLEAR(DialogBox_L);
+
+      // <-- 20161110-Wi00-ADV01.01.00-2684-CJY01
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+
+      20161110-Wi00-ADV01.01.00-2684-CJY01 : NEWOBJ
+
+      // <-- 3LI BEGIN
+    }
+    END.
+  }
+}
+

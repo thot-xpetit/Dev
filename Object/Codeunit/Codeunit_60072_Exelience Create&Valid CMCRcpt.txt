@@ -1,0 +1,578 @@
+OBJECT Codeunit 60072 Exelience Create&Valid CMCRcpt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=13/05/19;
+    Heure=00:00:00;
+    Liste versions=SP3358;
+  }
+  PROPERTIES
+  {
+    TableNo=60078;
+    OnRun=VAR
+            CMCCollectionContract_L@1000000000 : Record 8052983;
+            CMCPostedReceipt_L@1000000001 : Record 8052995;
+            CMCCollectionReceipt_L@1000000002 : Record 8052993;
+            CMCSetup_L@1000000003 : Record 8052982;
+            NoSeriesMgt_L@1000000004 : Codeunit 396;
+            CMCDelivery_L@60000 : Record 8053013;
+            PostReceipt_L@60001 : Codeunit 8052983;
+            CMCPostDelivery_L@60002 : Codeunit 8052988;
+            PostReceiptYN_L@60003 : Codeunit 8052984;
+          BEGIN
+            CMCCollectionContract_L.RESET;
+            CMCCollectionContract_L.SETRANGE(Type, CMCCollectionContract_L.Type::Contract);
+            CMCCollectionContract_L.SETRANGE("Collection Type", CMCCollectionContract_L."Collection Type"::Purchase);
+            CMCCollectionContract_L.SETRANGE("Paper Reference Contract No.", "Contract Reference");
+            CMCCollectionContract_L.FINDFIRST;
+
+            CMCPostedReceipt_L.RESET;
+            CMCPostedReceipt_L.SETRANGE("Contract No.", CMCCollectionContract_L."No.");
+            CMCPostedReceipt_L.SETRANGE("EXELIENCE Receipt Reference", "Receipt Reference");
+            CMCPostedReceipt_L.SETRANGE(CMCPostedReceipt_L.Canceled, FALSE);
+            IF CMCPostedReceipt_L.FINDFIRST THEN
+              ExelienceImport_G.InsertError(STRSUBSTNO(Text60015, "Sequence No.")
+                          ,"Sequence Flow No.","Sequence No.",'', "Record Order No.")
+            ELSE BEGIN
+              CLEAR(CMCCollectionReceipt_L);
+              CMCCollectionReceipt_L.LOCKTABLE;
+              CMCCollectionReceipt_L.INIT;
+
+              CMCSetup_L.GET;
+              CMCCollectionReceipt_L."No." := NoSeriesMgt_L.GetNextNo(CMCSetup_L."Collection Receipt Nos.", 0D, TRUE);
+
+              IF CMCCollectionReceipt_L."No." <> '' THEN BEGIN
+                CreateReceipt(Rec, CMCCollectionReceipt_L, CMCCollectionContract_L."No.");
+                // --> 20190110-Wi00-ADV01.01.00-3358-MRU01
+                CLEAR(CMCDelivery_L);
+                CMCDelivery_L.LOCKTABLE;
+                CMCDelivery_L.INIT;
+
+                CMCDelivery_L."No." := NoSeriesMgt_L.GetNextNo(CMCSetup_L."Collection Delivery Nos.", 0D, TRUE);
+
+                IF CMCDelivery_L."No." <> '' THEN BEGIN
+                  CreateDelivery(Rec, CMCDelivery_L, CMCCollectionReceipt_L);
+
+                  //Validation du bon de r'ception
+                  PostReceipt_L.RUN(CMCCollectionReceipt_L);
+
+                  //Validation du bon de sortie collecte
+                  //Si la validation ne fonctionne pas, annulation du bon de r'ception pr'c'demment valid'
+                  IF NOT CMCPostDelivery_L.RUN(CMCDelivery_L) THEN BEGIN
+                    //Stockage de l'erreur dans les logs
+                    ExelienceImport_G.InsertError(STRSUBSTNO(Text60016, "Sequence No.", GETLASTERRORTEXT)
+                                ,"Sequence Flow No.","Sequence No.",'', "Record Order No.");
+                    //R'cup'ration du bon de r'ception valid'
+                    CMCPostedReceipt_L.RESET;
+                    CMCPostedReceipt_L.SETRANGE("Contract No.", CMCCollectionContract_L."No.");
+                    CMCPostedReceipt_L.SETRANGE("EXELIENCE Receipt Reference", "Receipt Reference");
+                    CMCPostedReceipt_L.SETRANGE(Canceled, FALSE);
+                    IF CMCPostedReceipt_L.FINDFIRST THEN
+                      PostReceiptYN_L.CancelPostedReceipt(CMCPostedReceipt_L);
+                  END ELSE
+                    ExelienceImport_G.UpdateStatus(Rec);
+                END;
+                // <-- 20190110-Wi00-ADV01.01.00-3358-MRU01
+              END;
+
+            END;
+
+            // --> 20190110-WI00-ADV01.01.00-3358-MRU01
+            ExelienceImport_G.UpdateErrorStatus;
+            // <-- 20190110-WI00-ADV01.01.00-3358-MRU01
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TextTemplateLocation@1000000002 : TextConst 'FRA=EXELIENCE_LOCATION';
+      TextTemplateAnalysis@1000000001 : TextConst 'FRA=EXELIENCE_ANALYSIS';
+      TextFeatureImmat@1000000000 : TextConst 'FRA=IMMAT';
+      ExelienceImport_G@1000000003 : Codeunit 60069;
+      TextFeatureModLiv@60000 : TextConst 'FRA=MOD_LIV';
+      TextFeatureBlLiv@60001 : TextConst 'FRA=BL_LIV';
+      Text60015@1000000006 : TextConst 'ENU=Line No. %1 : Contract Code already existing in base;FRA=Ligne N› %1 : Apport d'j. existant en base';
+      Text60016@60002 : TextConst 'ENU=Line No. %1 : %2;FRA=Ligne N› %1 : %2';
+      Text60017@60003 : TextConst 'ENU=Net Weight (T) : %1 | Standard Weight (T) : %2;FRA=Poids net (T) : %1 | Poids aux normes (T) : %2';
+      RecRef_G@60004 : RecordRef;
+
+    PROCEDURE CreateReceipt@1000000001(ExelienceHeader_P@1000000000 : Record 60078;VAR CMCCollectionReceipt_P@1000000001 : Record 8052993;ContractNo_P@1000000002 : Code[10]) : Boolean;
+    VAR
+      CMCCollectionReceiptLine_L@1000000010 : Record 8053103;
+      ItemSNO_L@1000000009 : Record 60100;
+      Item_L@1000000008 : Record 27;
+      ReceiptDateTime_L@1000000006 : DateTime;
+      CMBAdvSetupMgt_L@1000000005 : Codeunit 8061290;
+      CMCSpeciesSetup_L@1000000004 : Record 8053323;
+      CMBInterfaceCorresp_L@1000000011 : Record 8061233;
+      CMCSetup_L@60000 : Record 8052982;
+      SeedsSetup_L@60001 : Record 60106;
+      NetWeight_L@60002 : Decimal;
+      StandardWeight_L@60003 : Decimal;
+    BEGIN
+      WITH ExelienceHeader_P DO BEGIN
+        CMCSetup_L.GET;
+        // --> 20190110-Wi00-ADV01.01.00-3358-MRU01
+        //R'cup'ration des paramStres semences
+        SeedsSetup_L.GET;
+        // <-- 20190110-Wi00-ADV01.01.00-3358-MRU01
+
+        CMCCollectionReceipt_P."Receipt Type" := CMCCollectionReceipt_P."Receipt Type"::Receipt;
+        CMCCollectionReceipt_P.INSERT(TRUE);
+
+        CMCCollectionReceipt_P.VALIDATE("Campaign No.", "Campaign Year");
+
+        // --> 20190110-Wi00-ADV01.01.00-3358-MRU01
+        //R'cup'ration du code magasin via le modSle de correspondance
+        CMBInterfaceCorresp_L.RESET;
+        CMBInterfaceCorresp_L.SETRANGE("Template code", TextTemplateLocation);
+        CMBInterfaceCorresp_L.SETRANGE("Interface Value", "Management Site");
+        {BEFORE
+        CMBInterfaceCorresp_L.FINDFIRST;
+        CMCCollectionReceipt_P.VALIDATE("Location Code", CMBInterfaceCorresp_L."NAV Value");
+        AFTER}
+        //R'cup'ration du code magasin via le modSle de correspondance, s'il n'existe pas alors magasin par d'faut (Param Semences)
+        IF CMBInterfaceCorresp_L.FINDFIRST THEN
+          CMCCollectionReceipt_P.VALIDATE("Location Code", CMBInterfaceCorresp_L."NAV Value")
+        ELSE
+          CMCCollectionReceipt_P.VALIDATE("Location Code", SeedsSetup_L."Seed Location Code");
+        // <-- 20190110-Wi00-ADV01.01.00-3358-MRU01
+
+        CMCCollectionReceipt_P.VALIDATE("Vendor No.", COPYSTR("Third Code", 2));
+        ItemSNO_L.GET("Item No.");
+        Item_L.GET(ItemSNO_L."Correspondance num'ro article");
+        CMCCollectionReceipt_P.VALIDATE("Species Code", Item_L."Species Code");
+        CMCCollectionReceipt_P.VALIDATE("Item No.", Item_L."No.");
+        EVALUATE(ReceiptDateTime_L, "Receipt DateTime");
+        CMCCollectionReceipt_P."Creation Date" := ReceiptDateTime_L;
+
+        //Traitement particulier pour la date comptabilisation : ni elle n'est pas dans la p'riode FranceAgrimer, alors TODAY
+        IF (DT2DATE(ReceiptDateTime_L) >= CMCSetup_L."ONIC Allow Posting From")
+            AND (DT2DATE(ReceiptDateTime_L) <= CMCSetup_L."ONIC Allow Posting To") THEN
+          CMCCollectionReceipt_P."Posting Date" := DT2DATE(ReceiptDateTime_L)
+        ELSE
+          CMCCollectionReceipt_P."Posting Date" := TODAY;
+
+        CMCCollectionReceipt_P."Shipment Date" := DT2DATE(ReceiptDateTime_L);
+        EVALUATE(CMCCollectionReceipt_P."Net Weight", "Net Weight");
+        CMCCollectionReceipt_P."Net Weight" := CMCCollectionReceipt_P."Net Weight"/1000;
+        EVALUATE(CMCCollectionReceipt_P."Standard Weight", "Standard Weight");
+        // --> 20190513-WI00-ADV01.01.00-3358-MRU01
+        {BEFORE
+        CMCCollectionReceipt_P."Weight Standards Already" := TRUE;
+        AFTER}
+        CMCCollectionReceipt_P."Weight Standards Already" := FALSE;
+        // <-- 20190513-WI00-ADV01.01.00-3358-MRU01
+
+        CMCCollectionReceipt_P.VALIDATE("Collection Type", CMCCollectionReceipt_P."Collection Type"::Purchase);
+
+        // --> 20190130-Wi00-ADV01.01.00-3358-MRU01
+        IF COMPANYNAME = 'TERNOVEO' THEN
+        // <-- 20190130-Wi00-ADV01.01.00-3358-MRU01
+          // --> 20190429-Wi00-ADV01.01.00-3358-MRU01
+          //CMCCollectionReceipt_P."Manual Weighing No." := '0';
+          CMCCollectionReceipt_P.VALIDATE("Manual Weighing No.", '0');
+          // <-- 20190429-Wi00-ADV01.01.00-3358-MRU01
+
+        CMCCollectionReceipt_P."Notebook Weighing No." := '0';
+
+        //Si Vari't' n'cessaire, r'cup'ration de l'information
+        IF CMBAdvSetupMgt_L.GetAdvancedParameterValueBool('CER-RCPT-VARIETOBLIG') THEN BEGIN
+          CMCCollectionReceipt_P."Variety Code" := Item_L."Variety Code";
+        END;
+
+        //Si Bon de livraison agriculteur n'cessaire, on remplit le champ
+        IF CMBAdvSetupMgt_L.GetAdvancedParameterValueBool('CER-RCPT-BLAGRIOBLIG') THEN
+          CMCCollectionReceipt_P."Vendor Delivery Note" := '0';
+
+        //Si N› Scell' n'cessaire, on remplit le champ
+        CMCSpeciesSetup_L.GET(Item_L."Species Code");
+        IF CMCSpeciesSetup_L."Mandatory Seal" THEN
+          CMCCollectionReceipt_P."Seal No." := '0';
+
+        CMCCollectionReceipt_P."Contract No." := ContractNo_P;
+        CMCCollectionReceipt_P."EXELIENCE Receipt Reference" := "Receipt Reference";
+
+        //Si Desinsectisation n'cessaire, on remplit le champ
+        IF NOT CMCSetup_L."Disinsectization default to No" THEN
+          CMCCollectionReceipt_P.Disinsectization := CMCCollectionReceipt_P.Disinsectization::No;
+
+        //Si N› Bon Manuel n'cessaire, on remplit le champ
+        IF CMBAdvSetupMgt_L.GetAdvancedParameterValueBool('CER-RCPT-TICKMAOBLIG') THEN
+          CMCCollectionReceipt_P."Manual Voucher No." := CMCCollectionReceipt_P."No.";
+
+        CMCCollectionReceipt_P.MODIFY(TRUE);
+
+        InsertReceiptAnalysis(ExelienceHeader_P, CMCCollectionReceipt_P);
+
+        // --> 20190513-WI00-ADV01.01.00-3358-MRU01
+        CMCCollectionReceipt_P.VALIDATE("Net Weight");
+        CMCCollectionReceipt_P.MODIFY;
+        // <-- 20190513-WI00-ADV01.01.00-3358-MRU01
+
+        CLEAR(CMCCollectionReceiptLine_L);
+        CMCCollectionReceiptLine_L.LOCKTABLE;
+        CMCCollectionReceiptLine_L.INIT;
+        CMCCollectionReceiptLine_L."Receipt Type" := CMCCollectionReceipt_P."Receipt Type";
+        CMCCollectionReceiptLine_L."No." := CMCCollectionReceipt_P."No.";
+
+        CMCCollectionReceiptLine_L.VALIDATE("Contract No.", ContractNo_P);
+        IF NOT CMCCollectionReceiptLine_L.INSERT THEN
+          CMCCollectionReceiptLine_L.MODIFY;
+
+        // --> 20190513-WI00-ADV01.01.00-3358-MRU01
+        RecRef_G.GETTABLE(CMCCollectionReceipt_P);
+        EVALUATE(NetWeight_L, "Net Weight");
+        NetWeight_L := NetWeight_L / 1000;
+        EVALUATE(StandardWeight_L, "Standard Weight");
+        InsertNotes(RecRef_G, NetWeight_L, StandardWeight_L);
+        // <-- 20190513-WI00-ADV01.01.00-3358-MRU01
+
+      END;
+    END;
+
+    PROCEDURE InsertReceiptAnalysis@1000000015(ExelienceHeader_P@1000000006 : Record 60078;VAR CMCCollectionReceipt_P@1000000002 : Record 8052993);
+    VAR
+      ExelienceLine_L@1000000000 : Record 60103;
+      CMCCollReceiptAnalysis_L@1000000001 : Record 8052994;
+      CMBInterfaceCorresp_L@1000000003 : Record 8061233;
+      SeedsSetup_L@60000 : Record 60106;
+    BEGIN
+      ExelienceLine_L.RESET;
+      ExelienceLine_L.SETRANGE("Sequence Flow No.", ExelienceHeader_P."Sequence Flow No.");
+      ExelienceLine_L.SETRANGE("Sequence Header No.", ExelienceHeader_P."Sequence No.");
+      IF ExelienceLine_L.FINDFIRST THEN REPEAT
+        WITH ExelienceLine_L DO BEGIN
+          // --> 20190110-Wi00-ADV01.01.00-3358-MRU01
+          {BEFORE
+          // --> 20181105-WI00-ADV01.01.00-3358-MRU01
+          {BEFORE
+          //Si le Code Caract'ristique est diff'rent de TextFeatureImmat, cr'ation d'une ligne d'analyse
+          //Sinon, renseignement du num'ro d'immatriculation v'hicule
+          IF "Feature Code" <> TextFeatureImmat THEN BEGIN
+          AFTER}
+          //Si le Code Caract'ristique est diff'rent de TextFeatureImmat et TextFeatureModLiv, cr'ation d'une ligne d'analyse
+          IF ("Feature Code" <> TextFeatureImmat) AND ("Feature Code" <> TextFeatureModLiv) THEN BEGIN
+          // <-- 20181105-WI00-ADV01.01.00-3358-MRU01
+          AFTER}
+          //Cr'ation d'une ligne d'analyse si le Code caract'ristique n'a pas de lien avec l'immatriculation ou la livraison
+          IF ("Feature Code" <> TextFeatureImmat) AND ("Feature Code" <> TextFeatureModLiv)
+                                                  AND ("Feature Code" <> TextFeatureBlLiv) THEN BEGIN
+          // <-- 20190110-Wi00-ADV01.01.00-3358-MRU01
+            CMBInterfaceCorresp_L.RESET;
+            CMBInterfaceCorresp_L.SETRANGE("Template code", TextTemplateAnalysis);
+            CMBInterfaceCorresp_L.SETRANGE("Interface Value", "Feature Code");
+            // --> 20190130-Wi00-ADV01.01.00-3358-MRU01
+            //Suppression du contr"le durant la phase d'analyse des donn'es : ne retourne pas forc'ment un enregistrement
+            {BEFORE
+            CMBInterfaceCorresp_L.FINDFIRST;
+            AFTER}
+            IF CMBInterfaceCorresp_L.FINDFIRST THEN BEGIN
+            // <-- 20190130-Wi00-ADV01.01.00-3358-MRU01
+
+              CLEAR(CMCCollReceiptAnalysis_L);
+              CMCCollReceiptAnalysis_L.LOCKTABLE;
+              CMCCollReceiptAnalysis_L.INIT;
+              CMCCollReceiptAnalysis_L."Receipt Type" := CMCCollectionReceipt_P."Receipt Type";
+              CMCCollReceiptAnalysis_L."Receipt No." := CMCCollectionReceipt_P."No.";
+              CMCCollReceiptAnalysis_L."Analysis Code" := CMBInterfaceCorresp_L."NAV Value";
+              EVALUATE(CMCCollReceiptAnalysis_L.Value, "Feature Value");
+              CMCCollReceiptAnalysis_L.VALIDATE(Value);
+              IF NOT CMCCollReceiptAnalysis_L.INSERT THEN
+                CMCCollReceiptAnalysis_L.MODIFY;
+            // --> 20190130-Wi00-ADV01.01.00-3358-MRU01
+            END;
+            // <-- 20190130-Wi00-ADV01.01.00-3358-MRU01
+          END ELSE BEGIN
+          // --> 20181105-WI00-ADV01.01.00-3358-MRU01
+            {BEFORE
+            CMCCollectionReceipt_P."Trucks Registration" := "Feature Value";
+            CMCCollectionReceipt_P.MODIFY;
+            AFTER}
+            IF "Feature Code" = TextFeatureImmat THEN BEGIN
+              CMCCollectionReceipt_P."Trucks Registration" := "Feature Value";
+              CMCCollectionReceipt_P.MODIFY;
+            END;
+
+            IF "Feature Code" = TextFeatureModLiv THEN BEGIN
+              IF UPPERCASE("Feature Value") = 'MULTIPLICATEUR' THEN
+                CMCCollectionReceipt_P."Transport Type" := CMCCollectionReceipt_P."Transport Type"::Vendor;
+              IF UPPERCASE("Feature Value") = 'TRANSPORTEUR' THEN BEGIN
+                CMCCollectionReceipt_P."Transport Type" := CMCCollectionReceipt_P."Transport Type"::Company;
+                // --> 20190110-Wi00-ADV01.01.00-3358-MRU01
+                {BEFORE
+                CMCCollectionReceipt_P.VALIDATE("Shipping Agent Code", 'EXELIENCE');
+                AFTER}
+                SeedsSetup_L.GET;
+                CMCCollectionReceipt_P.VALIDATE("Shipping Agent Code", SeedsSetup_L."Seed Shipping Agent Code");
+                // <-- 20190110-Wi00-ADV01.01.00-3358-MRU01
+              END;
+              CMCCollectionReceipt_P.MODIFY;
+            END;
+
+            // --> 20190110-Wi00-ADV01.01.00-3358-MRU01
+            IF "Feature Code" = TextFeatureBlLiv THEN BEGIN
+              CMCCollectionReceipt_P."Vendor Delivery Note" := "Feature Value";
+              // --> 20190130-Wi00-ADV01.01.00-3358-MRU01
+              IF COMPANYNAME = 'UNEAL' THEN
+                // --> 20190429-Wi00-ADV01.01.00-3358-MRU01
+                //CMCCollectionReceipt_P."Manual Weighing No." := "Feature Value";
+                CMCCollectionReceipt_P.VALIDATE("Manual Weighing No.", "Feature Value");
+                // <-- 20190429-Wi00-ADV01.01.00-3358-MRU01
+              // <-- 20190130-Wi00-ADV01.01.00-3358-MRU01
+              CMCCollectionReceipt_P.MODIFY;
+            END;
+            // <-- 20190110-Wi00-ADV01.01.00-3358-MRU01
+          // <-- 20181105-WI00-ADV01.01.00-3358-MRU01
+          END;
+
+        END;
+      UNTIL ExelienceLine_L.NEXT = 0;
+    END;
+
+    PROCEDURE CreateDelivery@60000(ExelienceHeader_P@60001 : Record 60078;VAR CMCDelivery_P@60000 : Record 8053013;VAR CMCCollectionReceipt_P@60003 : Record 8052993);
+    VAR
+      SeedsSetup_L@60002 : Record 60106;
+      CMCSalesContract_L@60004 : Record 8053012;
+      DeliveryDateTime_L@60005 : DateTime;
+      CMCSetup_L@60006 : Record 8052982;
+      VendorName_L@1000000000 : Text[50];
+      CommentLength_L@1000000001 : Integer;
+      CMBAdvSetupMgt_L@100000000 : Codeunit 8061290;
+    BEGIN
+      // --> 20190110-Wi00-ADV01.01.00-3358-MRU01
+      WITH ExelienceHeader_P DO BEGIN
+        CMCSetup_L.GET;
+        SeedsSetup_L.GET;
+
+        CMCDelivery_P."Delivery Type" := CMCDelivery_P."Delivery Type"::Delivery;
+        CMCDelivery_P.INSERT(TRUE);
+
+        CMCDelivery_P.VALIDATE("Campaign No.", "Campaign Year");
+        CMCDelivery_P.VALIDATE("Location Code", SeedsSetup_L."Seed Location Code");
+        CMCDelivery_P.VALIDATE("Customer No.", SeedsSetup_L."Seed Customer No.");
+        CMCDelivery_P.VALIDATE("Species Code", CMCCollectionReceipt_P."Species Code");
+
+        //R'cup'ration du contrat de vente associ'
+        CMCSalesContract_L.SETRANGE("Campaign No.", CMCDelivery_P."Campaign No.");
+        CMCSalesContract_L.SETRANGE("Customer No.", CMCDelivery_P."Customer No.");
+        CMCSalesContract_L.SETRANGE("Species Code", CMCDelivery_P."Species Code");
+        CMCSalesContract_L.SETRANGE(Status, CMCSalesContract_L.Status::Locked);
+        CMCSalesContract_L.FINDFIRST;
+
+        //Traitement particulier pour la date comptabilisation : ni elle n'est pas dans la p'riode FranceAgrimer, alors TODAY
+        IF (DT2DATE(DeliveryDateTime_L) >= CMCSetup_L."ONIC Allow Posting From")
+            AND (DT2DATE(DeliveryDateTime_L) <= CMCSetup_L."ONIC Allow Posting To") THEN
+          CMCDelivery_P."Posting Date" := DT2DATE(DeliveryDateTime_L)
+        ELSE
+          CMCDelivery_P."Posting Date" := TODAY;
+
+        EVALUATE(DeliveryDateTime_L, "Receipt DateTime");
+        CMCDelivery_P."Sales Date" := DT2DATE(DeliveryDateTime_L);
+        CMCDelivery_P."Requested Delivery Date" := DT2DATE(DeliveryDateTime_L);
+
+        CMCDelivery_P.VALIDATE("Contract No.", CMCSalesContract_L."No.");
+
+        IF CMCCollectionReceipt_P."Transport Type" = CMCCollectionReceipt_P."Transport Type"::Vendor THEN
+          // --> 20190123-Wi00-ADV01.01.00-3358-MRU01
+          //CMCDelivery_P."Shipping Type" := CMCDelivery_P."Shipping Type"::Company;
+          CMCDelivery_P."Shipping Type" := CMCDelivery_P."Shipping Type"::Customer;
+          CMCDelivery_P.VALIDATE("Shipping Agent Code", SeedsSetup_L."Seed Shipping Agent Code");
+          CMCDelivery_P."Trucker Name" := ' ';
+          // <-- 20190123-Wi00-ADV01.01.00-3358-MRU01
+        IF CMCCollectionReceipt_P."Transport Type" = CMCCollectionReceipt_P."Transport Type"::Company THEN BEGIN
+          // --> 20190123-Wi00-ADV01.01.00-3358-MRU01
+          //CMCDelivery_P."Shipping Type" := CMCDelivery_P."Shipping Type"::Customer;
+          //CMCDelivery_P.VALIDATE("Shipping Agent Code", SeedsSetup_L."Seed Shipping Agent Code");
+          //CMCDelivery_P."Trucker Name" := ' ';
+          CMCDelivery_P."Shipping Type" := CMCDelivery_P."Shipping Type"::Company;
+          // <-- 20190123-Wi00-ADV01.01.00-3358-MRU01
+        END;
+
+        CMCDelivery_P."Transport Method" := '3'; //Route par d'faut
+        CMCDelivery_P.Disinsectization := CMCDelivery_P.Disinsectization::No;
+        CMCDelivery_P."Trailers Registration No." := ' ';
+
+        CMCDelivery_P."Creation Date" := DeliveryDateTime_L;
+
+        CMCDelivery_P."User Id" := 'EXELIENCE';
+
+        //Observations : N› Client;Nom Client (tronqu' si total d'passe la taille du champ Comment);R'f'rence Apport
+        VendorName_L := CMCCollectionReceipt_P."Vendor Name";
+        CommentLength_L := (STRLEN(CMCCollectionReceipt_P."Vendor No.") + STRLEN(VendorName_L) + STRLEN("Receipt Reference") + 2);
+        IF CommentLength_L > MAXSTRLEN(CMCDelivery_P.Comment) THEN BEGIN
+          VendorName_L := COPYSTR(VendorName_L, 1, STRLEN(VendorName_L) - (CommentLength_L - MAXSTRLEN(CMCDelivery_P.Comment)));
+        END;
+
+        CMCDelivery_P.Comment := STRSUBSTNO('%1;%2;%3', CMCCollectionReceipt_P."Vendor No.", VendorName_L
+                                           , "Receipt Reference");
+
+        // --> 20190513-WI00-ADV01.01.00-3358-MRU01
+        {BEFORE
+        CMCDelivery_P."Net Weight" := CMCCollectionReceipt_P."Standard Weight";
+        CMCDelivery_P."Standard Weight" := CMCCollectionReceipt_P."Standard Weight";
+        CMCDelivery_P."Weight Standards Already" := TRUE;
+        AFTER}
+        CMCDelivery_P."Net Weight" := CMCCollectionReceipt_P."Net Weight";
+        CMCDelivery_P."Standard Weight" := CMCCollectionReceipt_P."Standard Weight";
+        CMCDelivery_P."Weight Standards Already" := FALSE;
+        // <-- 20190513-WI00-ADV01.01.00-3358-MRU01
+
+        // --> 20190130-Wi00-ADV01.01.00-3358-MRU01
+        //Reprise de l'information pr'sente dans le bon de r'ception cr''
+        {BEFORE
+        CMCDelivery_P."Manual Weighing No." := '0';
+        AFTER}
+        // --> 20190429-Wi00-ADV01.01.00-3358-MRU01
+        //CMCDelivery_P."Manual Weighing No." := CMCCollectionReceipt_P."Manual Weighing No.";
+        CMCDelivery_P.VALIDATE("Manual Weighing No.", CMCCollectionReceipt_P."Manual Weighing No.");
+        // <-- 20190429-Wi00-ADV01.01.00-3358-MRU01
+        // <-- 20190130-Wi00-ADV01.01.00-3358-MRU01
+        CMCDelivery_P."Notebook Weighing No." := '0';
+        CMCDelivery_P."Clean Containing" := CMCDelivery_P."Clean Containing"::Yes;
+
+        //Si N› Bon Manuel n'cessaire, on remplit le champ
+        IF CMBAdvSetupMgt_L.GetAdvancedParameterValueBool('CER-LIVR-TICKMAOBLIG') THEN
+          CMCDelivery_P."Manual Voucher No." := CMCDelivery_P."No.";
+
+        CMCDelivery_P.MODIFY(TRUE);
+
+        InsertDeliveryAnalysis(CMCDelivery_P, CMCCollectionReceipt_P);
+
+        // --> 20190513-WI00-ADV01.01.00-3358-MRU01
+        CMCDelivery_P.VALIDATE("Net Weight");
+        CMCDelivery_P.MODIFY;
+        // <-- 20190513-WI00-ADV01.01.00-3358-MRU01
+
+        InsertLastLoading(CMCDelivery_P);
+
+        CMCDelivery_P.VALIDATE("Conformity Containing", CMCDelivery_P."Conformity Containing"::Yes);
+        CMCDelivery_P.Status := CMCDelivery_P.Status::Released;
+        CMCDelivery_P.MODIFY;
+      END;
+
+      // <-- 20190110-Wi00-ADV01.01.00-3358-MRU01
+    END;
+
+    PROCEDURE InsertDeliveryAnalysis@60001(VAR CMCDeliveryReceipt_P@60000 : Record 8053013;VAR CMCCollectionReceipt_P@60001 : Record 8052993);
+    VAR
+      CMCCollReceiptAnalysis_L@60002 : Record 8052994;
+      CMCDeliveryAnalysis_L@60003 : Record 8053030;
+    BEGIN
+      // --> 20190110-Wi00-ADV01.01.00-3358-MRU01
+
+      CMCCollReceiptAnalysis_L.RESET;
+      CMCCollReceiptAnalysis_L.SETRANGE("Receipt Type", CMCCollectionReceipt_P."Receipt Type");
+      CMCCollReceiptAnalysis_L.SETRANGE("Receipt No.", CMCCollectionReceipt_P."No.");
+      IF CMCCollReceiptAnalysis_L.FINDFIRST THEN REPEAT
+        CLEAR(CMCDeliveryAnalysis_L);
+        CMCDeliveryAnalysis_L.LOCKTABLE;
+        CMCDeliveryAnalysis_L."Delivery Type" := CMCDeliveryReceipt_P."Delivery Type";
+        CMCDeliveryAnalysis_L."Delivery No." := CMCDeliveryReceipt_P."No.";
+        CMCDeliveryAnalysis_L."Analysis Code" := CMCCollReceiptAnalysis_L."Analysis Code";
+        CMCDeliveryAnalysis_L.Value := CMCCollReceiptAnalysis_L.Value;
+        IF NOT CMCDeliveryAnalysis_L.INSERT THEN
+          CMCDeliveryAnalysis_L.MODIFY;
+      UNTIL CMCCollReceiptAnalysis_L.NEXT = 0;
+
+      // <-- 20190110-Wi00-ADV01.01.00-3358-MRU01
+    END;
+
+    PROCEDURE InsertLastLoading@60005(VAR CMCDelivery_P@60001 : Record 8053013);
+    VAR
+      CMCLastLoading_L@60000 : Record 8053028;
+      i_L@60002 : Integer;
+    BEGIN
+      // --> 20190110-Wi00-ADV01.01.00-3358-MRU01
+      //Cr'ation de trois lignes de derniers chargements (obligatoire pour la validation du bon de sortie)
+
+      FOR i_L := 1 TO 3 DO BEGIN
+        CLEAR(CMCLastLoading_L);
+        CMCLastLoading_L.LOCKTABLE;
+        CMCLastLoading_L."Delivery Type" := CMCDelivery_P."Delivery Type";
+        CMCLastLoading_L."Delivery No." := CMCDelivery_P."No.";
+        CMCLastLoading_L."Line No." := i_L * 10000;
+        CMCLastLoading_L.VALIDATE(Date, DT2DATE(CMCDelivery_P."Creation Date"));
+        CMCLastLoading_L.VALIDATE("Shipping Code", 'CEREALES');
+        CMCLastLoading_L.INSERT;
+      END;
+
+      // <-- 20190110-Wi00-ADV01.01.00-3358-MRU01
+    END;
+
+    PROCEDURE InsertNotes@60002(RecRef_P@60000 : RecordRef;NetWeight_P@60002 : Decimal;StandardWeight_P@60003 : Decimal);
+    VAR
+      RecordLink_L@60001 : Record 2000000068;
+    BEGIN
+      // --> 20190513-WI00-ADV01.01.00-3358-MRU01
+      RecordLink_L.INIT;
+      RecordLink_L."Link ID" := 0;
+      RecordLink_L."Record ID" := RecRef_P.RECORDID;
+      RecordLink_L.Type := RecordLink_L.Type::Note;
+      RecordLink_L.Created := CURRENTDATETIME;
+      RecordLink_L."User ID":=USERID;
+      RecordLink_L.Company:=COMPANYNAME;
+      SetText(STRSUBSTNO(Text60017, FORMAT(NetWeight_P), FORMAT(StandardWeight_P)), RecordLink_L);
+
+      RecordLink_L.INSERT;
+
+      // <-- 20190513-WI00-ADV01.01.00-3358-MRU01
+    END;
+
+    PROCEDURE SetText@60003(NoteText_P@60000 : Text[1001];VAR RecordLink_P@60001 : Record 2000000068);
+    VAR
+      SystemUTF8Encoder_L@60002 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Text.UTF8Encoding";
+      SystemByteArray_L@60003 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Array";
+      OutStream_L@60004 : OutStream;
+      s_L@60005 : Text[1001];
+      lf_L@60006 : Text[1001];
+      c1_L@60007 : Char;
+      c2_L@60008 : Char;
+      x_L@60009 : Integer;
+      y_L@60010 : Integer;
+      i_L@60011 : Integer;
+    BEGIN
+      // --> 20190513-WI00-ADV01.01.00-3358-MRU01
+      RecordLink_P.Note.CREATEOUTSTREAM(OutStream_L);
+      SystemUTF8Encoder_L := SystemUTF8Encoder_L.UTF8Encoding;
+
+      s_L := NoteText_P;
+
+      SystemByteArray_L := SystemUTF8Encoder_L.GetBytes(s_L);
+
+      x_L := SystemByteArray_L.Length DIV 128;
+      IF x_L > 1 THEN
+        y_L := SystemByteArray_L.Length - 128 * (x_L - 1)
+      ELSE
+        y_L := SystemByteArray_L.Length;
+      c1_L := y_L;
+      OutStream_L.WRITE(c1_L);
+      IF x_L > 0 THEN BEGIN
+        c2_L := x_L;
+        OutStream_L.WRITE(c2_L);
+      END;
+      FOR i_L := 0 TO SystemByteArray_L.Length - 1 DO BEGIN
+        c1_L := SystemByteArray_L.GetValue(i_L);
+        OutStream_L.WRITE(c1_L);
+      END;
+
+      // <-- 20190513-WI00-ADV01.01.00-3358-MRU01
+    END;
+
+    BEGIN
+    {
+      //--> 3LI BEGIN
+      20181016-WI00-ADV01.01.00-3358-MRU01 : CREATE Object
+      20181105-WI00-ADV01.01.00-3358-MRU01 : Specification v8
+      20190110-Wi00-ADV01.01.00-3358-MRU01 : Specification v11
+      20190123-Wi00-ADV01.01.00-3358-MRU01 : Specifications v12 + 13
+      20190130-Wi00-ADV01.01.00-3358-MRU01 : Specification v14
+      20190429-Wi00-ADV01.01.00-3358-MRU01 : Validation du "Manual Weighing No." pour le retrouver dans les lignes de pes'e
+      20190513-WI00-ADV01.01.00-3358-MRU01 : Modifications gestion poids aux normes
+      //<-- 3LI END
+    }
+    END.
+  }
+}
+

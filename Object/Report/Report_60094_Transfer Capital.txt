@@ -1,0 +1,462 @@
+OBJECT Report 60094 Transfer Capital
+{
+  OBJECT-PROPERTIES
+  {
+    Date=16/05/18;
+    Heure=00:00:00;
+    Liste versions=ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Transfer Capital;
+               FRA=Requalification capital];
+    ProcessingOnly=Oui;
+    OnInitReport=VAR
+                   Campaign_L@8053001 : Record 8052991;
+                   PartType_L@1000000000 : Record 8053351;
+                 BEGIN
+                   Campaign_L.RESET;
+                   Campaign_L.SETFILTER(Campaign_L."Ending Date",'>%1',CALCDATE('<-1Y>',WORKDATE));
+                   Campaign_L.SETFILTER(Campaign_L."Starting Date",'<%1',CALCDATE('<-1Y>',WORKDATE));
+
+                   IF Campaign_L.FINDFIRST THEN BEGIN
+                     CampaignNo_G := Campaign_L."No.";
+                     // --> 20180516-Wi00-ADV01.01.00-35183-JCD01
+                     {BEFORE
+                     ClosingDate_G := CALCDATE('<+1Y>',Campaign_L."Ending Date");
+                     }
+                     // <-- 20180516-Wi00-ADV01.01.00-35183-JCD01
+                   END;
+                   // --> 20180516-Wi00-ADV01.01.00-35183-JCD01
+                   ClosingDate_G := 31129999D;
+                   // <-- 20180516-Wi00-ADV01.01.00-35183-JCD01
+                   PostingDate_G := WORKDATE;
+
+                   GLSetup_G.GET;
+                   CapitalSetup_G.GET;
+
+                   IF ToTypPart_G = '' THEN BEGIN
+                     CapitalSetup_G.TESTFIELD("Restraint Part Type");
+                     ToTypPart_G := CapitalSetup_G."Restraint Part Type";
+                     PartType_L.GET(ToTypPart_G);
+                     IF PartType_L.NEXT <> 0 THEN
+                       FromTypPart_G := PartType_L."Part Code";
+                   END;
+
+                   IF ToTypPart_G = CapitalSetup_G."Restraint Part Type" THEN
+                     BooCapital_G := TRUE
+                   ELSE
+                     BooCapital_G := FALSE;
+                 END;
+
+    OnPreReport=VAR
+                  Text8053000_L@8053000 : TextConst 'ENU=You must give a campaign;FRA=Vous devez renseigner une campagne';
+                  Text8053001_L@8053001 : TextConst 'ENU=You must give posting date;FRA=Vous devez rensigner une date comptabilisation';
+                BEGIN
+                  IF CampaignNo_G='' THEN
+                    ERROR(Text8053000_L);
+
+                  IF PostingDate_G=0D THEN
+                    ERROR(Text8053001_L);
+
+                  ValuePart_G := CheckPartTyp(FromTypPart_G,ToTypPart_G,ClosingDate_G);
+                END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table5050;
+        DataItemTableView=SORTING(No.)
+                          WHERE(Contact Type=FILTER(Farm),
+                                Partner Type=FILTER(Cooperator|Not Cooperator),
+                                Dead=CONST(Non),
+                                Lost=CONST(Non));
+        DataItemVarName=Agriculteur;
+        OnPreDataItem=BEGIN
+                        IF NOT HideDialog_G THEN
+                          IF ShowDialog() THEN BEGIN
+                            Window_G.OPEN(Text60002 + Text60003);
+                            Window_G.UPDATE(1, Bach_G);
+                          END;
+
+                        IntLine_G := 0;
+
+                        DeleteEmptyExistLine;
+                      END;
+
+        OnAfterGetRecord=VAR
+                           DistributionTemplate_L@8053000 : Record 8053354;
+                           BooInsert_L@1000000004 : Boolean;
+                           DistribMgt_L@1000000000 : Codeunit 60051;
+                           PartType_L@1000000001 : Record 8053351;
+                           PartToTransfert_L@1000000002 : Integer;
+                           iFor_L@1000000003 : Integer;
+                         BEGIN
+                           IF NOT HideDialog_G THEN BEGIN
+                             IF ShowDialog() AND ((IntLine_G MOD 20) = 0) THEN BEGIN
+                               Window_G.UPDATE(2, Agriculteur."No.");
+                             END;
+                             IntLine_G += 1;
+                           END;
+
+                           IF Dead OR Lost THEN
+                             CurrReport.SKIP;
+
+                           //Recherche du nombre de part pouvant ^tre transf'r'
+                           PartType_L.SETRANGE("Member Filter","No.");
+                           PartType_L.SETRANGE("Date Filter",0D,ClosingDate_G);
+                           PartType_L.GET(FromTypPart_G);
+                           PartType_L.CALCFIELDS("Part Type Count");
+                           IF PartType_L."Part Type Count" <= 0 THEN
+                             CurrReport.SKIP;
+
+                           // Si BooCapital_G coch', on ne transfert que jusqu'au capital statutaire sinopn on transfert tout
+                           IF BooCapital_G THEN BEGIN
+                             DistribMgt_L.FarmStatCap(Agriculteur."No.",CampaignNo_G,DecStatCatipal_G,DecRealCapital_G,ClosingDate_G);
+                             PartType_L.CALCFIELDS("Part Type Amount");
+                             IF DecRealCapital_G - PartType_L."Part Type Amount" >= DecStatCatipal_G THEN
+                               CurrReport.SKIP;
+                             IF DecStatCatipal_G - DecRealCapital_G > 0 THEN BEGIN
+                               // Il faut tout transf'rer le nombre de part ne permet pas de combler
+                               PartToTransfert_L := PartType_L."Part Type Count";
+                             END ELSE BEGIN
+                               PartToTransfert_L := ROUND((DecStatCatipal_G - DecRealCapital_G + PartType_L."Part Type Amount")/ValuePart_G,1);
+                             END;
+                           END ELSE BEGIN
+                             PartToTransfert_L := PartType_L."Part Type Count";
+                           END;
+
+                           IF PartToTransfert_L <= 0 THEN
+                             CurrReport.SKIP;
+
+                           // Mouvement d'annulation
+                           FOR iFor_L := 1 TO 2 DO BEGIN
+                             CLEAR(CapJnlLine_G);
+                             SetUpNewLineLoc;
+                             CapJnlLine_G.VALIDATE("Account Type",CapJnlLine_G."Account Type"::Adh'rent);
+                             CapJnlLine_G.VALIDATE("Account No.","No.");
+                             IF iFor_L = 1 THEN BEGIN
+                               CapJnlLine_G.VALIDATE("Movement Type",TextTypMouvAnnul);
+                               CapJnlLine_G.VALIDATE("Part Type",FromTypPart_G);
+                             END ELSE BEGIN
+                               CapJnlLine_G.VALIDATE("Movement Type",TextTypMouvSous);
+                               CapJnlLine_G.VALIDATE("Part Type",ToTypPart_G);
+                             END;
+                             CapJnlLine_G.VALIDATE(Quantity,PartToTransfert_L);
+                             CapJnlLine_G."Posting Description" := COPYSTR(STRSUBSTNO(TextDefautLib,FromTypPart_G,ToTypPart_G),1,50);
+                             CapJnlLine_G.INSERT;
+                           END;
+                         END;
+
+        OnPostDataItem=BEGIN
+                         IF NOT HideDialog_G THEN
+                           IF ShowDialog() THEN BEGIN
+                             Window_G.CLOSE;
+                           END;
+
+                         DeleteEmptyExistLine;
+                       END;
+
+        ReqFilterFields=No.,Dead,Lost;
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=6600;
+      Height=2750;
+    }
+    CONTROLS
+    {
+      { 8053000;TextBox   ;4070 ;770  ;1700 ;440  ;Name=Date arrested;
+                                                   InPage=-1;
+                                                   CaptionML=[ENU=Date arrested;
+                                                              FRA=Date d'arr^t'];
+                                                   SourceExpr=ClosingDate_G }
+      { 8053001;Label     ;660  ;770  ;3300 ;440  ;ParentControl=8053000 }
+      { 8053002;TextBox   ;4070 ;110  ;1700 ;440  ;Name=Campaign;
+                                                   InPage=-1;
+                                                   CaptionML=[ENU=Campaign;
+                                                              FRA=Campagne];
+                                                   SourceExpr=CampaignNo_G;
+                                                   TableRelation="CMC Campaign" }
+      { 8053003;Label     ;660  ;110  ;3300 ;440  ;ParentControl=8053002 }
+      { 1000000000;TextBox;4070 ;1320 ;1700 ;440  ;Name=Date arrested;
+                                                   CaptionML=[ENU=Date arrested;
+                                                              FRA=Date d'arr^t'];
+                                                   SourceExpr=PostingDate_G }
+      { 1000000001;Label  ;660  ;1320 ;3300 ;440  ;CaptionML=FRA=Date compta }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      OnInit=VAR
+               GenJnlBatch_L@1000000000 : Record 232;
+               CapitalJnlBatch_L@1000000001 : Record 8053355;
+             BEGIN
+             END;
+
+    }
+    CONTROLS
+    {
+      { 8053000; ;Container ;
+                  ContainerType=ContentArea }
+
+      { 8053001;1;Group     ;
+                  GroupType=Group }
+
+      { 8053004;2;Field     ;
+                  CaptionML=[ENU=Posting Date;
+                             FRA=Date comptabilisation];
+                  SourceExpr=PostingDate_G }
+
+      { 8053002;2;Field     ;
+                  CaptionML=[ENU=Campaign;
+                             FRA=Campagne];
+                  SourceExpr=CampaignNo_G;
+                  TableRelation="CMC Campaign";
+                  OnValidate=VAR
+                               Campaign_L@8053000 : Record 8052991;
+                             BEGIN
+                               Campaign_L.GET(CampaignNo_G);
+                               // --> 20180516-Wi00-ADV01.01.00-35183-JCD01
+                               {BEFORE
+                               ClosingDate_G := CALCDATE('<+1Y>',Campaign_L."Ending Date");
+                               AFTER}
+                               // <-- 20180516-Wi00-ADV01.01.00-35183-JCD01
+                             END;
+                              }
+
+      { 8053003;2;Field     ;
+                  CaptionML=[ENU=Closing date;
+                             FRA=date d'arr^t'];
+                  SourceExpr=ClosingDate_G;
+                  Visible=FALSE }
+
+      { 8053005;2;Field     ;
+                  CaptionML=[ENU=Document No.;
+                             FRA=N› document];
+                  SourceExpr=DocumentNo_G }
+
+      { 1000000000;2;Field  ;
+                  CaptionML=FRA=Type de part origine;
+                  SourceExpr=FromTypPart_G;
+                  TableRelation="CMC Part Type"."Part Code";
+                  LookupFormID=CMC Part Types }
+
+      { 1000000001;2;Field  ;
+                  CaptionML=FRA=Type de part destination;
+                  SourceExpr=ToTypPart_G;
+                  TableRelation="CMC Part Type"."Part Code";
+                  LookupFormID=CMC Part Types;
+                  OnValidate=BEGIN
+                               IF ToTypPart_G = CapitalSetup_G."Restraint Part Type" THEN
+                                 BooCapital_G := TRUE
+                               ELSE
+                                 BooCapital_G := FALSE;
+                             END;
+                              }
+
+      { 1000000002;2;Field  ;
+                  CaptionML=FRA=Atteindre Capital Statutaire;
+                  SourceExpr=BooCapital_G;
+                  Editable=FALSE }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      ClosingDate_G@8053000 : Date;
+      CampaignNo_G@8053002 : Code[20];
+      Template_G@8053008 : Code[10];
+      Bach_G@8053007 : Code[10];
+      BatchRec_G@8053006 : Record 8053355;
+      CapJnlLine_G@8053009 : Record 8053356;
+      HideDialog_G@8053012 : Boolean;
+      PostingDate_G@8053003 : Date;
+      GLSetup_G@8053018 : Record 98;
+      CapitalSetup_G@8053019 : Record 8053350;
+      DocumentNo_G@8053022 : Code[20];
+      CapitalEntry_G@8053023 : Record 8053357;
+      Text60000@1000000000 : TextConst 'FRA=La feuille de distribution %1 modSle %2 ne doit pas avoir de souche de num'ro.';
+      Text60001@1000000002 : TextConst 'FRA=Vous devez saisir un n› de document.';
+      Text60002@1000000004 : TextConst 'ENU=Journal Batch Name    #1##########\\;FRA=Nom feuille                  #1##########\\';
+      Text60003@1000000003 : TextConst 'ENU=Checking lines        #2######\;FRA=Agriculteur                  #2####################';
+      Window_G@1000000005 : Dialog;
+      IntLine_G@1000000006 : Integer;
+      LastLineNo_G@1000000007 : Integer;
+      Text60004@1000000008 : TextConst 'FRA=TR%1-00001';
+      DecStatCatipal_G@1000000001 : Decimal;
+      DecRealCapital_G@1000000011 : Decimal;
+      FromTypPart_G@1000000013 : Code[10];
+      ToTypPart_G@1000000014 : Code[10];
+      BooCapital_G@1000000015 : Boolean;
+      DecTransfertAmount_G@1000000016 : Decimal;
+      Text60005@1000000012 : TextConst 'FRA=Les parts %1 et %2 doivent avoir la m^me valeur.';
+      ValuePart_G@1000000009 : Decimal;
+      Text60006@1000000021 : TextConst 'FRA=Vous devez saisir un n› de document si la souche n''est pas renseign'e.';
+      TextTypMouvAnnul@1000000010 : TextConst 'FRA=ANNUL';
+      TextTypMouvSous@1000000017 : TextConst 'FRA=SOUSCRIPTI';
+      CapJnlTemplate_G@1000000018 : Record 8053354;
+      CapJnlBatch_G@1000000019 : Record 8053355;
+      TextDefautLib@1000000020 : TextConst 'FRA="TRANSFORM. %1 EN %2 "';
+
+    PROCEDURE SetTemplateAndBach@8061300(Template_P@8061300 : Code[10];Bach_P@8061301 : Code[10]);
+    VAR
+      NoSeriesMgt_L@8061302 : Codeunit 396;
+    BEGIN
+      Template_G := Template_P;
+      Bach_G := Bach_P;
+      BatchRec_G.GET(Template_G,Bach_G);
+      CapJnlTemplate_G.GET(Template_G);
+    END;
+
+    PROCEDURE SetHideDialog@8053000(P_Hide@8053000 : Boolean);
+    BEGIN
+      HideDialog_G := P_Hide;
+    END;
+
+    PROCEDURE SetUpNewLineLoc@9();
+    VAR
+      NoSeriesMgt_L@8053000 : Codeunit 396;
+      CapJnlTemplate_L@8061300 : Record 8053354;
+      CapJnlBatch_L@8061301 : Record 8053355;
+      CapJnlLine_L@8061302 : Record 8053356;
+    BEGIN
+      CapJnlLine_G.VALIDATE("Capital Journal Template",BatchRec_G."Capital Journal Template");
+      CapJnlLine_G.VALIDATE("Capital Batch Name",BatchRec_G.Name);
+      CapJnlLine_L.SETRANGE("Capital Journal Template",BatchRec_G."Capital Journal Template");
+      CapJnlLine_L.SETRANGE("Capital Batch Name",BatchRec_G.Name);
+
+      IF CapJnlLine_L.FINDLAST THEN BEGIN
+        LastLineNo_G := CapJnlLine_L."Line No." + 10000;
+        IF CapJnlLine_L."Document No." <> '' THEN BEGIN
+          CapJnlLine_G."Document No." := INCSTR(CapJnlLine_L."Document No.");
+          IF CapJnlLine_G."Document No." = '' THEN
+            CapJnlLine_G."Document No." := CapJnlLine_L."Document No.";
+        END;
+      END ELSE BEGIN
+        LastLineNo_G := 10000;
+        IF DocumentNo_G <> '' THEN
+          CapJnlLine_G."Document No." := DocumentNo_G
+        ELSE
+          CapJnlLine_G."Document No." := NoSeriesMgt_L.TryGetNextNo(BatchRec_G."No. Series",WORKDATE);
+      END;
+
+      IF CapJnlLine_G."Document No." = '' THEN
+        ERROR(Text60006);
+
+      CapJnlLine_G."Capital Journal Template" := BatchRec_G."Capital Journal Template";
+      CapJnlLine_G."Capital Batch Name" := BatchRec_G.Name;
+      CapJnlLine_G."Line No." := LastLineNo_G;
+      CapJnlLine_G."Source Code" := CapJnlTemplate_G."Source Code";
+      CapJnlLine_G."Posting No. Series" := CapJnlBatch_G."Posting No. Series";
+      CapJnlLine_G."G/L Posting No. Series" := CapJnlBatch_G."G/L Posting No. Series";
+      CapJnlLine_G."Bal. Account Type" := CapJnlBatch_G."Bal. Account Type";
+      IF CapJnlBatch_G."Bal. Account No." <> '' THEN
+        CapJnlLine_G.VALIDATE("Bal. Account No.",CapJnlBatch_G."Bal. Account No.");
+      CapJnlLine_G.VALIDATE("Posting Date",PostingDate_G);
+    END;
+
+    PROCEDURE ShowDialog@1200070000() : Boolean;
+    BEGIN
+      IF NOT GUIALLOWED THEN
+        EXIT(FALSE)
+      ELSE
+        EXIT(TRUE);
+    END;
+
+    PROCEDURE SetCapital@1000000005(VAR DecCatipalStatutaire_L@1000000001 : Decimal) Existe_L : Boolean;
+    VAR
+      CapitalSocial_L@1000000000 : Record 8087796;
+    BEGIN
+      DecCatipalStatutaire_L := 0;
+      CapitalSocial_L.SETCURRENTKEY(ADHERENT,NO_CAMPAGNE);
+      CapitalSocial_L.SETRANGE(ADHERENT,Agriculteur."No.");
+      CapitalSocial_L.SETRANGE(NO_CAMPAGNE,CampaignNo_G);
+      IF CapitalSocial_L.FIND('-') THEN BEGIN
+        Existe_L := TRUE;
+        DecCatipalStatutaire_L := CapitalSocial_L.CAPITAL_STATUTAIRE;
+      END ELSE
+        Existe_L := FALSE;
+    END;
+
+    PROCEDURE CheckPartTyp@1000000001(PartTypeFrom_P@1000000000 : Code[10];PartTypeTo_P@1000000001 : Code[10];ClosingDate_P@1000000004 : Date) Value_R : Decimal;
+    VAR
+      PartTypeDetail_L@1000000002 : Record 8053352;
+      PartTypeDetail2_L@1000000003 : Record 8053352;
+    BEGIN
+      //Les types de part doivent avoir la m^me valeur
+
+      PartTypeDetail_L.RESET;
+      PartTypeDetail_L.ASCENDING(FALSE);
+      PartTypeDetail_L.SETFILTER("Effective Date",'..%1',ClosingDate_P);
+      PartTypeDetail_L.SETRANGE("Part Code",PartTypeFrom_P);
+      PartTypeDetail_L.FINDFIRST;
+
+      PartTypeDetail2_L.RESET;
+      PartTypeDetail2_L.ASCENDING(FALSE);
+      PartTypeDetail2_L.SETFILTER("Effective Date",'..%1',ClosingDate_P);
+      PartTypeDetail2_L.SETRANGE("Part Code",PartTypeTo_P);
+      PartTypeDetail2_L.FINDFIRST;
+
+      IF PartTypeDetail_L."Unit Value" <> PartTypeDetail2_L."Unit Value" THEN
+        ERROR(Text60005,PartTypeFrom_P,PartTypeTo_P);
+
+      PartTypeDetail_L.TESTFIELD("Unit Value");
+
+      Value_R := PartTypeDetail_L."Unit Value";
+    END;
+
+    PROCEDURE DeleteEmptyExistLine@1000000004();
+    BEGIN
+      CapJnlLine_G.RESET;
+      CapJnlLine_G.SETRANGE("Capital Journal Template",Template_G);
+      CapJnlLine_G.SETRANGE("Capital Batch Name",Bach_G);
+      CapJnlLine_G.SETFILTER("Document No.",'=%1','');
+      IF NOT CapJnlLine_G.ISEMPTY THEN
+        CapJnlLine_G.DELETEALL;
+      CapJnlLine_G.SETRANGE("Document No.");
+      CapJnlLine_G.SETFILTER("Account No.",'=%1','');
+      IF NOT CapJnlLine_G.ISEMPTY THEN
+        CapJnlLine_G.DELETEALL;
+      COMMIT;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+
+      20170201-Wi00-ADV01.01.00-3209-JCD01 : CREATEOBJ
+      20180516-Wi00-ADV01.01.00-35183-JCD01 : MODCODE (Pas de date de fin pour le calcul du capital statutaire : supp. saisi date arr^t')
+      20180516-Wi00-ADV01.01.00-35183-JCD01 : MODOBJECT (date d arr^t' mis en visible . FALSE)
+
+      // <-- 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

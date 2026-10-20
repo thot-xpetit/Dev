@@ -1,0 +1,1185 @@
+OBJECT Codeunit 50007 Export E-Sign
+{
+  OBJECT-PROPERTIES
+  {
+    Date=05/06/24;
+    Heure=09:51:29;
+    Modifi'=Oui;
+    Liste versions=ADV18.10.12;
+  }
+  PROPERTIES
+  {
+    TableNo=8061230;
+    OnRun=BEGIN
+            IF (Initialize(Rec)) THEN BEGIN
+              ExportData();
+              Finalize();
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      AdvitamSetup@1000000028 : Record 8053450;
+      ProcessCodeUnit@1000000000 : Integer;
+      ConnectorName@1000000001 : Code[20];
+      ImpExpFolder@1000000002 : Text[256];
+      LogFolder@1000000003 : Text[256];
+      ExtensionFile@1000000004 : Text[30];
+      PrefixFile@1000000005 : Text[10];
+      LastExecution@1000000006 : DateTime;
+      ToolsFile@1000000007 : Codeunit 8053405;
+      MoteurInterface@1000000008 : Codeunit 8061230;
+      Text0012@1000000009 : TextConst 'ENU=Please check the Log;FRA=Veuillez consulter le Log.';
+      TypLog@1000000010 : 'Info,Error';
+      TErrCommitment@1000000011 : TextConst 'ENU=Error Contract : %1, The commitment Code : %2 don''t exist for Contract Type : %3;FRA=Erreur Contrat : %1, Le code engagement : %2 n''existe pas pour le type de contrat : %3';
+      ErrorMsg@1000000012 : Text[250];
+      TErrNoLine@1000000013 : TextConst 'ENU=No line Exist par contract : %1;FRA=Il n''existe pas de ligne pour le contrat : %1';
+      ExportFile@1000000014 : File;
+      FileOutStr@1000000015 : OutStream;
+      TErrNoContractType@1000000016 : TextConst 'ENU=The Contract Type : %1 Don''t Exists;FRA=Le type de contrat : %1 n''existe pas';
+      TErrNoContract@1000000017 : TextConst 'ENU=No contract Found;FRA=Aucun contrat trouv'';
+      TErrFile@1000000018 : TextConst 'ENU=Error creation file : %1;FRA=Erreur lors de la creation du fichier : %1';
+      FieldSeparator@1000000019 : Text[30];
+      StringSeparator@1000000020 : Text[30];
+      Char13@1000000021 : Char;
+      Char10@1000000022 : Char;
+      TErrContact@1000000023 : TextConst 'ENU=Error on contact : %1;FRA=Erreur sur l''adh'rent : %1';
+      TErrNoContact@1000000024 : TextConst 'ENU=The contact : %1 don''t Exist;FRA=L''adh'rent : %1 n''existe pas';
+      TErrNoTC@1000000025 : TextConst 'ENU=No TC exists;FRA=Aucun TC Existe';
+      TErrTCNoExist@1000000026 : TextConst 'ENU=The TC : %1 don''t exists;FRA=Le TC : %1 n''existe pas';
+      TErrInit@1000000029 : TextConst 'ENU=Error Initialization : %1;FRA=Erreur Initialisation : %1';
+      TMsgNotFound@1000000030 : TextConst 'ENU=" Not found";FRA=" pas trouv'"';
+      TErrClientNoSupported@1000000031 : TextConst 'ENU=The Classic client is not supported. You must use only RTC Client.;FRA=Le client Classique n''est pas support'. Vous devez seulement utiliser le client RTC.';
+      LastCCATimeStamp@1000000032 : Text[30];
+      LastCCCTimeStamp@1000000033 : Text[30];
+      SQLDbReader@1000000034 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader";
+      SQLConnection@1000000037 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      SQLCommand@1000000036 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlCommand";
+      CmdType@1000000035 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.CommandType";
+      FTPAddress@1000000038 : Text[30];
+      FTPUser@1000000039 : Text[30];
+      FTPPwd@1000000040 : Text[30];
+      FTPFolder@1000000041 : Text[30];
+      CCACampaign@1000000027 : Code[10];
+      CCCCampaign@1000000042 : Code[10];
+      Tools@1000000043 : Codeunit 8060985;
+      ContactFilter@1000000044 : Text[256];
+      TCstExluded@1000000045 : TextConst 'ENU=EXCLU;FRA=EXCLU';
+      TErrExcludedContact@1000000046 : TextConst 'ENU=The contact : %1 is excluded;FRA=L''adh'rent : %1 est exclu';
+      TestMode@1000000047 : Boolean;
+      TestEmail@1000000048 : Text[250];
+      NotSendFile@1000000049 : Boolean;
+      UserReplicaDatabase@1000000050 : Boolean;
+
+    PROCEDURE Initialize@1000000001(InterfaceSetup@1000000000 : Record 8061230) ReturnValue : Boolean;
+    VAR
+      ESignSetup@1000000001 : Record 50008;
+    BEGIN
+      ReturnValue := FALSE;
+      ProcessCodeUnit := InterfaceSetup.Processing;
+      MoteurInterface.GetParameter(ProcessCodeUnit, ConnectorName, ImpExpFolder, LogFolder, ExtensionFile, PrefixFile);
+
+      LastExecution := InterfaceSetup."Last Execution";
+
+      FTPAddress := InterfaceSetup."URL FTP";
+      FTPUser := InterfaceSetup."User FTP";
+      FTPPwd := InterfaceSetup."Password FTP";
+      FTPFolder := InterfaceSetup."Folder FTP";
+
+      UserReplicaDatabase := InterfaceSetup."Use Replica Database";
+
+      ToolsFile.LogInit(LogFolder, 'E-SIGN');
+      ToolsFile.LogInitCodeUnit(ProcessCodeUnit);
+
+      FieldSeparator := '$';
+      StringSeparator := '';
+      Char13 := 13;
+      Char10 := 10;
+
+      IF (ISSERVICETIER()) THEN BEGIN
+        IF (ESignSetup.GET()) THEN BEGIN
+          IF (AdvitamSetup.GET()) THEN BEGIN
+            IF (NOT ESignSetup.Reset) THEN BEGIN
+              LastCCATimeStamp := ESignSetup."Last CCA TimeStamp";
+              LastCCCTimeStamp := ESignSetup."Last CCC TimeStamp";
+            END ELSE BEGIN
+              LastCCATimeStamp := '';
+              LastCCCTimeStamp := '';
+            END;
+            CCACampaign := ESignSetup."CCA Campaign No.";
+            CCCCampaign := ESignSetup."CCC Campaign No.";
+            ContactFilter := ESignSetup."Contact Filter";
+            ContactFilter := CONVERTSTR(ContactFilter, '|', ',');
+            TestMode := ESignSetup."Test Mode";
+            TestEmail := ESignSetup."Email Test";
+            NotSendFile := ESignSetup."Not Send File";
+            ReturnValue := TRUE;
+          END ELSE BEGIN
+          SetToLog(TypLog::Error, COPYSTR(STRSUBSTNO(TErrInit, AdvitamSetup.TABLECAPTION + ' ' + TMsgNotFound),
+                                        1,
+                                        MAXSTRLEN(ErrorMsg)),
+                 0,
+                '');
+          END;
+        END ELSE BEGIN
+          SetToLog(TypLog::Error, COPYSTR(STRSUBSTNO(TErrInit, ESignSetup.TABLECAPTION + ' ' + TMsgNotFound),
+                                        1,
+                                        MAXSTRLEN(ErrorMsg)),
+                 0,
+                 '');
+        END;
+      END ELSE BEGIN
+        SetToLog(TypLog::Error, COPYSTR(TErrClientNoSupported,
+                                      1,
+                                      MAXSTRLEN(ErrorMsg)),
+               0,
+               '');
+
+      END;
+    END;
+
+    PROCEDURE Finalize@1000000002();
+    VAR
+      ESignSetupUpdate@1000000000 : Record 50008;
+      Result@1000000002 : Text[250];
+      FileLogName@1000000001 : Text[256];
+    BEGIN
+      // Save new Last TimeStamp
+      IF (ESignSetupUpdate.GET()) THEN BEGIN
+        ESignSetupUpdate."Last Execution Date" := CURRENTDATETIME;
+        IF (LastCCATimeStamp <> '') THEN BEGIN
+          ESignSetupUpdate."Last CCA TimeStamp" := LastCCATimeStamp;
+        END;
+        IF (LastCCCTimeStamp <> '') THEN BEGIN
+          ESignSetupUpdate."Last CCC TimeStamp" := LastCCCTimeStamp;
+        END;
+        ESignSetupUpdate.Reset := FALSE;
+        ESignSetupUpdate.MODIFY();
+      END;
+
+      // Check Error during process
+      CLEAR(Result);
+      FileLogName := ToolsFile.LogName;
+      ToolsFile.LogClose();
+      IF ToolsFile.LogErreurType() = 'E' THEN BEGIN
+        Result := 'ERREUR ' + FileLogName;
+        ERROR(Result);
+      END ELSE BEGIN
+        IF ToolsFile.LogErreurType() = 'I' THEN BEGIN
+          Result := Text0012;
+          MoteurInterface.InsertLog(ProcessCodeUnit, FileLogName);
+        END ELSE BEGIN
+          MoteurInterface.InsertOk(ProcessCodeUnit);
+        END;
+      END;
+    END;
+
+    PROCEDURE ExportData@1000000003();
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('ExportData', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      ExportCCA();
+      ExportCCC();
+      IF (SendFTPFiles()) THEN BEGIN
+        ZipFiles();
+      END;
+    END;
+
+    PROCEDURE ExportCCA@1000000006();
+    VAR
+      CCAContract@1000000000 : Record 8053239;
+      ContractType@1000000001 : Record 8053198;
+      ContactNo@1000000003 : Code[20];
+      ContractNo@1000000002 : Code[20];
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('ExportCCA', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      ContractType.SETRANGE(Type, ContractType.Type::CCA);
+      IF (ContractType.FINDFIRST()) THEN BEGIN
+        IF (GetSQLContractCCA()) THEN BEGIN
+          WHILE (SQLDbReader.Read()) DO BEGIN
+            ContractNo := FORMAT(SQLDbReader.GetSqlString(SQLDbReader.GetOrdinal('ContractNo')));
+            LastCCATimeStamp := FORMAT(SQLDbReader.GetSqlString(SQLDbReader.GetOrdinal('contractTimeStamp')));
+            CCAContract.SETRANGE(CCAContract."No.", ContractNo);
+            IF (CCAContract.FINDFIRST()) THEN BEGIN
+              IF (NOT IsExcludedCCAContact(CCAContract)) THEN BEGIN
+                //<-- ADV2019.01.24
+                IF (NOT ExportContact(CCAContract."Contact No.", CCAContract."No.", 'CCA')) THEN BEGIN
+                  SetToLog(TypLog::Error, COPYSTR(STRSUBSTNO(TErrContact, CCAContract."Contact No."),
+                                          1,
+                                          MAXSTRLEN(ErrorMsg)),
+                   0,
+                   '');
+                END ELSE BEGIN
+                  IF (ExportContractCCA(CCAContract)) THEN BEGIN
+                    ZipContractFile(CCAContract."Contact No.", CCAContract."No.", 'CCA');
+                    UpdateCCAContract(CCAContract);
+                  END;
+                END;
+                //--> ADV2019.01.24
+              END ELSE BEGIN
+                SetToLog(TypLog::Info, COPYSTR(STRSUBSTNO(TErrExcludedContact, CCAContract."Contact No."),
+                                               1,
+                                              MAXSTRLEN(ErrorMsg)),
+                    0,
+                    '');
+              END;
+            END ELSE BEGIN
+              SetToLog(TypLog::Info, COPYSTR(TErrNoContract + ' ' + CCAContract."No.",
+                                             1,
+                                            MAXSTRLEN(ErrorMsg)),
+                     0,
+                     '');
+            END;
+          END;
+          CloseDBConnection();
+        END;
+      END ELSE BEGIN
+        SetToLog(TypLog::Error, COPYSTR(STRSUBSTNO(TErrNoContractType, ContractType.Type),
+                                          1,
+                                          MAXSTRLEN(ErrorMsg)),
+                   0,
+                   '');
+      END;
+    END;
+
+    PROCEDURE ExportCCC@1000000007();
+    VAR
+      CCCContract@1000000001 : Record 8053208;
+      ContractType@1000000000 : Record 8053198;
+      ContractNo@1000000002 : Code[20];
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('ExportCCC', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      ContractType.SETRANGE(Type, ContractType.Type::CCC);
+      IF (ContractType.FINDFIRST()) THEN BEGIN
+        IF (GetSQLContractCCC()) THEN BEGIN
+          WHILE (SQLDbReader.Read()) DO BEGIN
+            ContractNo := FORMAT(SQLDbReader.GetSqlString(SQLDbReader.GetOrdinal('ContractNo')));
+            LastCCCTimeStamp := FORMAT(SQLDbReader.GetSqlString(SQLDbReader.GetOrdinal('contractTimeStamp')));
+
+            //CCCContract.SETRANGE("Contract Type", ContractType.Code);
+            //CCCContract.SETFILTER("Last Modification Date", '>=%1', DT2DATE(LastExecution));
+            CCCContract.SETRANGE("Contract No.", ContractNo);
+            IF (CCCContract.FINDFIRST()) THEN BEGIN
+              //<-- ADV2019.01.24
+              IF (NOT ExportContact(CCCContract."Contact No." ,CCCContract."Contract No.", 'CCC')) THEN BEGIN
+                SetToLog(TypLog::Error, COPYSTR(STRSUBSTNO(TErrContact, CCCContract."Contact No."),
+                                        1,
+                                        MAXSTRLEN(ErrorMsg)),
+                 0,
+                 '');
+              END ELSE BEGIN
+                IF (ExportContractCCC(CCCContract)) THEN BEGIN
+                  ZipContractFile(CCCContract."Contact No.", CCCContract."Contract No.", 'CCC');
+                  UpdateCCCContract(CCCContract);
+                END;
+              END;
+              //--> ADV2019.01.24
+            END ELSE BEGIN
+              SetToLog(TypLog::Info, COPYSTR(TErrNoContract + ' ' + ContractNo,
+                                             1,
+                                             MAXSTRLEN(ErrorMsg)),
+                       0,
+                       '')
+            END;
+          END;
+
+        END ELSE BEGIN
+          SetToLog(TypLog::Info, COPYSTR(TErrNoContract,
+                                          1,
+                                          MAXSTRLEN(ErrorMsg)),
+                   0,
+                   '');
+
+        END;
+      END ELSE BEGIN
+        SetToLog(TypLog::Error, COPYSTR(STRSUBSTNO(TErrNoContractType, ContractType.Type),
+                                          1,
+                                          MAXSTRLEN(ErrorMsg)),
+                   0,
+                   '');
+      END;
+    END;
+
+    PROCEDURE ExportContractCCA@1000000009(Contract@1000000003 : Record 8053239) ReturnValue : Boolean;
+    VAR
+      CCAData@1000000001 : ARRAY [2,13] OF Text[250];
+      FileName@1000000002 : Text[250];
+      CurrentContractNo@1000000004 : Code[20];
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('ExportContractCCA', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      ReturnValue := FALSE;
+      CLEAR(CCAData);
+      IF (GetContractCCAData(Contract, CCAData, FileName)) THEN BEGIN
+        IF (CreateFile(FileName)) THEN BEGIN
+          AddCCAHeader(CCAData);
+          AddCCAData(CCAData);
+          CloseFile();
+          ReturnValue := TRUE;
+        END ELSE BEGIN
+          SetToLog(TypLog::Error, COPYSTR(STRSUBSTNO(TErrFile, ImpExpFolder + FileName),
+                                          1,
+                                          MAXSTRLEN(ErrorMsg)),
+                   0,
+                   '');
+
+        END;
+      END ELSE BEGIN
+        SetToLog(TypLog::Error, COPYSTR(TErrNoContract,
+                                        1,
+                                        MAXSTRLEN(ErrorMsg)),
+                 0,
+                 '');
+
+      END;
+    END;
+
+    PROCEDURE ExportContractCCC@1000000033(Contract@1000000002 : Record 8053208) ReturnValue : Boolean;
+    VAR
+      CCCData@1000000001 : ARRAY [250,11] OF Text[250];
+      FileName@1000000000 : Text[250];
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('ExportContractCCC', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      ReturnValue := FALSE;
+      CLEAR(CCCData);
+      IF (GetContractCCCData(Contract, CCCData, FileName)) THEN BEGIN
+        IF (CreateFile(FileName)) THEN BEGIN
+          AddCCCHeader(CCCData);
+          AddCCCData(CCCData);
+          CloseFile();
+          ReturnValue := TRUE;
+        END ELSE BEGIN
+          SetToLog(TypLog::Error, COPYSTR(STRSUBSTNO(TErrFile, ImpExpFolder + FileName),
+                                          1,
+                                          MAXSTRLEN(ErrorMsg)),
+                   0,
+                   '');
+
+        END;
+      END ELSE BEGIN
+        SetToLog(TypLog::Error, COPYSTR(TErrNoContract,
+                                        1,
+                                        MAXSTRLEN(ErrorMsg)),
+                 0,
+                 '');
+
+      END;
+    END;
+
+    PROCEDURE GetContractCCAData@1000000010(CtcHeader@1000000012 : Record 8053239;VAR FileData@1000000001 : ARRAY [2,13] OF Text[250];VAR FileName@1000000002 : Text[250]) ReturnValue : Boolean;
+    VAR
+      Commitment@1000000003 : Record 8053199;
+      ContractLine@1000000004 : Record 8053240;
+      EngCa@1000000005 : Decimal;
+      EngTon@1000000006 : Decimal;
+      PhyCa@1000000007 : Decimal;
+      SemCa@1000000008 : Decimal;
+      SemCer@1000000009 : Decimal;
+      SemProt@1000000010 : Decimal;
+      SemMais@1000000011 : Decimal;
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('GetContractCCAData', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      ReturnValue := FALSE;
+      FileName := '';
+      Commitment.SETRANGE(Code, CtcHeader."Commitment Code");
+      Commitment.SETRANGE("Frame Contract Type", CtcHeader."Frame Contract Type");
+      IF (Commitment.FINDFIRST()) THEN BEGIN
+        //Set Header Data
+        FileData[1][1] := 'customId';
+        FileData[1][2] := 'cf_NumeroContract';
+        FileData[1][3] := 'cf_AnneeCampagne';
+        FileData[1][4] := 'cf_TypeContrat';
+        FileData[1][5] := 'cf_CodeEngagement';
+        FileData[1][6] := 'cf_CodeEngagementCourt';
+        //Reader.IsDBNull
+        // Set FileName
+        FileName := CtcHeader."Contact No." + '_' +
+                    CtcHeader."No." + '_CCA_' +
+                    FORMAT(CURRENTDATETIME, 0, '<Day,2><Month,2><Year4><Hours24,2><Minutes,2><Seconds,2>') +
+                    '_CorpsContratAdherentUneal' + ExtensionFile;
+
+
+        FileData[2][1] := CtcHeader."Contact No.";
+        // Set cf_NumeroContract
+        FileData[2][2] := CtcHeader."No.";
+        // Set cf_AnneeCampagne
+        FileData[2][3] := CtcHeader."Campaign No.";
+        // Set cf_TypeContrat
+        FileData[2][4] := Commitment.Code;
+        // Set cf_TypeContrat
+        FileData[2][5] := Tools.Ascii2Ansi(Commitment.Description);
+        // Set cf_CodeEngagementCourt
+        IF (STRPOS(Commitment.Code, 'COEUR') = 0) THEN BEGIN
+          FileData[2][6] := 'UNEAL SINGLE';
+        END ELSE BEGIN
+           FileData[2][6] := 'UNEAL COEUR';
+        END;
+        // Get Line Commitment
+        ContractLine.SETRANGE("Frame Contract No.", CtcHeader."No.");
+        ContractLine.SETFILTER("Line No.", '<>%1 & <> %2', 30, 120);
+        IF (ContractLine.FINDFIRST()) THEN BEGIN
+          EngCa := 0;
+          EngTon := 0;
+          PhyCa := 0;
+          SemCa := 0;
+          SemCer := 0;
+          SemProt := 0;
+          SemMais := 0;
+
+          REPEAT
+            CASE (ContractLine."Line No.") OF
+              10: BEGIN
+                SemCer += ContractLine.Commitment;
+              END;
+              20: BEGIN
+                SemProt += ContractLine.Commitment;
+              END;
+              40: BEGIN
+                SemMais += ContractLine.Commitment;
+              END;
+              60: BEGIN
+                EngCa += ContractLine.Commitment;
+              END;
+              70: BEGIN
+                PhyCa += ContractLine.Commitment;
+              END;
+              80: BEGIN
+                SemCa += ContractLine.Commitment;
+              END;
+              110 : BEGIN
+                EngTon += ContractLine.Commitment;
+              END;
+            END;
+          UNTIL (ContractLine.NEXT() = 0);
+          FileData[1][7] := 'cf_CcaEng';
+          IF (EngCa <> 0) THEN
+            FileData[2][7] := FORMAT(EngCa, 0, '<Precision,2:2><Standard Format,1>');
+
+          FileData[1][8] := 'cf_CcatEng';
+          IF (EngTon <> 0) THEN
+            FileData[2][8] := FORMAT(EngTon, 0, '<Precision,2:2><Standard Format,1>');
+
+          FileData[1][9] := 'cf_CcacPhy';
+          IF (PhyCa <> 0) THEN
+            FileData[2][9] := FORMAT(PhyCa, 0, '<Precision,2:2><Standard Format,1>');
+
+          FileData[1][10] := 'cf_CcacSem';
+          IF (SemCa <> 0) THEN
+            FileData[2][10] := FORMAT(SemCa, 0, '<Precision,2:2><Standard Format,1>');
+
+          FileData[1][11] := 'cf_CcatSem';
+          IF (SemCer <> 0) THEN
+            FileData[2][11] := FORMAT(SemCer, 0, '<Precision,2:2><Standard Format,1>');
+
+          FileData[1][12] := 'cf_CcatProt';
+          IF (SemProt <> 0) THEN
+            FileData[2][12] := FORMAT(SemProt, 0, '<Precision,2:2><Standard Format,1>');
+
+          FileData[1][13] := 'cf_CcatMais';
+          IF (SemMais <> 0) THEN
+            FileData[2][13] := FORMAT(SemMais, 0, '<Precision,2:2><Standard Format,1>');
+
+          ReturnValue := TRUE;
+        END ELSE BEGIN
+          SetToLog(TypLog::Error, COPYSTR(STRSUBSTNO(TErrNoLine,
+                                                     CtcHeader."Contact No."),
+                                          1,
+                                          MAXSTRLEN(ErrorMsg)),
+                   0,
+                   '');
+
+        END;
+      END ELSE BEGIN
+        SetToLog(TypLog::Error, COPYSTR(STRSUBSTNO(TErrCommitment,
+                                                   CtcHeader."No.",
+                                                   CtcHeader."Commitment Code",
+                                                   CtcHeader."Frame Contract Type"),
+                                        1,
+                                        MAXSTRLEN(ErrorMsg)),
+                 0,
+                 '');
+      END;
+    END;
+
+    PROCEDURE GetContractCCCData@1000000034(CtcHeader@1000000000 : Record 8053208;VAR FileData@1000000001 : ARRAY [250,11] OF Text[250];VAR FileName@1000000002 : Text[250]) ReturnValue : Boolean;
+    VAR
+      CtcLine@1000000003 : Record 8053209;
+      CtcAmendmentLine@1000000004 : Record 8053498;
+      index@1000000005 : Integer;
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('GetContractCCCData', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      ReturnValue := FALSE;
+      FileName := '';
+      FileName := CtcHeader."Contact No." + '_' + CtcHeader."Contract No." + '_CCC_' +
+                  FORMAT(CURRENTDATETIME, 0, '<Day,2><Month,2><Year4><Hours24,2><Minutes,2><Seconds,2>') +
+                  '_CorpsContratAdherentUneal' + ExtensionFile;
+      //Get line
+      CtcLine.SETRANGE("Contract No.", CtcHeader."Contract No.");
+      IF (CtcLine.FINDFIRST()) THEN BEGIN
+        index := 2;
+        // Set header
+        FileData[1][1] := 'customId';
+        FileData[1][2] := 'cf_NumeroContrat';
+        FileData[1][3] := 'cf_AnneeCampagne';
+        FileData[1][4] := 'cf_TypeContrat';
+        FileData[1][5] := 'cf_CodeEngagement';
+        FileData[1][6] := 'cf_DesignationArticle';
+        FileData[1][7] := 'cf_Surface';
+        FileData[1][8] := 'cf_SurfaceAutoconso';
+        FileData[1][9] := 'cf_Taux';
+        FileData[1][10] := 'cf_Quantite';
+        FileData[1][11] := 'cf_QuantitePrixFermePrevue';
+        REPEAT
+          // get the amendment
+          CtcAmendmentLine.SETRANGE("Contract No.", CtcLine."Contract No.");
+          CtcAmendmentLine.SETRANGE("Contract Line No.", CtcLine."Line No.");
+          IF (NOT CtcAmendmentLine.FINDFIRST()) THEN BEGIN
+            CtcAmendmentLine.INIT();
+            SetCCCData(FileData, index, CtcHeader, CtcLine, CtcAmendmentLine);
+          END ELSE BEGIN
+            REPEAT
+              SetCCCData(FileData, index, CtcHeader, CtcLine, CtcAmendmentLine);
+            UNTIL (CtcAmendmentLine.NEXT() = 0);
+          END;
+        UNTIL (CtcLine.NEXT() = 0);
+        ReturnValue := TRUE;
+      END ELSE BEGIN
+          SetToLog(TypLog::Error, COPYSTR(STRSUBSTNO(TErrNoLine,
+                                                     CtcHeader."Contact No."),
+                                          1,
+                                          MAXSTRLEN(ErrorMsg)),
+                   0,
+                   '');
+      END;
+    END;
+
+    PROCEDURE SetCCCData@1000000000(VAR FileData@1000000001 : ARRAY [250,11] OF Text[250];VAR Index@1000000000 : Integer;Header@1000000002 : Record 8053208;Line@1000000003 : Record 8053209;Amendment@1000000004 : Record 8053498);
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('SetCCCData', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      FileData[Index][1] := Header."Contact No.";
+      FileData[Index][2] := Header."Contract No.";
+      FileData[Index][3] := Header."Campaign No.";
+      FileData[Index][4] := Amendment."Contract Type";
+      FileData[Index][5] := Header."Commitment Code";
+      FileData[Index][6] := Tools.Ascii2Ansi(Line.Description);
+      FileData[Index][7] := FORMAT(Line."Area (Ha)", 0, '<Precision,2:2><Standard Format,1>');
+      FileData[Index][8] := FORMAT(Line."Autoconsumed Surface (Ha)", 0, '<Precision,2:2><Standard Format,1>');
+      IF (Line."% Rate" = 100) THEN BEGIN
+        FileData[Index][9] := 'Oui';
+      END ELSE BEGIN
+        FileData[Index][9] := 'Non';
+      END;
+      // << ADV2019.03.18
+      //IF (Amendment.Quantity <> 0) THEN BEGIN
+      //  FileData[Index][10] := FORMAT(Amendment.Quantity, 0, '<Precision,3:3><Standard Format,1>');
+      //END ELSE BEGIN
+      // >> ADV2019.03.18
+        FileData[Index][10] := FORMAT(Line."Quantity (T)", 0, '<Precision,3:3><Standard Format,1>');
+      // <<ADV2019.03.18
+      //END;
+      // >> ADV2019.03.18
+      FileData[Index][11] := FORMAT(Line."Qty. PF (Expected)", 0, '<Precision,3:3><Standard Format,1>');
+
+      Index += 1;
+    END;
+
+    PROCEDURE AddCCAHeader@1000000013(Data@1000000000 : ARRAY [2,13] OF Text[250]);
+    VAR
+      index@1000000001 : Integer;
+      Line@1000000002 : Text[1024];
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('AddCCAHeader', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      index := 0;
+      Line := '';
+      REPEAT
+        index += 1;
+        //FileOutStr.WRITE(Data[1][index] + FieldSeparator);
+        Line += Data[1][index] + FieldSeparator;
+      UNTIL (index = (ARRAYLEN(Data, 2) - 1));
+      index += 1;
+      Line += Data[1][index];
+      FileOutStr.WRITETEXT(Line + FORMAT(Char13) + FORMAT(Char10));
+      //FileOutStr.WRITE(Data[1][index] + FORMAT(Char13) + FORMAT(Char10));
+    END;
+
+    PROCEDURE AddCCCHeader@1000000004(Data@1000000000 : ARRAY [250,11] OF Text[250]);
+    VAR
+      index@1000000001 : Integer;
+      Line@1000000002 : Text[1024];
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('AddCCCHeader', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      index := 0;
+      Line := '';
+      REPEAT
+        index += 1;
+        //FileOutStr.WRITE(Data[1][index] + FieldSeparator);
+        Line += Data[1][index] + FieldSeparator;
+      UNTIL (index = (ARRAYLEN(Data, 2) - 1));
+      index += 1;
+      Line += Data[1][index];
+      FileOutStr.WRITETEXT(Line + FORMAT(Char13) + FORMAT(Char10));
+      //FileOutStr.WRITE(Data[1][index] + FORMAT(Char13) + FORMAT(Char10));
+    END;
+
+    PROCEDURE AddCCAData@1000000014(Data@1000000000 : ARRAY [2,13] OF Text[250]);
+    VAR
+      index@1000000001 : Integer;
+      Line@1000000002 : Text[1024];
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('AddCCAData', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      index := 0;
+      Line := '';
+      REPEAT
+        index += 1;
+        //FileOutStr.WRITE(Data[2][index] + FieldSeparator);
+        Line += Data[2][index] + FieldSeparator;
+      UNTIL (index = (ARRAYLEN(Data, 2) - 1));
+      index += 1;
+      Line += Data[2][index];
+      //FileOutStr.WRITE(Data[2][index] + FORMAT(Char13) + FORMAT(Char10));
+      FileOutStr.WRITETEXT(Line + FORMAT(Char13) + FORMAT(Char10));
+    END;
+
+    PROCEDURE AddCCCData@1000000005(Data@1000000000 : ARRAY [250,11] OF Text[250]);
+    VAR
+      index@1000000001 : Integer;
+      IndexLine@1000000002 : Integer;
+      Continue@1000000003 : Boolean;
+      Line@1000000004 : Text[1024];
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('AddCCCData', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      index := 1;
+      IndexLine := 2;
+      Continue := (Data[IndexLine,index] <> '');
+      WHILE (Continue) DO BEGIN
+        Line := '';
+        index := 0;
+        REPEAT
+          index += 1;
+          //FileOutStr.WRITE(Data[IndexLine][index] + FieldSeparator);
+          Line += Data[IndexLine][index] + FieldSeparator;
+        UNTIL (index = (ARRAYLEN(Data, 2) - 1));
+        index += 1;
+        //FileOutStr.WRITE(Data[IndexLine][index] + FORMAT(Char13) + FORMAT(Char10));
+        Line += Data[IndexLine][index];
+        FileOutStr.WRITETEXT(Line + FORMAT(Char13) + FORMAT(Char10));
+
+        IndexLine += 1;
+        index := 1;
+        Continue := (Data[IndexLine,index] <> '');
+      END;
+    END;
+
+    PROCEDURE CreateFile@1000000011(FileName@1000000000 : Text[250]) ReturnValue : Boolean;
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('CreateFile', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      ReturnValue := FALSE;
+      IF (EXISTS(ImpExpFolder + '\' + FileName)) THEN BEGIN
+        ERASE(ImpExpFolder +  '\' + FileName);
+      END;
+      ExportFile.TEXTMODE(TRUE);
+      IF (ExportFile.CREATE(ImpExpFolder +  '\' + FileName)) THEN BEGIN
+        ExportFile.CREATEOUTSTREAM(FileOutStr);
+        ReturnValue := TRUE;
+      END;
+    END;
+
+    PROCEDURE CloseFile@1000000012();
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('CloseFile', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      ExportFile.CLOSE();
+    END;
+
+    PROCEDURE SetToLog@1000000016(LogType@1000000000 : 'Info,Error';ErrMsg@1000000001 : Text[256];LineNo@1000000002 : Integer;FileName@1000000003 : Text[256]);
+    VAR
+      Msg@1000000004 : Text[1024];
+      tErrLineNo@1000000005 : TextConst 'ENU=At line : %1 in the file : %2;FRA=A la ligne : %1 dans le fichier : %2';
+    BEGIN
+      Msg := ErrMsg;
+      IF ((LineNo <> 0) AND (FileName <> '')) THEN BEGIN
+        Msg := Msg + ' ' + STRSUBSTNO(tErrLineNo, LineNo, FileName);
+      END;
+      CASE (LogType) OF
+        LogType::Info : BEGIN
+          ToolsFile.LogWriteInfo(Msg);
+        END;
+        LogType::Error : BEGIN
+          ToolsFile.LogWriteErreur(Msg);
+        END;
+      END;
+    END;
+
+    PROCEDURE ExportContact@1000000023(ContactNo@1000000004 : Code[20];ContractNo@1000000000 : Code[20];ContractType@1000000001 : Text[30]) ReturnValue : Boolean;
+    VAR
+      ContactData@1000000002 : ARRAY [2,11] OF Text[250];
+      FileName@1000000003 : Text[250];
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('ExportContact', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      ReturnValue := FALSE;
+      CLEAR(ContactData);
+      IF (GetContactData(ContactNo, ContractNo, ContactData, FileName, ContractType)) THEN BEGIN
+        IF (CreateFile(FileName)) THEN BEGIN
+          AddContactHeader(ContactData);
+          AddContactData(ContactData);
+          CloseFile();
+          ReturnValue := TRUE;
+        END ELSE BEGIN
+          SetToLog(TypLog::Error, COPYSTR(STRSUBSTNO(TErrFile, ImpExpFolder + FileName),
+                                          1,
+                                          MAXSTRLEN(ErrorMsg)),
+                   0,
+                   '');
+        END;
+      END ELSE BEGIN
+        SetToLog(TypLog::Error, COPYSTR(STRSUBSTNO(TErrNoContact, ContactNo),
+                                        1,
+                                        MAXSTRLEN(ErrorMsg)),
+                 0,
+                 '');
+
+      END;
+    END;
+
+    PROCEDURE GetContactData@1000000026(ContactNo@1000000007 : Code[20];ContractNo@1000000000 : Code[20];VAR FileData@1000000001 : ARRAY [2,11] OF Text[250];VAR FileName@1000000002 : Text[250];ContactType@1000000006 : Text[30]) ReturnValue : Boolean;
+    VAR
+      Contact@1000000005 : Record 5050;
+      ContactSalesPerson@1000000004 : Record 8053160;
+      SalesPerson@1000000003 : Record 13;
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('GetContactData', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      ReturnValue := FALSE;
+      Contact.SETRANGE("No.", ContactNo);
+      Contact.SETRANGE("Contact Type", Contact."Contact Type"::Farm);
+      IF (Contact.FINDFIRST()) THEN BEGIN
+        // Get the TC
+        ContactSalesPerson.SETRANGE("Contact Code", Contact."No.");
+        ContactSalesPerson.SETRANGE("Prod. Activity Code", 'PV');
+        ContactSalesPerson.SETRANGE("Sales Network Code", 'PV');
+        IF (ContactSalesPerson.FINDFIRST()) THEN BEGIN
+          IF (NOT SalesPerson.GET(ContactSalesPerson."Salesperson Code")) THEN BEGIN
+            SetToLog(TypLog::Error, COPYSTR(STRSUBSTNO(TErrTCNoExist, ContactSalesPerson."Salesperson Code"),
+                                          1,
+                                          MAXSTRLEN(ErrorMsg)),
+                   0,
+                  '');
+
+          END ELSE BEGIN
+          //1/ MORALE
+          //2/ PHISYQUE
+            //Set filename
+            FileName := Contact."No." + '_' + ContractNo + '_' + ContactType + '_' +
+                        FORMAT(CURRENTDATETIME, 0, '<Day,2><Month,2><Year4><Hours24,2><Minutes,2><Seconds,2>') +
+                        '_Contact_Adherent' + ExtensionFile;
+            // Set data
+            CASE  (Contact."Moral Or Natural Person") OF
+              Contact."Moral Or Natural Person"::Moral : BEGIN
+                //Nom
+                FileData[2][2] := Tools.Ascii2Ansi(Contact.Address);
+                // Entrperise
+                 FileData[2][5] := Tools.Ascii2Ansi(Contact.Name);
+                // Adress
+                FileData[2][6] := Tools.Ascii2Ansi(Contact."Address 2");
+
+              END;
+              Contact."Moral Or Natural Person"::Natural : BEGIN
+                //Nom
+                FileData[2][2] := Tools.Ascii2Ansi(Contact.Name);
+                // Entrperise
+                FileData[2][5] := '';
+                // Adress
+                FileData[2][6] := Tools.Ascii2Ansi(Contact.Address + ' '+ Contact."Address 2");
+
+              END;
+
+            END;
+
+            FileData[1][1] := 'customId';
+            FileData[2][1] := Contact."No.";
+
+            FileData[1][2] := 'name';
+
+            FileData[1][3] := 'sms';
+            FileData[2][3] := Contact."Mobile Phone No.";
+
+            FileData[1][4] := 'email';
+            IF (TestMode) THEN BEGIN
+              FileData[2][4] := TestEmail;
+            END ELSE BEGIN
+              FileData[2][4] := Contact."E-Mail";
+            END;
+
+            FileData[1][5] := 'cf_NomEntreprise';
+
+            FileData[1][6] := 'cf_Adresse';
+
+            FileData[1][7] := 'cf_CodePostalVille';
+            FileData[2][7] := Contact."Post Code" + ' ' + Tools.Ascii2Ansi(Contact.City);
+
+            FileData[1][8] := 'cf_CodeRegion';
+            FileData[2][8] := ContactSalesPerson."Sales Area Code";
+
+            FileData[1][9] := 'cf_CodeTc';
+            FileData[2][9] := SalesPerson.Code;
+
+            FileData[1][10] := 'cf_NomPrenomTc';
+            FileData[2][10] := SalesPerson.Name;
+
+            FileData[1][11] := 'cf_EmailTc';
+            IF (TestMode) THEN BEGIN
+              FileData[2][11] := TestEmail;
+            END ELSE BEGIN
+              FileData[2][11] := SalesPerson."E-Mail";
+            END;
+
+            ReturnValue := TRUE;
+          END;
+        END ELSE BEGIN
+          SetToLog(TypLog::Error, COPYSTR(TErrNoTC,
+                                        1,
+                                        MAXSTRLEN(ErrorMsg)),
+                 0,
+                 '');
+
+        END;
+      END ELSE BEGIN
+        SetToLog(TypLog::Error, COPYSTR(STRSUBSTNO(TErrNoContact, ContractNo),
+                                        1,
+                                        MAXSTRLEN(ErrorMsg)),
+                 0,
+                 '');
+      END;
+    END;
+
+    PROCEDURE AddContactHeader@1000000028(Data@1000000000 : ARRAY [2,11] OF Text[250]);
+    VAR
+      index@1000000001 : Integer;
+      Line@1000000002 : Text[1024];
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('AddContactHeader', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      index := 0;
+      Line := '';
+      REPEAT
+        index += 1;
+        //FileOutStr.WRITE(Data[1][index] + FieldSeparator);
+        Line += Data[1][index] + FieldSeparator;
+      UNTIL (index = (ARRAYLEN(Data, 2) - 1));
+      index += 1;
+      //FileOutStr.WRITE(Data[1][index] + FieldSeparator);
+      Line += Data[1][index];
+      FileOutStr.WRITETEXT(Line + FORMAT(Char13) + FORMAT(Char10));
+    END;
+
+    PROCEDURE AddContactData@1000000029(Data@1000000000 : ARRAY [2,11] OF Text[250]);
+    VAR
+      Index@1000000001 : Integer;
+      Line@1000000002 : Text[1024];
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('AddContactData', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      Index := 0;
+      Line := '';
+      REPEAT
+        Index += 1;
+        //FileOutStr.WRITE(Data[2][Index] + FieldSeparator);
+        Line += Data[2][Index] + FieldSeparator;
+      UNTIL (Index = (ARRAYLEN(Data, 2) - 1));
+      Index += 1;
+      //FileOutStr.WRITE(Data[2][Index] + FORMAT(Char13) + FORMAT(Char10));
+      Line += Data[2][Index];
+      FileOutStr.WRITETEXT(Line + FORMAT(Char13) + FORMAT(Char10));
+    END;
+
+    PROCEDURE GetSQLContractCCA@1000000015() ReturnValue : Boolean;
+    VAR
+      Session@1000000004 : Record 2000000009;
+      ToolsFile@1000000005 : Codeunit 8053405;
+      StrSQLSelect@1000000006 : Text[1024];
+      StrSQLFrom@1000000000 : Text[1024];
+      StrSQLWhere@1000000001 : Text[1024];
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('GetSQLContractCCA', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      ReturnValue := FALSE;
+      IF ISSERVICETIER THEN BEGIN
+        Session.SETRANGE("Ma session",TRUE);
+        IF Session.FINDFIRST THEN BEGIN
+          SQLConnection:= SQLConnection.SqlConnection(
+                                            ToolsFile.GetSQLConnectionString(
+                                              Session."Nom de la base de donn'es",
+                                              '',
+                                              '',
+                                              AdvitamSetup."Replica Database",
+                                              UserReplicaDatabase)
+                                            );
+
+              //ToolsFile.GetConnectionString2(AdvitamSetup.BddNavision, Session."Database Name", '','',
+              //AdvitamSetup."Replica Database"));
+          SQLConnection.Open;
+          SQLCommand := SQLCommand.SqlCommand(); //Constructor
+
+          StrSQLSelect := '';
+          StrSQLFrom := '';
+          StrSQLWhere := '';
+
+          StrSQLSelect := 'SELECT CONVERT(VARCHAR(MAX), CONVERT(VARBINARY,CCAContract.[timestamp]), 1) ';
+          StrSQLSelect += 'AS [contractTimeStamp], ';
+          StrSQLSelect += 'CCAContract.[No_] AS [ContractNo] ';
+          StrSQLFrom += 'FROM ';
+          StrSQLFrom += '[' + COMPANYNAME  + '$CMC Frame Contract Type] AS ContractType ';
+          StrSQLFrom += 'LEFT JOIN [' + COMPANYNAME  + '$CMC Sup_ Frame Contract Header]AS CCAContract ON ';
+          StrSQLFrom += 'CCAContract.[Frame Contract Type]=ContractType.Code ';
+          StrSQLFrom += 'LEFT JOIN [' + COMPANYNAME  + '$CMC Commitment] AS Commitment ON ';
+          StrSQLFrom += 'Commitment.[Frame Contract Type]=CCAContract.[Frame Contract Type] ';
+          StrSQLFrom += 'AND Commitment.Code=CCAContract.[Commitment Code] ';
+          StrSQLFrom += 'LEFT JOIN [' + COMPANYNAME  + '$CMC Sup_ Frame Contract Line] AS ContractLine ON ';
+          StrSQLFrom += 'ContractLine.[Frame Contract No_]=CCAContract.No_ ';
+          StrSQLFrom += 'AND (ContractLine.[Line No_]<>30 AND ContractLine.[Line No_]<>120) ';
+          StrSQLWhere += 'WHERE ContractType.[Type]=1 ';
+          // << ADV2018.10.12
+          StrSQLWhere += 'AND Commitment.[Exclude Conformity]=0 ';
+          // >> ADV2018.10.12
+          // << ADV2018.11.08
+          StrSQLWhere += 'AND (([Date d_envoi] = CAST(''01/01/1753'' AS DATETIME)) OR ([Last Modification Date] > [Date d_envoi]))';
+          // >> ADV2018.11.08
+          StrSQLWhere +=  'AND (CONVERT(VARCHAR(MAX), CONVERT(VARBINARY,CCAContract.[timestamp]), 1) > ''';
+          StrSQLWhere += LastCCATimeStamp + ''') ';
+          IF (CCACampaign <> '') THEN BEGIN
+            StrSQLWhere += 'AND CCAContract.[Campaign No_]=''' + CCACampaign + ''' ';
+          END;
+          IF (ContactFilter <> '') THEN BEGIN
+            StrSQLWhere += 'AND CCAContract.[Contact No_] IN (' + ContactFilter + ') ';
+          END;
+          StrSQLWhere += 'GROUP BY CCAContract.[timestamp], CCAContract.[No_] ';
+          StrSQLWhere += 'ORDER BY CCAContract.[timestamp] ';
+
+          SQLCommand.CommandText := StrSQLSelect + StrSQLFrom + StrSQLWhere;
+          SQLCommand.Connection := SQLConnection;
+          CmdType := SQLCommand.CommandType;
+          SQLCommand.CommandType := CmdType.Parse(CmdType.GetType(),'Text');
+          SQLCommand.CommandTimeout := 0;
+          SQLDbReader := SQLCommand.ExecuteReader();
+          ReturnValue := TRUE;
+          //SetToLog(TypLog::Info, 'HAS CCA : ' + FORMAT(ReturnValue), 0, '');
+        END;
+      END;
+    END;
+
+    PROCEDURE GetSQLContractCCC@1000000020() ReturnValue : Boolean;
+    VAR
+      Session@1000000003 : Record 2000000009;
+      ToolsFile@1000000002 : Codeunit 8053405;
+      StrSQLSelect@1000000001 : Text[1024];
+      StrSQLFrom@1000000000 : Text[1024];
+      StrSQLWhere@1000000004 : Text[1024];
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('GetSQLContractCCC', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      ReturnValue := FALSE;
+      IF ISSERVICETIER THEN BEGIN
+        Session.SETRANGE("Ma session",TRUE);
+        IF Session.FINDFIRST THEN BEGIN
+          SQLConnection:= SQLConnection.SqlConnection(
+                                            ToolsFile.GetSQLConnectionString(
+                                              Session."Nom de la base de donn'es",
+                                              '',
+                                              '',
+                                              AdvitamSetup."Replica Database",
+                                              UserReplicaDatabase)
+                                            );
+
+              //ToolsFile.GetConnectionString2(AdvitamSetup.BddNavision, Session."Database Name", '','',
+              //                              AdvitamSetup."Replica Database"));
+          SQLConnection.Open;
+          SQLCommand := SQLCommand.SqlCommand(); //Constructor
+
+          StrSQLSelect := '';
+          StrSQLFrom := '';
+          StrSQLWhere := '';
+
+          StrSQLSelect := 'SELECT CONVERT(VARCHAR(MAX), CONVERT(VARBINARY,CCCContract.[timestamp]), 1) ';
+          StrSQLSelect += 'AS [contractTimeStamp], ';
+          StrSQLSelect += 'CCCContract.[Contract No_] AS [ContractNo] ';
+          StrSQLFrom += 'FROM ';
+          StrSQLFrom += '[' + COMPANYNAME  + '$CMC Frame Contract Type] AS ContractType ';
+          StrSQLFrom += 'LEFT JOIN [' + COMPANYNAME  + '$CMC Frame Contract]AS CCCContract ON ';
+          StrSQLFrom += 'CCCContract.[Contract Type]=ContractType.Code ';
+          // << ADV2018.10.12
+          StrSQLFrom += 'LEFT JOIN [UNEAL$CMC Commitment] AS Commitment ON  ';
+          StrSQLFrom += 'Commitment.[Frame Contract Type]=CCCContract.[Contract Type]  ';
+          StrSQLFrom += 'AND Commitment.Code=CCCContract.[Commitment Code]  ';
+          // >> ADV2018.10.12
+          StrSQLFrom += 'INNER JOIN [' + COMPANYNAME  + '$CMC Frame Contract Line] AS ContractLine ON ';
+          StrSQLFrom += 'ContractLine.[Contract No_]=CCCContract.[Contract No_] ';
+          StrSQLWhere += 'WHERE ContractType.[Type]=0 ';
+          // << ADV2018.10.12
+          StrSQLWhere += 'AND Commitment.[Exclude Conformity]=0 ';
+          // >> ADV2018.10.12
+          // << ADV2018.11.08
+          StrSQLWhere += 'AND (([Date d_envoi] = CAST(''01/01/1753'' AS DATETIME)) OR ([Last Modification Date] > [Date d_envoi]))';
+          // >> ADV2018.11.08
+          StrSQLWhere += 'AND (CONVERT(VARCHAR(MAX), CONVERT(VARBINARY,CCCContract.[timestamp]), 1) > ''';
+          StrSQLWhere += LastCCCTimeStamp + ''') ';
+          IF (CCCCampaign <> '') THEN BEGIN
+            StrSQLWhere += 'AND CCCContract.[Campaign No_]=''' + CCCCampaign + ''' ';
+          END;
+          IF (ContactFilter <> '') THEN BEGIN
+            StrSQLWhere += 'AND CCCContract.[Contact No_] IN (' + ContactFilter + ') ';
+          END;
+          StrSQLWhere += 'GROUP BY CCCContract.[timestamp], CCCContract.[Contract No_] ';
+          StrSQLWhere += 'ORDER BY CCCContract.[timestamp]';
+
+          SQLCommand.CommandText := StrSQLSelect + StrSQLFrom + StrSQLWhere;
+          SQLCommand.Connection := SQLConnection;
+          CmdType := SQLCommand.CommandType;
+          SQLCommand.CommandType := CmdType.Parse(CmdType.GetType(),'Text');
+          SQLCommand.CommandTimeout := 0;
+          SQLDbReader := SQLCommand.ExecuteReader();
+          ReturnValue := TRUE;
+          //SetToLog(TypLog::Info, 'HAS CCC : ' + FORMAT(ReturnValue), 0, '');
+        END;
+      END;
+    END;
+
+    PROCEDURE CloseDBConnection@1000000017();
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('CloseDBConnection', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      SQLDbReader.Close();
+      SQLConnection.Close();
+    END;
+
+    PROCEDURE SendFTPFiles@1000000008() ReturnValue : Boolean;
+    VAR
+      sftp@1000000000 : DotNet "'Renci.SshNet, Version=2017.0.0.0, Culture=neutral, PublicKeyToken=1cee9f8bde3db106'.Renci.SshNet.SftpClient";
+      FileToSend@1000000001 : Record 2000000022;
+      File@1000000002 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.File";
+      FileStream@1000000003 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.FileStream";
+      Action@1000000004 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Action`1";
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('SendFTPFiles', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      ReturnValue := FALSE;
+      IF (TestMode AND NotSendFile) OR (NotSendFile) THEN BEGIN
+        ReturnValue := TRUE;
+      END ELSE BEGIN
+        SetToLog(TypLog::Info, STRSUBSTNO('%1 - %2 - %3', FTPAddress, FTPUser, FTPPwd), 0, '');
+        sftp := sftp.SftpClient(FTPAddress, FTPUser, FTPPwd);
+        sftp.Connect();
+
+        IF (FTPFolder <> '') THEN
+          sftp.ChangeDirectory(FTPFolder);
+        FileToSend.RESET();
+        FileToSend.SETRANGE("Is a file", TRUE);
+        FileToSend.SETRANGE(Path, ImpExpFolder);
+        IF (FileToSend.FINDFIRST()) THEN BEGIN
+          REPEAT
+            FileStream := File.OpenRead(ImpExpFolder + '\' + FileToSend.Name);
+            sftp.UploadFile(FileStream, FileToSend.Name, Action);
+            FileStream.Close();
+            //File.Move(ImpExpFolder + '\' + FileToSend.Name, ImpExpFolder + '\SAV\' + FileToSend.Name);
+          UNTIL(FileToSend.NEXT() = 0);
+          ReturnValue := TRUE;
+        END;
+
+        sftp.Disconnect();
+      END;
+    END;
+
+    PROCEDURE ZipFiles@1000000018();
+    VAR
+      FastZip@1000000000 : DotNet "'ICSharpCode.SharpZipLib, Version=0.84.0.0, Culture=neutral, PublicKeyToken=1b03e6acf1164f73'.ICSharpCode.SharpZipLib.Zip.FastZip";
+      Recurse@1000000001 : Boolean;
+      Filter@1000000002 : Text[30];
+      ZipFileName@1000000003 : Text[256];
+    BEGIN
+      //SetToLog(TypLog::Info, COPYSTR('ZipFile', 1, MAXSTRLEN(ErrorMsg)), 0, '');
+      Recurse := FALSE;
+      Filter := '\.zip$';
+
+      ZipFileName := 'ExportE-SIGN' + FORMAT(CURRENTDATETIME, 0, '<Year4><Month,2><Day,2><Hours24><Minutes,2><Seconds,2>') + '.zip';
+
+      FastZip := FastZip.FastZip();
+
+      FastZip.CreateZip(ImpExpFolder + '\SAV\' + ZipFileName, ImpExpFolder, Recurse, Filter);
+      // Delete All CSV Files
+      DeleteFiles('.zip');
+    END;
+
+    PROCEDURE DeleteFiles@1000000021(ExtFile@1000000006 : Text[30]);
+    VAR
+      ObjFile@1000000000 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Object";
+      Folder@1000000001 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.Directory";
+      FileToDelete@1000000002 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.File";
+      Path@1000000003 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.Path";
+      ListFile@1000000004 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Collections.Generic.List`1";
+      index@1000000005 : Integer;
+    BEGIN
+      ObjFile := Folder.GetFiles(ImpExpFolder, '*' + ExtFile);
+      ListFile := ListFile.List();
+      ListFile.AddRange(ObjFile);
+      FOR index := 0 TO (ListFile.Count - 1) DO BEGIN
+        FileToDelete.Delete(ListFile.Item(index));
+      END;
+    END;
+
+    PROCEDURE ZipContractFile@1000000024(ContactNo@1000000000 : Code[20];ContractNo@1000000001 : Code[20];contractType@1000000002 : Text[30]);
+    VAR
+      FastZip@1000000006 : DotNet "'ICSharpCode.SharpZipLib, Version=0.84.0.0, Culture=neutral, PublicKeyToken=1b03e6acf1164f73'.ICSharpCode.SharpZipLib.Zip.FastZip";
+      Recurse@1000000005 : Boolean;
+      Filter@1000000004 : Text[30];
+      ZipFileName@1000000003 : Text[256];
+    BEGIN
+      Recurse := FALSE;
+      Filter := '\' + ExtensionFile +'$';
+
+      ZipFileName := ContactNo + '_' + ContractNo + '_' + contractType + '_' +
+                     FORMAT(CURRENTDATETIME, 0, '<Year4><Month,2><Day,2><Hours24><Minutes,2><Seconds,2>') + '.zip';
+
+      FastZip := FastZip.FastZip();
+
+      FastZip.CreateZip(ImpExpFolder + '\' + ZipFileName, ImpExpFolder, Recurse, Filter);
+      // Delete All CSV Files
+      DeleteFiles(ExtensionFile);
+    END;
+
+    PROCEDURE IsExcludedCCAContact@1000000019(CtcHeader@1000000000 : Record 8053239) ReturnValue : Boolean;
+    VAR
+      Ctc@1000000001 : Record 5050;
+      Customer@1000000002 : Record 18;
+    BEGIN
+      ReturnValue := FALSE;
+      IF (Ctc.GET(CtcHeader."Contact No.")) THEN BEGIN
+        IF (Customer.GET(Ctc."Customer No.")) THEN BEGIN
+          IF (STRPOS(Customer."Customer List 6", TCstExluded) <> 0) THEN BEGIN
+            ReturnValue := TRUE;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE UpdateCCAContract@1000000022(Contract@1000000000 : Record 8053239);
+    VAR
+      UpdatedContract@1000000001 : Record 8053239;
+    BEGIN
+      IF (UpdatedContract.GET(Contract."No.")) THEN BEGIN
+        UpdatedContract."Date d'envoi" := TODAY;
+        UpdatedContract.MODIFY();
+      END;
+    END;
+
+    PROCEDURE UpdateCCCContract@1000000025(Contract@1000000000 : Record 8053208);
+    VAR
+      UpdatedContract@1000000001 : Record 8053208;
+    BEGIN
+      IF (UpdatedContract.GET(Contract."Contract No.")) THEN BEGIN
+        UpdatedContract."Date d'envoi" := TODAY;
+        UpdatedContract.MODIFY();
+      END;
+    END;
+
+    BEGIN
+    {
+      // ADV2018.10.12 XPE 12/10/2018 : Remove from contract selection the commitment Code "NONENF" and "REFUS" (Comformity Exclude=0)
+      // ADV2019.01.24 XPE 24/01/2019 : Before create Contract File, we need to create Contact File, If this one not exist le contract
+                                        don't create
+      // ADV2019.03.18 XPE 18/03/2019 : Modified Function GetContractCCCData
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,1893 @@
+OBJECT Report 8053083 CMC Update Sales ECD
+{
+  OBJECT-PROPERTIES
+  {
+    Date=03/05/18;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,TER01.01.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 113=rimd,
+                TableData 115=rimd,
+                TableData 5802=rimd;
+    CaptionML=[ENU=Update Sales ECD;
+               FRA=Mise . jour ventes RFC];
+    UseReqForm=Oui;
+    ProcessingOnly=Oui;
+    OnPreReport=BEGIN
+                  // --> 20140913-APP33-CMC02.02.00-FDA01
+                  IF PrintToExcel_G THEN
+                    MakeExcelInfo;
+                  // <-- 20140913-APP33-CMC02.02.00-FDA01
+                END;
+
+    OnPostReport=BEGIN
+                   // --> 20140913-APP33-CMC02.02.00-1412-FDA01
+                   IF PrintToExcel_G THEN
+                     CreateExcelbook;
+                   // <-- 20140913-APP33-CMC02.02.00-1412-FDA01
+
+                   MESSAGE(Text005);
+                 END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table5802;
+        DataItemTableView=SORTING(Item Ledger Entry No.,Entry Type,Item Ledger Entry Type,Document Type,Adjustment,Item Charge No.)
+                          WHERE(Item Ledger Entry Type=CONST(Sale),
+                                Entry Type=FILTER(=Direct Cost),
+                                Document Type=FILTER(<>' '),
+                                Adjustment=FILTER(=Non),
+                                Item Charge No.=FILTER(=''),
+                                Valued Quantity=FILTER(<>0));
+        OnPreDataItem=BEGIN
+                        IF CustomerNo_G <> '' THEN
+                          "Value Entry".SETRANGE("Source No.",CustomerNo_G);
+
+                        // --> 20140912-APP33-TER01.01.00-FDA01
+                        //Before
+                        {
+                        IF ModificationValue_G = 0 THEN
+                          ERROR(Text002);
+
+                        IF DiscountCode_G = '' THEN
+                          ERROR(Text003);
+                        }
+                        //After
+                        GLSetup_G.GET;
+                        CMCSetup_G.GET;
+                        IF NOT (UpdateType_G IN [UpdateType_G::"Cancel ECD",UpdateType_G::"Unapply Budgeted Unit Price"]) THEN
+                          IF ModificationValue_G = 0 THEN
+                            ERROR(Text002);
+
+                        IF NOT CONFIRM(Text8053017,FALSE,WORKDATE) THEN
+                          ERROR('');
+                        // <-- 20140912-APP33-TER01.01.00-FDA01
+
+                        // --> 20150424-APP33-TER01.01.00-TER292-SDE01
+                            SETFILTER("Value Entry"."Document Type",'%1|%2',"Value Entry"."Document Type"::"Sales Invoice",
+                                    "Value Entry"."Document Type"::"Sales Credit Memo");
+
+                          CASE UpdateType_G OF UpdateType_G::"Cancel ECD":
+                            SETRANGE("Value Entry"."Document Type");
+                          END;
+                        // <-- 20150424-APP33-TER01.01.00-TER292-SDE01
+                      END;
+
+        OnAfterGetRecord=VAR
+                           ECDManagement_L@8053000 : Codeunit 8053038;
+                           ValueEntryDisc_L@8053001 : Record 8053252;
+                           ECDLedgerEntry_L@1000000000 : Record 8053089;
+                           ECDLedgerEntryForExcel_L@1000000001 : Record 8053089;
+                           ECDLedgerEntry2_L@1000000002 : Record 8053089;
+                         BEGIN
+                           // --> 20140912-APP33-TER01.01.00-FDA01
+                           //Before
+                           {
+                           // --> 20131017-APP33-TER01.01.00-0944-BSI01
+                           IF ModificationType_G = ModificationType_G::"Create discount" THEN BEGIN
+
+                             ValueEntryDisc_G.RESET;
+
+                             IF ValueEntryDisc_G.GET("Value Entry"."Entry No.",DiscountCode_G) THEN
+                               ERROR(Text001,DiscountCode_G,"Value Entry"."Entry No.");//discount already exists
+
+                             CLEAR(ValueEntryDiscForUpdate_G);
+                             ValueEntryDiscForUpdate_G."Value Entry No." := "Value Entry"."Entry No.";
+                             ValueEntryDiscForUpdate_G."Discount Code" := DiscountCode_G;
+
+                             SalesDiscount_G.GET(DiscountCode_G);
+                             ValueEntryDiscForUpdate_G.VALIDATE(Rank,SalesDiscount_G.Rank);
+
+                             ValueEntryDisc_G.RESET;
+                             ValueEntryDisc_G.SETRANGE("Value Entry No.","Value Entry"."Entry No.");
+
+                             IF ValueEntryDisc_G.FINDLAST THEN BEGIN
+                              ValueEntryDiscForUpdate_G.VALIDATE("Base Value",ValueEntryDisc_G."Final Price");
+                              InsertNewDiscount;
+                             END ELSE BEGIN
+                              ValueEntryDiscForUpdate_G.VALIDATE("Base Value","Value Entry"."Cost per Unit");
+                              InsertNewDiscount;
+                             END;
+                             // --> 20140805-APP33-TER01.01.00-FDA01
+                             //Before
+                             //cduItemJnlPostLine_G.InsertSalesECDLedgerEntry("Value Entry",FALSE,DiscountCode_G)
+                             //After
+                             ECDManagement_L.InsertSalesECDLedgerEntry("Value Entry",FALSE,DiscountCode_G)
+                             // <-- 20140805-APP33-TER01.01.00-FDA01
+                           END;
+
+                           // <-- 20131017-APP33-CMC02.02.00-0944-BSI01
+                           }
+                           //After
+
+                           // --> 20141014-APP33-TER01.01.00-FDA01
+                           IF NotConsideredECDCodeExist("Value Entry") THEN
+                             CurrReport.SKIP;
+                           // <-- 20141014-APP33-TER01.01.00-FDA01
+
+                           DetailedECDExist_G := TRUE;
+                           ValueEntryDisc_L.RESET;
+                           ValueEntryDisc_L.SETRANGE("Value Entry No.","Entry No.");
+                           IF ValueEntryDisc_L.ISEMPTY THEN
+                             DetailedECDExist_G := FALSE;
+
+                           IF DetailedECDExist_G AND (DiscountCode_G = '') THEN
+                             IF NOT (UpdateType_G IN [UpdateType_G::"Apply Budgeted Unit Price",UpdateType_G::"Unapply Budgeted Unit Price"]) THEN
+                               CurrReport.SKIP;
+
+                           IF NOT DetailedECDExist_G AND (DiscountCode_G <> '') THEN
+                           // -->20151222-APP33-TER01.01.00-2607-DGL01
+                             IF ("Value Entry"."Sales Amount (Actual)" = 0) THEN
+                               CurrReport.SKIP;
+                           // <--20151222-APP33-TER01.01.00-2607-DGL01
+
+                           // --> 20140930-APP33-TER01.01.00-FDA01
+                           //Before
+                           //  CurrReport.SKIP;
+                           //After
+                             DetailedECDExist_G := TRUE;
+                           // <-- 20140930-APP33-TER01.01.00-FDA01
+
+                           CLEAR(ValueEntryDiscForUpdate_G);
+
+                           IF DetailedECDExist_G THEN BEGIN
+                             CASE UpdateType_G OF
+                               UpdateType_G::"ECD Update" : BEGIN
+                                 IF NOT ValueEntryDisc_G.GET("Entry No.",DiscountCode_G) THEN BEGIN
+                                   ValueEntryDiscForUpdate_G.INIT;
+                                   ValueEntryDiscForUpdate_G."Value Entry No." := "Entry No.";
+                                   ValueEntryDiscForUpdate_G."Discount Code" := DiscountCode_G;
+
+                                   SalesDiscount_G.GET(DiscountCode_G);
+                                   ValueEntryDiscForUpdate_G.Rank := SalesDiscount_G.Rank;
+
+                                   ValueEntryDisc_G.RESET;
+                                   ValueEntryDisc_G.SETCURRENTKEY("Value Entry No.",Rank);
+                                   ValueEntryDisc_G.SETRANGE("Value Entry No.","Entry No.");
+
+                                   ValueEntryDisc_G.SETFILTER(Rank,'<=%1',SalesDiscount_G.Rank);
+                                   IF ValueEntryDisc_G.FINDLAST THEN BEGIN
+                                     // --> 20141020-APP33-TER01.01.00-FDA01
+                                     // --> 20160614-Wi00-ADV01.01.00-3085-CJY01
+                                     {BEFORE
+                                     ValueEntryDiscForUpdate_G."Base Value %" := ValueEntryDisc_G."Base Value %";
+                                     AFTER}
+                                     ValueEntryDiscForUpdate_G."Base Value %" := ValueEntryDisc_G."Final Price";
+                                     // <-- 20160614-Wi00-ADV01.01.00-3085-CJY01
+                                     // <-- 20141020-APP33-TER01.01.00-FDA01
+                                     ValueEntryDiscForUpdate_G."Base Value" := ValueEntryDisc_G."Final Price";
+                                   END ELSE BEGIN
+                                     ValueEntryDisc_G.SETRANGE(Rank);
+                                     // --> 20140930-APP33-TER01.01.00-FDA01
+                                     //Before
+                                     //ValueEntryDisc_G.FINDFIRST;
+                                     //After
+                                     IF NOT ValueEntryDisc_G.FINDFIRST THEN BEGIN
+                                       // --> 20141020-APP33-TER01.01.00-FDA01
+                                       //Before
+                                       //ValueEntryDiscForUpdate_G.INIT;
+                                       //After
+                                       // --> // --> 20180426-Wi00-ADV01.01.00-34402-CJY01
+                                       {BEFORE
+                                       IF "Value Entry"."Sales Amount (Actual)" <> 0 THEN BEGIN
+                                         ValueEntryDiscForUpdate_G."Base Value %" := "Sales Amount (Actual)" / -"Valued Quantity";
+                                         ValueEntryDiscForUpdate_G."Base Value" := "Sales Amount (Actual)" / -"Valued Quantity";
+                                       END ELSE BEGIN
+                                         ValueEntryDiscForUpdate_G."Base Value %" := "Sales Amount (Expected)" / -"Valued Quantity";
+                                         ValueEntryDiscForUpdate_G."Base Value" := "Sales Amount (Expected)" / -"Valued Quantity";
+                                       END;
+                                       AFTER}
+                                       IF "Value Entry"."Sales Amount (Actual)" <> 0 THEN BEGIN
+                                         ValueEntryDiscForUpdate_G."Base Value %" := RetrouvePUN("Value Entry");
+                                         ValueEntryDiscForUpdate_G."Base Value" := RetrouvePUN("Value Entry");
+                                       END ELSE BEGIN
+                                         ValueEntryDiscForUpdate_G."Base Value %" := "Sales Amount (Expected)" / -"Valued Quantity";
+                                         ValueEntryDiscForUpdate_G."Base Value" := "Sales Amount (Expected)" / -"Valued Quantity";
+                                       END;
+
+                                       // <-- 20180426-Wi00-ADV01.01.00-34402-CJY01
+                                       //ValueEntryDiscForUpdate_G.Rank := SalesDiscount_G.Rank;
+                                       // <-- 20141020-APP33-TER01.01.00-FDA01
+                                     END ELSE BEGIN
+                                       // --> 20160614-Wi00-ADV01.01.00-3085-CJY01
+                                       {BEFORE
+                                     // <-- 20140930-APP33-TER01.01.00-FDA01
+                                       ValueEntryDiscForUpdate_G."Base Value" := ValueEntryDisc_G."Base Value";
+                                     // --> 20141020-APP33-TER01.01.00-FDA01
+                                       ValueEntryDiscForUpdate_G."Base Value %" := ValueEntryDisc_G."Base Value %";
+                                       AFTER}
+                                       // --> 20180426-Wi00-ADV01.01.00-34402-CJY01
+                                       {BEFORE
+                                       IF "Value Entry"."Sales Amount (Actual)" <> 0 THEN BEGIN
+                                         ValueEntryDiscForUpdate_G."Base Value %" := "Sales Amount (Actual)" / -"Valued Quantity";
+                                         ValueEntryDiscForUpdate_G."Base Value" := "Sales Amount (Actual)" / -"Valued Quantity";
+                                       END ELSE BEGIN
+                                         ValueEntryDiscForUpdate_G."Base Value %" := "Sales Amount (Expected)" / -"Valued Quantity";
+                                         ValueEntryDiscForUpdate_G."Base Value" := "Sales Amount (Expected)" / -"Valued Quantity";
+                                       END;
+                                       AFTER}
+                                       IF "Value Entry"."Sales Amount (Actual)" <> 0 THEN BEGIN
+                                         ValueEntryDiscForUpdate_G."Base Value %" := RetrouvePUN("Value Entry");
+                                         ValueEntryDiscForUpdate_G."Base Value" := RetrouvePUN("Value Entry");
+                                       END ELSE BEGIN
+                                         ValueEntryDiscForUpdate_G."Base Value %" := "Sales Amount (Expected)" / -"Valued Quantity";
+                                         ValueEntryDiscForUpdate_G."Base Value" := "Sales Amount (Expected)" / -"Valued Quantity";
+                                       END;
+
+                                       // <-- 20180426-Wi00-ADV01.01.00-34402-CJY01
+                                       // <-- 20160614-Wi00-ADV01.01.00-3085-CJY01
+                                     END;
+                                     // <-- 20141020-APP33-TER01.01.00-FDA01
+                                   END;
+
+                                   InsertNewDiscount;
+                                   "Budgeted Unit Cost" := UpdateRemainingValueEntryDisc(ValueEntryDiscForUpdate_G,"Value Entry");
+                                   SetECDUnitAmount("Value Entry");
+
+                                   MODIFY(TRUE);
+
+                                   CLEAR(ECDMgt_G);
+                                   ECDMgt_G.SetECDValueDate(WORKDATE);
+                                   ECDMgt_G.InsertSalesECDLedgerEntry("Value Entry",FALSE,DiscountCode_G);
+                                   // --> 20160607-Wi00-ADV01.01.00-3058-CJY01
+                                   {BEFORE
+                                   ECDMgt_G.RefreshSalesECDLedgerEntry("Value Entry",'',FALSE,'');
+                                   AFTER}
+                                   // --> 20160608-Wi00-ADV01.01.00-3056-CJY02
+                                   {BEFORE
+                                   IF FctRFCExist("Value Entry",'') THEN
+                                     ECDMgt_G.RefreshSalesECDLedgerEntry("Value Entry",'',FALSE,'');
+                                   AFTER}
+                                   IF FctRFCExist("Value Entry",'') THEN BEGIN
+                                     ECDMgt_G.FctInitEcdOutstand(DiscountCode_G);
+                                     ECDMgt_G.RefreshSalesECDLedgerEntry("Value Entry",'',FALSE,'');
+                                   END;
+                                   // <-- 20160608-Wi00-ADV01.01.00-3056-CJY02
+
+                                   // <-- 20160607-Wi00-ADV01.01.00-3058-CJY01
+
+                                 END ELSE BEGIN
+                                   // --> 20160603-Wi00-ADV01.01.00-2780-CJY02
+                                   IF PrintToExcel_G THEN BEGIN
+                                     IF ValuationType_G = ValuationType_G::"Change ECD amount" THEN BEGIN
+                                       ECDLedgerEntryForExcel_L.RESET;
+                                       ECDLedgerEntryForExcel_L.SETRANGE("Value Entry No.","Entry No.");
+                                       ECDLedgerEntryForExcel_L.SETRANGE("Discount Code",DiscountCode_G);
+                                       IF ECDLedgerEntryForExcel_L.FINDFIRST THEN BEGIN
+                                         MakeExcelDataBodyModif(ECDLedgerEntryForExcel_L,0);
+                                       END;
+                                     END;
+                                   END;
+                                   // <-- 20160603-Wi00-ADV01.01.00-2780-CJY02
+
+                                   ValueEntryDiscForUpdate_G := ValueEntryDisc_G;
+                                   UpdateDiscount(ValueEntryDiscForUpdate_G,ValuationType_G,ModificationValue_G);
+                                   "Budgeted Unit Cost" := UpdateRemainingValueEntryDisc(ValueEntryDiscForUpdate_G,"Value Entry");
+                                   SetECDUnitAmount("Value Entry");
+
+                                   MODIFY(TRUE);
+
+                                   CLEAR(ECDMgt_G);
+                                   ECDMgt_G.SetECDValueDate(WORKDATE);
+                                   // --> 20160607-Wi00-ADV01.01.00-3058-CJY01
+                                   {BEFORE
+                                   ECDMgt_G.RefreshSalesECDLedgerEntry("Value Entry",'',FALSE,'');
+                                   AFTER}
+                                   // --> 20160608-Wi00-ADV01.01.00-3056-CJY02
+                                   {BEFORE
+                                   IF FctRFCExist("Value Entry",'') THEN
+                                   ECDMgt_G.RefreshSalesECDLedgerEntry("Value Entry",'',FALSE,'');
+                                   AFTER}
+                                   IF FctRFCExist("Value Entry",'') THEN BEGIN
+                                     ECDMgt_G.FctInitEcdOutstand(DiscountCode_G);
+                                     ECDMgt_G.RefreshSalesECDLedgerEntry("Value Entry",'',FALSE,'');
+                                   END;
+                                   // <-- 20160608-Wi00-ADV01.01.00-3056-CJY02
+
+                                   // <-- 20160607-Wi00-ADV01.01.00-3058-CJY01
+                                 END;
+                               END;
+                               UpdateType_G::"Cancel ECD" : BEGIN
+                                 IF ValueEntryDisc_G.GET("Entry No.",DiscountCode_G) THEN BEGIN
+                                   // --> 20160603-Wi00-ADV01.01.00-2780-CJY02
+                                     // --> 20161205-Wi00-ADV01.01.00-23310-CJY01
+                                     ECDLedgerEntry2_L.RESET;
+                                     ECDLedgerEntry2_L.SETRANGE("Value Entry No.","Entry No.");
+                                     ECDLedgerEntry2_L.SETRANGE("Discount Code",DiscountCode_G);
+                                     IF ECDLedgerEntry2_L.FINDFIRST THEN BEGIN
+                                       IF ECDLedgerEntry2_L."ECD Unit Price Outstanding" >= 0 THEN BEGIN
+                                     // <-- 20161205-Wi00-ADV01.01.00-23310-CJY01
+                                   IF PrintToExcel_G THEN BEGIN
+                                     ECDLedgerEntryForExcel_L.RESET;
+                                     ECDLedgerEntryForExcel_L.SETRANGE("Value Entry No.","Entry No.");
+                                     ECDLedgerEntryForExcel_L.SETRANGE("Discount Code",DiscountCode_G);
+                                     IF ECDLedgerEntryForExcel_L.FINDFIRST THEN BEGIN
+                                       MakeExcelDataBodySolde(ECDLedgerEntryForExcel_L);
+                                     END;
+                                   END;
+                                   // <-- 20160603-Wi00-ADV01.01.00-2780-CJY02
+                                   ValueEntryDiscForUpdate_G := ValueEntryDisc_G;
+                                   UpdateDiscount(ValueEntryDiscForUpdate_G,0,0);
+                                   "Budgeted Unit Cost" := UpdateRemainingValueEntryDisc(ValueEntryDiscForUpdate_G,"Value Entry");
+                                   SetECDUnitAmount("Value Entry");
+
+                                   MODIFY(TRUE);
+
+                                   CLEAR(ECDMgt_G);
+                                   ECDMgt_G.SetECDValueDate(WORKDATE);
+                                   // --> 20160211-APP33-ADV01.01.00-1792-CJY01
+                                   ECDMgt_G.SetNoControle(TRUE);
+                                   // <-- 20160211-APP33-ADV01.01.00-1792-CJY01
+                                   ECDMgt_G.RefreshSalesECDLedgerEntry("Value Entry",'',TRUE,DiscountCode_G);
+                                   // --> 20160211-APP33-ADV01.01.00-1792-CJY01
+                                   ECDLedgerEntry_L.RESET;
+                                   ECDLedgerEntry_L.SETCURRENTKEY("Value Entry No.","Discount Code");
+                                   ECDLedgerEntry_L.SETRANGE("Value Entry No.","Entry No.");
+                                   ECDLedgerEntry_L.SETRANGE("Discount Code",DiscountCode_G);
+                                   IF ECDLedgerEntry_L.FINDLAST THEN BEGIN
+                                     ECDLedgerEntry_L."ECD Unit Price Outstanding" := 0;
+                                     ECDLedgerEntry_L.MODIFY;
+                                   END;
+                                     // --> 20161205-Wi00-ADV01.01.00-23310-CJY01
+                                       END;
+                                     END;
+                                     // <-- 20161205-Wi00-ADV01.01.00-23310-CJY01
+                                   // <-- 20160211-APP33-ADV01.01.00-1792-CJY01
+
+                                 END ELSE
+                                   CurrReport.SKIP;
+                               END;
+                               UpdateType_G::"Apply Budgeted Unit Price" : BEGIN
+                                 ValueEntryDisc_G.RESET;
+                                 ValueEntryDisc_G.SETCURRENTKEY("Value Entry No.",Rank);
+                                 ValueEntryDisc_G.SETRANGE("Value Entry No.","Entry No.");
+                                 IF ValueEntryDisc_G.FINDLAST THEN BEGIN
+                                   IF ValueEntryDisc_G."Discount Code" = CMCSetup_G."Except. Sales ECD Disc. Code" THEN BEGIN
+                                     IF ValueEntryDisc_G."Base Value" >= ModificationValue_G THEN BEGIN
+                                       ValueEntryDisc_G."Final Price" := ModificationValue_G;
+                                       ValueEntryDisc_G."Discount Amount" := ValueEntryDisc_G."Base Value" - ValueEntryDisc_G."Final Price";
+                                       ValueEntryDisc_G.MODIFY(TRUE);
+                                     END ELSE
+                                       ERROR(Text004, ValueEntryDisc_G."Value Entry No.");
+
+                                     "Budgeted Unit Cost" := UpdateRemainingValueEntryDisc(ValueEntryDisc_G,"Value Entry");
+                                     "ECD Calculation Priority" := "ECD Calculation Priority"::"Budgeted Unit Cost";
+                                     SetECDUnitAmount("Value Entry");
+
+                                     MODIFY(TRUE);
+
+                                     CLEAR(ECDMgt_G);
+                                     ECDMgt_G.SetECDValueDate(WORKDATE);
+                                     ECDMgt_G.RefreshSalesECDLedgerEntry("Value Entry",'',FALSE,'');
+                                   END ELSE BEGIN
+                                     IF ValueEntryDisc_G."Final Price" > ModificationValue_G THEN BEGIN
+                                       DiscountCode_G := CMCSetup_G."Except. Sales ECD Disc. Code";
+                                       ValueEntryDiscForUpdate_G.INIT;
+                                       ValueEntryDiscForUpdate_G."Value Entry No." := "Entry No.";
+                                       ValueEntryDiscForUpdate_G."Discount Code" := DiscountCode_G;
+                                       SalesDiscount_G.GET(DiscountCode_G);
+                                       ValueEntryDiscForUpdate_G.Rank := SalesDiscount_G.Rank;
+                                       ValueEntryDiscForUpdate_G."Base Value" := ValueEntryDisc_G."Final Price";
+                                       ValueEntryDiscForUpdate_G."Final Price" := ModificationValue_G;
+                                       ValueEntryDiscForUpdate_G."Discount Amount" := ValueEntryDiscForUpdate_G."Base Value" -
+                                                                                                ValueEntryDiscForUpdate_G."Final Price";
+                                       ValueEntryDiscForUpdate_G.INSERT(TRUE);
+
+                                       IF PrintToExcel_G THEN
+                                         MakeExcelDataBody3;
+
+                                       "Budgeted Unit Cost" := UpdateRemainingValueEntryDisc(ValueEntryDiscForUpdate_G,"Value Entry");
+                                       "ECD Calculation Priority" := "ECD Calculation Priority"::"Budgeted Unit Cost";
+                                       SetECDUnitAmount("Value Entry");
+
+                                       MODIFY(TRUE);
+
+                                       CLEAR(ECDMgt_G);
+                                       ECDMgt_G.SetECDValueDate(WORKDATE);
+                                       ECDMgt_G.InsertSalesECDLedgerEntry("Value Entry",FALSE,DiscountCode_G);
+                                       ECDMgt_G.RefreshSalesECDLedgerEntry("Value Entry",'',FALSE,'');
+                                     END ELSE
+                                       IF ValueEntryDisc_G."Final Price" < ModificationValue_G THEN
+                                         ERROR(Text004, ValueEntryDisc_G."Value Entry No.");
+                                   END;
+                                 END ELSE BEGIN
+                                   "Budgeted Unit Cost" := ModificationValue_G;
+                                   "ECD Calculation Priority" := "ECD Calculation Priority"::"Budgeted Unit Cost";
+                                   SetECDUnitAmount("Value Entry");
+
+                                   MODIFY(TRUE);
+                                 END;
+                               END;
+                               UpdateType_G::"Unapply Budgeted Unit Price" : BEGIN
+                                 IF "ECD Calculation Priority" = "ECD Calculation Priority"::"Budgeted Unit Cost" THEN BEGIN
+                                   DiscountCode_G := CMCSetup_G."Except. Sales ECD Disc. Code";
+                                   IF ValueEntryDisc_G.GET("Entry No.",DiscountCode_G) THEN BEGIN
+                                     // --> 20160614-Wi00-ADV01.01.00-2780-CJY03
+                                     IF PrintToExcel_G THEN BEGIN
+                                       ECDLedgerEntryForExcel_L.RESET;
+                                       ECDLedgerEntryForExcel_L.SETRANGE("Value Entry No.","Entry No.");
+                                       ECDLedgerEntryForExcel_L.SETRANGE("Discount Code",DiscountCode_G);
+                                       IF ECDLedgerEntryForExcel_L.FINDFIRST THEN BEGIN
+                                         MakeExcelDataBodySolde(ECDLedgerEntryForExcel_L);
+                                       END;
+                                     END;
+                                     // <-- 20160614-Wi00-ADV01.01.00-2780-CJY03
+
+                                     UpdateDiscount(ValueEntryDisc_G,0,0);
+                                     "Budgeted Unit Cost" := UpdateRemainingValueEntryDisc(ValueEntryDisc_G,"Value Entry");
+                                     "ECD Calculation Priority" := "ECD Calculation Priority"::"ECD Value";
+                                     SetECDUnitAmount("Value Entry");
+
+                                     MODIFY(TRUE);
+
+                                     CLEAR(ECDMgt_G);
+                                     ECDMgt_G.SetECDValueDate(WORKDATE);
+                                     ECDMgt_G.RefreshSalesECDLedgerEntry("Value Entry",'',TRUE,DiscountCode_G);
+                                   END ELSE BEGIN
+                                     "ECD Calculation Priority" := "ECD Calculation Priority"::"ECD Value";
+                                     MODIFY(TRUE);
+                                   END;
+                                 END ELSE
+                                   CurrReport.SKIP;
+                               END;
+                             END;
+                           END ELSE BEGIN
+                             CASE UpdateType_G OF
+                               UpdateType_G::"ECD Update" : BEGIN
+                                 IF "ECD Calculation Priority" = "ECD Calculation Priority"::"ECD Value" THEN BEGIN
+                                   CASE ValuationType_G OF
+                                     ValuationType_G::"New ECD Amount" : BEGIN
+                                       "ECD Unit Amount" := ModificationValue_G;
+                                       SetBudgetedUnitCost("Value Entry");
+
+                                       MODIFY(TRUE);
+
+                                       ValueEntryDisc_L.INIT;
+                                       StoreBeforeECDLedgerEntry(SalesECDLedgEntryTmp_G,ValueEntryDisc_L,"Value Entry");
+
+                                       CLEAR(ECDMgt_G);
+                                       ECDMgt_G.SetECDValueDate(WORKDATE);
+                                       ECDMgt_G.RefreshSalesECDLedgerEntry("Value Entry",'',FALSE,'');
+                                     END;
+                                     ValuationType_G::"Change ECD amount" : BEGIN
+                                       "ECD Unit Amount" := "ECD Unit Amount" + ModificationValue_G;
+                                       SetBudgetedUnitCost("Value Entry");
+
+                                       MODIFY(TRUE);
+
+                                       ValueEntryDisc_L.INIT;
+                                       StoreBeforeECDLedgerEntry(SalesECDLedgEntryTmp_G,ValueEntryDisc_L,"Value Entry");
+
+                                       CLEAR(ECDMgt_G);
+                                       ECDMgt_G.SetECDValueDate(WORKDATE);
+                                       ECDMgt_G.RefreshSalesECDLedgerEntry("Value Entry",'',FALSE,'');
+                                     END;
+                                     ELSE
+                                       ERROR(Text8053020)
+                                   END;
+                                 END ELSE
+                                   CurrReport.SKIP;
+                               END;
+                               UpdateType_G::"Cancel ECD" : BEGIN
+                                 "ECD Unit Amount" := 0;
+                                 SetBudgetedUnitCost("Value Entry");
+
+                                 MODIFY(TRUE);
+
+                                 ValueEntryDisc_L.INIT;
+                                 StoreBeforeECDLedgerEntry(SalesECDLedgEntryTmp_G,ValueEntryDisc_L,"Value Entry");
+
+                                 CLEAR(ECDMgt_G);
+                                 ECDMgt_G.SetECDValueDate(WORKDATE);
+                                 ECDMgt_G.RefreshSalesECDLedgerEntry("Value Entry",'',TRUE,'');
+                               END;
+                               UpdateType_G::"Apply Budgeted Unit Price" : BEGIN
+                                 "ECD Calculation Priority" := "ECD Calculation Priority"::"Budgeted Unit Cost";
+                                 "Budgeted Unit Cost" := ModificationValue_G;
+                                 SetECDUnitAmount("Value Entry");
+
+                                 MODIFY(TRUE);
+
+                                 ValueEntryDisc_L.INIT;
+                                 StoreBeforeECDLedgerEntry(SalesECDLedgEntryTmp_G,ValueEntryDisc_L,"Value Entry");
+
+                                 CLEAR(ECDMgt_G);
+                                 ECDMgt_G.SetECDValueDate(WORKDATE);
+                                 ECDMgt_G.RefreshSalesECDLedgerEntry("Value Entry",'',FALSE,'');
+                               END;
+                               UpdateType_G::"Unapply Budgeted Unit Price" : BEGIN
+                                 IF "ECD Calculation Priority" = "ECD Calculation Priority"::"Budgeted Unit Cost" THEN BEGIN
+                                   "ECD Calculation Priority" := "ECD Calculation Priority"::"ECD Value";
+                                   MODIFY(TRUE);
+
+                                   ValueEntryDisc_L.INIT;
+                                   StoreBeforeECDLedgerEntry(SalesECDLedgEntryTmp_G,ValueEntryDisc_L,"Value Entry");
+
+                                   CLEAR(ECDMgt_G);
+                                   ECDMgt_G.SetECDValueDate(WORKDATE);
+                                   ECDMgt_G.RefreshSalesECDLedgerEntry("Value Entry",'',TRUE,'');
+                                 END ELSE
+                                   CurrReport.SKIP;
+                               END;
+                             END;
+                           END;
+                           UpdateDocumentLine("Value Entry");
+                           // <-- 20140912-APP33-TER01.01.00-FDA01
+                         END;
+
+        ReqFilterFields=Item No.,Activity Code,Family Code,Source No.,Buy-from Vendor No.,Entry No.,Item Ledger Entry Posting Date,Source Order Not In Offseason;
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=1;
+        DataItemTable=Table8053089;
+        DataItemTableView=SORTING(Value Entry No.);
+        OnPreDataItem=BEGIN
+                        // --> 20140912-APP33-TER01.01.00-FDA01
+                        {
+                        // --> 20131017-APP33-CMC02.02.00-0944-BSI01
+                        IF ModificationType_G = ModificationType_G::"Create discount" THEN
+                          CurrReport.BREAK;
+
+                        SETRANGE("Discount Code", DiscountCode_G);
+
+                        // <-- 20131017-APP33-CMC02.02.00-0944-BSI01
+                        }
+                        // <-- 20140912-APP33-TER01.01.00-FDA01
+                      END;
+
+        OnAfterGetRecord=VAR
+                           ECDManagement_L@8053000 : Codeunit 8053038;
+                         BEGIN
+                           // --> 20140912-APP33-TER01.01.00-FDA01
+                           //Before
+                           {
+                           // --> 20131017-APP33-CMC02.02.00-0944-BSI01
+                           ValueEntryDisc_G.GET("Value Entry No.", "Discount Code");
+
+                           IF NOT TempValueEntryDisc_G.GET(ValueEntryDisc_G."Value Entry No.", ValueEntryDisc_G."Discount Code") THEN BEGIN
+                             TempValueEntryDisc_G := ValueEntryDisc_G;
+                             TempValueEntryDisc_G.INSERT;
+
+                             CASE ModificationType_G OF
+                               ModificationType_G::"New amount":
+                                 BEGIN
+                                   ValueEntryDisc_G.VALIDATE("Discount Amount",ModificationValue_G);
+                                 END;
+
+                              ModificationType_G::"Modify amount":
+                                BEGIN
+                                   ValueEntryDisc_G.VALIDATE("Discount Amount",ValueEntryDisc_G."Discount Amount" + ModificationValue_G);
+                                END;
+
+                              ModificationType_G::"Modify percentage":
+                                BEGIN
+                                   ValueEntryDisc_G.VALIDATE("Discount Amount",
+                                                ROUND(ValueEntryDisc_G."Discount Amount" * (100 + ModificationValue_G) / 100, 0.01, '='));
+                                END;
+                              END;
+
+                             ValueEntryDisc_G.VALIDATE("Final Price",
+                                        ValueEntryDisc_G."Base Value" - ValueEntryDisc_G."Discount Amount");
+                             IF ValueEntryDisc_G."Final Price" < 0 THEN
+                               ERROR(Text004, ValueEntryDisc_G."Value Entry No.");
+                             ValueEntryDisc_G.MODIFY(TRUE);
+                           END;
+
+
+                           CASE "Value Entry"."Document Type" OF
+                             "Value Entry"."Document Type"::"Sales Shipment","Value Entry"."Document Type"::"Sales Return Receipt":
+                               BEGIN
+                                 VALIDATE("ECD Unit Amount (Shipment)",ValueEntryDisc_G."Discount Amount");
+                                 // --> 20131107-APP33-CMC02.02.00-1044-BSI01
+                                 //BEFORE
+                                 //VALIDATE("ECD Amount (Shipment)",
+                                 //  SalesLedgEntry_G."ECD Unit Amount (Shipment)" * "Value Entry"."Valued Quantity");
+                                 //AFTER
+                                 VALIDATE("ECD Amount (Shipment)",
+                                   SalesLedgEntry_G."ECD Unit Amount (Shipment)" * (-"Value Entry"."Valued Quantity"));
+                                 // <-- 20131107-APP33-CMC02.02.00-1044-BSI01
+                                 MODIFY(TRUE);
+                               END;
+                             "Value Entry"."Document Type"::"Sales Invoice","Value Entry"."Document Type"::"Sales Credit Memo":
+                               BEGIN
+                                 // --> 20140805-APP33-TER01.01.00-FDA01
+                                 //Before
+                                 //IF NOT cduItemJnlPostLine_G.isSalesECDCrMemo("Value Entry") THEN BEGIN
+                                 //After
+                                 IF NOT ECDManagement_L.isSalesECDCrMemo("Value Entry") THEN BEGIN
+                                 // <-- 20140805-APP33-TER01.01.00-FDA01
+                                   VALIDATE("ECD Unit Amount (Invoice)",ValueEntryDisc_G."Discount Amount");
+                                   VALIDATE("ECD Amount (Invoice)",
+                                     // --> 20131104-APP33-CMC02.02.00-1044-MMI01
+                                     //BEFORE
+                                     //"ECD Unit Amount (Shipment)" * "Value Entry"."Valued Quantity");
+                                     //AFTER
+                                     // --> 20131107-APP33-CMC02.02.00-1044-BSI01
+                                     //BEFORE
+                                     //"ECD Unit Amount (Invoice)" * "Value Entry"."Valued Quantity");
+                                     //AFTER
+                                     "ECD Unit Amount (Invoice)" * (-"Value Entry"."Valued Quantity"));
+                                     // <-- 20131107-APP33-CMC02.02.00-1044-BSI01
+                                     // <-- 20131104-APP33-CMC02.02.00-1044-MMI01
+                                   VALIDATE("ECD Unit Price Outstanding", "ECD Unit Amount (Invoice)");
+                                   // --> 20140805-APP33-TER01.01.00-FDA01
+                                   //Before
+                                   //cduItemJnlPostLine_G.CalcRevSalesECDExpAmtToBalance("CMC Sales ECD Ledger Entry", "Value Entry"."Invoiced Quantity");
+                                   //After
+                                   ECDManagement_L.CalcRevSalesECDExpAmtToBalance("CMC Sales ECD Ledger Entry", "Value Entry"."Invoiced Quantity");
+                                   // <-- 20140805-APP33-TER01.01.00-FDA01
+                                   MODIFY(TRUE);
+                                 END;
+                               END;
+                           END;
+
+                           // <-- 20131017-APP33-CMC02.02.00-0944-BSI01
+                           }
+                           //After - the next sequence must be adapted
+                           IF PrintToExcel_G THEN
+                             IF SalesECDLedgEntryTmp_G.GET("Entry No.") THEN BEGIN
+                               IF ("ECD Amount (Shipment)" <> SalesECDLedgEntryTmp_G."ECD Amount (Shipment)") OR
+                                  ("ECD Amount (Invoice)" <> SalesECDLedgEntryTmp_G."ECD Amount (Invoice)") THEN BEGIN
+                                 // --> 20160603-Wi00-ADV01.01.00-2780-CJY02
+                                 // --> 20160614-Wi00-ADV01.01.00-2780-CJY03
+                                 {BEFORE
+                                 IF UpdateType_G <> UpdateType_G::"Cancel ECD" THEN BEGIN
+                                 AFTER}
+                                 IF ((UpdateType_G <> UpdateType_G::"Cancel ECD") AND (UpdateType_G <> UpdateType_G::"Unapply Budgeted Unit Price")) THEN
+                           BEGIN
+                                 // <-- 20160614-Wi00-ADV01.01.00-2780-CJY03
+                                   IF ValuationType_G <> ValuationType_G::"Change ECD amount" THEN BEGIN
+                                 // <-- 20160603-Wi00-ADV01.01.00-2780-CJY02
+                                 MakeExcelDataBody(SalesECDLedgEntryTmp_G);
+                                 MakeExcelDataBody2("CMC Sales ECD Ledger Entry");
+                                 // --> 20160603-Wi00-ADV01.01.00-2780-CJY02
+                                   END ELSE BEGIN
+                                     MakeExcelDataBodyModif("CMC Sales ECD Ledger Entry",1);
+                                   END;
+
+                                 END ELSE BEGIN
+                                   //MakeExcelDataBodySolde("CMC Sales ECD Ledger Entry");
+                                 END;
+                                 // --> 20160603-Wi00-ADV01.01.00-2780-CJY02
+                               END;
+                             END;
+                           // <-- 20140912-APP33-TER01.01.00-FDA01
+                         END;
+
+        DataItemLink=Value Entry No.=FIELD(Entry No.);
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=8250;
+      Height=4730;
+      SaveValues=Oui;
+    }
+    CONTROLS
+    {
+      { 8053000;TextBox   ;3520 ;110  ;2530 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Customer No.;
+                                                              FRA=N› du client];
+                                                   SourceExpr=CustomerNo_G;
+                                                   TableRelation=Customer }
+      { 8053001;Label     ;110  ;110  ;3300 ;440  ;ParentControl=8053000 }
+      { 8053002;TextBox   ;3520 ;770  ;4620 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Discount Code;
+                                                              FRA=Code remise];
+                                                   SourceExpr=DiscountCode_G;
+                                                   TableRelation="CMC Sales Discount" WHERE (Type=CONST(ECD)) }
+      { 8053003;Label     ;110  ;770  ;3300 ;440  ;ParentControl=8053002 }
+      { 8053004;TextBox   ;3520 ;1320 ;4620 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Modification Type;
+                                                              FRA=Type de modification];
+                                                   OptionCaptionML=[ENU=ECD Update,Cancel ECD,Apply Budgeted Unit Price,Unapply Budgeted Unit Price;
+                                                                    FRA=MAJ RFC,Solde RFC,Appliquer prix unitaire pr'visionnel,Enlever prix unitaire pr'visionnel];
+                                                   SourceExpr=UpdateType_G }
+      { 8053005;Label     ;110  ;1320 ;3300 ;440  ;ParentControl=8053004 }
+      { 8053007;TextBox   ;3520 ;2420 ;4620 ;440  ;CaptionML=[ENU=Value;
+                                                              FRA=Valeur];
+                                                   DecimalPlaces=3:3;
+                                                   SourceExpr=ModificationValue_G }
+      { 8053008;Label     ;110  ;2420 ;3300 ;440  ;ParentControl=8053007;
+                                                   InPage=-1 }
+      { 8053009;TextBox   ;3520 ;3080 ;4620 ;440  ;CaptionML=[ENU=Not Considered ECD Code;
+                                                              FRA=Code RFC documents . ne pas prendre en compte];
+                                                   SourceExpr=NotConsideredECDCode_G;
+                                                   TableRelation="CMC Sales Discount" WHERE (Type=CONST(ECD)) }
+      { 8053010;Label     ;110  ;3080 ;3300 ;440  ;ParentControl=8053009;
+                                                   InPage=-1 }
+      { 1000000002;CheckBox;3520;4180 ;440  ;440  ;ShowCaption=Non;
+                                                   CaptionML=[ENU=Send to Excel;
+                                                              FRA=Envoyer vers Excel];
+                                                   SourceExpr=PrintToExcel_G }
+      { 1000000003;Label  ;110  ;4180 ;3300 ;440  ;ParentControl=1000000002 }
+      { 1000000004;CheckBox;3520;3630 ;440  ;440  ;ShowCaption=Non;
+                                                   CaptionML=[ENU=Test;
+                                                              FRA=Test];
+                                                   SourceExpr=Test_G }
+      { 1000000005;Label  ;110  ;3630 ;3300 ;440  ;ParentControl=1000000004 }
+      { 1000000000;TextBox;3520 ;1870 ;4620 ;440  ;CaptionML=[ENU=Valuation Type;
+                                                              FRA=Type valorisation];
+                                                   OptionCaptionML=[ENU=New ECD Amount,New ECD Percentage,Change ECD amount;
+                                                                    FRA=Nouveau montant RFC,Nouveau pourcentage RFC,Modifier montant RFC];
+                                                   SourceExpr=ValuationType_G }
+      { 1000000001;Label  ;110  ;1870 ;3300 ;440  ;ParentControl=1000000000 }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      OnOpenPage=BEGIN
+                   // --> 20140910-APP33-CMC02.02.00-FDA01
+                   SetEnable;
+                   // <-- 20140910-APP33-CMC02.02.00-FDA01
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 8053001; ;Container ;
+                  ContainerType=ContentArea }
+
+      { 8053005;1;Group     ;
+                  CaptionML=ENU=Options;
+                  GroupType=Group }
+
+      { 8053000;2;Field     ;
+                  CaptionML=[ENU=Customer No.;
+                             FRA=N› du client];
+                  SourceExpr=CustomerNo_G;
+                  TableRelation=Customer }
+
+      { 8053002;2;Field     ;
+                  CaptionML=[ENU=Discount Code;
+                             FRA=Code remise];
+                  SourceExpr=DiscountCode_G;
+                  TableRelation="CMC Sales Discount" WHERE (Type=CONST(ECD)) }
+
+      { 8053003;2;Field     ;
+                  CaptionML=[ENU=Modification Type;
+                             FRA=Type de modification];
+                  OptionCaptionML=[ENU=ECD Update,Cancel ECD,Apply Budgeted Unit Price,Unapply Budgeted Unit Price;
+                                   FRA=MAJ RFC,Solde RFC,Appliquer prix unitaire pr'visionnel,Enlever prix unitaire pr'visionnel];
+                  SourceExpr=UpdateType_G;
+                  OnValidate=BEGIN
+                               // --> 20140910-APP33-CMC02.02.00-FDA01
+                               SetEnable;
+                               // <-- 20140910-APP33-CMC02.02.00-FDA01
+                             END;
+                              }
+
+      { 8053006;2;Field     ;
+                  CaptionML=[ENU=Valuation Type;
+                             FRA=Type valorisation];
+                  OptionCaptionML=[ENU=New ECD Amount,New ECD Percentage,Change ECD amount;
+                                   FRA=Nouveau montant RFC,Nouveau pourcentage RFC,Modifier montant RFC];
+                  SourceExpr=ValuationType_G;
+                  Enabled=EnableValuationType_G }
+
+      { 8053004;2;Field     ;
+                  CaptionML=[ENU=Value;
+                             FRA=Valeur];
+                  DecimalPlaces=3:3;
+                  SourceExpr=ModificationValue_G;
+                  Enabled=EnableValue_G }
+
+      { 8053009;2;Field     ;
+                  CaptionML=[ENU=Not Considered ECD Code;
+                             FRA=Code RFC documents . ne pas prendre en compte];
+                  SourceExpr=NotConsideredECDCode_G;
+                  TableRelation="CMC Sales Discount" WHERE (Type=CONST(ECD)) }
+
+      { 8053007;2;Field     ;
+                  CaptionML=[ENU=Send to Excel;
+                             FRA=Envoyer vers Excel];
+                  SourceExpr=PrintToExcel_G;
+                  OnValidate=BEGIN
+                               // --> 20140913-APP33-CMC02.02.00-FDA01
+                               IF (PrintToExcel_G = FALSE) AND (Test_G = TRUE) THEN
+                                 ERROR(Text006);
+                               // <-- 20140913-APP33-CMC02.02.00-FDA01
+                             END;
+                              }
+
+      { 8053008;2;Field     ;
+                  CaptionML=[ENU=Test;
+                             FRA=Test];
+                  SourceExpr=Test_G;
+                  OnValidate=BEGIN
+                               // --> 20140913-APP33-CMC02.02.00-FDA01
+                               IF (PrintToExcel_G = FALSE) AND (Test_G = TRUE) THEN
+                                 ERROR(Text006);
+                               // <-- 20140913-APP33-CMC02.02.00-FDA01
+                             END;
+                              }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      CustomerNo_G@8053000 : Code[20];
+      DiscountCode_G@8053001 : Code[20];
+      UpdateType_G@8053002 : 'ECD Update,Cancel ECD,Apply Budgeted Unit Price,Unapply Budgeted Unit Price';
+      ModificationValue_G@8053003 : Decimal;
+      ValueEntryDisc_G@8053004 : Record 8053252;
+      Text001@8053005 : TextConst 'ENU="Discount already exists for Discount Code=%1, Value Entry No. =%2 !";FRA="Remise existe d'j. pour le code de remise =%1, 'criture valeur =%2!"';
+      ValueEntryDiscForUpdate_G@8053007 : Record 8053252;
+      SalesDiscount_G@8053008 : Record 8053174;
+      SalesLedgEntry_G@8053009 : Record 8053089;
+      Text002@8053011 : TextConst 'ENU=Field "Value" must be filled!;FRA=Champ "Valeur" doit ^tre rempli!';
+      Text003@8053012 : TextConst 'ENU=Field "Discount Code" must be filled!;FRA=Champ "Code remise" doit ^tre rempli!';
+      Text004@8053014 : TextConst 'ENU=Discount is greater than Base Value for Value Entry No. %1!;FRA=La remise est sup'rieure . la valeur de base pour l''ecriture valeur n› %1!';
+      Text005@8053006 : TextConst 'ENU=Report successfully run!;FRA=Traitement termin' avec succSs !';
+      TempValueEntryDisc_G@8053013 : TEMPORARY Record 8053252;
+      CMCSetup_G@8053010 : Record 8052982;
+      ValuationType_G@8053015 : 'New ECD Amount,New ECD Percentage,Change ECD amount';
+      Text006@8053054 : TextConst 'ENU="In order to test you need Send To Excel = Yes";FRA="Pour tester vous devez mettre Envoyer . Excel = Oui"';
+      Text007@8053053 : TextConst 'ENU=Period: %1;FRA=P'riode : %1';
+      Text008@8053052 : TextConst 'ENU=Company Name;FRA=Nom de la soci't'';
+      Text009@8053051 : TextConst 'ENU=Report No.;FRA=N› 'tat';
+      Text010@8053050 : TextConst 'ENU=Report Name;FRA=Nom 'tat';
+      Text011@8053049 : TextConst 'ENU=User ID;FRA=Code utilisateur';
+      Text012@8053048 : TextConst 'ENU=Date;FRA=Date';
+      Text013@8053047 : TextConst 'ENU=Item No. Filter;FRA=Filtre article';
+      Text014@8053046 : TextConst 'ENU=Period Filter;FRA=Filtre p'riode';
+      Text015@8053045 : TextConst 'ENU=Quantity;FRA=Quantit'';
+      Text016@8053044 : TextConst 'ENU=ECD Unit Amount (before);FRA=Montant unitaire RFC (avant)';
+      Text017@8053043 : TextConst 'ENU=ECD Amount (before);FRA=Montant RFC (avant)';
+      Text018@8053042 : TextConst 'ENU=ECD Unit Amount (after);FRA=Montant unitaire RFC (aprSs)';
+      Text019@8053041 : TextConst 'ENU=ECD Amount (after);FRA=Montant RFC (aprSs)';
+      Text020@8053040 : TextConst 'ENU=Data;FRA=Donn'es';
+      Text021@8053039 : TextConst 'ENU=Update Sales ECD;FRA=Mise . jour vente RFC';
+      Text022@8053055 : TextConst 'ENU=Customer No.;FRA=N› du client';
+      Text023@8053038 : TextConst 'ENU=Discount Code;FRA=Code remise';
+      Text024@8053037 : TextConst 'ENU=Modification Type;FRA=Type de modification';
+      Text025@8053036 : TextConst 'ENU=Value;FRA=Valeur';
+      Text026@8053035 : TextConst 'ENU=Send to Excel;FRA=Envoyer . Excel';
+      Text027@8053034 : TextConst 'ENU=Test;FRA=Test';
+      Text028@8053033 : TextConst 'ENU='';FRA=''';
+      Text029@8053032 : TextConst 'ENU=Sales ECD Ledger Entry Filter;FRA=Filtre Ecritures RFC vente';
+      Text030@8053020 : TextConst 'ENU=It is not possible to add an ECD amount when the ECD is created for the first time.;FRA=Il n''est pas possible d''ajouter un montant de RFC quand la RFC est cr'e pour la premiSre fois.';
+      Text8053017@8053016 : TextConst 'ENU=The changes will be posted on %1. Do you want to continue?;FRA=Les modifications vont ^tre comptabilis'es en date du %1. Voulez-vous continuer ?';
+      DetailedECDExist_G@8053017 : Boolean;
+      GLSetup_G@8053018 : Record 98;
+      ECDMgt_G@8053019 : Codeunit 8053038;
+      SalesECDLedgEntryTmp_G@8053021 : TEMPORARY Record 8053089;
+      Text8053018@8053025 : TextConst 'ENU=Final Price is greater than Base Value for Value Entry No. %1!;FRA=Le prix final est sup'rieure . la valeur de base pour l''ecriture valeur n› %1!';
+      Text8053019@8053024 : TextConst 'ENU="%1 not found for %2 = %3 ";FRA="%1 pas trouv' de %2 = %3"';
+      Text8053020@8053023 : TextConst 'ENU=Incorrect Valuation Type;FRA=Type valorisation incorrect';
+      Text8053021@8053022 : TextConst 'ENU="%1 < 0 for %2, %3 = %4.";FRA="%1 < 0 pour %2, %3 = %4."';
+      EnableValuationType_G@8053027 : Boolean INDATASET;
+      EnableValue_G@8053026 : Boolean INDATASET;
+      PrintToExcel_G@8053031 : Boolean;
+      Test_G@8053030 : Boolean;
+      ExcelBuf_G@8053029 : TEMPORARY Record 370;
+      VarInteger_G@8053028 : Integer;
+      NotConsideredECDCode_G@8053056 : Code[20];
+      Text60000@1000000000 : TextConst 'FRA=Montant unitaire RFC d'j. factur'';
+      Text60001@1000000001 : TextConst 'FRA=Montant RFC d'j. factur'';
+      Text60002@1000000002 : TextConst 'FRA=Montant unitaire RFC restant';
+      Text60003@1000000003 : TextConst 'FRA=Montant RFC restant';
+
+    PROCEDURE InsertNewDiscount@8053009();
+    BEGIN
+      // --> 20140912-APP33-TER01.01.00-FDA01
+      //Before
+      {
+      CASE SalesDiscount_G."Valuation Type" OF
+       SalesDiscount_G."Valuation Type"::Percentage:
+         BEGIN
+           ValueEntryDiscForUpdate_G.VALIDATE("Discount %",ModificationValue_G);
+           ValueEntryDiscForUpdate_G.VALIDATE("Discount Amount",
+                        ROUND(ValueEntryDiscForUpdate_G."Base Value" * ModificationValue_G/100, 0.01, '='));
+         END;
+       SalesDiscount_G."Valuation Type"::"Unit Amount":
+         BEGIN
+           ValueEntryDiscForUpdate_G.VALIDATE("Discount Amount",ModificationValue_G);
+         END;
+      END;
+
+      ValueEntryDiscForUpdate_G.VALIDATE("Final Price",
+                  ValueEntryDiscForUpdate_G."Base Value" - ValueEntryDiscForUpdate_G."Discount Amount");
+
+      IF ValueEntryDiscForUpdate_G."Final Price" < 0 THEN
+        ERROR(Text004,ValueEntryDiscForUpdate_G."Value Entry No.");
+      ValueEntryDiscForUpdate_G.INSERT(TRUE);
+      }
+      //After
+      CASE ValuationType_G OF
+        ValuationType_G::"New ECD Amount": BEGIN
+          ValueEntryDiscForUpdate_G.VALIDATE("Discount Amount",ModificationValue_G);
+        END;
+        ValuationType_G::"New ECD Percentage": BEGIN
+          ValueEntryDiscForUpdate_G.VALIDATE("Discount %",ModificationValue_G);
+          ValueEntryDiscForUpdate_G.VALIDATE("Discount Amount",
+                        // --> 20141014-APP33-TER01.01.00-FDA01
+                        //Before
+                        //ROUND(ValueEntryDiscForUpdate_G."Base Value" * ModificationValue_G/100, 0.01, '='));
+                        //After
+                        ROUND(ValueEntryDiscForUpdate_G."Base Value %" * ModificationValue_G/100, 0.01, '='));
+                        // <-- 20141014-APP33-TER01.01.00-FDA01
+        END;
+        ValuationType_G::"Change ECD amount": BEGIN
+          ERROR(Text030);
+        END;
+      END;
+
+      ValueEntryDiscForUpdate_G.VALIDATE("Final Price",
+                  ValueEntryDiscForUpdate_G."Base Value" - ValueEntryDiscForUpdate_G."Discount Amount");
+
+      IF ValueEntryDiscForUpdate_G."Final Price" < 0 THEN
+        ERROR(Text004,ValueEntryDiscForUpdate_G."Value Entry No.");
+
+      // --> 20160809-Wi00-ADV01.01.00-3106-CJY01
+      IF ValueEntryDiscForUpdate_G."Discount Amount" > 0 THEN BEGIN
+      // <-- 20160809-Wi00-ADV01.01.00-3106-CJY01
+        ValueEntryDiscForUpdate_G.INSERT(TRUE);
+
+        IF PrintToExcel_G THEN
+          MakeExcelDataBody3;
+
+      // --> 20160809-Wi00-ADV01.01.00-3106-CJY01
+      END;
+      // <-- 20160809-Wi00-ADV01.01.00-3106-CJY01
+      // <-- 20140912-APP33-TER01.01.00-FDA01
+    END;
+
+    PROCEDURE ModifyDiscount@8053027();
+    BEGIN
+      // --> 20131017-APP33-CMC02.02.00-0944-BSI01
+      {BEFORE
+      "CMC Value Entry Discount".VALIDATE("Final Price",
+                 "CMC Value Entry Discount"."Base Value" - "CMC Value Entry Discount"."Discount Amount");
+      IF "CMC Value Entry Discount"."Final Price" < 0 THEN
+        ERROR(Text004,"CMC Value Entry Discount"."Value Entry No.");
+      "CMC Value Entry Discount".MODIFY(TRUE);
+      AFTER}
+      // <-- 20131017-APP33-CMC02.02.00-0944-BSI01
+    END;
+
+    PROCEDURE UpdateRemainingValueEntryDisc@8053007(ValueEntryDisc_P@8053001 : Record 8053252;ValueEntry_P@8053004 : Record 5802) : Decimal;
+    VAR
+      ValueEntryDisc_L@8053000 : Record 8053252;
+      Found_L@8053002 : Boolean;
+      PreviousFinalPrice_L@8053003 : Decimal;
+    BEGIN
+      // --> 20140912-APP33-TER01.01.00-FDA01
+      SalesECDLedgEntryTmp_G.RESET;
+      SalesECDLedgEntryTmp_G.DELETEALL;
+
+      Found_L := FALSE;
+      PreviousFinalPrice_L := 0;
+
+      ValueEntryDisc_L.RESET;
+      ValueEntryDisc_L.SETCURRENTKEY("Value Entry No.",Rank);
+      ValueEntryDisc_L.SETRANGE("Value Entry No.","Value Entry"."Entry No.");
+
+      IF ValueEntryDisc_L.FINDSET THEN
+        REPEAT
+          IF ValueEntryDisc_L."Discount Code" = ValueEntryDisc_P."Discount Code" THEN BEGIN
+            Found_L := TRUE;
+            PreviousFinalPrice_L := ValueEntryDisc_L."Final Price";
+            StoreBeforeECDLedgerEntry(SalesECDLedgEntryTmp_G,ValueEntryDisc_L,ValueEntry_P);
+            UpdateSalesDocDiscount(ValueEntryDisc_L);
+          END ELSE BEGIN
+            IF Found_L THEN BEGIN
+              ValueEntryDisc_L."Base Value" := PreviousFinalPrice_L;
+              IF ValueEntryDisc_L."Discount %" <> 0 THEN
+                UpdateDiscount(ValueEntryDisc_L,1,ValueEntryDisc_L."Discount %")
+              ELSE
+                UpdateDiscount(ValueEntryDisc_L,0,ValueEntryDisc_L."Discount Amount");
+              PreviousFinalPrice_L := ValueEntryDisc_L."Final Price";
+              StoreBeforeECDLedgerEntry(SalesECDLedgEntryTmp_G,ValueEntryDisc_L,ValueEntry_P);
+              UpdateSalesDocDiscount(ValueEntryDisc_L);
+            END;
+          END;
+        UNTIL ValueEntryDisc_L.NEXT = 0
+      ELSE
+        // --> 20160809-Wi00-ADV01.01.00-3106-CJY01
+        BEGIN
+        {BEFORE
+        ERROR(Text8053019,ValueEntryDisc_L.TABLECAPTION,
+                          ValueEntryDisc_L.FIELDCAPTION("Value Entry No."),
+                          FORMAT("Value Entry"."Entry No."));
+        AFTER}
+        // --> 20180426-Wi00-ADV01.01.00-34402-CJY01
+        {BEFORE
+        IF ValueEntry_P."Sales Amount (Actual)" <> 0 THEN
+          PreviousFinalPrice_L := ROUND(ValueEntry_P."Sales Amount (Actual)" /
+              -ValueEntry_P."Valued Quantity",GLSetup_G."Unit-Amount Rounding Precision")
+
+        ELSE
+          PreviousFinalPrice_L := ROUND(ValueEntry_P."Sales Amount (Expected)" /
+              -ValueEntry_P."Valued Quantity",GLSetup_G."Unit-Amount Rounding Precision");
+        AFTER}
+        IF ValueEntry_P."Sales Amount (Actual)" <> 0 THEN
+          PreviousFinalPrice_L := ROUND(RetrouvePUN(ValueEntry_P),GLSetup_G."Unit-Amount Rounding Precision")
+
+        ELSE
+          PreviousFinalPrice_L := ROUND(ValueEntry_P."Sales Amount (Expected)" /
+              -ValueEntry_P."Valued Quantity",GLSetup_G."Unit-Amount Rounding Precision");
+
+        // <-- 20180426-Wi00-ADV01.01.00-34402-CJY01
+
+
+        // <-- 20160809-Wi00-ADV01.01.00-3106-CJY01
+        END;
+      EXIT(PreviousFinalPrice_L);
+      // <-- 20140912-APP33-TER01.01.00-FDA01
+    END;
+
+    PROCEDURE StoreBeforeECDLedgerEntry@8053011(VAR SalesECDLedgerEntry_P@8053000 : Record 8053089;ValueEntryDisc_P@8053001 : Record 8053252;ValueEntry_P@8053003 : Record 5802);
+    VAR
+      SalesECDLedgerEntry_L@8053002 : Record 8053089;
+    BEGIN
+      // --> 20140912-APP33-TER01.01.00-FDA01
+      IF DetailedECDExist_G THEN BEGIN
+        SalesECDLedgerEntry_L.RESET;
+        SalesECDLedgerEntry_L.SETCURRENTKEY("Value Entry No.","Discount Code");
+        SalesECDLedgerEntry_L.SETRANGE("Value Entry No.",ValueEntryDisc_P."Value Entry No.");
+        SalesECDLedgerEntry_L.SETRANGE("Discount Code",ValueEntryDisc_P."Discount Code");
+
+        IF SalesECDLedgerEntry_L.FINDLAST THEN BEGIN
+          SalesECDLedgerEntry_P := SalesECDLedgerEntry_L;
+          SalesECDLedgerEntry_P.INSERT;
+        END;
+      END ELSE BEGIN
+        SalesECDLedgerEntry_L.RESET;
+        SalesECDLedgerEntry_L.SETCURRENTKEY("Value Entry No.","Discount Code");
+        SalesECDLedgerEntry_L.SETRANGE("Value Entry No.",ValueEntry_P."Entry No.");
+        SalesECDLedgerEntry_L.SETRANGE("Discount Code",'');
+
+        IF SalesECDLedgerEntry_L.FINDLAST THEN BEGIN
+          SalesECDLedgerEntry_P := SalesECDLedgerEntry_L;
+          SalesECDLedgerEntry_P.INSERT;
+        END;
+      END;
+      // <-- 20140912-APP33-TER01.01.00-FDA01
+    END;
+
+    PROCEDURE UpdateSalesDocDiscount@8053010(ValueEntryDisc_P@8053001 : Record 8053252);
+    VAR
+      SalesShptLine_L@8053000 : Record 111;
+      SalesDocDiscount_L@8053002 : Record 8053177;
+      PostedSalesDocDiscount_L@8053003 : Record 8053178;
+      SalesInvLine_L@8053004 : Record 113;
+      SalesLine_L@8053005 : Record 37;
+      ReturnShptLine_L@8053007 : Record 6661;
+      SalesCrMemoLine_L@8053006 : Record 115;
+      ValueEntry_L@8053008 : Record 5802;
+      DiscountUnitAmount_L@8053009 : Decimal;
+    BEGIN
+      // --> 20140912-APP33-TER01.01.00-FDA01
+      ValueEntry_L.GET(ValueEntryDisc_P."Value Entry No.");
+      CASE ValueEntry_L."Document Type" OF
+        ValueEntry_L."Document Type"::"Sales Shipment" : BEGIN
+          IF SalesShptLine_L.GET(ValueEntry_L."Document No.",ValueEntry_L."Document Line No.") THEN BEGIN
+            IF SalesLine_L.GET(SalesLine_L."Document Type"::Order,SalesShptLine_L."Order No.",
+                                                                SalesShptLine_L."Order Line No.") THEN BEGIN
+              IF SalesDocDiscount_L.GET(SalesDocDiscount_L."Document Type"::Order,SalesShptLine_L."Order No.",
+                                        SalesShptLine_L."Order Line No.",
+                                        ValueEntryDisc_P."Discount Code") THEN BEGIN
+                SalesDocDiscount_L.Rank := ValueEntryDisc_P.Rank;
+                SalesDocDiscount_L."Base Value" := ValueEntryDisc_P."Base Value";
+                // --> 20141014-APP33-TER01.01.00-FDA01
+                SalesDocDiscount_L."Base Value %" := ValueEntryDisc_P."Base Value %";
+                // <-- 20141014-APP33-TER01.01.00-FDA01
+                SalesDocDiscount_L."Discount %" := ValueEntryDisc_P."Discount %";
+                SalesDocDiscount_L."Discount Amount" := ValueEntryDisc_P."Discount Amount";
+                SalesDocDiscount_L."Final Price" := ValueEntryDisc_P."Final Price";
+
+                SalesDocDiscount_L.MODIFY;
+              END ELSE BEGIN
+                SalesDocDiscount_L.INIT;
+                SalesDocDiscount_L."Document Type" := SalesDocDiscount_L."Document Type"::Order;
+                SalesDocDiscount_L."Document No." := SalesShptLine_L."Order No.";
+                SalesDocDiscount_L."Document Line No." := SalesShptLine_L."Order Line No.";
+                SalesDocDiscount_L."Discount Code" := ValueEntryDisc_P."Discount Code";
+                SalesDocDiscount_L.Rank := ValueEntryDisc_P.Rank;
+                SalesDocDiscount_L."Base Value" := ValueEntryDisc_P."Base Value";
+                // --> 20141014-APP33-TER01.01.00-FDA01
+                SalesDocDiscount_L."Base Value %" := ValueEntryDisc_P."Base Value %";
+                // <-- 20141014-APP33-TER01.01.00-FDA01
+                SalesDocDiscount_L."Discount %" := ValueEntryDisc_P."Discount %";
+                SalesDocDiscount_L."Discount Amount" := ValueEntryDisc_P."Discount Amount";
+                SalesDocDiscount_L."Final Price" := ValueEntryDisc_P."Final Price";
+
+                SalesDocDiscount_L.INSERT;
+              END;
+            END;
+          END ELSE
+            ERROR(Text8053019,SalesShptLine_L.TABLECAPTION,ValueEntry_L.FIELDCAPTION("Document No."),
+                                                           FORMAT(ValueEntry_L."Document No."));
+        END;
+        ValueEntry_L."Document Type"::"Sales Invoice" : BEGIN
+          IF SalesInvLine_L.GET(ValueEntry_L."Document No.",ValueEntry_L."Document Line No.") THEN BEGIN
+            IF PostedSalesDocDiscount_L.GET(PostedSalesDocDiscount_L."Document Type"::Invoice,SalesInvLine_L."Document No.",
+                                      SalesInvLine_L."Line No.",
+                                      ValueEntryDisc_P."Discount Code") THEN BEGIN
+              PostedSalesDocDiscount_L.Rank := ValueEntryDisc_P.Rank;
+              PostedSalesDocDiscount_L."Base Value" := ValueEntryDisc_P."Base Value";
+              // --> 20141014-APP33-TER01.01.00-FDA01
+              PostedSalesDocDiscount_L."Base Value %" := ValueEntryDisc_P."Base Value %";
+              // <-- 20141014-APP33-TER01.01.00-FDA01
+              PostedSalesDocDiscount_L."Discount %" := ValueEntryDisc_P."Discount %";
+              PostedSalesDocDiscount_L."Discount Amount" := ValueEntryDisc_P."Discount Amount";
+              PostedSalesDocDiscount_L."Final Price" := ValueEntryDisc_P."Final Price";
+
+              PostedSalesDocDiscount_L.MODIFY;
+            END ELSE BEGIN
+              PostedSalesDocDiscount_L.INIT;
+              PostedSalesDocDiscount_L."Document Type" := PostedSalesDocDiscount_L."Document Type"::Invoice;
+              PostedSalesDocDiscount_L."Document No." := SalesInvLine_L."Document No.";
+              PostedSalesDocDiscount_L."Document Line No." := SalesInvLine_L."Line No.";
+              PostedSalesDocDiscount_L."Discount Code" := ValueEntryDisc_P."Discount Code";
+              PostedSalesDocDiscount_L.Rank := ValueEntryDisc_P.Rank;
+              PostedSalesDocDiscount_L."Base Value" := ValueEntryDisc_P."Base Value";
+              // --> 20141014-APP33-TER01.01.00-FDA01
+              PostedSalesDocDiscount_L."Base Value %" := ValueEntryDisc_P."Base Value %";
+              // <-- 20141014-APP33-TER01.01.00-FDA01
+              PostedSalesDocDiscount_L."Discount %" := ValueEntryDisc_P."Discount %";
+              PostedSalesDocDiscount_L."Discount Amount" := ValueEntryDisc_P."Discount Amount";
+              PostedSalesDocDiscount_L."Final Price" := ValueEntryDisc_P."Final Price";
+
+              PostedSalesDocDiscount_L.INSERT;
+            END;
+          END ELSE
+            ERROR(Text8053019,SalesInvLine_L.TABLECAPTION,ValueEntry_L.FIELDCAPTION("Document No."),
+                                                           FORMAT(ValueEntry_L."Document No."));
+        END;
+        ValueEntry_L."Document Type"::"Sales Return Receipt" : BEGIN
+          IF ReturnShptLine_L.GET(ValueEntry_L."Document No.",ValueEntry_L."Document Line No.") THEN BEGIN
+            IF SalesLine_L.GET(SalesLine_L."Document Type"::"Return Order",ReturnShptLine_L."Return Order No.",
+                                                                      ReturnShptLine_L."Return Order Line No.") THEN BEGIN
+              IF SalesDocDiscount_L.GET(SalesDocDiscount_L."Document Type"::"Return Order",
+                                        ReturnShptLine_L."Return Order No.",
+                                        ReturnShptLine_L."Return Order Line No.",
+                                        ValueEntryDisc_P."Discount Code") THEN BEGIN
+                SalesDocDiscount_L.Rank := ValueEntryDisc_P.Rank;
+                SalesDocDiscount_L."Base Value" := ValueEntryDisc_P."Base Value";
+                // --> 20141014-APP33-TER01.01.00-FDA01
+                SalesDocDiscount_L."Base Value %" := ValueEntryDisc_P."Base Value %";
+                // <-- 20141014-APP33-TER01.01.00-FDA01
+                SalesDocDiscount_L."Discount %" := ValueEntryDisc_P."Discount %";
+                SalesDocDiscount_L."Discount Amount" := ValueEntryDisc_P."Discount Amount";
+                SalesDocDiscount_L."Final Price" := ValueEntryDisc_P."Final Price";
+
+                SalesDocDiscount_L.MODIFY;
+              END ELSE BEGIN
+                SalesDocDiscount_L.INIT;
+                SalesDocDiscount_L."Document Type" := SalesDocDiscount_L."Document Type"::"Return Order";
+                SalesDocDiscount_L."Document No." := ReturnShptLine_L."Return Order No.";
+                SalesDocDiscount_L."Document Line No." := ReturnShptLine_L."Return Order Line No.";
+                SalesDocDiscount_L."Discount Code" := ValueEntryDisc_P."Discount Code";
+                SalesDocDiscount_L.Rank := ValueEntryDisc_P.Rank;
+                SalesDocDiscount_L."Base Value" := ValueEntryDisc_P."Base Value";
+                // --> 20141014-APP33-TER01.01.00-FDA01
+                SalesDocDiscount_L."Base Value %" := ValueEntryDisc_P."Base Value %";
+                // <-- 20141014-APP33-TER01.01.00-FDA01
+                SalesDocDiscount_L."Discount %" := ValueEntryDisc_P."Discount %";
+                SalesDocDiscount_L."Discount Amount" := ValueEntryDisc_P."Discount Amount";
+                SalesDocDiscount_L."Final Price" := ValueEntryDisc_P."Final Price";
+
+                SalesDocDiscount_L.INSERT;
+              END;
+            END;
+          END ELSE
+            ERROR(Text8053019,SalesShptLine_L.TABLECAPTION,ValueEntry_L.FIELDCAPTION("Document No."),
+                                                           FORMAT(ValueEntry_L."Document No."));
+        END;
+        ValueEntry_L."Document Type"::"Sales Credit Memo" : BEGIN
+          IF SalesCrMemoLine_L.GET(ValueEntry_L."Document No.",ValueEntry_L."Document Line No.") THEN BEGIN
+            IF PostedSalesDocDiscount_L.GET(PostedSalesDocDiscount_L."Document Type"::"Credit Memo",
+                                            SalesCrMemoLine_L."Document No.",
+                                            SalesCrMemoLine_L."Line No.",
+                                            ValueEntryDisc_P."Discount Code") THEN BEGIN
+              PostedSalesDocDiscount_L.Rank := ValueEntryDisc_P.Rank;
+              PostedSalesDocDiscount_L."Base Value" := ValueEntryDisc_P."Base Value";
+              // --> 20141014-APP33-TER01.01.00-FDA01
+              PostedSalesDocDiscount_L."Base Value %" := ValueEntryDisc_P."Base Value %";
+              // <-- 20141014-APP33-TER01.01.00-FDA01
+              PostedSalesDocDiscount_L."Discount %" := ValueEntryDisc_P."Discount %";
+              PostedSalesDocDiscount_L."Discount Amount" := ValueEntryDisc_P."Discount Amount";
+              PostedSalesDocDiscount_L."Final Price" := ValueEntryDisc_P."Final Price";
+
+              PostedSalesDocDiscount_L.MODIFY;
+            END ELSE BEGIN
+              PostedSalesDocDiscount_L.INIT;
+              PostedSalesDocDiscount_L."Document Type" := PostedSalesDocDiscount_L."Document Type"::"Credit Memo";
+              PostedSalesDocDiscount_L."Document No." := SalesCrMemoLine_L."Document No.";
+              PostedSalesDocDiscount_L."Document Line No." := SalesCrMemoLine_L."Line No.";
+              PostedSalesDocDiscount_L."Discount Code" := ValueEntryDisc_P."Discount Code";
+              PostedSalesDocDiscount_L.Rank := ValueEntryDisc_P.Rank;
+              PostedSalesDocDiscount_L."Base Value" := ValueEntryDisc_P."Base Value";
+              // --> 20141014-APP33-TER01.01.00-FDA01
+              PostedSalesDocDiscount_L."Base Value %" := ValueEntryDisc_P."Base Value %";
+              // <-- 20141014-APP33-TER01.01.00-FDA01
+              PostedSalesDocDiscount_L."Discount %" := ValueEntryDisc_P."Discount %";
+              PostedSalesDocDiscount_L."Discount Amount" := ValueEntryDisc_P."Discount Amount";
+              PostedSalesDocDiscount_L."Final Price" := ValueEntryDisc_P."Final Price";
+
+              PostedSalesDocDiscount_L.INSERT;
+            END;
+          END ELSE
+            ERROR(Text8053019,SalesInvLine_L.TABLECAPTION,ValueEntry_L.FIELDCAPTION("Document No."),
+                                                           FORMAT(ValueEntry_L."Document No."));
+        END;
+      END;
+      // <-- 20140912-APP33-TER01.01.00-FDA01
+    END;
+
+    PROCEDURE UpdateDocumentLine@8053006(ValueEntry_P@8053005 : Record 5802);
+    VAR
+      SalesLine_L@8053001 : Record 37;
+      SalesShptLine_L@8053004 : Record 111;
+      ReturnShptLine_L@8053002 : Record 6651;
+      SalesInvLine_L@8053003 : Record 113;
+      SalesCrMemoLine_L@8053000 : Record 115;
+      DiscountUnitAmount_L@8053006 : Decimal;
+    BEGIN
+      // --> 20140912-APP33-TER01.01.00-FDA01
+      CASE ValueEntry_P."Document Type" OF
+        ValueEntry_P."Document Type"::"Sales Shipment" : BEGIN
+          IF SalesShptLine_L.GET(ValueEntry_P."Document No.",ValueEntry_P."Document Line No.") THEN
+            IF SalesLine_L.GET(SalesLine_L."Document Type"::Order,SalesShptLine_L."Order No.",
+                                                                SalesShptLine_L."Order Line No.") THEN
+              UpdateSalesLine(SalesLine_L,ValueEntry_P);
+        END;
+        ValueEntry_P."Document Type"::"Sales Invoice" : BEGIN
+          IF SalesInvLine_L.GET(ValueEntry_P."Document No.",ValueEntry_P."Document Line No.") THEN BEGIN
+            SalesInvLine_L."ECD Calculation Priority" := ValueEntry_P."ECD Calculation Priority";
+            SalesInvLine_L."Budgeted Unit Price" := ValueEntry_P."Budgeted Unit Cost";
+            SalesInvLine_L."ECD Unit Amount" := ValueEntry_P."ECD Unit Amount";
+            SalesInvLine_L.MODIFY;
+          END;
+        END;
+        ValueEntry_P."Document Type"::"Sales Return Receipt" : BEGIN
+          IF ReturnShptLine_L.GET(ValueEntry_P."Document No.",ValueEntry_P."Document Line No.") THEN
+            IF SalesLine_L.GET(SalesLine_L."Document Type"::"Return Order",ReturnShptLine_L."Return Order No.",
+                                                                      ReturnShptLine_L."Return Order Line No.") THEN
+              UpdateSalesLine(SalesLine_L,ValueEntry_P);
+        END;
+        ValueEntry_P."Document Type"::"Sales Credit Memo" : BEGIN
+          IF SalesCrMemoLine_L.GET(ValueEntry_P."Document No.",ValueEntry_P."Document Line No.") THEN BEGIN
+            SalesCrMemoLine_L."ECD Calculation Priority" := ValueEntry_P."ECD Calculation Priority";
+            SalesCrMemoLine_L."Budgeted Unit Price" := ValueEntry_P."Budgeted Unit Cost";
+            SalesCrMemoLine_L."ECD Unit Amount" := ValueEntry_P."ECD Unit Amount";
+            SalesCrMemoLine_L.MODIFY;
+          END;
+        END;
+      END;
+      // <-- 20140912-APP33-TER01.01.00-FDA01
+    END;
+
+    PROCEDURE UpdateSalesLine@8053022(SalesLine_P@8053000 : Record 37;ValueEntry_P@8053002 : Record 5802);
+    BEGIN
+      // --> 20140912-APP33-TER01.01.00-FDA01
+      WITH SalesLine_P DO BEGIN
+        "ECD Calculation Priority" := ValueEntry_P."ECD Calculation Priority";
+        "Budgeted Unit Price" := ValueEntry_P."Budgeted Unit Cost";
+        "ECD Unit Amount" := ValueEntry_P."ECD Unit Amount";
+        MODIFY;
+      END;
+      // <-- 20140912-APP33-TER01.01.00-FDA01
+    END;
+
+    PROCEDURE SetECDUnitAmount@8053000(VAR ValueEntry_P@8053000 : Record 5802);
+    BEGIN
+      // --> 20140912-APP33-TER01.01.00-FDA01
+      WITH ValueEntry_P DO BEGIN
+
+        // --> 20180426-Wi00-ADV01.01.00-34402-CJY01
+        {BEFORE
+        IF "Sales Amount (Actual)" <> 0 THEN
+          "ECD Unit Amount" := ROUND("Sales Amount (Actual)" / -"Valued Quantity",GLSetup_G."Unit-Amount Rounding Precision")
+                                    - "Budgeted Unit Cost"
+        ELSE
+          "ECD Unit Amount" := ROUND("Sales Amount (Expected)" / -"Valued Quantity",GLSetup_G."Unit-Amount Rounding Precision")
+                                    - "Budgeted Unit Cost";
+        AFTER}
+        IF "Sales Amount (Actual)" <> 0 THEN
+          "ECD Unit Amount" := ROUND(RetrouvePUN(ValueEntry_P),GLSetup_G."Unit-Amount Rounding Precision")
+                                    - "Budgeted Unit Cost"
+        ELSE
+          "ECD Unit Amount" := ROUND("Sales Amount (Expected)" / -"Valued Quantity",GLSetup_G."Unit-Amount Rounding Precision")
+                                    - "Budgeted Unit Cost";
+
+        // <-- 20180426-Wi00-ADV01.01.00-34402-CJY01
+
+        "ECD Unit Amount" := ROUND("ECD Unit Amount",GLSetup_G."Unit-Amount Rounding Precision");
+      // 20160718-Wi00-ADV01.01.00-20476-OAN01
+        IF "ECD Unit Amount" < 0 THEN
+          ERROR(Text8053021,FIELDCAPTION("ECD Unit Amount"),TABLECAPTION,FIELDCAPTION("Entry No."),FORMAT("Entry No."));
+      END;
+      // <-- 20140912-APP33-TER01.01.00-FDA01
+    END;
+
+    PROCEDURE UpdateDiscount@8053004(VAR ValueEntryDisc_P@8053000 : Record 8053252;ValuationType_P@8053001 : 'New ECD Amount,New ECD Percentage,Change ECD amount';ModificationValue_P@8053002 : Decimal);
+    VAR
+      CMCSalesDiscValue_L@8053004 : Record 8053175;
+    BEGIN
+      // --> 20140912-APP33-TER01.01.00-FDA01
+      CASE ValuationType_P OF
+        ValuationType_P::"New ECD Amount" : BEGIN
+          // --> 20160211-APP33-ADV01.01.00-1792-CJY01
+          {BEFORE
+          IF ValueEntryDisc_P."Discount Code" <> CMCSetup_G."Except. Sales ECD Disc. Code" THEN BEGIN
+          AFTER}
+          IF NOT ((ValueEntryDisc_P."Discount Code" = CMCSetup_G."Except. Sales ECD Disc. Code") AND
+           (UpdateType_G <> UpdateType_G::"Cancel ECD")) THEN BEGIN
+          // <-- 20160211-APP33-TER01.01.00-1792-CJY01
+            ValueEntryDisc_P."Discount Amount" := ModificationValue_P;
+            // --> 20141006-APP33-TER01.01.00-FDA01
+            ValueEntryDisc_P."Discount %" := 0;
+            // <-- 20141006-APP33-TER01.01.00-FDA01
+            SetFinalPrice(ValueEntryDisc_P);
+          END ELSE BEGIN
+            IF UpdateType_G <> UpdateType_G::"Unapply Budgeted Unit Price" THEN BEGIN
+              IF ValueEntryDisc_P."Discount Amount" <> 0 THEN BEGIN
+                IF ValueEntryDisc_P."Base Value" > ValueEntryDisc_P."Final Price" THEN
+                  ValueEntryDisc_P."Discount Amount" := ValueEntryDisc_P."Base Value" - ValueEntryDisc_P."Final Price"
+                ELSE
+                  IF ValueEntryDisc_P."Base Value" < ValueEntryDisc_P."Final Price" THEN
+                    ERROR(Text8053018,"Value Entry"."Entry No.")
+                  ELSE BEGIN
+                    ValueEntryDisc_P."Discount %" := 0;
+                    ValueEntryDisc_P."Discount Amount" := 0;
+                  END;
+              END ELSE BEGIN
+                ValueEntryDisc_P."Discount Amount" := ModificationValue_P;
+                SetFinalPrice(ValueEntryDisc_P);
+              END;
+            END ELSE BEGIN
+              ValueEntryDisc_P."Discount %" := 0;
+              ValueEntryDisc_P."Discount Amount" := 0;
+              ValueEntryDisc_P."Final Price" := ValueEntryDisc_P."Base Value";
+            END;
+          END;
+        END;
+        ValuationType_P::"New ECD Percentage" : BEGIN
+          // --> 20160809-Wi00-ADV01.01.00-3106-CJY01
+          IF ROUND(ValueEntryDisc_P."Base Value %" * ModificationValue_P / 100, 0.01, '=') <> 0 THEN BEGIN
+          // <-- 20160809-Wi00-ADV01.01.00-3106-CJY01
+            ValueEntryDisc_P."Discount Amount" :=
+                                     // --> 20141014-APP33-TER01.01.00-FDA01
+                                     //Before
+                                     //ROUND(ValueEntryDisc_P."Base Value" * ModificationValue_P / 100, 0.01, '=');
+                                     //After
+                                     ROUND(ValueEntryDisc_P."Base Value %" * ModificationValue_P / 100, 0.01, '=');
+                                     // <-- 20141014-APP33-TER01.01.00-FDA01
+            ValueEntryDisc_P."Discount %" := ModificationValue_P;
+          // --> 20160809-Wi00-ADV01.01.00-3106-CJY01
+          END;
+          // <-- 20160809-Wi00-ADV01.01.00-3106-CJY01
+          SetFinalPrice(ValueEntryDisc_P);
+        END;
+        ValuationType_P::"Change ECD amount" : BEGIN
+          ValueEntryDisc_P."Discount Amount" := ValueEntryDisc_P."Discount Amount" + ModificationValue_P;
+          SetFinalPrice(ValueEntryDisc_P);
+        END;
+      END;
+
+      ValueEntryDisc_P.MODIFY(TRUE);
+      // <-- 20140912-APP33-TER01.01.00-FDA01
+    END;
+
+    PROCEDURE SetFinalPrice@8053013(VAR ValueEntryDiscount_P@8053000 : Record 8053252);
+    BEGIN
+      // --> 20140912-APP33-TER01.01.00-FDA01
+      ValueEntryDiscount_P."Final Price" := ValueEntryDiscount_P."Base Value" - ValueEntryDiscount_P."Discount Amount";
+      IF ValueEntryDiscount_P."Final Price" < 0 THEN
+        ERROR(Text004, ValueEntryDiscount_P."Value Entry No.");
+      // <-- 20140912-APP33-TER01.01.00-FDA01
+    END;
+
+    PROCEDURE SetBudgetedUnitCost@8053005(VAR ValueEntry_P@8053000 : Record 5802);
+    BEGIN
+      // --> 20140912-APP33-TER01.01.00-FDA01
+      WITH ValueEntry_P DO BEGIN
+
+        // --> 20180426-Wi00-ADV01.01.00-34402-CJY01
+        {BEFORE
+        IF "Sales Amount (Actual)" <> 0 THEN
+          "Budgeted Unit Cost" := ROUND("Sales Amount (Actual)" / -"Valued Quantity",GLSetup_G."Unit-Amount Rounding Precision")
+                                    - "ECD Unit Amount"
+        ELSE
+          "Budgeted Unit Cost" := ROUND("Sales Amount (Expected)" / -"Valued Quantity",GLSetup_G."Unit-Amount Rounding Precision")
+                                    - "ECD Unit Amount";
+        AFTER}
+        IF "Sales Amount (Actual)" <> 0 THEN
+          "Budgeted Unit Cost" := ROUND(RetrouvePUN(ValueEntry_P),GLSetup_G."Unit-Amount Rounding Precision")
+                                    - "ECD Unit Amount"
+        ELSE
+          "Budgeted Unit Cost" := ROUND("Sales Amount (Expected)" / -"Valued Quantity",GLSetup_G."Unit-Amount Rounding Precision")
+                                    - "ECD Unit Amount";
+
+        // <-- 20180426-Wi00-ADV01.01.00-34402-CJY01
+
+        IF "Budgeted Unit Cost" < 0 THEN
+          ERROR(Text8053021,FIELDCAPTION("Budgeted Unit Cost"),TABLECAPTION,FIELDCAPTION("Entry No."),FORMAT("Entry No."));
+      END;
+      // <-- 20140912-APP33-TER01.01.00-FDA01
+    END;
+
+    PROCEDURE SetEnable@8053003();
+    BEGIN
+      // --> 20140812-APP33-TER01.01.00-FDA01
+      CASE UpdateType_G OF
+        UpdateType_G::"ECD Update" : BEGIN
+          EnableValuationType_G := TRUE;
+          EnableValue_G := TRUE;
+        END;
+        UpdateType_G::"Cancel ECD" : BEGIN
+          EnableValuationType_G := FALSE;
+          EnableValue_G := FALSE;
+        END;
+        UpdateType_G::"Apply Budgeted Unit Price" : BEGIN
+          EnableValuationType_G := FALSE;
+          EnableValue_G := TRUE;
+        END;
+        UpdateType_G::"Unapply Budgeted Unit Price" : BEGIN
+          EnableValuationType_G := FALSE;
+          EnableValue_G := FALSE;
+        END;
+      END;
+      // <-- 20140812-APP33-TER01.01.00-FDA01
+    END;
+
+    PROCEDURE MakeExcelInfo@3();
+    BEGIN
+      // --> 20140913-APP33-TER01.01.00-FDA01
+      ExcelBuf_G.SetUseInfoSheed;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text008),FALSE,'',TRUE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn(COMPANYNAME,FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text010),FALSE,'',TRUE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text021),FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text009),FALSE,'',TRUE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn(REPORT::"CMC Update Sales ECD",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text011),FALSE,'',TRUE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn(USERID,FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text012),FALSE,'',TRUE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn(TODAY,FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.NewRow;
+
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text029),FALSE,'',TRUE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn("CMC Sales ECD Ledger Entry".GETFILTERS,FALSE,'',FALSE,FALSE,FALSE,'');
+
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text022),FALSE,'',TRUE,FALSE,FALSE,'');
+      IF EVALUATE(VarInteger_G,CustomerNo_G) THEN
+        ExcelBuf_G.AddInfoColumn(FORMAT(Text028 + CustomerNo_G,0,'<Text>'),FALSE,'',FALSE,FALSE,FALSE,'')
+      ELSE
+        ExcelBuf_G.AddInfoColumn(FORMAT(CustomerNo_G,0,'<Text>'),FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text023),FALSE,'',TRUE,FALSE,FALSE,'');
+      IF EVALUATE(VarInteger_G,CustomerNo_G) THEN
+        ExcelBuf_G.AddInfoColumn(FORMAT(Text028 + DiscountCode_G,0,'<Text>'),FALSE,'',FALSE,FALSE,FALSE,'')
+      ELSE
+        ExcelBuf_G.AddInfoColumn(FORMAT(DiscountCode_G,0,'<Text>'),FALSE,'',FALSE,FALSE,FALSE,'');
+
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text024),FALSE,'',TRUE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn(FORMAT(UpdateType_G,0,1),FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn(FORMAT(ValuationType_G,0,1),FALSE,'',FALSE,FALSE,FALSE,'');
+
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text025),FALSE,'',TRUE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn(FORMAT(ModificationValue_G,0,2),FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text026),FALSE,'',TRUE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn(FORMAT(PrintToExcel_G,0,1),FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text027),FALSE,'',TRUE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn(FORMAT(Test_G,0,1),FALSE,'',FALSE,FALSE,FALSE,'');
+
+      ExcelBuf_G.ClearNewRow;
+
+      MakeExcelDataHeader;
+      // <-- 20140913-APP33-TER01.01.00-FDA01
+    END;
+
+    LOCAL PROCEDURE MakeExcelDataHeader@2();
+    BEGIN
+      // --> 20140913-APP33-TER01.01.00-FDA01
+      ExcelBuf_G.AddColumn("CMC Sales ECD Ledger Entry".FIELDCAPTION("Document No."),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn("CMC Sales ECD Ledger Entry".FIELDCAPTION("Posting Date"),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn("CMC Sales ECD Ledger Entry".FIELDCAPTION("Item No."),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn("CMC Sales ECD Ledger Entry".FIELDCAPTION("Variant Code"),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn("CMC Sales ECD Ledger Entry".FIELDCAPTION(Description),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn(FORMAT(Text015),FALSE,'',TRUE,FALSE,TRUE,'');
+      // --> 20160603-Wi00-ADV01.01.00-2780-CJY02
+      // --> 20160614-Wi00-ADV01.01.00-2780-CJY03
+      {BEFORE
+      IF UpdateType_G <> UpdateType_G::"Cancel ECD" THEN BEGIN
+      AFTER}
+      IF ((UpdateType_G <> UpdateType_G::"Cancel ECD") AND (UpdateType_G <> UpdateType_G::"Unapply Budgeted Unit Price")) THEN BEGIN
+
+      // <-- 20160614-Wi00-ADV01.01.00-2780-CJY03
+
+      // <-- 20160603-Wi00-ADV01.01.00-2780-CJY02
+      ExcelBuf_G.AddColumn(FORMAT(Text016),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn(FORMAT(Text017),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn(FORMAT(Text018),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn(FORMAT(Text019),FALSE,'',TRUE,FALSE,TRUE,'');
+      // --> 20160603-Wi00-ADV01.01.00-2780-CJY02
+      END ELSE BEGIN
+        ExcelBuf_G.AddColumn(FORMAT(Text60000),FALSE,'',TRUE,FALSE,TRUE,'');
+        ExcelBuf_G.AddColumn(FORMAT(Text60001),FALSE,'',TRUE,FALSE,TRUE,'');
+        ExcelBuf_G.AddColumn(FORMAT(Text60002),FALSE,'',TRUE,FALSE,TRUE,'');
+        ExcelBuf_G.AddColumn(FORMAT(Text60003),FALSE,'',TRUE,FALSE,TRUE,'');
+      END;
+      // <-- 20160603-Wi00-ADV01.01.00-2780-CJY02
+
+      // <-- 20140913-APP33-TER01.01.00-FDA01
+    END;
+
+    PROCEDURE MakeExcelDataBody@4(SalesECDLedgerEntry_P@8053000 : Record 8053089);
+    VAR
+      BlankFiller@1000 : Text[250];
+    BEGIN
+      // --> 20140913-APP33-TER01.01.00-FDA01
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."Document No.",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."Posting Date",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."Item No.",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."Variant Code",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(GetItemDescription(SalesECDLedgerEntry_P."Item No.",
+                                              SalesECDLedgerEntry_P."Variant Code"),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."Valued Quantity",FALSE,'',FALSE,FALSE,FALSE,'');
+
+      CASE "Value Entry"."Document Type" OF
+        "Value Entry"."Document Type"::"Sales Shipment","Value Entry"."Document Type"::"Sales Return Receipt":
+          BEGIN
+            ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."ECD Unit Amount (Shipment)",FALSE,'',FALSE,FALSE,FALSE,'');
+            ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."ECD Amount (Shipment)",FALSE,'',FALSE,FALSE,FALSE,'');
+          END;
+        "Value Entry"."Document Type"::"Purchase Invoice","Value Entry"."Document Type"::"Purchase Credit Memo":
+          BEGIN
+            ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."ECD Unit Amount (Invoice)",FALSE,'',FALSE,FALSE,FALSE,'');
+            ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."ECD Amount (Invoice)",FALSE,'',FALSE,FALSE,FALSE,'');
+          END;
+      END;
+      // <-- 20140913-APP33-TER01.01.00-FDA01
+    END;
+
+    PROCEDURE MakeExcelDataBody2@8053001(SalesECDLedgerEntry_P@8053000 : Record 8053089);
+    VAR
+      BlankFiller@1000 : Text[250];
+    BEGIN
+      // --> 20140913-APP33-TER01.01.00-FDA01
+      CASE "Value Entry"."Document Type" OF
+        "Value Entry"."Document Type"::"Sales Shipment","Value Entry"."Document Type"::"Sales Return Receipt":
+          BEGIN
+            ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."ECD Unit Amount (Shipment)",FALSE,'',FALSE,FALSE,FALSE,'');
+            ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."ECD Amount (Shipment)",FALSE,'',FALSE,FALSE,FALSE,'');
+          END;
+        "Value Entry"."Document Type"::"Sales Invoice","Value Entry"."Document Type"::"Sales Credit Memo":
+          BEGIN
+            ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."ECD Unit Amount (Invoice)",FALSE,'',FALSE,FALSE,FALSE,'');
+            ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."ECD Amount (Invoice)",FALSE,'',FALSE,FALSE,FALSE,'');
+          END;
+      END;
+      // <-- 20140913-APP33-TER01.01.00-FDA01
+    END;
+
+    PROCEDURE CreateExcelbook@1();
+    BEGIN
+      // --> 20140913-APP33-TER01.01.00-FDA01
+      ExcelBuf_G.CreateBook;
+      ExcelBuf_G.CreateSheet(Text020,Text021,COMPANYNAME,USERID);
+      ExcelBuf_G.GiveUserControl;
+      IF Test_G = TRUE THEN
+        ERROR('');
+      // <-- 20140913-APP33-TER01.01.00-FDA01
+    END;
+
+    PROCEDURE MakeExcelDataBody3@8053014();
+    VAR
+      BlankFiller@1000 : Text[250];
+    BEGIN
+      // --> 20140913-APP33-TER01.01.00-FDA01
+      ExcelBuf_G.NewRow;
+
+      ExcelBuf_G.AddColumn("Value Entry"."Document No.",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn("Value Entry"."Posting Date",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn("Value Entry"."Item No.",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn("Value Entry"."Variant Code",FALSE,'',FALSE,FALSE,FALSE,'');
+
+      ExcelBuf_G.AddColumn(GetItemDescription("Value Entry"."Item No.",
+                                              "Value Entry"."Variant Code"),FALSE,'',TRUE,FALSE,TRUE,'');
+
+      ExcelBuf_G.AddColumn("Value Entry"."Valued Quantity",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(0,FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(0,FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(ValueEntryDiscForUpdate_G."Discount Amount",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(ValueEntryDiscForUpdate_G."Discount Amount" * "Value Entry"."Valued Quantity",
+                           FALSE,'',FALSE,FALSE,FALSE,'');
+      // <-- 20140913-APP33-TER01.01.00-FDA01
+    END;
+
+    PROCEDURE GetItemDescription@8053002(ItemCode_P@8053000 : Code[20];ItemVariantCode_P@8053001 : Code[20]) : Text[50];
+    VAR
+      Item_L@8053002 : Record 27;
+      ItemVariant_L@8053003 : Record 5401;
+      Description_L@8053004 : Text[50];
+    BEGIN
+      // --> 20140913-APP33-TER01.01.00-FDA01
+      Description_L := '';
+
+      IF ItemVariantCode_P <> '' THEN BEGIN
+        IF ItemVariant_L.GET(ItemCode_P,ItemVariantCode_P) THEN
+          Description_L := ItemVariant_L.Description;
+      END;
+
+      IF (Description_L = '') AND Item_L.GET(ItemCode_P) THEN
+        Description_L := Item_L.Description;
+
+      EXIT(Description_L);
+      // <-- 20140913-APP33-TER01.01.00-FDA01
+    END;
+
+    PROCEDURE NotConsideredECDCodeExist@8053012(ValueEntry_P@8053001 : Record 5802) : Boolean;
+    VAR
+      ValueEntryDisc_L@8053000 : Record 8053252;
+    BEGIN
+      // --> 20141014-APP33-TER01.01.00-FDA01
+      WITH ValueEntryDisc_L DO BEGIN
+        IF NotConsideredECDCode_G <> '' THEN BEGIN
+          RESET;
+          SETRANGE("Value Entry No.",ValueEntry_P."Entry No.");
+          SETRANGE("Discount Code",NotConsideredECDCode_G);
+          SETFILTER("Discount Amount",'<>%1',0);
+          IF NOT ISEMPTY THEN
+            EXIT(TRUE);
+        END;
+        EXIT(FALSE);
+      END;
+      // <-- 20141014-APP33-TER01.01.00-FDA01
+    END;
+
+    PROCEDURE MakeExcelDataBodySolde@1000000000(SalesECDLedgerEntry_P@8053000 : Record 8053089);
+    VAR
+      BlankFiller@1000 : Text[250];
+    BEGIN
+
+      // --> 20160603-Wi00-ADV01.01.00-2780-CJY02
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."Document No.",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."Posting Date",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."Item No.",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."Variant Code",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(GetItemDescription(SalesECDLedgerEntry_P."Item No.",
+                                              SalesECDLedgerEntry_P."Variant Code"),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."Valued Quantity",FALSE,'',FALSE,FALSE,FALSE,'');
+
+      CASE "Value Entry"."Document Type" OF
+        "Value Entry"."Document Type"::"Sales Invoice","Value Entry"."Document Type"::"Sales Credit Memo":
+          BEGIN
+            ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."Invoiced ECD Unit Price",FALSE,'',FALSE,FALSE,FALSE,'');
+            ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."Invoiced ECD Amount",FALSE,'',FALSE,FALSE,FALSE,'');
+            ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."ECD Unit Price Outstanding",FALSE,'',FALSE,FALSE,FALSE,'');
+            ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P.CalcECDUnitPriceOutstanding * (-SalesECDLedgerEntry_P."Invoiced Quantity")
+              ,FALSE,'',FALSE,FALSE,FALSE,'');
+
+          END;
+      END;
+      // <-- 20160603-Wi00-ADV01.01.00-2780-CJY02
+    END;
+
+    PROCEDURE MakeExcelDataBodyModif@1000000002(SalesECDLedgerEntry_P@8053000 : Record 8053089;Part_P@1000000000 : Integer);
+    VAR
+      BlankFiller@1000 : Text[250];
+    BEGIN
+
+      // --> 20160603-Wi00-ADV01.01.00-2780-CJY02
+      IF Part_P = 0 THEN BEGIN
+        ExcelBuf_G.NewRow;
+        ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."Document No.",FALSE,'',FALSE,FALSE,FALSE,'');
+        ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."Posting Date",FALSE,'',FALSE,FALSE,FALSE,'');
+        ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."Item No.",FALSE,'',FALSE,FALSE,FALSE,'');
+        ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."Variant Code",FALSE,'',FALSE,FALSE,FALSE,'');
+        ExcelBuf_G.AddColumn(GetItemDescription(SalesECDLedgerEntry_P."Item No.",
+                                                SalesECDLedgerEntry_P."Variant Code"),FALSE,'',TRUE,FALSE,TRUE,'');
+        ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."Valued Quantity",FALSE,'',FALSE,FALSE,FALSE,'');
+      END;
+      CASE "Value Entry"."Document Type" OF
+        "Value Entry"."Document Type"::"Sales Invoice","Value Entry"."Document Type"::"Sales Credit Memo":
+          BEGIN
+              ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."ECD Unit Amount (Invoice)",FALSE,'',FALSE,FALSE,FALSE,'');
+              ExcelBuf_G.AddColumn(SalesECDLedgerEntry_P."ECD Amount (Invoice)",FALSE,'',FALSE,FALSE,FALSE,'');
+          END;
+      END;
+      // <-- 20160603-Wi00-ADV01.01.00-2780-CJY02
+    END;
+
+    PROCEDURE FctRFCExist@1000000001(ValueEntry_P@1000000001 : Record 5802;DiscountCode_P@1000000002 : Code[20]) : Boolean;
+    VAR
+      ECDLedgerEntry_L@1000000000 : Record 8053089;
+      CmcValueEntryDiscount_L@1000000003 : Record 8053252;
+    BEGIN
+      // --> 20160607-Wi00-ADV01.01.00-3058-CJY01
+      CmcValueEntryDiscount_L.RESET;
+      CmcValueEntryDiscount_L.SETRANGE("Value Entry No.",ValueEntry_P."Entry No.");
+      IF DiscountCode_P <> '' THEN
+         CmcValueEntryDiscount_L.SETRANGE("Discount Code",DiscountCode_P);
+
+      // --> 20160809-Wi00-ADV01.01.00-3106-CJY01
+      IF NOT CmcValueEntryDiscount_L.FINDSET THEN
+        EXIT(FALSE);
+      // <-- 20160809-Wi00-ADV01.01.00-3106-CJY01
+      IF CmcValueEntryDiscount_L.FINDSET THEN REPEAT
+          ECDLedgerEntry_L.RESET;
+          ECDLedgerEntry_L.SETCURRENTKEY("Value Entry No.","Discount Code");
+          ECDLedgerEntry_L.SETRANGE("Value Entry No.",ValueEntry_P."Entry No.");
+          ECDLedgerEntry_L.SETRANGE("Discount Code",CmcValueEntryDiscount_L."Discount Code");
+          IF ECDLedgerEntry_L.ISEMPTY THEN
+            EXIT(FALSE);
+
+      UNTIL CmcValueEntryDiscount_L.NEXT = 0;
+      EXIT(TRUE);
+      // <-- 20160607-Wi00-ADV01.01.00-3058-CJY01
+    END;
+
+    PROCEDURE RetrouvePUN@1000000003(ValueEntry_P@1000000000 : Record 5802) : Decimal;
+    VAR
+      SalesInvoiceLine_L@1000000001 : Record 113;
+      SalesCreditMemoLine_L@1000000002 : Record 115;
+    BEGIN
+      //cette fonction permet de retrouver la valeur exacte du prix unitaire net plutot que de le reconsittuer par le calcul
+      //le but est d''viter des d'cimales trop nombreuses et des arrondis incorrect
+      //TEST
+      //IF
+      //TEST
+      IF ValueEntry_P."Sales Amount (Actual)" <> 0 THEN BEGIN
+        //cas facture ou avoir
+        IF ValueEntry_P."Document Type" = ValueEntry_P."Document Type"::"Sales Invoice" THEN BEGIN
+          IF SalesInvoiceLine_L.GET(ValueEntry_P."Document No.",ValueEntry_P."Document Line No.") THEN
+            EXIT(SalesInvoiceLine_L."Net Unit Price");
+        END;
+        IF ValueEntry_P."Document Type" = ValueEntry_P."Document Type"::"Sales Credit Memo" THEN BEGIN
+          IF SalesCreditMemoLine_L.GET(ValueEntry_P."Document No.",ValueEntry_P."Document Line No.") THEN
+            EXIT(SalesCreditMemoLine_L."Net Unit Price");
+        END;
+
+        //ValueEntryDiscForUpdate_G."Base Value %" := "Sales Amount (Actual)" / -"Valued Quantity";
+        //ValueEntryDiscForUpdate_G."Base Value" := "Sales Amount (Actual)" / -"Valued Quantity";
+      END ELSE BEGIN
+        //cas expedition ou retour
+        //ValueEntryDiscForUpdate_G."Base Value %" := "Sales Amount (Expected)" / -"Valued Quantity";
+        //ValueEntryDiscForUpdate_G."Base Value" := "Sales Amount (Expected)" / -"Valued Quantity";
+        EXIT(ValueEntry_P."Sales Amount (Expected)" / -ValueEntry_P."Valued Quantity");
+      END;
+
+      EXIT(0);
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+
+      20130902-APP33-CMC02.02.00-BSI01: NEWOBJ
+      20131001-APP33-CMC02.02.00-0880-MMI01 : BUGFIXED (Correct Text001, Text004)
+      20131001-APP33-CMC02.02.00-0879-MMI01 : BUGFIXED (Modify percentage option)
+      20131017-APP33-CMC02.02.00-0944-BSI01 : BUGFIXED (Filter should be done on DataItem CMC Sales ECD Ledger Entry, the structure of
+                                                       report was changed in order to do this)
+      20131104-APP33-CMC02.02.00-1044-MMI01 : BUGFIXED (calculation of ECD Amount (Invoice))
+      20131107-APP33-CMC02.02.00-1044-BSI01 : BUGFIXED (calculation of ECD Amount (Invoice))
+      20131107-APP33-CMC02.02.00-1066-BSI01 : BUGFIXED (filter the discount code on the RFC types in the request page of the report)
+      20140805-APP33-TER01.01.00-FDA01 : MODCODE (Called ECD functions from codeunit 8053038 CMC ECD Management, instead of codeunit 22)
+      20140910-APP33-TER01.01.00-FDA01 : MODOBJ (Applied modifications according Tarifs et RFC v2 specification)
+                                         - ModificationType_G -> UpdateType_G with new option values
+                                         - Management of the Enable property for controls
+                                         - 3 decimals for control Value)
+                                         MODDATAITEM (Value Entry - table filter):
+                                         - Entry Type             =Direct Cost
+                                         - Document Type          <>''
+                                         - Adjustment             =No
+                                         - Item Charge No.        =''
+      20140912-APP33-TER01.01.00-FDA01 : MODCODE (Applied modifications according Tarifs et RFC v2 specification - followed
+                                                  symmetry rule towards report 8053082)
+      20140913-APP33-TER01.01.00-FDA01 : ADDFUNC (Added functions related to Print to Excel functionality, copied from report 8053082
+                                                  - The functionality is blocked for user. It must be tested)
+      20140926-APP33-TER01.01.00-FBE01 : ADDPERMISSIONS
+      20140930-APP33-TER01.01.00-FDA01 : MODCODE (Allowed to create sales ECD ledger entry when Discount Code <> blank and no entry
+                                                  exist in Value Entry Discount - no detail ECD)
+      20141006-APP33-TER01.01.00-FDA01 : MODFUNC (UpdateDiscount)
+      20141014-APP33-TER01.01.00-FDA01 : ADDCODE (Added Not Considered ECD Code in page request. If a Value Entry line has already applied
+                                                  a discount with this code it is skipped)
+                                         MODFUNC (InsertNewDiscount,UpdateDiscount,UpdateSalesDocDiscount - fill in value in field
+                                                  Base value %)
+      20141020-APP33-TER01.01.00-FDA01 : MODCODE (Correction when Value Entry Discount has no entry for current Value Entry)
+                                                 (Correction when Valuation Type = Percentage)
+      20141125-APP33-TER01.01.00-FEC01 : MODOBJ (Add Request Filter Fields).
+      20150202-APP33-CMC02.02.00-2730-SDE01 : MODEPARAM (mauvaise table param'tr'e ReturnShptLine_L)
+      20150424-APP33-TER01.01.00-TER292-SDE01 :   MODCODE (que sur facture et avoir, hors annulation )
+      20151222-APP33-TER01.01.00-2607-DGL01 : ADDCODE (Ne pas cr'er de ligne RFC Vente pour produit gratuit i.e. PrixdeVente=0)
+      20160211-APP33-ADV01.01.00-1792-CJY01 : MODCODE (permettre le solde d'une RFC exceptionelle)
+      20160519-Wi00-ADV01.01.00-2701-OAN01 : ADDFILTER (Source Order Not In Offseason)
+      20160602-Wi00-ADV01.01.00-2780-CJY01 : MODOBJ (ENABLE fields on Request Page : "PrintToExcel_G" and "Test_G")
+      20160603-Wi00-ADV01.01.00-2780-CJY02 : ADDCODE (Gestion Excel suivant les cas de figures)
+      20160607-Wi00-ADV01.01.00-3058-CJY01 : ADDFUNC (fonction : FctRFCExist);
+      20160608-Wi00-ADV01.01.00-3056-CJY02 : MODCODE (correction bug application nouvelle RFC);
+      20160614-Wi00-ADV01.01.00-3085-CJY01 : MODCODE (correction bug quand application nouvelle RFC % sur RFC deja existante);
+      20160614-Wi00-ADV01.01.00-2780-CJY03 : ADDCODE (Compl'ment Gestion Excel suivant les cas de figures)
+      20160718-Wi00-ADV01.01.00-20494-OAN01 : MODPROPERIES (Update Request Form Caption For Debugging)
+                                              ADDCODE (Round To Prevent Negative ECD Unit Amount : -0,000009999)
+                                              MODFUNCTION (SetECDUnitAmount)
+      20160809-Wi00-ADV01.01.00-3106-CJY01 : MODCODE (Onterdiction de cr'er des RFC d'un montant = 0)
+      20160916-Wi00-ADV01.01.00-3106-CJY01 : MODDATAITEM : (ajout du filtre "valued quantity" <> 0 dans le data item Value Entry)
+      20161205-Wi00-ADV01.01.00-23310-CJY01 : ADDCODE (ne pas chercher . solder quand on a d'ja facturer pour plus que pr'vu)
+      20180426-Wi00-ADV01.01.00-34402-CJY01 : MODCODE (prise en compte du prix unitaire net r'el et non reconstitut')
+      20180426-Wi00-ADV01.01.00-34402-CJY01 : MODCODE (changement cl' de lecture data item value entry pour performance)
+
+      // <-- 3LI BEGIN
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

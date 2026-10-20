@@ -1,0 +1,1455 @@
+OBJECT Codeunit 5760 Whse.-Post Receipt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=04/06/21;
+    Heure=00:00:00;
+    Liste versions=NAVW16.00.01,CMC02.02.00,CMB6.00.10.09,TER01.01.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    TableNo=7317;
+    Permissions=TableData 121=rm,
+                TableData 6509=i,
+                TableData 6651=rm,
+                TableData 6661=rm,
+                TableData 7318=i,
+                TableData 7319=i,
+                TableData 60013=rm,
+                TableData 8053265=rm;
+    OnRun=VAR
+            WhseReceiptNo@8053000 : Code[10];
+          BEGIN
+            WhseRcptLine.COPY(Rec);
+            Code;
+            Rec := WhseRcptLine;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=The source document %1 %2 is not released.;FRA=Le document origine %1 %2 n''a pas 't' lanc'.';
+      Text001@1001 : TextConst 'ENU=There is nothing to post.;FRA=Il n''y a rien . valider.';
+      Text002@1002 : TextConst 'ENU=Number of source documents posted: %1 out of a total of %2.;FRA=Nombre de documents valid's : %1 sur %2.';
+      Text003@1003 : TextConst 'ENU=Number of put-away activities created: %3.;FRA=Nombre d''activit's de rangement cr''es : %3.';
+      WhseRcptHeader@1021 : Record 7316;
+      WhseRcptLine@1009 : Record 7317;
+      WhseRcptLineBuf@1040 : TEMPORARY Record 7317;
+      TransHeader@1012 : Record 5740;
+      SalesHeader@1011 : Record 36;
+      PurchHeader@1008 : Record 38;
+      TempWhseJnlLine@1024 : TEMPORARY Record 7311;
+      Location@1010 : Record 14;
+      ItemUnitOfMeasure@1020 : Record 5404;
+      WhseRqst@1006 : Record 5765;
+      TempWhseItemEntryRelation@1013 : TEMPORARY Record 6509;
+      NoSeriesMgt@1030 : Codeunit 396;
+      ItemTrackingMgt@1007 : Codeunit 6500;
+      WMSMgt@1023 : Codeunit 7302;
+      WhseJnlRegisterLine@1018 : Codeunit 7301;
+      CreatePutAway@1017 : Codeunit 7313;
+      PostingDate@1025 : Date;
+      CounterSourceDocOK@1032 : Integer;
+      CounterSourceDocTotal@1033 : Integer;
+      CounterPutAways@1027 : Integer;
+      PutAwayRequired@1039 : Boolean;
+      HideValidationDialog@1019 : Boolean;
+      ReceivingNo@1005 : Code[20];
+      ItemEntryRelationCreated@1014 : Boolean;
+      Text004@1102601000 : TextConst 'ENU=is not within your range of allowed posting dates;FRA=n''appartient pas . la plage de dates de comptabilisation autoris'e';
+      "<< 3LI GLOBALS >>"@8053000 : Integer;
+      Print_G@8053001 : Boolean;
+      WhseLastLoadingMgt_G@1000000000 : Codeunit 8053059;
+      Text8053002@8053002 : TextConst 'FRA=La date de comptabilisation %1 %2 (%3) est sup'rieure . la date de comptabilisation de la r'ception (%4). Vous allez comptabiliser le mouvement . une date erron'e.\Veuillez modifier la date de comptabilisation %1 %2.';
+      Text8053003@8053003 : TextConst 'FRA=du retour vente,de la commande achat,du transfert';
+
+    LOCAL PROCEDURE Code@6();
+    VAR
+      "<<3Li LOCALS>>"@8053001 : Integer;
+      cduAdvancedSetupManagement_L@8053000 : Codeunit 8061290;
+      Item_L@8053002 : Record 27;
+      ItemVariant_L@8053003 : Record 5401;
+      CMCPackagingType_L@8053004 : Record 8053152;
+      cduItemJnlPostLine_L@8053005 : Codeunit 22;
+      CduCMCPostingChecks_L@1000000000 : Codeunit 8053034;
+    BEGIN
+      WITH WhseRcptLine DO BEGIN
+        // --> 20140428-LOG11-CMC02.02.00-2051-FEC01
+        {BEFORE
+        SETCURRENTKEY("No.");
+        SETRANGE("No.","No.");
+        SETFILTER("Qty. to Receive",'>0');
+        AFTER}
+        CLEARMARKS;
+        SETCURRENTKEY("No.");
+        SETRANGE("No.","No.");
+        IF FINDFIRST THEN BEGIN
+          REPEAT
+            MARK(("Qty. to Receive" > 0) OR (WhseRcptLine."No Qty Received"));
+          UNTIL NEXT = 0;
+          MARKEDONLY(TRUE);
+        END;
+        // <-- 20140428-LOG11-CMC02.02.00-2051-FEC01
+        IF FIND('-') THEN
+          REPEAT
+            TESTFIELD("Unit of Measure Code");
+            WhseRqst.GET(
+              WhseRqst.Type::Inbound,"Location Code","Source Type","Source Subtype","Source No.");
+            IF WhseRqst."Document Status" <> WhseRqst."Document Status"::Released THEN
+              ERROR(Text000,"Source Document","Source No.");
+            // --> 20131227-Log10-CMC02.02.00-1362-FGS
+            IF "Variant Code" <> '' THEN BEGIN
+              IF ItemVariant_L.GET("Item No.","Variant Code") THEN
+                IF ItemVariant_L."Packaging Type" <> '' THEN
+                  CMCPackagingType_L.GET(ItemVariant_L."Packaging Type");
+            END ELSE BEGIN
+              Item_L.GET("Item No.");
+              IF Item_L."Packaging Type" <> '' THEN
+                CMCPackagingType_L.GET(Item_L."Packaging Type");
+            END;
+            IF CMCPackagingType_L."Check Weight Ticket" THEN BEGIN
+              IF ("Weighing 2 No." = '') AND ("Weighing Source Line No." = 0) THEN BEGIN
+                IF cduAdvancedSetupManagement_L.GetAdvancedParameterValueBool('WMS-RCPT-TICKMAOBLIG')THEN
+                  TESTFIELD("Manual Weighing No.");
+                IF cduAdvancedSetupManagement_L.GetAdvancedParameterValueBool('WMS-RCPT-CAHPESOBLIG')THEN
+                  TESTFIELD("Notebook Weighing No.");
+              END;
+              IF ("Weighing 1" <> 0) OR ("Weighing 2" <> 0) THEN BEGIN
+                TESTFIELD("Weighing 1");
+                TESTFIELD("Weighing 2");
+              END;
+            END;
+            // <-- 20131227-Log10-CMC02.02.00-1362-FGS
+
+            // --> 20140102-WI00-CMC02.02.00-1386-SD01
+            GetLocation(WhseRcptLine."Location Code");
+            Item_L.GET(WhseRcptLine."Item No.");
+            IF cduItemJnlPostLine_L.ItemToReverse(Item_L,Location."Cell Item Filter View") THEN
+              TESTFIELD(WhseRcptLine."Cell Code")
+            ELSE
+              TESTFIELD(WhseRcptLine."Cell Code",'');
+            // <-- 20140102-WI00-CMC02.02.00-1386-SD01
+
+          UNTIL NEXT = 0
+        ELSE
+          ERROR(Text001);
+
+        CounterSourceDocOK := 0;
+        CounterSourceDocTotal := 0;
+        CounterPutAways := 0;
+        CLEAR(CreatePutAway);
+
+        WhseRcptHeader.GET("No.");
+        WhseRcptHeader.TESTFIELD("Posting Date");
+
+        // --> 20140717-APP38-CMC02.02.00-FEC01
+        WhseLastLoadingMgt_G.CheckWhseRcptLastLoad(WhseRcptHeader);
+        // <-- 20140717-APP38-CMC02.02.00-FEC01
+        // --> 20140903-APP36-TER01.01.00-FBE01
+        CduCMCPostingChecks_L.CheckPostWhseRcpt(WhseRcptHeader);
+        // <-- 20140903-APP36-TER01.01.00-FBE01
+
+        IF WhseRcptHeader."Receiving No." = '' THEN BEGIN
+          WhseRcptHeader.TESTFIELD("Receiving No. Series");
+          WhseRcptHeader."Receiving No." :=
+            NoSeriesMgt.GetNextNo(
+            WhseRcptHeader."Receiving No. Series",WhseRcptHeader."Posting Date",TRUE);
+        END;
+        WhseRcptHeader."Create Posted Header" := TRUE;
+        WhseRcptHeader.MODIFY;
+        COMMIT;
+
+        SETCURRENTKEY("No.","Source Type","Source Subtype","Source No.","Source Line No.");
+        FINDSET(TRUE,TRUE);
+        REPEAT
+          SETRANGE("Source Type","Source Type");
+          SETRANGE("Source Subtype","Source Subtype");
+          SETRANGE("Source No.","Source No.");
+          GetSourceDocument;
+          MakePreliminaryChecks;
+          InitSourceDocumentLines(WhseRcptLine);
+          InitSourceDocumentHeader;
+          COMMIT;
+
+          CounterSourceDocTotal := CounterSourceDocTotal + 1;
+          PostSourceDocument(WhseRcptLine);
+
+          IF FINDLAST THEN;
+          SETRANGE("Source Type");
+          SETRANGE("Source Subtype");
+          SETRANGE("Source No.");
+        UNTIL NEXT = 0;
+
+        GetLocation("Location Code");
+        PutAwayRequired := Location.RequirePutaway("Location Code");
+        IF PutAwayRequired AND NOT Location."Use Put-away Worksheet" THEN
+          CreatePutAwayDoc(WhseRcptHeader);
+
+        CLEAR(WMSMgt);
+        CLEAR(WhseJnlRegisterLine);
+      END;
+    END;
+
+    LOCAL PROCEDURE GetSourceDocument@19();
+    BEGIN
+      WITH WhseRcptLine DO BEGIN
+        CASE "Source Type" OF
+          DATABASE::"Purchase Line":
+            PurchHeader.GET("Source Subtype","Source No.");
+          DATABASE::"Sales Line": // Return Order
+            SalesHeader.GET("Source Subtype","Source No.");
+          DATABASE::"Transfer Line":
+            TransHeader.GET("Source No.");
+        END;
+      END;
+    END;
+
+    PROCEDURE MakePreliminaryChecks@1102601000();
+    VAR
+      GenJnlCheckLine@1102601000 : Codeunit 11;
+    BEGIN
+      WITH WhseRcptHeader DO BEGIN
+        IF GenJnlCheckLine.DateNotAllowed("Posting Date") THEN
+          FIELDERROR("Posting Date",Text004);
+      END;
+    END;
+
+    LOCAL PROCEDURE InitSourceDocumentHeader@3();
+    VAR
+      SalesRelease@1002 : Codeunit 414;
+      PurchRelease@1001 : Codeunit 415;
+      ModifyHeader@1000 : Boolean;
+    BEGIN
+      WITH WhseRcptLine DO BEGIN
+        CASE "Source Type" OF
+          DATABASE::"Purchase Line":
+            BEGIN
+              // --> 20140917-Wi00-CMC02.02.00-FEC01
+              CheckWhsePostDateVsDocDate(PurchHeader."Posting Date",2,PurchHeader."No.");
+              // --< 20140917-Wi00-CMC02.02.00-FEC01
+
+              IF (PurchHeader."Posting Date" = 0D) OR
+                 (PurchHeader."Posting Date" < WhseRcptHeader."Posting Date")
+              THEN BEGIN
+                PurchRelease.Reopen(PurchHeader);
+                PurchHeader.SetHideValidationDialog(TRUE);
+                PurchHeader.VALIDATE("Posting Date",WhseRcptHeader."Posting Date");
+                PurchRelease.RUN(PurchHeader);
+                ModifyHeader := TRUE;
+              END;
+              IF WhseRcptHeader."Vendor Shipment No." <> '' THEN BEGIN
+                PurchHeader."Vendor Shipment No." := WhseRcptHeader."Vendor Shipment No.";
+                ModifyHeader := TRUE;
+              END;
+              IF ModifyHeader THEN
+                PurchHeader.MODIFY;
+            END;
+          DATABASE::"Sales Line": // Return Order
+            BEGIN
+              // --> 20140917-Wi00-CMC02.02.00-FEC02
+              CheckWhsePostDateVsDocDate(SalesHeader."Posting Date",1,SalesHeader."No.");
+              // --< 20140917-Wi00-CMC02.02.00-FEC02
+
+
+              IF (SalesHeader."Posting Date" = 0D) OR
+                 (SalesHeader."Posting Date" < WhseRcptHeader."Posting Date")
+              THEN BEGIN
+                SalesRelease.Reopen(SalesHeader);
+                SalesHeader.SetHideValidationDialog(TRUE);
+                SalesHeader.VALIDATE("Posting Date",WhseRcptHeader."Posting Date");
+                SalesRelease.RUN(SalesHeader);
+                ModifyHeader := TRUE;
+              END;
+              IF WhseRcptHeader."Vendor Shipment No." <> '' THEN BEGIN
+                SalesHeader."External Document No." := WhseRcptHeader."Vendor Shipment No.";
+                ModifyHeader := TRUE;
+              END;
+              // --> 20140529-8060990/101-CMB6.00.10.09-2168-FEC01
+              IF WhseRcptHeader."Shipment Method Code" <> '' THEN BEGIN
+                SalesHeader."Shipment Method Code" := WhseRcptHeader."Shipment Method Code";
+                ModifyHeader := TRUE;
+              END;
+              // <-- 20140529-8060990/101-CMB6.00.10.09-2168-FEC01
+              IF ModifyHeader THEN
+                SalesHeader.MODIFY;
+            END;
+          DATABASE::"Transfer Line":
+            BEGIN
+              // --> 20140917-Wi00-CMC02.02.00-FEC03
+              CheckWhsePostDateVsDocDate(TransHeader."Posting Date",3,TransHeader."No.");
+              // --< 20140917-Wi00-CMC02.02.00-FEC03
+              IF (TransHeader."Posting Date" = 0D) OR
+                 (TransHeader."Posting Date" < WhseRcptHeader."Posting Date")
+              THEN BEGIN
+                TransHeader.CalledFromWarehouse(TRUE);
+                TransHeader.VALIDATE("Posting Date",WhseRcptHeader."Posting Date");
+                ModifyHeader := TRUE;
+              END;
+              IF WhseRcptHeader."Vendor Shipment No." <> '' THEN BEGIN
+                TransHeader."External Document No." := WhseRcptHeader."Vendor Shipment No.";
+                ModifyHeader := TRUE;
+              END;
+              IF ModifyHeader THEN
+                TransHeader.MODIFY;
+            END;
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE InitSourceDocumentLines@1(VAR WhseRcptLine@1004 : Record 7317);
+    VAR
+      WhseRcptLine2@1002 : Record 7317;
+      TransLine@1005 : Record 5741;
+      SalesLine@1003 : Record 37;
+      PurchLine@1001 : Record 39;
+      ModifyLine@1000 : Boolean;
+      "<< 3LI LOCALS >>"@8053000 : Integer;
+      cduWeighingManagement_L@8053001 : Codeunit 8053010;
+      RecTransLineDeriv_L@1000000000 : Record 5741;
+    BEGIN
+      WhseRcptLine2.COPY(WhseRcptLine);
+      WITH WhseRcptLine2 DO BEGIN
+        CASE "Source Type" OF
+          DATABASE::"Purchase Line":
+            BEGIN
+              PurchLine.SETRANGE("Document Type","Source Subtype");
+              PurchLine.SETRANGE("Document No.","Source No.");
+              IF PurchLine.FIND('-') THEN
+                REPEAT
+                  SETRANGE("Source Line No.",PurchLine."Line No.");
+                  IF FIND('-') THEN BEGIN
+                    IF "Source Document" = "Source Document"::"Purchase Order" THEN BEGIN
+                      ModifyLine := PurchLine."Qty. to Receive" <> "Qty. to Receive";
+                      IF ModifyLine THEN
+                      // --> 20110601-Wi00-CMC01.04
+                      BEGIN
+                        IF (("Qty. to Receive" + PurchLine."Quantity Received") > PurchLine.Quantity) OR
+                          ((("Qty. to Receive" + PurchLine."Quantity Received") < PurchLine.Quantity) AND "Cancel Remaining Qty")
+                        THEN
+                          UpdateQtyOfPurchLine("Qty. to Receive",PurchLine);
+                        PurchLine.VALIDATE("Qty. to Receive","Qty. to Receive");
+                      END
+                      // <-- 20110601-Wi00-CMC01.04
+                    END ELSE BEGIN
+                      ModifyLine := PurchLine."Return Qty. to Ship" <> -"Qty. to Receive";
+                      IF ModifyLine THEN
+                        PurchLine.VALIDATE("Return Qty. to Ship",-"Qty. to Receive");
+                    END;
+                    IF PurchLine."Bin Code" <> "Bin Code" THEN BEGIN
+                      PurchLine."Bin Code" := "Bin Code";
+                      ModifyLine := TRUE;
+                    END;
+                    // --> 20140102-WI00-CMC02.02.00-1386-SD01
+                    IF PurchLine."Cell Code"<> "Cell Code" THEN BEGIN
+                      PurchLine."Cell Code":= "Cell Code";
+                      ModifyLine := TRUE;
+                    END;
+                    // <-- 20140102-WI00-CMC02.02.00-1386-SD01
+
+                    // --> 20130709-APP27-CMC02.02.00-AKH01
+                    IF PurchLine."Shipment Method Code" <> "Shipment Method Code" THEN BEGIN
+                      PurchLine."Shipment Method Code" := "Shipment Method Code";
+                      ModifyLine := TRUE;
+                    END;
+                    IF PurchLine."Origin site address" <> "Origin site address" THEN BEGIN
+                      PurchLine."Origin site address" := "Origin site address";
+                      ModifyLine := TRUE;
+                    END;
+                    IF PurchLine."Actual Shipping Agent Code" <> "Actual Shipping Agent Code" THEN BEGIN
+                      PurchLine."Actual Shipping Agent Code" := "Actual Shipping Agent Code";
+                      ModifyLine := TRUE;
+                    END;
+                    IF  PurchLine.Consignment <> Consignment THEN BEGIN
+                      PurchLine.Consignment := Consignment;
+                      ModifyLine := TRUE;
+                    END;
+                    // <--20130709-APP27-CMC02.02.00-AKH01
+
+                    // --> 20140310-Wi00-CMC02.02.00-1817-FEC01
+                    IF PurchLine."Truck Registration" <> "Truck Registration" THEN BEGIN
+                      PurchLine."Truck Registration" := "Truck Registration";
+                      ModifyLine := TRUE;
+                    END;
+                    IF PurchLine."Driver Name" <> "Driver Name" THEN BEGIN
+                      PurchLine."Driver Name" := "Driver Name";
+                      ModifyLine := TRUE;
+                    END;
+                    // <-- 20140310-Wi00-CMC02.02.00-1817-FEC01
+
+                  END ELSE
+                    // --> 20130722-Nut08-CMC02.02.00-WSA01
+                    IF PurchLine."Item Charge Root Line No." = 0 THEN
+                    // <-- 20130722-Nut08-CMC02.02.00-WSA01
+                     IF "Source Document" = "Source Document"::"Purchase Order" THEN BEGIN
+                       ModifyLine := PurchLine."Qty. to Receive" <> 0;
+                      IF ModifyLine THEN
+                        PurchLine.VALIDATE("Qty. to Receive",0);
+                    END ELSE BEGIN
+                      ModifyLine := PurchLine."Return Qty. to Ship" <> 0;
+                      IF ModifyLine THEN
+                        PurchLine.VALIDATE("Return Qty. to Ship",0);
+                    END;
+
+                  IF ModifyLine THEN BEGIN
+                    // <-- 20120111-Int01-CMC02.01.00-DRN01
+                    cduWeighingManagement_L.InitPurchDocumentLines(PurchLine,WhseRcptLine2);
+                    // --> 20120111-Int01-CMC02.01.00-DRN01
+                    PurchLine.MODIFY;
+
+                    // --> 20150720-NUT08-ADV01.01.00-1973-DRN01
+                    //BEFORE
+                    // La MAJ est d'j. g'r'e dans la table 39. La fonction fait doublon
+                    // --> 20130722-Nut08-CMC02.02.00-WSA01
+                    //UpdateQtyKitPurchLine(PurchLine);
+                    // <-- 20130722-Nut08-CMC02.02.00-WSA01
+                    // <-- 20150720-NUT08-ADV01.01.00-1973-DRN01
+                  END;
+                UNTIL PurchLine.NEXT = 0;
+            END;
+          DATABASE::"Sales Line": // Return Order
+            BEGIN
+              SalesLine.SETRANGE("Document Type","Source Subtype");
+              SalesLine.SETRANGE("Document No.","Source No.");
+              IF SalesLine.FIND('-') THEN
+                REPEAT
+                  SETRANGE("Source Line No.",SalesLine."Line No.");
+                  IF FIND('-') THEN BEGIN
+                    IF "Source Document" = "Source Document"::"Sales Order" THEN BEGIN
+                      ModifyLine := SalesLine."Qty. to Ship" <> -"Qty. to Receive";
+                      IF ModifyLine THEN
+                        SalesLine.VALIDATE("Qty. to Ship",-"Qty. to Receive");
+                    END ELSE BEGIN
+                      ModifyLine := SalesLine."Return Qty. to Receive" <> "Qty. to Receive";
+                      IF ModifyLine THEN BEGIN
+                        // --> 20140122-Wi00-CMC02.02.00-1389-FHS01
+                        IF (("Qty. to Receive" + SalesLine."Return Qty. Received" > SalesLine.Quantity) OR
+                           ((("Qty. to Receive" + SalesLine."Return Qty. Received") < SalesLine.Quantity) AND "Cancel Remaining Qty"))
+                        THEN
+                          UpdateQtyOfSalesLine("Qty. to Receive", SalesLine);
+                        // <-- 20140122-Wi00-CMC02.02.00-1389-FHS01
+                        SalesLine.VALIDATE("Return Qty. to Receive","Qty. to Receive");
+                      END;
+                    END;
+                    IF SalesLine."Bin Code" <> "Bin Code" THEN BEGIN
+                      SalesLine."Bin Code" := "Bin Code";
+                      ModifyLine := TRUE;
+                    END;
+                    // --> 20140105-WI00-CMC02.02.00-1386-SD01
+                    IF SalesLine."Cell Code"<> "Cell Code" THEN BEGIN
+                      SalesLine."Cell Code":= "Cell Code";
+                      ModifyLine := TRUE;
+                    END;
+                    // <-- 20140105-WI00-CMC02.02.00-1386-SD01
+
+                    // --> 20140529-8060990/101-CMB6.00.10.09-2168-FEC01
+                    IF SalesLine."Shipment Method Code" <> "Shipment Method Code" THEN BEGIN
+                      SalesLine."Shipment Method Code" := "Shipment Method Code";
+                      ModifyLine := TRUE;
+                    END;
+                    // <-- 20140529-8060990/101-CMB6.00.10.09-2168-FEC01
+
+                    // --> 20130709-APP27-CMC02.02.00-AKH01
+                    IF SalesLine."Shipment Method Code" <> "Shipment Method Code" THEN BEGIN
+                        SalesLine."Shipment Method Code" := "Shipment Method Code";
+                        ModifyLine := TRUE;
+                    END;
+                    IF SalesLine."Actual Shipping Agent Code" <> "Actual Shipping Agent Code" THEN BEGIN
+                      SalesLine."Actual Shipping Agent Code" := "Actual Shipping Agent Code";
+                      ModifyLine := TRUE;
+                    END;
+                    IF  SalesLine.Consignment <> Consignment THEN BEGIN
+                      SalesLine.Consignment := Consignment;
+                      ModifyLine := TRUE;
+                    END;
+                    // <-- 20130709-APP27-CMC02.02.00-AKH01
+
+                    // --> 20140310-Wi00-CMC02.02.00-1817-FEC02
+                    IF SalesLine."Truck Registration" <> "Truck Registration" THEN BEGIN
+                      SalesLine."Truck Registration" := "Truck Registration";
+                      ModifyLine := TRUE;
+                    END;
+                    IF SalesLine."Driver Name" <> "Driver Name" THEN BEGIN
+                      SalesLine."Driver Name" := "Driver Name";
+                      ModifyLine := TRUE;
+                    END;
+                    // <-- 20140310-Wi00-CMC02.02.00-1817-FEC02
+
+                  END ELSE
+                    IF "Source Document" = "Source Document"::"Sales Order" THEN BEGIN
+                      ModifyLine := SalesLine."Qty. to Ship" <> 0;
+                      IF ModifyLine THEN
+                        SalesLine.VALIDATE("Qty. to Ship",0);
+                    END ELSE BEGIN
+                      ModifyLine := SalesLine."Return Qty. to Receive" <> 0;
+                      IF ModifyLine THEN
+                        // --> 20120705-Wi00-CMC02.01.00-JLT01
+                        IF (SalesLine."CVO Item Attached Line" <> "Source Line No.") AND
+                          (SalesLine."CVO Corn Item Attached Line" <> "Source Line No.") AND
+                          (SalesLine."RPD Item Attached Line" <> "Source Line No.")
+                          // --> 20160705-APP12-ADV01.01.00-3111-OAN01
+                          AND (SalesLine."Free Item Root Line" <> "Source Line No.")
+                          // <-- 20160705-APP12-ADV01.01.00-3111-OAN01
+                          // --> 20160802-Nut08-ADV01.01.00-20894-OAN01
+                          AND (SalesLine."Item Charge Root Line No." <> "Source Line No.")
+                          // <-- 20160802-Nut08-ADV01.01.00-20894-OAN01
+                        THEN
+                        // <-- 20120705-Wi00-CMC02.01.00-JLT01
+                          SalesLine.VALIDATE("Return Qty. to Receive",0);
+                    END;
+
+                  IF ModifyLine THEN BEGIN
+                    // --> 20120111-Int01-CMC02.01.00-DRN01
+                    cduWeighingManagement_L.InitReturnSalesDocumentLines(SalesLine,WhseRcptLine2);
+                    // <-- 20120111-Int01-CMC02.01.00-DRN01
+                    SalesLine.MODIFY;
+                    // --> 20120828-Wi00-CMC01.04.05-TLM13262-JLT01
+                    SalesLine.GenerateTaxLine(SalesLine);
+                    // <-- 20120828-Wi00-CMC01.04.05-TLM13262-JLT01
+                  END;
+                UNTIL SalesLine.NEXT = 0;
+            END;
+          DATABASE::"Transfer Line":
+            BEGIN
+              TransLine.SETRANGE("Document No.","Source No.");
+              TransLine.SETRANGE("Derived From Line No.",0);
+              IF TransLine.FIND('-') THEN
+                REPEAT
+                  SETRANGE("Source Line No.",TransLine."Line No.");
+                  IF FIND('-') THEN BEGIN
+                    // --> 20140428-LOG11-CMC02.02.00-2051-FEC02
+                    {BEFORE
+                    ModifyLine := TransLine."Qty. to Receive" <> "Qty. to Receive";
+                    AFTER}
+                    ModifyLine := (TransLine."Qty. to Receive" <> "Qty. to Receive") OR
+                      (TransLine."Cancel Transit Location Qty" <> "Cancel Transit Location Qty") OR
+                      ("No Qty Received");
+                    // <-- 20140428-LOG11-CMC02.02.00-2051-FEC02
+
+                    // --> 20130612-Log11-CMC02.02.00-FEC01
+                    {BEFORE
+                    IF ModifyLine THEN
+                      TransLine.VALIDATE("Qty. to Receive","Qty. to Receive");
+                    AFTER}
+                    IF ModifyLine THEN BEGIN
+                      // --> 20130704-Log11-CMC02.02.00-FEC01
+                      TransLine."Cancel Transit Location Qty" := "Cancel Transit Location Qty";
+                      // <-- 20130704-Log11-CMC02.02.00-FEC01
+                      // --> 20140327-App10-CMC02.02.00-1844-FEC01
+                      {BEFORE
+                      IF "Qty. to Receive" > TransLine."Qty. in Transit" THEN
+                      AFTER}
+                      IF TransLine."Cancel Transit Location Qty" THEN
+                      // <-- 20140327-App10-CMC02.02.00-1844-FEC01
+                        TransLine.VALIDATE("CMC Actual Qty. to Receive","Qty. to Receive")
+                      ELSE
+                        TransLine.VALIDATE("Qty. to Receive","Qty. to Receive");
+                    END;
+                    // <-- 20130612-Log11-CMC02.02.00-FEC01
+                    IF TransLine."Transfer-To Bin Code" <> "Bin Code" THEN BEGIN
+                      TransLine."Transfer-To Bin Code" := "Bin Code";
+                      ModifyLine := TRUE;
+                    END;
+                    // --> 20140105-WI00-CMC02.02.00-1386-SD01
+                    IF TransLine."Transfer-To Cell Code"<> "Cell Code" THEN BEGIN
+                      TransLine."Transfer-To Cell Code":= "Cell Code";
+                      ModifyLine := TRUE;
+                    END;
+                    // <-- 20140105-WI00-CMC02.02.00-1386-SD01
+
+                    // --> 20130709-APP27-CMC02.02.00-AKH01
+                    IF TransLine."Shipment Method Code" <> "Shipment Method Code" THEN BEGIN
+                      TransLine."Shipment Method Code" := "Shipment Method Code";
+                      ModifyLine := TRUE;
+                    END;
+                    IF TransLine."Actual Shipping Agent Code" <> "Actual Shipping Agent Code" THEN BEGIN
+                      TransLine."Actual Shipping Agent Code" := "Actual Shipping Agent Code";
+                      ModifyLine := TRUE;
+                    END;
+                    // --> 20150827-APP27-ADV01.01.00-2165-FBE01
+                    RecTransLineDeriv_L.SETRANGE("Document No.",TransLine."Document No.");
+                    RecTransLineDeriv_L.SETRANGE("Derived From Line No.",TransLine."Line No.");
+                    IF RecTransLineDeriv_L.FINDSET THEN
+                    REPEAT
+                      IF (RecTransLineDeriv_L."Actual Shipping Agent Code" <> "Actual Shipping Agent Code") THEN BEGIN
+                        RecTransLineDeriv_L."Actual Shipping Agent Code" := "Actual Shipping Agent Code";
+                        RecTransLineDeriv_L.MODIFY;
+                      END;
+                    UNTIL RecTransLineDeriv_L.NEXT = 0;
+                    // <-- 20150827-APP27-ADV01.01.00-2165-FBE01
+                    IF  TransLine.Consignment <> Consignment THEN BEGIN
+                      TransLine.Consignment := Consignment;
+                      ModifyLine := TRUE;
+                    END;
+                    // <-- 20130709-APP27-CMC02.02.00-AKH01
+
+                    // --> 20140310-Wi00-CMC02.02.00-1817-FEC03
+                    IF TransLine."Truck Registration" <> "Truck Registration" THEN BEGIN
+                      TransLine."Truck Registration" := "Truck Registration";
+                      ModifyLine := TRUE;
+                    END;
+                    IF TransLine."Driver Name" <> "Driver Name" THEN BEGIN
+                      TransLine."Driver Name" := "Driver Name";
+                      ModifyLine := TRUE;
+                    END;
+                    // <-- 20140310-Wi00-CMC02.02.00-1817-FEC03
+
+                    // --> 20141219-LOG10-CMC02.02.00-1817-DRN01
+                    IF TransLine."Notebook Weighing No." <> "Notebook Weighing No." THEN BEGIN
+                      TransLine."Notebook Weighing No." := "Notebook Weighing No.";
+                      ModifyLine := TRUE;
+                    END;
+                    IF TransLine."Manual Weighing No." <> "Manual Weighing No." THEN BEGIN
+                      TransLine."Manual Weighing No." := "Manual Weighing No.";
+                      ModifyLine := TRUE;
+                    END;
+                    // <-- 20141219-LOG10-CMC02.02.00-1817-DRN01
+
+                  END ELSE BEGIN
+                    ModifyLine := TransLine."Qty. to Receive" <> 0;
+                    IF ModifyLine THEN
+                      TransLine.VALIDATE("Qty. to Receive",0);
+                  END;
+
+                  IF ModifyLine THEN
+                    TransLine.MODIFY;
+                UNTIL TransLine.NEXT = 0;
+            END;
+        END;
+        SETRANGE("Source Line No.");
+      END;
+    END;
+
+    LOCAL PROCEDURE PostSourceDocument@5(WhseRcptLine@1000 : Record 7317);
+    VAR
+      WhseSetup@1001 : Record 5769;
+      WhseRcptHeader@1002 : Record 7316;
+      PurchPost@1003 : Codeunit 90;
+      SalesPost@1004 : Codeunit 80;
+      TransferPostReceipt@1005 : Codeunit 5705;
+      "<< 3LI LOCALS >>"@8053001 : Integer;
+      cduWeighingManagement_L@8053000 : Codeunit 8053010;
+      RecPostedWhseRcptLine_L@8053002 : Record 7319;
+      RecShippingOrder_L@1000000000 : Record 8053265;
+      CUCharterTransMgmt_L@1000000001 : Codeunit 60001;
+      RecShippingOrder2_L@1000000002 : Record 8053265;
+      TranspOrderNo_L@60007 : Code[20];
+      RecCharter_L@60006 : Record 60013;
+      RecPurchHead_L@60005 : Record 38;
+      RecPurchaseLine_L@60004 : Record 39;
+      CUPurchPost_L@60003 : Codeunit 90;
+      RecSalesHead_L@60002 : Record 36;
+      RecSalesLine_L@60001 : Record 37;
+      RecReturnReceLine_L@60000 : Record 6661;
+      RecPurchRcptLine_L@60008 : Record 121;
+    BEGIN
+      WhseSetup.GET;
+      WITH WhseRcptLine DO BEGIN
+        WhseRcptHeader.GET("No.");
+        CASE "Source Type" OF
+          DATABASE::"Purchase Line":
+            BEGIN
+              IF "Source Document" = "Source Document"::"Purchase Order" THEN
+                PurchHeader.Receive := TRUE
+              ELSE
+                PurchHeader.Ship := TRUE;
+              PurchHeader.Invoice := FALSE;
+
+              PurchPost.SetWhseRcptHeader(WhseRcptHeader);
+              CASE WhseSetup."Receipt Posting Policy" OF
+                WhseSetup."Receipt Posting Policy"::"Posting errors are not processed":
+                  BEGIN
+                    PurchPost.RUN(PurchHeader);
+                    CounterSourceDocOK := CounterSourceDocOK + 1;
+                  END;
+                WhseSetup."Receipt Posting Policy"::"Stop and show the first posting error":
+                  BEGIN
+                    PurchPost.RUN(PurchHeader);
+                    CounterSourceDocOK := CounterSourceDocOK + 1;
+                  END;
+              END;
+
+              // --> 20210603-WI00-ADV01.01.00-3555-CJY01
+              //d'placement du paquet de code impression ci-dessous plus bas
+              {BEFORE
+              // <-- 20120117-Int01-CMC02.01.00-DRN01
+              IF Print_G THEN
+                IF "Source Document" = "Source Document"::"Purchase Order" THEN BEGIN
+                  // --> 20140402-LOG10-CMC02.02.00-1923-DRN01
+                  IF ("Weighing Source Line No." = 0) AND NOT "Posted Weighing" THEN BEGIN
+                    RecPostedWhseRcptLine_L.SETCURRENTKEY("Whse. Receipt No.","Whse Receipt Line No.");
+                    RecPostedWhseRcptLine_L.SETRANGE("Whse. Receipt No.","No.");
+                    RecPostedWhseRcptLine_L.SETRANGE("Whse Receipt Line No.","Line No.");
+                    RecPostedWhseRcptLine_L.FINDFIRST;
+                    cduWeighingManagement_L.PrintWeighingTicket3(RecPostedWhseRcptLine_L."Weighing No.",FALSE);
+                  END;
+                  // <-- 20140402-LOG10-CMC02.02.00-1923-DRN01
+                END;
+              // --> 20120117-Int01-CMC02.01.00-DRN01
+              AFTER}
+              // <-- 20210603-WI00-ADV01.01.00-3555-CJY01
+
+              // --> 20141216-APP27-TER01.01.00-BSI01
+              IF "Shipping Order No." <> '' THEN BEGIN
+                TranspOrderNo_L := '';
+                IF RecShippingOrder2_L.GET("Shipping Order No.") THEN BEGIN
+                  RecShippingOrder2_L."Number of Achieved Units" := RecShippingOrder2_L."Number of Achieved Units" + "Qty. to Receive";
+                  // --> 20150401-APP27-TER01.01.00-233-BSI01
+                  RecShippingOrder2_L.VALIDATE("Realized Quantity",RecShippingOrder2_L."Realized Quantity" + "Qty. to Receive");
+                  // <-- 20150401-APP27-TER01.01.00-233-BSI01
+                  RecShippingOrder2_L.MODIFY;
+                  // --> 20150908-APP27-TER01.01.00-2028-BSI01
+                  {before
+                  TranspOrderNo_L := CUCharterTransMgmt_L.CreateTransportPurchOrder(RecShippingOrder2_L,"Qty. to Receive");
+                  after}
+                  TranspOrderNo_L := CUCharterTransMgmt_L.CreateTransportPurchOrder(RecShippingOrder2_L,"Qty. to Receive",WORKDATE);
+                  // <-- 20150908-APP27-TER01.01.00-2028-BSI01
+                END;
+                CUCharterTransMgmt_L.TerminateCharter(RecShippingOrder2_L."Charter No");
+                IF RecShippingOrder_L.GET("Shipping Order No.") THEN
+                  IF RecCharter_L.GET(RecShippingOrder_L."Charter No") THEN BEGIN
+                    CASE RecCharter_L."Source Document Type" OF
+                      RecCharter_L."Source Document Type"::" " : BEGIN
+                        IF "Source Document" = "Source Document"::"Purchase Order" THEN BEGIN
+                          RecPurchHead_L.GET(RecPurchHead_L."Document Type"::Order,WhseRcptLine."Source No.");
+                          RecPurchaseLine_L.GET(RecPurchaseLine_L."Document Type"::Order,
+                                             WhseRcptLine."Source No.",WhseRcptLine."Source Line No.");
+                          RecPurchaseLine_L."Transport Order No." := TranspOrderNo_L;
+                          RecPurchaseLine_L.MODIFY;
+                          CLEAR(RecPurchRcptLine_L);
+                          RecPurchRcptLine_L.SETRANGE("Document No.",RecPurchHead_L."Last Receiving No.");
+                          RecPurchRcptLine_L.SETRANGE("Order No.",RecPurchaseLine_L."Document No.");
+                          RecPurchRcptLine_L.SETRANGE("Order Line No.",RecPurchaseLine_L."Line No.");
+                          IF RecPurchRcptLine_L.FIND('-') THEN BEGIN
+                            RecPurchRcptLine_L."Transport Order No." := RecPurchaseLine_L."Transport Order No.";
+                            RecPurchRcptLine_L.MODIFY;
+                          END;
+                        END;
+                      END;
+                    END;
+                  END;
+              END;
+              // <-- 20141216-APP27-TER01.01.00-BSI01
+              CLEAR(PurchPost);
+              // --> 20210603-WI00-ADV01.01.00-3555-CJY01
+              //on commit juste avant l'impression pour relacher les tables et limiter les locks
+              COMMIT;
+              // <-- 20120117-Int01-CMC02.01.00-DRN01
+              IF Print_G THEN
+                IF "Source Document" = "Source Document"::"Purchase Order" THEN BEGIN
+                  // --> 20140402-LOG10-CMC02.02.00-1923-DRN01
+                  IF ("Weighing Source Line No." = 0) AND NOT "Posted Weighing" THEN BEGIN
+                    RecPostedWhseRcptLine_L.SETCURRENTKEY("Whse. Receipt No.","Whse Receipt Line No.");
+                    RecPostedWhseRcptLine_L.SETRANGE("Whse. Receipt No.","No.");
+                    RecPostedWhseRcptLine_L.SETRANGE("Whse Receipt Line No.","Line No.");
+                    RecPostedWhseRcptLine_L.FINDFIRST;
+                    cduWeighingManagement_L.PrintWeighingTicket3(RecPostedWhseRcptLine_L."Weighing No.",FALSE);
+                  END;
+                  // <-- 20140402-LOG10-CMC02.02.00-1923-DRN01
+                END;
+              // --> 20120117-Int01-CMC02.01.00-DRN01
+
+              // <-- 20210603-WI00-ADV01.01.00-3555-CJY01
+
+            END;
+          DATABASE::"Sales Line": // Return Order
+            BEGIN
+              IF "Source Document" = "Source Document"::"Sales Order" THEN
+                SalesHeader.Ship := TRUE
+              ELSE
+                SalesHeader.Receive := TRUE;
+              SalesHeader.Invoice := FALSE;
+
+              SalesPost.SetWhseRcptHeader(WhseRcptHeader);
+              CASE WhseSetup."Receipt Posting Policy" OF
+                WhseSetup."Receipt Posting Policy"::"Posting errors are not processed":
+                  BEGIN
+                    SalesPost.RUN(SalesHeader);
+                    CounterSourceDocOK := CounterSourceDocOK + 1;
+                  END;
+                WhseSetup."Receipt Posting Policy"::"Stop and show the first posting error":
+                  BEGIN
+                    SalesPost.RUN(SalesHeader);
+                    CounterSourceDocOK := CounterSourceDocOK + 1;
+                  END;
+              END;
+
+              // --> 20210603-WI00-ADV01.01.00-3555-CJY01
+              //on d'place l'impression ci-dessous en fin de traitement en vue d'optimisation
+              {BEFORE
+              // <-- 20120117-Int01-CMC02.01.00-DRN01
+              IF Print_G THEN
+                IF "Source Document" = "Source Document"::"Sales Return Order" THEN BEGIN
+                  // --> 20140402-LOG10-CMC02.02.00-1923-DRN01
+                  IF ("Weighing Source Line No." = 0) AND NOT "Posted Weighing" THEN BEGIN
+                    RecPostedWhseRcptLine_L.SETCURRENTKEY("Whse. Receipt No.","Whse Receipt Line No.");
+                    RecPostedWhseRcptLine_L.SETRANGE("Whse. Receipt No.","No.");
+                    RecPostedWhseRcptLine_L.SETRANGE("Whse Receipt Line No.","Line No.");
+                    RecPostedWhseRcptLine_L.FINDFIRST;
+                    cduWeighingManagement_L.PrintWeighingTicket3(RecPostedWhseRcptLine_L."Weighing No.",FALSE);
+                  END;
+                  // <-- 20140402-LOG10-CMC02.02.00-1923-DRN01
+                END;
+              // --> 20120117-Int01-CMC02.01.00-DRN01
+              AFTER}
+              // --> 20141216-APP27-TER01.01.00-BSI01
+              IF "Shipping Order No." <> '' THEN BEGIN
+                TranspOrderNo_L := '';
+                IF RecShippingOrder2_L.GET("Shipping Order No.") THEN BEGIN
+                  RecShippingOrder2_L."Number of Achieved Units" := RecShippingOrder2_L."Number of Achieved Units" + "Qty. to Receive";
+                  // --> 20150401-APP27-TER01.01.00-233-BSI01
+                  RecShippingOrder2_L.VALIDATE("Realized Quantity",RecShippingOrder2_L."Realized Quantity" + "Qty. to Receive");
+                  // <-- 20150401-APP27-TER01.01.00-233-BSI01
+                  RecShippingOrder2_L.MODIFY;
+                  // --> 20150908-APP27-TER01.01.00-2028-BSI01
+                  {before
+                  TranspOrderNo_L := CUCharterTransMgmt_L.CreateTransportPurchOrder(RecShippingOrder2_L,"Qty. to Receive");
+                  after}
+                  TranspOrderNo_L := CUCharterTransMgmt_L.CreateTransportPurchOrder(RecShippingOrder2_L,"Qty. to Receive",WORKDATE);
+                  // <-- 20150908-APP27-TER01.01.00-2028-BSI01
+                END;
+                CUCharterTransMgmt_L.TerminateCharter(RecShippingOrder2_L."Charter No");
+                IF RecShippingOrder_L.GET("Shipping Order No.") THEN
+                  IF RecCharter_L.GET(RecShippingOrder_L."Charter No") THEN BEGIN
+                    CASE RecCharter_L."Source Document Type" OF
+                      RecCharter_L."Source Document Type"::"Purchase order" : BEGIN
+                        RecPurchHead_L.GET(RecPurchHead_L."Document Type"::Order,RecCharter_L."Document No.");
+                        RecPurchaseLine_L.GET(RecPurchHead_L."Document Type"::Order,RecCharter_L."Document No.",
+                                              RecCharter_L."Document Line No.");
+                        RecPurchaseLine_L.VALIDATE("Qty. to Receive", "Qty. to Receive");
+                        RecPurchaseLine_L."Transport Order No." := TranspOrderNo_L;
+                        RecPurchaseLine_L.MODIFY;
+                        RecPurchHead_L.Receive := TRUE;
+                        RecPurchHead_L.VALIDATE("Posting Date",WORKDATE);
+                        RecPurchHead_L."Vendor Shipment No." := RecPurchHead_L."No.";
+                        RecPurchHead_L.MODIFY;
+                        CLEAR(CUPurchPost_L);
+                        CUPurchPost_L.RUN(RecPurchHead_L);
+                      END; // END Purchase order
+                      RecCharter_L."Source Document Type"::" " : BEGIN
+                        IF "Source Document" = "Source Document"::"Sales Return Order" THEN BEGIN
+                          RecSalesHead_L.GET(RecSalesLine_L."Document Type"::"Return Order",WhseRcptLine."Source No.");
+                          RecSalesLine_L.GET(RecSalesLine_L."Document Type"::"Return Order",
+                                             WhseRcptLine."Source No.",WhseRcptLine."Source Line No.");
+                          RecSalesLine_L."Transport Order No." := TranspOrderNo_L;
+                          RecSalesLine_L.MODIFY;
+                          CLEAR(RecReturnReceLine_L);
+                          RecReturnReceLine_L.SETRANGE("Document No.",RecSalesHead_L."Last Return Receipt No.");
+                          RecReturnReceLine_L.SETRANGE("Return Order No.",RecSalesLine_L."Document No.");
+                          RecReturnReceLine_L.SETRANGE("Return Order Line No.",RecSalesLine_L."Line No.");
+                          IF RecReturnReceLine_L.FIND('-') THEN BEGIN
+                            RecReturnReceLine_L."Transport Order No." := RecSalesLine_L."Transport Order No.";
+                            RecReturnReceLine_L.MODIFY;
+                          END;
+                        END;
+                      END;// END " "
+                    END; // END CASE
+                  END;
+              END;
+              // <-- 20141216-APP27-TER01.01.00-BSI01
+              CLEAR(SalesPost);
+              // --> 20210603-WI00-ADV01.01.00-3555-CJY01
+              //on commit juste avant l'impression pour relacher les tables et limiter les locks
+              COMMIT;
+              // <-- 20120117-Int01-CMC02.01.00-DRN01
+              IF Print_G THEN
+                IF "Source Document" = "Source Document"::"Sales Return Order" THEN BEGIN
+                  // --> 20140402-LOG10-CMC02.02.00-1923-DRN01
+                  IF ("Weighing Source Line No." = 0) AND NOT "Posted Weighing" THEN BEGIN
+                    RecPostedWhseRcptLine_L.SETCURRENTKEY("Whse. Receipt No.","Whse Receipt Line No.");
+                    RecPostedWhseRcptLine_L.SETRANGE("Whse. Receipt No.","No.");
+                    RecPostedWhseRcptLine_L.SETRANGE("Whse Receipt Line No.","Line No.");
+                    RecPostedWhseRcptLine_L.FINDFIRST;
+                    cduWeighingManagement_L.PrintWeighingTicket3(RecPostedWhseRcptLine_L."Weighing No.",FALSE);
+                  END;
+                  // <-- 20140402-LOG10-CMC02.02.00-1923-DRN01
+                END;
+              // --> 20120117-Int01-CMC02.01.00-DRN01
+              // <-- 20210603-WI00-ADV01.01.00-3555-CJY01
+            END;
+          DATABASE::"Transfer Line":
+            BEGIN
+              IF HideValidationDialog THEN
+                TransferPostReceipt.SetHideValidationDialog(HideValidationDialog);
+              TransferPostReceipt.SetWhseRcptHeader(WhseRcptHeader);
+              CASE WhseSetup."Receipt Posting Policy" OF
+                WhseSetup."Receipt Posting Policy"::"Posting errors are not processed":
+                  BEGIN
+                    TransferPostReceipt.RUN(TransHeader);
+                    CounterSourceDocOK := CounterSourceDocOK + 1;
+                  END;
+                WhseSetup."Receipt Posting Policy"::"Stop and show the first posting error":
+                  BEGIN
+                    TransferPostReceipt.RUN(TransHeader);
+                    CounterSourceDocOK := CounterSourceDocOK + 1;
+                  END;
+              END;
+              // --> 20210603-WI00-ADV01.01.00-3555-CJY01
+              CLEAR(TransferPostReceipt);
+              //on commit juste avant l'impression pour relacher les tables et limiter les locks
+              COMMIT;
+              // <-- 20210603-WI00-ADV01.01.00-3555-CJY01
+
+              // <-- 20120629-Int01-CMC02.01.00-DRN01
+              IF Print_G THEN
+                // --> 20140402-LOG10-CMC02.02.00-1923-DRN01
+                IF ("Weighing Source Line No." = 0) AND NOT "Posted Weighing" THEN BEGIN
+                  RecPostedWhseRcptLine_L.SETCURRENTKEY("Whse. Receipt No.","Whse Receipt Line No.");
+                  RecPostedWhseRcptLine_L.SETRANGE("Whse. Receipt No.","No.");
+                  RecPostedWhseRcptLine_L.SETRANGE("Whse Receipt Line No.","Line No.");
+                  RecPostedWhseRcptLine_L.FINDFIRST;
+                  cduWeighingManagement_L.PrintWeighingTicket3(RecPostedWhseRcptLine_L."Weighing No.",FALSE);
+                END;
+                // <-- 20140402-LOG10-CMC02.02.00-1923-DRN01
+              // --> 20120629-Int01-CMC02.01.00-DRN01
+
+              // --> 20210603-WI00-ADV01.01.00-3555-CJY01
+              //on remonte ce clear juste avant l'impression du ticket de pes'e dans laquelle il n'intervient pas
+              {BEFORE
+              CLEAR(TransferPostReceipt);
+              }
+              // <-- 20210603-WI00-ADV01.01.00-3555-CJY01
+            END;
+        END;
+      END;
+    END;
+
+    PROCEDURE GetResultMessage@10();
+    VAR
+      MessageText@1000 : Text[250];
+    BEGIN
+      MessageText := Text002;
+      IF CounterPutAways > 0 THEN
+        MessageText := MessageText + '\\' + Text003;
+      MESSAGE(MessageText,CounterSourceDocOK,CounterSourceDocTotal,CounterPutAways);
+    END;
+
+    PROCEDURE PostUpdateWhseDocuments@16(VAR WhseRcptHeader@1000 : Record 7316);
+    VAR
+      WhseRcptLine2@1001 : Record 7317;
+      WhsePutawayRequest@1010 : Record 7324;
+      "<< 3LI LOCALS >>"@8053001 : Integer;
+      cduWeighingManagement_L@8053000 : Codeunit 8053010;
+    BEGIN
+      WITH WhseRcptLineBuf DO
+        IF FIND('-') THEN BEGIN
+          REPEAT
+            WhseRcptLine2.GET("No.","Line No.");
+            IF "Qty. Outstanding" = "Qty. to Receive" THEN
+              WhseRcptLine2.DELETE
+            ELSE BEGIN
+              // --> 20110601-Wi00-CMC01.04
+              IF "Qty. Outstanding" < "Qty. to Receive" THEN
+                WhseRcptLine2.DELETE
+              ELSE BEGIN
+              // <-- 20110601-Wi00-CMC01.04
+                WhseRcptLine2.VALIDATE("Qty. Received","Qty. Received" + "Qty. to Receive");
+                WhseRcptLine2.VALIDATE("Qty. Outstanding","Qty. Outstanding" - "Qty. to Receive");
+                WhseRcptLine2."Qty. to Cross-Dock" := 0;
+                WhseRcptLine2."Qty. to Cross-Dock (Base)" := 0;
+                WhseRcptLine2.Status := WhseRcptLine2.GetLineStatus;
+                // --> 20120112-Int01-CMC02.01.00-DRN01
+                cduWeighingManagement_L.InitWeighingDataToWhseRcptLine(WhseRcptLine2);
+                // <-- 20120112-Int01-CMC02.01.00-DRN01
+                WhseRcptLine2.MODIFY;
+              // --> 20110601-Wi00-CMC01.04
+              END;
+              // <-- 20110601-Wi00-CMC01.04
+            END;
+          UNTIL NEXT = 0;
+          DELETEALL;
+        END;
+
+      IF WhseRcptHeader."Create Posted Header" THEN BEGIN
+        WhseRcptHeader."Last Receiving No." := WhseRcptHeader."Receiving No.";
+        WhseRcptHeader."Receiving No." := '';
+        WhseRcptHeader."Create Posted Header" := FALSE;
+      END;
+
+      WhseRcptLine2.SETRANGE("No.",WhseRcptHeader."No.");
+      IF WhseRcptLine2.FIND('-') THEN BEGIN
+        WhseRcptHeader."Document Status" := WhseRcptHeader.GetHeaderStatus(0);
+        WhseRcptHeader.MODIFY;
+      END ELSE BEGIN
+        WhseRcptHeader.DeleteRelatedLines(FALSE);
+        WhseRcptHeader.DELETE;
+      END;
+
+      GetLocation(WhseRcptHeader."Location Code");
+      IF Location."Require Put-away" THEN BEGIN
+        WhsePutawayRequest."Document Type" := WhsePutawayRequest."Document Type"::Receipt;
+        WhsePutawayRequest."Document No." := WhseRcptHeader."Last Receiving No.";
+        WhsePutawayRequest."Location Code" := WhseRcptHeader."Location Code";
+        WhsePutawayRequest."Zone Code" := WhseRcptHeader."Zone Code";
+        WhsePutawayRequest."Bin Code" := WhseRcptHeader."Bin Code";
+        IF WhsePutawayRequest.INSERT THEN;
+      END;
+    END;
+
+    PROCEDURE CreatePostedRcptHeader@2(VAR PostedWhseRcptHeader@1000 : Record 7318;VAR WhseRcptHeader@1003 : Record 7316;VAR ReceivingNo2@1004 : Code[20];VAR PostingDate2@1005 : Date);
+    VAR
+      WhseComment@1002 : Record 5770;
+      WhseComment2@1001 : Record 5770;
+    BEGIN
+      ReceivingNo := ReceivingNo2;
+      PostingDate := PostingDate2;
+
+      IF NOT WhseRcptHeader."Create Posted Header" THEN BEGIN
+        PostedWhseRcptHeader.GET(WhseRcptHeader."Last Receiving No.");
+        EXIT;
+      END;
+
+      PostedWhseRcptHeader.INIT;
+      PostedWhseRcptHeader.TRANSFERFIELDS(WhseRcptHeader);
+      PostedWhseRcptHeader."No." := WhseRcptHeader."Receiving No.";
+      PostedWhseRcptHeader."Whse. Receipt No." := WhseRcptHeader."No.";
+
+      GetLocation(PostedWhseRcptHeader."Location Code");
+      IF NOT Location."Require Put-away" THEN
+        PostedWhseRcptHeader."Document Status" :=
+          PostedWhseRcptHeader."Document Status"::"Completely Put Away";
+      PostedWhseRcptHeader.INSERT;
+
+      WhseComment.SETRANGE("Table Name",WhseComment."Table Name"::"Whse. Receipt");
+      WhseComment.SETRANGE(Type,WhseComment.Type::" ");
+      WhseComment.SETRANGE("No.",WhseRcptHeader."No.");
+      IF WhseComment.FIND('-') THEN BEGIN
+        REPEAT
+          WhseComment2.INIT;
+          WhseComment2 := WhseComment;
+          WhseComment2."Table Name" := WhseComment2."Table Name"::"Posted Whse. Receipt";
+          WhseComment2."No." := PostedWhseRcptHeader."No.";
+          WhseComment2.INSERT;
+        UNTIL WhseComment.NEXT = 0;
+      END;
+
+      // --> 20140717-APP38-CMC02.02.00-FEC02
+      WhseLastLoadingMgt_G.MoveWhseRcptLastLoadToPosted(WhseRcptHeader,PostedWhseRcptHeader);
+      // <-- 20140717-APP38-CMC02.02.00-FEC02
+    END;
+
+    PROCEDURE CreatePostedRcptLine@4(VAR WhseRcptLine@1001 : Record 7317;VAR PostedWhseRcptHeader@1000 : Record 7318;VAR PostedWhseRcptLine@1002 : Record 7319;VAR TempHandlingSpecification@1003 : Record 336);
+    VAR
+      "<< 3LI LOCALS >>"@8053001 : Integer;
+      cduWeighingManagement_L@8053000 : Codeunit 8053010;
+    BEGIN
+      UpdateWhseRcptLineBuf(WhseRcptLine);
+      WITH PostedWhseRcptLine DO BEGIN
+        INIT;
+        TRANSFERFIELDS(WhseRcptLine);
+        "No." := PostedWhseRcptHeader."No.";
+        Quantity := WhseRcptLine."Qty. to Receive";
+        "Qty. (Base)" := WhseRcptLine."Qty. to Receive (Base)";
+        CASE WhseRcptLine."Source Document" OF
+          WhseRcptLine."Source Document"::"Purchase Order":
+            "Posted Source Document" := "Posted Source Document"::"Posted Receipt";
+          WhseRcptLine."Source Document"::"Sales Order":
+            "Posted Source Document" := "Posted Source Document"::"Posted Shipment";
+          WhseRcptLine."Source Document"::"Purchase Return Order":
+             "Posted Source Document" := "Posted Source Document"::"Posted Return Shipment";
+          WhseRcptLine."Source Document"::"Sales Return Order":
+            "Posted Source Document" := "Posted Source Document"::"Posted Return Receipt";
+          WhseRcptLine."Source Document"::"Inbound Transfer":
+            "Posted Source Document" := "Posted Source Document"::"Posted Transfer Receipt";
+        END;
+
+        GetLocation("Location Code");
+        IF NOT Location."Require Put-away" THEN BEGIN
+          "Qty. Put Away" := Quantity;
+          "Qty. Put Away (Base)" := "Qty. (Base)";
+          Status := Status::"Completely Put Away";
+        END;
+        "Posted Source No." := ReceivingNo;
+        "Posting Date" := PostingDate;
+        "Whse. Receipt No." := WhseRcptLine."No.";
+        "Whse Receipt Line No." := WhseRcptLine."Line No.";
+        INSERT;
+      END;
+
+      PostWhseJnlLine(PostedWhseRcptHeader,PostedWhseRcptLine,TempHandlingSpecification);
+    END;
+
+    LOCAL PROCEDURE UpdateWhseRcptLineBuf@18(WhseRcptLine2@1000 : Record 7317);
+    BEGIN
+      WITH WhseRcptLine2 DO BEGIN
+        WhseRcptLineBuf."No." := "No.";
+        WhseRcptLineBuf."Line No." := "Line No.";
+        IF NOT WhseRcptLineBuf.FIND THEN BEGIN
+          WhseRcptLineBuf.INIT;
+          WhseRcptLineBuf := WhseRcptLine2;
+          WhseRcptLineBuf.INSERT;
+        END;
+      END;
+    END;
+
+    PROCEDURE PostWhseJnlLine@9(VAR PostedWhseRcptHeader@1000 : Record 7318;VAR PostedWhseRcptLine@1001 : Record 7319;VAR TempWhseSplitSpecification@1002 : TEMPORARY Record 336);
+    VAR
+      TempWhseJnlLine2@1003 : TEMPORARY Record 7311;
+    BEGIN
+      WITH PostedWhseRcptLine DO BEGIN
+        GetLocation("Location Code");
+        InsertWhseItemEntryRelation(PostedWhseRcptHeader,PostedWhseRcptLine,TempWhseSplitSpecification);
+
+        IF Location."Bin Mandatory" THEN BEGIN
+          InsertTempWhseJnlLine(PostedWhseRcptLine);
+
+          TempWhseJnlLine.GET('','',"Location Code","Line No.");
+          TempWhseJnlLine."Line No." := 0;
+          TempWhseJnlLine."Reference No." := ReceivingNo;
+          TempWhseJnlLine."Registering Date" := PostingDate;
+          TempWhseJnlLine."Whse. Document Type" := TempWhseJnlLine."Whse. Document Type"::Receipt;
+          TempWhseJnlLine."Whse. Document No." := "No.";
+          TempWhseJnlLine."Whse. Document Line No." := "Line No.";
+
+          ItemTrackingMgt.SplitWhseJnlLine(TempWhseJnlLine,TempWhseJnlLine2,TempWhseSplitSpecification,FALSE);
+          IF TempWhseJnlLine2.FIND('-') THEN
+            REPEAT
+              WhseJnlRegisterLine.RUN(TempWhseJnlLine2);
+           UNTIL TempWhseJnlLine2.NEXT = 0;
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE InsertWhseItemEntryRelation@38(VAR PostedWhseRcptHeader@1000 : Record 7318;VAR PostedWhseRcptLine@1002 : Record 7319;VAR TempWhseSplitSpecification@1003 : TEMPORARY Record 336);
+    VAR
+      WhseItemEntryRelation@1001 : Record 6509;
+    BEGIN
+      IF ItemEntryRelationCreated THEN BEGIN
+        IF TempWhseItemEntryRelation.FIND('-') THEN BEGIN
+          REPEAT
+            WhseItemEntryRelation := TempWhseItemEntryRelation;
+            WhseItemEntryRelation."Source Type" := DATABASE::"Posted Whse. Receipt Line";
+            WhseItemEntryRelation."Source ID" := PostedWhseRcptHeader."No.";
+            WhseItemEntryRelation."Source Ref. No." := PostedWhseRcptLine."Line No.";
+            WhseItemEntryRelation.INSERT;
+          UNTIL TempWhseItemEntryRelation.NEXT = 0;
+          ItemEntryRelationCreated := FALSE;
+        END;
+        EXIT;
+      END;
+      TempWhseSplitSpecification.RESET;
+      IF TempWhseSplitSpecification.FIND('-') THEN
+        REPEAT
+          WhseItemEntryRelation.INIT;
+          WhseItemEntryRelation."Item Entry No." := TempWhseSplitSpecification."Entry No.";
+          WhseItemEntryRelation."Source Type" := DATABASE::"Posted Whse. Receipt Line";
+          WhseItemEntryRelation."Source ID" := PostedWhseRcptHeader."No.";
+          WhseItemEntryRelation."Source Ref. No." := PostedWhseRcptLine."Line No.";
+          WhseItemEntryRelation."Serial No." := TempWhseSplitSpecification."Serial No.";
+          WhseItemEntryRelation."Lot No." := TempWhseSplitSpecification."Lot No.";
+          WhseItemEntryRelation.INSERT;
+        UNTIL TempWhseSplitSpecification.NEXT = 0;
+    END;
+
+    PROCEDURE GetFirstPutAwayDocument@7(VAR WhseActivHeader@1000 : Record 5766) : Boolean;
+    BEGIN
+      EXIT(CreatePutAway.GetFirstPutAwayDocument(WhseActivHeader));
+    END;
+
+    PROCEDURE GetNextPutAwayDocument@8(VAR WhseActivHeader@1000 : Record 5766) : Boolean;
+    BEGIN
+      EXIT(CreatePutAway.GetNextPutAwayDocument(WhseActivHeader));
+    END;
+
+    PROCEDURE InsertTempWhseJnlLine@11(PostedWhseRcptLine@1001 : Record 7319);
+    VAR
+      SourceCodeSetup@1003 : Record 242;
+      SNRequired@1000 : Boolean;
+      LNRequired@1002 : Boolean;
+    BEGIN
+      WITH PostedWhseRcptLine DO BEGIN
+        TempWhseJnlLine.INIT;
+        TempWhseJnlLine."Entry Type" := TempWhseJnlLine."Entry Type":: "Positive Adjmt.";
+        TempWhseJnlLine."Line No." := "Line No.";
+        TempWhseJnlLine."Location Code" := "Location Code";
+        TempWhseJnlLine."To Zone Code" := "Zone Code";
+        TempWhseJnlLine."To Bin Code" := "Bin Code";
+        TempWhseJnlLine."Item No." := "Item No.";
+        TempWhseJnlLine.Description := Description;
+        GetLocation("Location Code");
+        IF Location."Directed Put-away and Pick" THEN BEGIN
+          TempWhseJnlLine."Qty. (Absolute)" := Quantity;
+          TempWhseJnlLine."Unit of Measure Code" := "Unit of Measure Code";
+          TempWhseJnlLine."Qty. per Unit of Measure" := "Qty. per Unit of Measure";
+          GetItemUnitOfMeasure2("Item No.","Unit of Measure Code");
+          TempWhseJnlLine.Cubage := ABS(TempWhseJnlLine."Qty. (Absolute)") * ItemUnitOfMeasure.Cubage;
+          TempWhseJnlLine.Weight := ABS(TempWhseJnlLine."Qty. (Absolute)") * ItemUnitOfMeasure.Weight;
+        END ELSE BEGIN
+          TempWhseJnlLine."Qty. (Absolute)" := "Qty. (Base)";
+          TempWhseJnlLine."Unit of Measure Code" := WMSMgt.GetBaseUOM("Item No.");
+          TempWhseJnlLine."Qty. per Unit of Measure" := 1;
+        END;
+
+        TempWhseJnlLine."Qty. (Absolute, Base)" := "Qty. (Base)";
+        TempWhseJnlLine."User ID" := USERID;
+        TempWhseJnlLine."Variant Code" := "Variant Code";
+        TempWhseJnlLine."Source Type" := "Source Type";
+        TempWhseJnlLine."Source Subtype" := "Source Subtype";
+        TempWhseJnlLine."Source No." := "Source No.";
+        TempWhseJnlLine."Source Line No." := "Source Line No.";
+        TempWhseJnlLine."Source Document" := "Source Document";
+        SourceCodeSetup.GET;
+        CASE "Source Document" OF
+          "Source Document"::"Purchase Order":
+             BEGIN
+               TempWhseJnlLine."Source Code" := SourceCodeSetup.Purchases;
+               TempWhseJnlLine."Reference Document" :=
+                 TempWhseJnlLine."Reference Document"::"Posted Rcpt.";
+             END;
+          "Source Document"::"Sales Order":
+             BEGIN
+               TempWhseJnlLine."Source Code" := SourceCodeSetup.Sales;
+               TempWhseJnlLine."Reference Document" :=
+                 TempWhseJnlLine."Reference Document"::"Posted Shipment";
+             END;
+          "Source Document"::"Purchase Return Order":
+             BEGIN
+               TempWhseJnlLine."Source Code" := SourceCodeSetup.Purchases;
+               TempWhseJnlLine."Reference Document" :=
+                 TempWhseJnlLine."Reference Document"::"Posted Rtrn. Shipment";
+             END;
+          "Source Document"::"Sales Return Order":
+             BEGIN
+               TempWhseJnlLine."Source Code" := SourceCodeSetup.Sales;
+               TempWhseJnlLine."Reference Document" :=
+                 TempWhseJnlLine."Reference Document"::"Posted Rtrn. Rcpt.";
+             END;
+          "Source Document"::"Inbound Transfer":
+             BEGIN
+               TempWhseJnlLine."Source Code" := SourceCodeSetup.Transfer;
+               TempWhseJnlLine."Reference Document" :=
+                 TempWhseJnlLine."Reference Document"::"Posted T. Receipt";
+             END;
+        END;
+
+        ItemTrackingMgt.CheckWhseItemTrkgSetup("Item No.",SNRequired,LNRequired,FALSE);
+        IF SNRequired THEN
+          TESTFIELD("Qty. per Unit of Measure",1);
+
+        WMSMgt.CheckWhseJnlLine(TempWhseJnlLine,0,0,FALSE);
+        TempWhseJnlLine.INSERT;
+      END;
+    END;
+
+    LOCAL PROCEDURE CreatePutAwayDoc@12(WhseRcptHeader@1000 : Record 7316);
+    VAR
+      WhseActivHeader@1001 : Record 5766;
+      PostedWhseRcptLine@1005 : Record 7319;
+      TempPostedWhseRcptLine@1004 : TEMPORARY Record 7319;
+      TempPostedWhseRcptLine2@1003 : TEMPORARY Record 7319;
+      ItemTrackingMgt@1002 : Codeunit 6500;
+    BEGIN
+      PostedWhseRcptLine.SETRANGE("No.",WhseRcptHeader."Receiving No.");
+      IF NOT PostedWhseRcptLine.FIND('-') THEN
+        EXIT;
+
+      IF PostedWhseRcptLine.FIND('-') THEN
+        REPEAT
+          CreatePutAway.SetCrossDockValues(TRUE);
+          ItemTrackingMgt.SplitPostedWhseRcptLine(PostedWhseRcptLine,TempPostedWhseRcptLine);
+          IF TempPostedWhseRcptLine.FIND('-') THEN
+            REPEAT
+              TempPostedWhseRcptLine2 := TempPostedWhseRcptLine;
+              TempPostedWhseRcptLine2."Line No." := PostedWhseRcptLine."Line No.";
+              CreatePutAway.RUN(TempPostedWhseRcptLine2);
+            UNTIL TempPostedWhseRcptLine.NEXT = 0;
+        UNTIL PostedWhseRcptLine.NEXT = 0;
+      IF GetFirstPutAwayDocument(WhseActivHeader) THEN
+        REPEAT
+          CounterPutAways := CounterPutAways + 1;
+        UNTIL NOT GetNextPutAwayDocument(WhseActivHeader);
+    END;
+
+    LOCAL PROCEDURE GetLocation@13(LocationCode@1000 : Code[10]);
+    BEGIN
+      IF LocationCode <> Location.Code THEN
+        IF NOT Location.GET(LocationCode) THEN;
+    END;
+
+    PROCEDURE SetHideValidationDialog@14(NewHideValidationDialog@1000 : Boolean);
+    BEGIN
+      HideValidationDialog := NewHideValidationDialog;
+    END;
+
+    LOCAL PROCEDURE GetItemUnitOfMeasure2@15(ItemNo@1000 : Code[20];UOMCode@1001 : Code[10]);
+    BEGIN
+      IF (ItemUnitOfMeasure."Item No." <> ItemNo) OR
+         (ItemUnitOfMeasure.Code <> UOMCode)
+      THEN
+        IF NOT ItemUnitOfMeasure.GET(ItemNo,UOMCode) THEN
+          ItemUnitOfMeasure.INIT;
+    END;
+
+    PROCEDURE SetItemEntryRelation@17(PostedWhseRcptHeader@1003 : Record 7318;PostedWhseRcptLine@1002 : Record 7319;VAR ItemEntryRelation@1000 : Record 6507);
+    BEGIN
+      IF ItemEntryRelation.FIND('-') THEN BEGIN
+        TempWhseItemEntryRelation.DELETEALL;
+        REPEAT
+          TempWhseItemEntryRelation.INIT;
+          TempWhseItemEntryRelation.TRANSFERFIELDS(ItemEntryRelation);
+          TempWhseItemEntryRelation."Source Type" := DATABASE::"Posted Whse. Receipt Line";
+          TempWhseItemEntryRelation."Source ID" := PostedWhseRcptHeader."No.";
+          TempWhseItemEntryRelation."Source Ref. No." := PostedWhseRcptLine."Line No.";
+          TempWhseItemEntryRelation.INSERT;
+        UNTIL ItemEntryRelation.NEXT = 0;
+        ItemEntryRelationCreated := TRUE;
+      END;
+    END;
+
+    PROCEDURE "<< 3LI FUNCTIONS >>"@8053000();
+    BEGIN
+    END;
+
+    PROCEDURE UpdateQtyOfPurchLine@8053001(QtyToReceive_P@8053000 : Decimal;VAR PurchLine_P@8053001 : Record 39);
+    VAR
+      DirectUnitCost_L@8053002 : Decimal;
+      LineDiscount_L@8053003 : Decimal;
+    BEGIN
+      // --> 20110601-Wi00-CMC01.04
+      PurchLine_P.SuspendStatusCheck(TRUE);
+      PurchLine_P.UpdateQtyFromWhse(TRUE);
+      // --> 20130702-8060990/104-CMB6.00.10.09-FEC01
+      PurchLine_P.SetAllowChangeDeletion(TRUE);
+      // <-- 20130702-8060990/104-CMB6.00.10.09-FEC01
+      DirectUnitCost_L := PurchLine_P."Direct Unit Cost";
+      LineDiscount_L := PurchLine_P."Line Discount %";
+
+      // --> 20140522-WI00-CMC02.02.00-0000-FEC01
+      IF PurchLine_P."First Receipt Quantity" = 0 THEN
+        PurchLine_P."First Receipt Quantity" := PurchLine_P.Quantity;
+      // <-- 20140522-WI00-CMC02.02.00-0000-FEC01
+
+      PurchLine_P.VALIDATE(Quantity,QtyToReceive_P + PurchLine_P."Quantity Received");
+      PurchLine_P.VALIDATE("Qty. to Receive",QtyToReceive_P);
+      PurchLine_P.VALIDATE("Direct Unit Cost",DirectUnitCost_L);
+      PurchLine_P.VALIDATE("Line Discount %",LineDiscount_L);
+      PurchLine_P.MODIFY(TRUE);
+      // --> 20130702-8060990/104-CMB6.00.10.09-FEC02
+      PurchLine_P.SetAllowChangeDeletion(FALSE);
+      // <-- 20130702-8060990/104-CMB6.00.10.09-FEC02
+
+      // <-- 20110601-Wi00-CMC01.04
+    END;
+
+    PROCEDURE SetPrint@8053002(Print_P@1000 : Boolean);
+    VAR
+      CMCSetup_L@8053000 : Record 8052982;
+    BEGIN
+      // --> 20140324-Wi00-CMC02.02.00-1862-FEC01
+      IF Print_P THEN BEGIN
+        CMCSetup_L.GET;
+        Print_G := CMCSetup_L."Print Wght Ticket on Whse Rcpt";
+      END ELSE BEGIN
+        Print_G := FALSE;
+      END;
+      // <-- 20140324-Wi00-CMC02.02.00-1862-FEC01
+    END;
+
+    PROCEDURE UpdateQtyKitPurchLine@8053004(Purchline_P@8053000 : Record 39);
+    VAR
+      PurchLineKit_L@8053001 : Record 39;
+    BEGIN
+      // --> 20130722-Nut08-CMC02.02.00-WSA01
+      PurchLineKit_L.RESET;
+      PurchLineKit_L.SETCURRENTKEY("Document Type","Document No.");
+      PurchLineKit_L.SETRANGE("Document Type",Purchline_P."Document Type");
+      PurchLineKit_L.SETRANGE("Document No.",Purchline_P."Document No.");
+      PurchLineKit_L.SETRANGE("Item Charge Root Line No.",Purchline_P."Line No.");
+      IF PurchLineKit_L.FINDSET( TRUE , FALSE ) THEN
+        REPEAT
+          PurchLineKit_L.VALIDATE("Qty. to Receive",Purchline_P."Qty. to Receive" * PurchLineKit_L."Item Charge Quantity Per");
+          PurchLineKit_L.MODIFY;
+          PurchLineKit_L.ItemChargeAssignment(PurchLineKit_L);
+        UNTIL PurchLineKit_L.NEXT = 0;
+      // <-- 20130722-Nut08-CMC02.02.00-WSA01
+    END;
+
+    PROCEDURE UpdateQtyOfSalesLine@8053003(QtyToShip_P@8053000 : Decimal;VAR SalesLine_P@8053001 : Record 37);
+    VAR
+      UnitPrice_L@8053002 : Decimal;
+      LineDiscount_L@8053003 : Decimal;
+    BEGIN
+      // --> 20140122-Wi00-CMC02.02.00-1389-FHS01
+      SalesLine_P.SuspendStatusCheck(TRUE);
+      SalesLine_P.UpdateQtyFromWhse(TRUE);
+      UnitPrice_L   := SalesLine_P."Unit Price";
+      LineDiscount_L:= SalesLine_P."Line Discount %";
+
+      SalesLine_P.MODIFY;
+      SalesLine_P.GET(SalesLine_P."Document Type", SalesLine_P."Document No.", SalesLine_P."Line No.");
+
+      SalesLine_P.VALIDATE(Quantity, QtyToShip_P + SalesLine_P."Return Qty. Received");
+      SalesLine_P.VALIDATE("Return Qty. to Receive", QtyToShip_P);
+      SalesLine_P.VALIDATE("Unit Price", UnitPrice_L);
+      SalesLine_P.VALIDATE("Line Discount %", LineDiscount_L);
+      SalesLine_P.MODIFY(TRUE);
+      // <-- 20140122-Wi00-CMC02.02.00-1389-FHS01
+    END;
+
+    PROCEDURE CheckWhsePostDateVsDocDate@8053005(DocDate_P@8053000 : Date;DocType_P@8053001 : Integer;DocNo_P@8053002 : Code[20]);
+    BEGIN
+      IF DocDate_P > WhseRcptHeader."Posting Date" THEN
+        ERROR(Text8053002,SELECTSTR(DocType_P,Text8053003),DocNo_P,DocDate_P,WhseRcptHeader."Posting Date",
+              SELECTSTR(DocType_P,Text8053003));
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20110601-Wi00-CMC01.04 : Version RTM 01.04 - NavAgri
+      20120111-Int01-CMC02.01.00-DRN01 : ADDCODE (Ajout code dans Fct InitSourceDocumentLines)
+      20120112-Int01-CMC02.01.00-DRN01 : ADDCODE (Ajout code dans Fct PostUpdateWhseDocuments)
+      20120117-Int01-CMC02.01.00-DRN01 : ADDCODE (Ajout impression ticket pes'e dans Fct PostSourceDocument)
+      20120117-Int01-CMC02.01.00-DRN01 : ADDCODE (Ajout Fct SetPrint)
+      20120629-Int01-CMC02.01.00-DRN01 : ADDCODE (Cas des r'ceptions transfert)
+      20120705-Wi00-CMC02.01.00-JLT01 : R'ception RPD ou CVO en retour
+      20120828-Wi00-CMC01.04.05-TLM13262-JLT01: Gestion des taxes en retour
+      20130612-Log11-CMC02.02.00-FEC01 : ADDCODE (Changement de la validation)
+      20130702-8060990/104-CMB6.00.10.09-FEC01 : ADDCODE(Gestion des LD)
+      20130702-8060990/104-CMB6.00.10.09-FEC02 : ADDCODE(Gestion des LD)
+      20130704-Log11-CMC02.02.00-FEC01 : ADDCODE (Gestion des mouvements exceptionnels).
+      20130709-APP27-CMC02.02.00-AKH01 : ADDCODE (MAJ des documents origine par les donn'es transport des Docs valid's  )
+      20130625-Log10-CMC02.02.00-BSI01 : ADDCODE (Manual Weighting No. must be completed if Weighing 2 No. is blank)
+      20130626-Log10-CMC02.02.00-BSI01 : ADDCODE (Both fields "Weighing 1" or "Weighing 2"  must be filled)
+      20130722-Nut08-CMC02.02.00-WSA01 : ADDCODE (Gestion aliment m'dicamenteux)
+      20131227-Log10-CMC02.02.00-1362-FGS : ADDCODE gestion des conditionn's et pes'es
+      20140105-WI00-CMC02.02.00-1386-SD01 : ADDCODE (test + gestion de la cellule appro)
+      20140122-Wi00-CMC02.02.00-1389-FHS01 : ADDCODE (gSre les reliquats sur les retours)
+      20140310-Wi00-CMC02.02.00-1817-FEC01 : ADDCODE
+      20140310-Wi00-CMC02.02.00-1817-FEC02 : ADDCODE
+      20140310-Wi00-CMC02.02.00-1817-FEC03 : ADDCODE
+      20140324-Wi00-CMC02.02.00-1862-FEC01 : MODCODE.
+      20140327-App10-CMC02.02.00-1844-FEC01 : ADDCODE.
+      20140327-App10-CMC02.02.00-1844-FEC02 : ADDCODE.
+      20140402-LOG10-CMC02.02.00-1923-DRN01 : Ne pas bloquer les lignes li'es . un 'clatement de pes'e dont le N› de ticket bascule
+                                              n'est pas renseign'
+                                              Edition du ticket de pes'e avec 'clatement de pes'e
+      20140428-LOG11-CMC02.02.00-2051-FEC01 : ADDCODE.
+      20140428-LOG11-CMC02.02.00-2051-FEC02 : ADDCODE.
+      20140522-WI00-CMC02.02.00-0000-FEC01 : ADDCODE.
+      20140528-8060990/101-CMB6.00.10.09-2168-FEC01 : ADDCODE.
+      20140528-8060990/101-CMB6.00.10.09-2168-FEC02 : ADDCODE.
+      20140529-LOG10-CMC02.02.00-2177-FEC01 : MODCODE.
+      20140717-APP38-CMC02.02.00-FEC01 : ADDCODE.
+      20140717-APP38-CMC02.02.00-FEC02 : ADDCODE.
+      20140903-APP36-TER01.01.00-FBE01 : ADDCODE: Controle champ obligatoires sur r'ception
+      20140922-APP27-TER01.01.00-BSI01 : ADDCODE (Cr'ation d'une facture transport achat)
+      20141215-APP27-TER01.01.00-BSI01 : ADDPermissions sur la table 121
+      20141215-APP27-TER01.01.00-BSI01 : ADDPermissions sur la table 6651
+      20141219-LOG10-CMC02.02.00-1817-DRN01 : MAJ fonction InitSourceDocumentLines
+      20150212-APP27-TER01.01.00-240-BSI01 : Ajout de permissions
+      20150401-APP27-TER01.01.00-233-BSI01 : ADDCODE (MAJ du champ "Realized Quantity")
+      20150720-NUT08-ADV01.01.00-1973-DRN01 : MODCODE (Correction bug sur MAJ lignes frais annexe m'dicamenteux)
+      20150827-APP27-ADV01.01.00-2165-FBE01 : ADDCODE MAJ du code transporteur r'el sur lignes transfert
+      20150908-APP27-TER01.01.00-2028-BSI01 : MODCODE (Ajout d'un param lors de l'appel de la fonction CreateTransportPurchOrder)
+      20160705-APP12-ADV01.01.00-3111-OAN01 : MODCODE (Allow to Return Free Product Linked to Item Line)
+      20160802-Nut08-ADV01.01.00-20894-OAN01 : ADDCODE (Allow to Return Charge Item Linked to Item Line)
+      20210603-WI00-ADV01.01.00-3555-CJY01 : MODCODE (chasse aux locks pes'e, COMMIT entre cr'ation ticket valid' et impression)
+      20210603-WI00-ADV01.01.00-3555-CJY01 : MODCODE (d'placement de l'impression pes'e)
+
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

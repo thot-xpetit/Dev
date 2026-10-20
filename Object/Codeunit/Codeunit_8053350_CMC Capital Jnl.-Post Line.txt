@@ -1,0 +1,510 @@
+OBJECT Codeunit 8053350 CMC Capital Jnl.-Post Line
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27/09/16;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    TableNo=8053356;
+    OnRun=BEGIN
+            CapitalSetup_G.GET;
+            IF NOT CapitalSetup_G."Activate Capital Management"  THEN
+              EXIT;
+            RunWithCheck(Rec);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text8053001@1000000000 : TextConst 'ENU=is not within your range of allowed posting dates;FRA=n''appartient pas . la plage de dates autoris'e';
+      CapitalEntry_G@8053003 : Record 8053357;
+      AllowPostingTo_G@8053004 : Date;
+      AllowPostingFrom_G@8053000 : Date;
+      CapitalSetup_G@8053001 : Record 8053350;
+      CapJnlLine_G@8053002 : Record 8053356;
+      LastDocNo_G@8053009 : Code[20];
+      LastLineNo_G@8053010 : Integer;
+      LastDate_G@8053008 : Date;
+      LastDocType_G@8053006 : ' ,Payment,Invoice,Credit Memo,Finance Charge Memo,Reminder';
+      GenJnlLine_G@8053005 : Record 81;
+      NextEntryNo_G@8053007 : Integer;
+      AccountingPeriod_G@8053011 : Record 50;
+      FiscalYearStartDate_G@8053012 : Date;
+      GenJnlPostLine_G@8053013 : Codeunit 12;
+      GLRec_G@8053014 : Record 45;
+      SystemCreated_G@8053015 : Boolean;
+      CapitalEntry2_G@8053016 : Record 8053357;
+      SrcCode_G@8053017 : Code[10];
+      Text8053002@1000000001 : TextConst 'FRA=%1 . %2.';
+
+    PROCEDURE RunWithCheck@45(VAR CapJnlLine2_P@8053000 : Record 8053356);
+    BEGIN
+      CapJnlLine_G.COPY(CapJnlLine2_P);
+      Code(TRUE);
+      CapJnlLine2_P := CapJnlLine_G;
+    END;
+
+    PROCEDURE RunWithoutCheck@21(VAR CapJnlLine2_P@8053000 : Record 8053356);
+    BEGIN
+      CapJnlLine_G.COPY(CapJnlLine2_P);
+      Code(FALSE);
+      CapJnlLine2_P := CapJnlLine_G;
+    END;
+
+    LOCAL PROCEDURE Code@9(CheckLine_P@8053000 : Boolean);
+    BEGIN
+      CapitalSetup_G.GET;
+      WITH CapJnlLine_G DO
+      BEGIN
+        IF EmptyLine THEN BEGIN
+          LastDocNo_G := "Document No.";
+          LastLineNo_G := "Line No.";
+          LastDate_G := "Posting Date";
+          EXIT;
+        END;
+
+        IF CheckLine_P THEN
+          RunCheck(CapJnlLine_G);
+        InitCodeUnit;
+
+        IF "Account No." <> '' THEN
+          CASE "Account Type" OF
+            "Account Type"::G'n'ral:
+              PostGLAcc;
+            "Account Type"::Adh'rent:
+              PostCapEntry;
+           END;
+      END;
+    END;
+
+    LOCAL PROCEDURE PostGLAcc@11();
+    BEGIN
+      WITH CapJnlLine_G DO
+      BEGIN
+        TESTFIELD("Bal. Account Type",CapJnlLine_G."Bal. Account Type"::G'n'ral);
+        TESTFIELD("Bal. Account No.");
+        TESTFIELD(Accounting);
+        CapitalSetup_G.TESTFIELD("Gen. Journal Template");
+        CapitalSetup_G.TESTFIELD("Gen. Journal Batch");
+        InitGenJnlLine;
+        GenJnlLine_G.VALIDATE("Account No.","Account No.");
+        // --> 20160927-Wi00-ADV01.01.00-3140-JCD01
+        IF "Due Date" <> 0D THEN
+          GenJnlLine_G."Due Date" := "Due Date";
+        // <-- 20160927-Wi00-ADV01.01.00-3140-JCD01
+        GenJnlLine_G.Description := CapJnlLine_G."Posting Description";
+        IF CapJnlLine_G.Direction=CapJnlLine_G.Direction::Debit THEN
+         GenJnlLine_G.VALIDATE("Debit Amount",Amount)
+        ELSE
+         GenJnlLine_G.VALIDATE("Credit Amount",Amount);
+        GenJnlLine_G.VALIDATE("Bal. Account No.","Bal. Account No.");
+        GenJnlPostLine_G.RUN(GenJnlLine_G);
+        GenJnlPostLine_G.GetGLReg(GLRec_G);
+      END;
+    END;
+
+    PROCEDURE PostCapEntry@8053022();
+    VAR
+      Vend_L@8053000 : Record 23;
+      Adhe_L@8053001 : Record 5050;
+      GLEntry_L@8053002 : Record 17;
+      Msg8053000_L@8053003 : TextConst 'ENU=%1 of member %2.;FRA=%1 de %2.';
+      Contact_L@1000000000 : Record 5050;
+    BEGIN
+      WITH CapJnlLine_G DO
+      BEGIN
+        CapitalEntry_G.INIT;
+        CapitalEntry_G."Entry No." := NextEntryNo_G;
+        NextEntryNo_G+=1;
+        CapitalEntry_G."Member No." := "Account No.";
+        CapitalEntry_G."Posting Date" := "Posting Date";
+        CapitalEntry_G."Movement Type" := "Movement Type";
+        CapitalEntry_G."Part Type" := "Part Type";
+        CapitalEntry_G."Document No." := "Document No.";
+        CapitalEntry_G.Description := Description;
+        // --> 20160331-Wi00-ADV01.01.00-2487-JCD01
+        {BEFORE
+        CapitalEntry_G."Posting Description" := COPYSTR(STRSUBSTNO(Msg8053000_L,"Posting Description",CapJnlLine_G."Account No."),1,50);
+        }
+        // <-- 20160331-Wi00-ADV01.01.00-2487-JCD01
+        CapitalEntry_G."Unit Value" := "Unit Value";
+        IF Direction=Direction::Debit THEN BEGIN
+          CapitalEntry_G.Quantity := Quantity;
+          CapitalEntry_G.Amount := Amount;
+        END ELSE BEGIN
+          CapitalEntry_G.Quantity := -Quantity;
+          CapitalEntry_G.Amount := -Amount;
+        END;
+        // --> 20160331-Wi00-ADV01.01.00-2487-JCD01
+        IF "Bal. Account Type"="Bal. Account Type"::Adh'rent THEN BEGIN
+          Contact_L.GET(CapJnlLine_G."Bal. Account No.");
+          IF CapitalEntry_G.Quantity >= 0 THEN
+            CapitalEntry_G."Posting Description" :=
+              COPYSTR(STRSUBSTNO(Msg8053000_L,"Posting Description",Contact_L.Name),1,50)
+          ELSE
+            CapitalEntry_G."Posting Description" := COPYSTR(STRSUBSTNO(Text8053002,"Posting Description",
+              Contact_L.Name),1,50)
+        END ELSE BEGIN
+          CapitalEntry_G."Posting Description" := "Posting Description";
+        END;
+        // <-- 20160331-Wi00-ADV01.01.00-2487-JCD01
+
+        CapitalEntry_G."Capital Batch Name" := "Capital Batch Name";
+        CapitalEntry_G."User Code" := USERID;
+        CapitalEntry_G."System-Created Entry" := SystemCreated_G;
+        IF "Bal. Account Type"="Bal. Account Type"::Adh'rent THEN BEGIN
+          CapitalEntry2_G.INIT;
+          CapitalEntry2_G."Entry No." := NextEntryNo_G;
+          NextEntryNo_G+=1;
+          CapitalEntry2_G."Member No." := "Bal. Account No.";
+          CapitalEntry2_G."Posting Date" := "Posting Date";
+          CapitalEntry2_G."Movement Type" := "Movement Type";
+          CapitalEntry2_G."Part Type" := "Part Type";
+          CapitalEntry2_G."Document No." := "Document No.";
+          // --> 20160331-Wi00-ADV01.01.00-2487-JCD01
+          {BEFORE
+          CapitalEntry2_G.Description := Description;
+          CapitalEntry2_G."Posting Description" :=
+          COPYSTR(STRSUBSTNO(Msg8053000_L,"Posting Description",CapJnlLine_G."Bal. Account No."),1,50);
+          AFTER}
+          Contact_L.GET("Bal. Account No.");
+          CapitalEntry2_G.Description := Contact_L.Name;
+          // <-- 20160331-Wi00-ADV01.01.00-2487-JCD01
+          CapitalEntry2_G."Unit Value" := "Unit Value";
+          IF Direction=Direction::Debit THEN BEGIN
+            CapitalEntry2_G.Quantity := -Quantity;
+            CapitalEntry2_G.Amount := -Amount;
+          END ELSE BEGIN
+            CapitalEntry2_G.Quantity := Quantity;
+            CapitalEntry2_G.Amount := Amount;
+          END;
+          // --> 20160331-Wi00-ADV01.01.00-2487-JCD01
+          IF "Bal. Account Type"="Bal. Account Type"::Adh'rent THEN BEGIN
+            Contact_L.GET(CapJnlLine_G."Bal. Account No.");
+            CapitalEntry2_G.Description := Contact_L.Name;
+            Contact_L.GET(CapJnlLine_G."Account No.");
+            IF CapitalEntry2_G.Quantity >= 0 THEN BEGIN
+              CapitalEntry2_G."Posting Description" :=
+              COPYSTR(STRSUBSTNO(Msg8053000_L,"Posting Description",Contact_L.Name),1,50)
+            END ELSE BEGIN
+              CapitalEntry2_G."Posting Description" :=
+              COPYSTR(STRSUBSTNO(Text8053002,"Posting Description",Contact_L.Name),1,50);
+            END;
+          END ELSE BEGIN
+            CapitalEntry_G."Posting Description" := "Posting Description";
+          END;
+          // <-- 20160331-Wi00-ADV01.01.00-2487-JCD01
+          CapitalEntry2_G."Capital Batch Name" := "Capital Batch Name";
+          CapitalEntry2_G."User Code" := USERID;
+          CapitalEntry2_G."System-Created Entry" := SystemCreated_G;
+        END;
+
+        IF Accounting THEN BEGIN
+          // --> 20160331-Wi00-ADV01.01.00-2487-JCD01
+          CLEAR(GenJnlPostLine_G);
+          // <-- 20160331-Wi00-ADV01.01.00-2487-JCD01
+          CapitalSetup_G.TESTFIELD("Gen. Journal Template");
+          CapitalSetup_G.TESTFIELD("Gen. Journal Batch");
+          InitGenJnlLine;
+          Adhe_L.GET("Account No.");
+          Vend_L.GET(Adhe_L."Vendor No.");
+          GenJnlLine_G."Account Type" := GenJnlLine_G."Account Type"::Vendor;
+          GenJnlLine_G.VALIDATE("Account No.",Vend_L."No.");
+          // --> 20160927-Wi00-ADV01.01.00-3140-JCD01
+          IF "Due Date" <> 0D THEN
+            GenJnlLine_G."Due Date" := "Due Date";
+          // <-- 20160927-Wi00-ADV01.01.00-3140-JCD01
+          GenJnlLine_G.Description := "Posting Description";
+          IF Direction=Direction::Debit THEN
+            GenJnlLine_G.VALIDATE("Debit Amount",Amount)
+          ELSE
+           GenJnlLine_G.VALIDATE("Credit Amount",Amount);
+          CASE "Bal. Account Type" OF
+            "Bal. Account Type"::G'n'ral :
+              GenJnlLine_G.VALIDATE("Bal. Account No.","Bal. Account No.");
+            "Bal. Account Type"::Adh'rent:
+            BEGIN
+              // --> 20160331-Wi00-ADV01.01.00-2487-JCD01
+              //Validation premiSre ligne
+              GenJnlPostLine_G.RUN(GenJnlLine_G);
+              // <-- 20160331-Wi00-ADV01.01.00-2487-JCD01
+              Adhe_L.GET("Bal. Account No.");
+              Vend_L.GET(Adhe_L."Vendor No.");
+              // --> 20160331-Wi00-ADV01.01.00-2487-JCD01
+              {BEFORE
+              GenJnlLine_G."Bal. Account Type" := GenJnlLine_G."Bal. Account Type"::Vendor;
+              GenJnlLine_G.VALIDATE("Bal. Account No.","Bal. Account No.");
+              AFTER}
+              //Validation seconde ligne pour avoir un libell' diff'rent
+              InitGenJnlLine;
+              GenJnlLine_G."Account Type" := GenJnlLine_G."Account Type"::Vendor;
+              GenJnlLine_G.VALIDATE("Account No.",Vend_L."No.");
+              // --> 20160927-Wi00-ADV01.01.00-3140-JCD01
+              IF "Due Date" <> 0D THEN
+                GenJnlLine_G."Due Date" := "Due Date";
+              // <-- 20160927-Wi00-ADV01.01.00-3140-JCD01
+              GenJnlLine_G.Description := CapitalEntry2_G."Posting Description";
+              IF Direction=Direction::Credit THEN
+                GenJnlLine_G.VALIDATE("Debit Amount",Amount)
+              ELSE
+               GenJnlLine_G.VALIDATE("Credit Amount",Amount);
+              // <-- 20160331-Wi00-ADV01.01.00-2487-JCD01
+              CapitalEntry2_G."G/L Posted" := TRUE
+            END;
+          END;
+          // --> 20160331-Wi00-ADV01.01.00-2487-JCD01
+          {BEFORE
+          // --> 20141211-FIN05-CMC02.02.00-2542-BRA01
+          CLEAR(GenJnlPostLine_G);
+          // <-- 20141211-FIN05-CMC02.02.00-2542-BRA01
+          }
+          // <-- 20160331-Wi00-ADV01.01.00-2487-JCD01
+          GenJnlPostLine_G.RUN(GenJnlLine_G);
+          GenJnlPostLine_G.GetGLReg(GLRec_G);
+          //After GL Posting
+          CapitalEntry_G."G/L Posted" := TRUE;
+          GLEntry_L.GET(GLRec_G."From Entry No.");
+          CapitalEntry_G."G/L Document No." := GLEntry_L."Document No.";
+          CapitalEntry_G."G/L Registers No." := GLRec_G."No.";
+          IF CapitalEntry2_G."Entry No."<>0 THEN BEGIN
+            CapitalEntry2_G."G/L Posted" := TRUE;
+            CapitalEntry2_G."G/L Document No." := GLEntry_L."Document No.";
+            CapitalEntry2_G."G/L Registers No." := GLRec_G."No.";
+          END;
+        END;
+        CapitalEntry_G.INSERT;
+        IF CapitalEntry2_G."Entry No."<>0 THEN
+          CapitalEntry2_G.INSERT;
+      END;
+    END;
+
+    PROCEDURE InitGenJnlLine@8053013();
+    VAR
+      NoSeriesMgt_L@8053000 : Codeunit 396;
+    BEGIN
+      WITH GenJnlLine_G DO
+      BEGIN
+        INIT;
+        "Journal Template Name" := CapitalSetup_G."Gen. Journal Template";
+        "Journal Batch Name" := CapitalSetup_G."Gen. Journal Batch";
+        "Line No." := CapJnlLine_G."Line No.";
+        IF (CapJnlLine_G."G/L Posting No. Series"<>'') THEN
+          "Document No." := NoSeriesMgt_L.GetNextNo(CapJnlLine_G."G/L Posting No. Series",WORKDATE,TRUE)
+        ELSE
+          "Document No." := CapJnlLine_G."Document No.";
+
+        "Posting Date" := CapJnlLine_G."Posting Date";
+        "Source Code" := SrcCode_G;
+        "Posting No. Series" := CapJnlLine_G."G/L Posting No. Series";
+      END;
+    END;
+
+    LOCAL PROCEDURE InitCodeUnit@24();
+    BEGIN
+      WITH CapJnlLine_G DO
+      BEGIN
+        IF NextEntryNo_G = 0 THEN BEGIN
+          CapitalEntry_G.LOCKTABLE;
+          IF CapitalEntry_G.FINDLAST THEN BEGIN
+            NextEntryNo_G := CapitalEntry_G."Entry No." + 1;
+          END ELSE
+            NextEntryNo_G := 1;
+        END;
+        LastDocNo_G := "Document No.";
+        LastLineNo_G := "Line No.";
+        LastDate_G := "Posting Date";
+
+        AccountingPeriod_G.RESET;
+        AccountingPeriod_G.SETCURRENTKEY(Closed);
+        AccountingPeriod_G.SETRANGE(Closed,FALSE);
+        AccountingPeriod_G.FINDFIRST;
+      END;
+    END;
+
+    PROCEDURE CapitalDateNotAllowed@1(PostingDate_P@1000 : Date) : Boolean;
+    BEGIN
+      IF (AllowPostingFrom_G = 0D) AND (AllowPostingTo_G = 0D) THEN BEGIN
+        CapitalSetup_G.GET;
+        AllowPostingFrom_G := CapitalSetup_G."Position Starting Date";
+        AllowPostingTo_G := CapitalSetup_G."Posting Ending Date";
+        IF AllowPostingTo_G = 0D THEN
+          AllowPostingTo_G := 31129999D;
+      END;
+      EXIT((PostingDate_P < AllowPostingFrom_G) OR (PostingDate_P > AllowPostingTo_G));
+    END;
+
+    PROCEDURE RunCheck@2(VAR CapJnlLine_P@1000 : Record 8053356);
+    VAR
+      GLAcc_L@8053000 : Record 15;
+      Contact_L@8053001 : Record 5050;
+      Vendor_L@8053002 : Record 23;
+      MsgErr8053000_L@8053003 : TextConst 'ENU=Source code can''t be empty in capital setup table.;FRA=Code journal ne peut pas ^tre vide dans paramStre gestion capital.';
+    BEGIN
+      IF SrcCode_G='' THEN BEGIN
+        CapitalSetup_G.GET;
+        IF CapitalSetup_G."Capital Source Code" <> '' THEN
+          SrcCode_G := CapitalSetup_G."Capital Source Code"
+        ELSE
+          SrcCode_G := CapJnlLine_G."Source Code";
+      END;
+
+      WITH CapJnlLine_P DO
+      BEGIN
+
+        // --> 20160629-WI00-ADV01.01.00-3099-JCD01
+        {BEFORE
+        IF (CapJnlLine_P."Account Type"=CapJnlLine_P."Account Type"::G'n'ral) OR
+          (CapJnlLine_P."Bal. Account Type"=CapJnlLine_P."Bal. Account Type"::G'n'ral)
+        AFTER}
+        IF (CapJnlLine_P."Account Type"=CapJnlLine_P."Account Type"::G'n'ral) OR
+          ((CapJnlLine_P."Bal. Account Type"=CapJnlLine_P."Bal. Account Type"::G'n'ral)
+           AND (CapJnlLine_P."Bal. Account No." <>''))
+        // <-- 20160629-WI00-ADV01.01.00-3099-JCD01
+        THEN
+          TESTFIELD(Accounting);
+
+        CheckMemeberParts(CapJnlLine_P);
+
+        TESTFIELD(Amount);
+        TESTFIELD(Quantity);
+
+        IF CapJnlLine_P.Accounting THEN BEGIN
+          IF SrcCode_G ='' THEN
+            ERROR(MsgErr8053000_L);
+          CASE CapJnlLine_P."Account Type" OF
+            CapJnlLine_P."Account Type"::G'n'ral :
+            BEGIN
+              GLAcc_L.GET("Account No.");
+              GLAcc_L.TESTFIELD(GLAcc_L."Direct Posting");
+            END;
+            CapJnlLine_P."Account Type"::Adh'rent :
+            BEGIN
+              Contact_L.GET("Account No.");
+              Contact_L.TESTFIELD(Contact_L.Type,Contact_L.Type::Company);
+              Contact_L.TESTFIELD(Contact_L."Vendor No.");
+              Vendor_L.GET(Contact_L."Vendor No.");
+              Vendor_L.CheckBlockedVendOnJnls(Vendor_L,0,TRUE);
+            END;
+          END;
+          CASE CapJnlLine_P."Bal. Account Type" OF
+            CapJnlLine_P."Bal. Account Type"::G'n'ral :
+            BEGIN
+              GLAcc_L.GET("Bal. Account No.");
+              GLAcc_L.TESTFIELD(GLAcc_L."Direct Posting");
+            END;
+            CapJnlLine_P."Bal. Account Type"::Adh'rent :
+            BEGIN
+              Contact_L.GET("Bal. Account No.");
+              Contact_L.TESTFIELD(Contact_L.Type,Contact_L.Type::Company);
+              Contact_L.TESTFIELD(Contact_L."Vendor No.");
+              Vendor_L.GET(Contact_L."Vendor No.");
+              Vendor_L.CheckBlockedVendOnJnls(Vendor_L,0,TRUE);
+            END;
+          END;
+        END;
+
+        TESTFIELD("Posting Date");
+        IF CapitalDateNotAllowed("Posting Date") THEN
+          FIELDERROR("Posting Date",Text8053001);
+        TESTFIELD("Document No.");
+        TESTFIELD("Account No.");
+        // --> 20160629-WI00-ADV01.01.00-3099-JCD01
+        IF Accounting THEN
+        // <-- 20160629-WI00-ADV01.01.00-3099-JCD01
+        TESTFIELD("Bal. Account No.");
+      END;
+    END;
+
+    PROCEDURE CheckMemeberParts@8053003(CapJnlLine_L@8053000 : Record 8053356);
+    VAR
+      MemberCode_L@8053001 : Code[20];
+      PartType_L@8053002 : Record 8053351;
+      Text8053000_L@8053003 : TextConst 'ENU=You can''t handle more of %1 parts type %2 in possession of the member %3, Template %4 Batch %5 Line No. %6.;FRA=Vous ne pouvez manipuler plus que %1 parts de type %2 en possession de l''adh'rent %3, ModSle %4 feuille %5 Ligne n› %6.';
+    BEGIN
+      MemberCode_L := '';
+      IF ((CapJnlLine_L."Account Type"<>CapJnlLine_L."Account Type"::Adh'rent) AND
+        (CapJnlLine_L."Bal. Account Type"<>CapJnlLine_L."Bal. Account Type"::Adh'rent)) OR
+        (CapJnlLine_L."Account No."='') OR (CapJnlLine_L."Bal. Account No."='') OR (CapJnlLine_L.Quantity=0) OR
+        (CapJnlLine_L."Part Type"='')
+      THEN
+        EXIT;
+      IF (CapJnlLine_L."Account Type" = CapJnlLine_L."Account Type"::G'n'ral) OR
+        (CapJnlLine_L."Bal. Account Type" = CapJnlLine_L."Bal. Account Type"::G'n'ral)
+      THEN BEGIN
+        IF (CapJnlLine_L."Account Type" = CapJnlLine_L."Account Type"::Adh'rent) AND
+          (CapJnlLine_L.Direction = CapJnlLine_L.Direction::Credit)
+        THEN
+          MemberCode_L := CapJnlLine_L."Account No.";
+        IF (CapJnlLine_L."Bal. Account Type"= CapJnlLine_L."Bal. Account Type"::Adh'rent) AND
+          (CapJnlLine_L.Direction = CapJnlLine_L.Direction::Debit)
+        THEN
+          MemberCode_L := CapJnlLine_L."Bal. Account No.";
+      END ELSE
+        CASE CapJnlLine_L.Direction OF
+          CapJnlLine_L.Direction::Debit : MemberCode_L := CapJnlLine_L."Bal. Account No.";
+          CapJnlLine_L.Direction::Credit :MemberCode_L := CapJnlLine_L."Account No.";
+        END;
+
+      IF MemberCode_L='' THEN
+        EXIT;
+
+      PartType_L.GET(CapJnlLine_L."Part Type");
+      PartType_L.SETFILTER(PartType_L."Member Filter",MemberCode_L);
+      PartType_L.CALCFIELDS(PartType_L."Part Type Count");
+      IF CapJnlLine_L.Quantity>PartType_L."Part Type Count" THEN
+        ERROR(STRSUBSTNO(Text8053000_L,PartType_L."Part Type Count",PartType_L."Part Code",MemberCode_L,
+          CapJnlLine_L."Capital Journal Template",CapJnlLine_L."Capital Batch Name",CapJnlLine_L."Line No."));
+    END;
+
+    PROCEDURE SetSystemCreated@8053000(SysC_P@8053000 : Boolean);
+    BEGIN
+      SystemCreated_G := SysC_P;
+    END;
+
+    PROCEDURE GetGLReg@10(VAR NewGLReg@1000 : Record 45);
+    BEGIN
+      NewGLReg := GLRec_G;
+    END;
+
+    PROCEDURE SetSrcCode@8053001(CapJnlLine_P@8053000 : Record 8053356);
+    BEGIN
+      CapitalSetup_G.GET;
+      IF CapitalSetup_G."Capital Source Code" <> '' THEN
+        SrcCode_G := CapitalSetup_G."Capital Source Code"
+      ELSE
+        SrcCode_G := CapJnlLine_P."Source Code";
+    END;
+
+    PROCEDURE SetSourceCode@8053002(SrcCode_P@8053000 : Code[10]);
+    BEGIN
+      SrcCode_G := SrcCode_P;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20130215-FINA05-CMC02.02.00-WSA01 : OBJETCREATE
+      20130227-FINA05-CMC02.02.00-BRA01 : ADDFCT (V'rification des parts dans le cas de mutation)
+      20130301-FINA05-CMC02.02.00-WSA01 : ADDCODE (V'rification des parts cas 'tendu)
+      20130304-FINA05-CMC02.02.00-BRA01 : BUGFIXED
+      20130402-FINA09-CMC02.02.00-WSA01 : ADDFUNCTION(GetGLREC)
+      20130418-FINA05-CMC02.02.00-BRA01 : BUGFIXED (Initialisation de la ligne)
+      20130913-FINA05-CMC02.02.00-0786-WSA01 : BUGFIXED (corriger la d'signation de l''criture capital)
+      20130925-FINA05-CMC02.02.00-0786-BRA01 : BUGFIXED (taille . 50)
+      20131113-Wi00-CMC02.02.00-0926-WSA01 : ADDCODE (Gestion codes journaux)
+      20131115-Wi00-CMC02.02.00-0926-BRA01 : ADDFUNCTION (SetSourceCode)
+      20141211-FINA05-CMC02.02.00-2542-BRA01 : ADDCODE (Clear sur CU12 pour g'n'rer un autre r'gistre d'histo transaction compta)
+      20160331-Wi00-ADV01.01.00-2487-JCD01 : MODCODE (Modification des libelles et comptabilisation en deux fois pour libelle.)
+      20160629-WI00-ADV01.01.00-3099-JCD01 : MODCODE (pas de controle sur le compte de contrepartie pour le type OD);
+      20160927-Wi00-ADV01.01.00-3140-JCD01 : ADDCODE (Ajout date d''ch'ance dans distribution)
+
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,534 @@
+OBJECT Codeunit 8053047 CMC Upd Sales Line Discount
+{
+  OBJECT-PROPERTIES
+  {
+    Date=08/12/20;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,TER01.01.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    TableNo=37;
+    OnRun=VAR
+            SalesHeader_L@1000000000 : Record 36;
+            PrevUnitPrice_L@1000000001 : Decimal;
+            PrevNetUnitPrice_L@1000000002 : Decimal;
+            SalesLine2_L@1000000003 : Record 37;
+            SalesLineItemCharge_L@1000000004 : Record 37;
+            "<--3LI Local-->"@60000 : Integer;
+            recCust_L@60001 : Record 18;
+            SalesInvLine_L@1000000005 : Record 113;
+            InvoicedShpmt_L@1000000006 : Record 10825;
+            IsInvValueRetrieved_L@1000000007 : Boolean;
+            RunUpdate_L@1000000008 : Boolean;
+            NewReturnOrderPmtTerms_L@1000000009 : Code[10];
+            NewReturnOrderDueDate_L@1000000010 : Date;
+            LienExpe_L@1000000011 : Integer;
+          BEGIN
+            CMCSetup_G.GET;
+            SalesHeader_L.GET("Document Type","Document No.");
+
+            LOCKTABLE;
+            GET("Document Type","Document No.","Line No.");
+
+            SetHideValidationDialog(TRUE);
+            SuspendStatusCheck(TRUE);
+
+            IF Quantity = 0 THEN
+              EXIT;
+
+            IF (Type <> Type::Item) AND (Type <> Type::"Charge (Item)") OR ("No." = '') THEN
+              EXIT;
+
+            IF "Document Type" = "Document Type"::Order THEN BEGIN
+              // --> 20151007-APP19-ADV01.01.00-2318-DRN01
+              //Update "Customer Price Group" and "Customer Disc. Group" from customer if changing since creating order
+              // --> 20151104-APP19-ADV01.01.00-2437-DRN01
+              //BEFORE
+              //IF CallByUpdateSalesBatch_G THEN BEGIN
+              //AFTER
+              IF CallByUpdateSalesBatch_G AND CMCSetup_G."Upd Price Grp On Order Reval" THEN BEGIN
+              // --> 20151104-APP19-ADV01.01.00-2437-DRN01
+                recCust_L.GET("Bill-to Customer No.");
+                // --> 20160420-WI00-ADV01.01.00-2946-CJY01
+                {BEFORE
+                IF "Customer Price Group" <> recCust_L."Customer Price Group" THEN
+                  "Customer Price Group" := recCust_L."Customer Price Group";
+                AFTER}
+                IF Type <> Type::Item THEN
+                  "Customer Price Group" := recCust_L."Customer Price Group"
+                ELSE BEGIN
+                  "Customer Price Group" := GetCustomerPriceGroup("No.");
+                  IF "Customer Price Group" = '' THEN
+                    "Customer Price Group" := recCust_L."Customer Price Group";
+                END;
+                // <-- 20160420-WI00-ADV01.01.00-2946-CJY01
+                IF "Customer Disc. Group" <> recCust_L."Customer Disc. Group" THEN
+                  "Customer Disc. Group" := recCust_L."Customer Disc. Group";
+              END;
+              // <-- 20151007-APP19-ADV01.01.00-2318-DRN01
+
+              IF (Type = Type::Item) AND
+                 (NOT ("Negotiated Price" AND (NOT CMCSetup_G."Activate Exceptional Discount")))
+              THEN BEGIN
+                PrevUnitPrice_L := "Unit Price";
+
+                IF "Negotiated Price" THEN
+                  PrevNetUnitPrice_L := "Net Unit Price";
+
+                IF NOT SetUnitPriceFromContract(Rec) THEN BEGIN
+                  SalesPriceCalcMgt_G.FindSalesLineLineDisc(SalesHeader_L,Rec);
+                  SalesPriceCalcMgt_G.FindSalesLinePrice(SalesHeader_L,Rec,0);
+                END;
+
+                IF ("Unit Price" = 0) AND "Negotiated Price" AND
+                  (CMCSetup_G."Use Net Unit Price if No Price")
+                THEN
+                  VALIDATE("Unit Price",PrevUnitPrice_L)
+                ELSE
+                  VALIDATE("Unit Price");
+
+                // --> 20140930-APP01-TER01.01.00-FBE01
+                //IF "Negotiated Price" THEN
+                IF "Negotiated Price" AND (IsLineWithRex(Rec) OR NOT CallByUpdateSalesBatch_G)
+                // --> 20150223-APP33-TER01.01.00-TER64-SDE01
+                  AND (NOT((PrevNetUnitPrice_L=0) AND (PrevUnitPrice_L=0)))
+                  THEN
+                // <-- 20150223-APP33-TER01.01.00-TER64-SDE01
+                // <-- 20140930-APP01-TER01.01.00-FBE01
+                  "Net Unit Price" := PrevNetUnitPrice_L
+                ELSE
+                  // --> 20171030-WI00-ADV01.01.00-24077-CJY01
+                  {BEFORE
+                  IF "Unit Price" = 0 THEN
+                  AFTER}
+                  IF ("Unit Price" = 0) AND ("Mutated Price" = FALSE) THEN
+                  // <-- 20171030-WI00-ADV01.01.00-24077-CJY01
+                    "Net Unit Price" := 0;
+
+                CMCSalesPriceDiscMgt_G.RUN(Rec);
+
+                //SalesPriceCalcMgt_G.CheckMinimumPrice(Rec); Doublon avec la fonction SetSalesLinePriceAnomaly
+                SalesPriceCalcMgt_G.UpdateRedMinimumPrice(Rec);
+                SalesPriceCalcMgt_G.SetSalesLinePriceAnomaly(Rec);
+
+                MODIFY;
+              END;
+
+              //Valorisation du produit gratuit
+              IF (Type = Type::"Charge (Item)") AND ("Free Item Root Line" <> 0) THEN BEGIN
+                IF SalesLine2_L.GET("Document Type"::Order,"Document No.","Free Item Root Line") THEN BEGIN
+                  CMCSalesPriceDiscMgt_G.ValueSalesLineWithSalesLine(SalesLine2_L,Rec);
+                  MODIFY;
+                END;
+              END;
+
+              //Valorisation des frais annexes pour les m'dicaments
+              IF (Type = Type::"Charge (Item)") AND ("Item Charge Pricing Item No." <> '') THEN BEGIN
+                SalesLineItemCharge_L := Rec;
+                FindItemChargePriceAndDisc(SalesLineItemCharge_L,0);
+                IF SalesLineItemCharge_L."Unit Price" <> 0 THEN BEGIN
+                  VALIDATE("Unit Price",SalesLineItemCharge_L."Unit Price");
+                  CMCSalesPriceDiscMgt_G.RUN(Rec);
+                  SalesPriceCalcMgt_G.SetSalesLinePriceAnomaly(Rec);
+                  SalesPriceCalcMgt_G.UpdateRedMinimumPrice(Rec);
+                  MODIFY;
+                END;
+              END;
+              IF DoSendApprovalRequest_G THEN
+                IF NOT ApprovMgt_G.DoNotCanceledApprovEntryExist(Rec) THEN
+              ApprovMgt_G.SendSalesLineApprovalRequest(Rec);
+            END ELSE BEGIN
+              // --> 20150708-APP06-ADV01.01.00-1828-FEC01
+              {BEFORE
+              IF ("Valued From Doc. No." <> '') AND
+                 ("Valued From Doc. Type" = "Valued From Doc. Type"::Order)
+              THEN BEGIN
+                CASE "Valued From Doc. Type" OF
+                  "Valued From Doc. Type"::Order :
+                    BEGIN
+                      SalesLine2_L.GET(SalesLine2_L."Document Type"::Order,"Valued From Doc. No.","Valued From Doc. Line No." );
+                      CMCSalesPriceDiscMgt_G.ValueSalesLineWithSalesLine(SalesLine2_L,Rec);
+                    END;
+                END;
+                // --> 20150408-APP40-TER01.01.00-231-FBE
+                IF NOT "VisPrix Forced" THEN BEGIN
+                // <-- 20150408-APP40-TER01.01.00-231-FBE
+                // --> 20140725-APP06-TER01.01.00-FHS01
+                  recCust_L.GET("Bill-to Customer No.");
+                  IF recCust_L."Do Not Allow Discount" = FALSE THEN
+                  // <-- 20140725-APP06-TER01.01.00-FHS01
+                    IF ItemReturnCheck("No.") THEN BEGIN
+                      IF "Appl.-from Item Entry" <> 0 THEN BEGIN
+                        ItemLedgerEntry_G.GET("Appl.-from Item Entry");
+                        CMCSalesPriceDiscMgt_G.ApplyReturnDiscount(Rec,ItemReturnSetup_G,SalesHeader_L."Order Date",
+                          ItemLedgerEntry_G."Posting Date");
+                      END;
+                    END;
+                 // --> 20150408-APP40-TER01.01.00-231-FBE
+                 END;
+                 // <-- 20150408-APP40-TER01.01.00-231-FBE
+              END;
+              AFTER}
+
+              // --> 20160203-APP19-ADV01.01.00-2638-OAN01
+              RunUpdate_L := TRUE;
+              IF "Document Type" = "Document Type"::"Return Order" THEN BEGIN
+                IF CallByUpdateSalesBatch_G AND ("VisPrix Forced") THEN
+                  RunUpdate_L := FALSE;
+                // Update Line Payment Term And Line Due Date
+                IF GetSalesOrderPaymentTerms(Rec,NewReturnOrderPmtTerms_L,NewReturnOrderDueDate_L) THEN BEGIN
+                  VALIDATE("Payment Terms Code",NewReturnOrderPmtTerms_L);
+                  VALIDATE("Due Date",NewReturnOrderDueDate_L);
+                  UpdatePmtTermsOnAttachedLines(Rec);
+                END;
+              END;
+              // <-- 20160203-APP19-ADV01.01.00-2638-OAN01
+
+              IF RunUpdate_L THEN BEGIN // 20160203-APP19-ADV01.01.00-2638-OAN01
+                IsInvValueRetrieved_L := FALSE;
+                IF "Appl.-from Item Entry" <> 0 THEN BEGIN
+                  ItemLedgerEntry_G.GET("Appl.-from Item Entry");
+                  IF (ItemLedgerEntry_G."Invoiced Quantity" <> 0) AND
+                     (ItemLedgerEntry_G."Document Type" = ItemLedgerEntry_G."Document Type"::"Sales Shipment") THEN BEGIN
+                    InvoicedShpmt_L.RESET;
+                    InvoicedShpmt_L.SETRANGE("Shipment No.",ItemLedgerEntry_G."Document No.");
+                    InvoicedShpmt_L.SETRANGE("Shipment Line No.",ItemLedgerEntry_G."Document Line No.");
+                    IF InvoicedShpmt_L.FINDFIRST THEN
+                      IF SalesInvLine_L.GET(InvoicedShpmt_L."Invoice No.",InvoicedShpmt_L."Invoice Line No.") THEN BEGIN
+                        CMCSalesPriceDiscMgt_G.ValueSalesLineWithSalesInvLine(SalesInvLine_L,Rec);
+                        IsInvValueRetrieved_L := TRUE;
+                      END;
+                  END;
+                END;
+
+                IF IsInvValueRetrieved_L = FALSE THEN
+                  CASE "Valued From Doc. Type" OF
+                    "Valued From Doc. Type"::Order :
+                      IF SalesLine2_L.GET(SalesLine2_L."Document Type"::Order,"Valued From Doc. No.","Valued From Doc. Line No." ) THEN
+                        CMCSalesPriceDiscMgt_G.ValueSalesLineWithSalesLine(SalesLine2_L,Rec);
+                    "Valued From Doc. Type"::"Posted Invoice" :
+                      IF SalesInvLine_L.GET("Valued From Doc. No.","Valued From Doc. Line No." ) THEN
+                        CMCSalesPriceDiscMgt_G.ValueSalesLineWithSalesInvLine(SalesInvLine_L,Rec);
+                  END;
+
+                IF NOT "VisPrix Forced" THEN BEGIN
+                  recCust_L.GET("Bill-to Customer No.");
+                  IF recCust_L."Do Not Allow Discount" = FALSE THEN
+                    IF ItemReturnCheck("No.") THEN BEGIN
+
+                      // --> 20180724-WI00-ADV01.01.00-36579-CJY01
+                      {BEFORE
+                      IF "Appl.-from Item Entry" <> 0 THEN BEGIN
+                        ItemLedgerEntry_G.GET("Appl.-from Item Entry");
+                        CMCSalesPriceDiscMgt_G.ApplyReturnDiscount(Rec,ItemReturnSetup_G,SalesHeader_L."Order Date",
+                          ItemLedgerEntry_G."Posting Date");
+                      END;
+                      AFTER}
+                      LienExpe_L := FindExpeLink(Rec);
+                      IF LienExpe_L <> 0 THEN BEGIN
+                        ItemLedgerEntry_G.GET(LienExpe_L);
+                        CMCSalesPriceDiscMgt_G.ApplyReturnDiscount(Rec,ItemReturnSetup_G,SalesHeader_L."Order Date",
+                          ItemLedgerEntry_G."Posting Date");
+                      END;
+
+                      // <-- 20180724-WI00-ADV01.01.00-36579-CJY01
+                    END;
+                 END;
+                // <-- 20150708-APP06-ADV01.01.00-1828-FEC01
+                SalesPriceCalcMgt_G.SetSalesLinePriceAnomaly(Rec);
+
+                // --> 20160713-APP34-ADV01.01.00-1969-OAN01
+                IF (SalesLine2_L.GET(SalesLine2_L."Document Type"::Order,"Source Order No.","Source Order Line No.")) THEN
+                  "Market Price" := SalesLine2_L."Market Price";
+                // <-- 20160713-APP34-ADV01.01.00-1969-OAN01
+
+              END; // 20160203-APP19-ADV01.01.00-2638-OAN01
+              MODIFY;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      CMCSetup_G@1000000000 : Record 8052982;
+      SalesPriceCalcMgt_G@1000000001 : Codeunit 7000;
+      CMCSalesPriceDiscMgt_G@1000000002 : Codeunit 8053017;
+      ApprovMgt_G@1000000003 : Codeunit 439;
+      ItemReturnSetup_G@1000000004 : Record 8053245;
+      ItemLedgerEntry_G@1000000005 : Record 32;
+      DoSendApprovalRequest_G@1000000006 : Boolean;
+      CallByUpdateSalesBatch_G@1000000007 : Boolean;
+
+    PROCEDURE ItemReturnCheck@8053001(ItemNo_P@8053002 : Code[20]) : Boolean;
+    VAR
+      UserSetup_L@8053000 : Record 91;
+      Found_L@8053003 : Boolean;
+      Item_L@8053001 : Record 27;
+    BEGIN
+      UserSetup_L.GET(USERID);
+      UserSetup_L.TESTFIELD("User Groupe Code");
+
+      ItemReturnSetup_G.RESET;
+      ItemReturnSetup_G.SETRANGE("User Group Code",UserSetup_L."User Groupe Code");
+      ItemReturnSetup_G.SETRANGE(Type,ItemReturnSetup_G.Type::Item);
+      ItemReturnSetup_G.SETRANGE("No.",ItemNo_P);
+      Found_L := ItemReturnSetup_G.FINDFIRST;
+
+      IF NOT Item_L.GET(ItemNo_P) THEN
+       EXIT(FALSE);
+
+      IF NOT Found_L THEN BEGIN
+        ItemReturnSetup_G.RESET;
+        ItemReturnSetup_G.SETRANGE("User Group Code",UserSetup_L."User Groupe Code");
+        ItemReturnSetup_G.SETRANGE(Type,ItemReturnSetup_G.Type::Species);
+        ItemReturnSetup_G.SETRANGE("No.",Item_L."Species Code");
+        Found_L := ItemReturnSetup_G.FINDFIRST;
+      END;
+
+      IF NOT Found_L THEN BEGIN
+        ItemReturnSetup_G.RESET;
+        ItemReturnSetup_G.SETRANGE("User Group Code",UserSetup_L."User Groupe Code");
+        ItemReturnSetup_G.SETRANGE(Type,ItemReturnSetup_G.Type::Subfamily);
+        ItemReturnSetup_G.SETRANGE("No.",Item_L."Sub-Family Code");
+        Found_L := ItemReturnSetup_G.FINDFIRST;
+      END;
+
+      IF NOT Found_L THEN BEGIN
+        ItemReturnSetup_G.RESET;
+        ItemReturnSetup_G.SETRANGE("User Group Code",UserSetup_L."User Groupe Code");
+        ItemReturnSetup_G.SETRANGE(Type,ItemReturnSetup_G.Type::Family);
+        ItemReturnSetup_G.SETRANGE("No.",Item_L."Family Code");
+        Found_L := ItemReturnSetup_G.FINDFIRST;
+      END;
+
+      IF NOT Found_L THEN BEGIN
+        ItemReturnSetup_G.RESET;
+        ItemReturnSetup_G.SETRANGE("User Group Code",UserSetup_L."User Groupe Code");
+        ItemReturnSetup_G.SETRANGE(Type,ItemReturnSetup_G.Type::Activity);
+        ItemReturnSetup_G.SETRANGE("No.",Item_L."Activity Code");
+        Found_L := ItemReturnSetup_G.FINDFIRST;
+      END;
+
+      EXIT(Found_L);
+    END;
+
+    PROCEDURE SetDoSendApprovalRequest@1000000000(DoSendApprovalRequest_P@1000000000 : Boolean);
+    BEGIN
+      DoSendApprovalRequest_G := DoSendApprovalRequest_P;
+    END;
+
+    PROCEDURE IsLineWithRex@1000000001(RecSalesLine_P@1000000002 : Record 37) : Boolean;
+    VAR
+      RecSalesDiscount_L@1000000001 : Record 8053177;
+      ReturnValue_L@1000000000 : Boolean;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      //  Controle si la ligne contient une remise de type Remise exceptionelle
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecSalesLine_P : la ligne de vente sur laquelle on recherche si une remise exeptionelle est appliqu'e
+      // Sorties:
+      //   - ReturnValue_L = TRUE si il y a une remise exceptionelle attach'e . la ligne
+      //                     Si pas de parametrage on renvoie TRUE
+      //----------------------------------------------------------------------------------------------------------
+      ReturnValue_L := FALSE;
+      IF CMCSetup_G."Exceptional Discount Code" <> '' THEN
+        ReturnValue_L := RecSalesDiscount_L.GET(RecSalesLine_P."Document Type",RecSalesLine_P."Document No.",RecSalesLine_P."Line No.",
+                                           CMCSetup_G."Exceptional Discount Code")
+      ELSE
+        ReturnValue_L := TRUE;
+
+      EXIT(ReturnValue_L);
+    END;
+
+    PROCEDURE InitCallByBatch@1000000002(CallByUpdateSalesBatch_P@1000000000 : Boolean);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      //  Positionne CallByUpdateSalesBatch_G pour ne mettre . jour certaines variables que dans le cas du traitement
+      //             de MAJ Valeur document vente
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - CallByUpdateSalesBatch_P
+      // Sorties:
+      //   - Neant
+      //----------------------------------------------------------------------------------------------------------
+      CallByUpdateSalesBatch_G := CallByUpdateSalesBatch_P;
+    END;
+
+    PROCEDURE GetSalesOrderPaymentTerms@1000000006(SalesLine_P@1000000000 : Record 37;VAR PaymentTermsCode_P@1000000001 : Code[10];VAR DueDate_P@1000000002 : Date) UpdateRecord_L : Boolean;
+    VAR
+      SalesOrderHdr_L@1000000003 : Record 36;
+      ItemLedgerEntry_L@1000000004 : Record 32;
+      SalesShipmentHeader_L@1000000005 : Record 110;
+      CmcSetup_L@1000000006 : Record 8052982;
+      SalesLine_L@1000000007 : Record 37;
+    BEGIN
+      // --> 20160711-WI00-ADV01.01.00-2859-JCD01
+      {BEFORE
+      // --> 20160203-APP19-ADV01.01.00-2638-OAN01
+      IF SalesOrderHdr_L.GET(SalesOrderHdr_L."Document Type"::Order,SalesLine_P."Source Order No.") THEN BEGIN
+        PaymentTermsCode_P := SalesOrderHdr_L."Payment Terms Code";
+        DueDate_P := SalesOrderHdr_L."Due Date";
+        // IF (SalesLine_P."Payment Terms Code" <> PaymentTermsCode_P) AND (SalesLine_P."Due Date" <> DueDate_P) THEN
+        UpdateRecord_L := TRUE;
+      END;
+      // <-- 20160203-APP19-ADV01.01.00-2638-OAN01
+      AFTER}
+      // --> 20161007-WI00-ADV01.01.00-2859-CJY01
+      {BEFORE
+      // Recherche de la ligne d''criture article devant ^tre lettr'e si elle existe
+      IF SalesLine_P."Appl.-from Item Entry" <> 0 THEN BEGIN
+        IF ItemLedgerEntry_L.GET(SalesLine_P."Appl.-from Item Entry") AND
+        (ItemLedgerEntry_L."Document Type" = ItemLedgerEntry_L."Document Type"::"Sales Shipment") THEN
+          IF SalesShipmentHeader_L.GET(ItemLedgerEntry_L."Document No.") THEN BEGIN
+            PaymentTermsCode_P := SalesShipmentHeader_L."Payment Terms Code";
+            // --> 20160727-WI00-ADV01.01.00-2859-VMR01
+            //BEFORE
+            //DueDate_P := SalesShipmentHeader_L."Due Date";
+            //AFTER
+            // <-- 20160727-WI00-ADV01.01.00-2859-VMR01
+            UpdateRecord_L := TRUE;
+          END;
+      // Si pas d''criture recherche des information dans la commande li'e
+      END ELSE IF SalesOrderHdr_L.GET(SalesOrderHdr_L."Document Type"::Order,SalesLine_P."Source Order No.") THEN BEGIN
+        PaymentTermsCode_P := SalesOrderHdr_L."Payment Terms Code";
+        // --> 20160727-WI00-ADV01.01.00-2859-VMR01
+        //DueDate_P := SalesOrderHdr_L."Due Date";
+        //AFTER
+        // <-- 20160727-WI00-ADV01.01.00-2859-VMR01
+        UpdateRecord_L := TRUE;
+      END;
+      AFTER}
+      //pour le Payment Terms : rSgle identique pour tout le monde, on r'cupSre celui de la commande originale
+      IF SalesOrderHdr_L.GET(SalesOrderHdr_L."Document Type"::Order,SalesLine_P."Source Order No.") THEN BEGIN
+        PaymentTermsCode_P := SalesOrderHdr_L."Payment Terms Code";
+        UpdateRecord_L := TRUE;
+      END;
+      CmcSetup_L.GET;
+      //pour la date d''ch'ance, on ne traite que dans le cas UNEAL c'est . dire "Copy Due Date S.O.Lines" = TRUE
+      IF CmcSetup_L."Copy Due Date S.O.Lines" THEN BEGIN
+        IF SalesLine_L.GET(SalesLine_L."Document Type"::Order,SalesLine_P."Source Order No.",
+          SalesLine_P."Source Order Line No.") THEN BEGIN
+            DueDate_P := SalesLine_L."Due Date";
+            UpdateRecord_L := TRUE;
+          END;
+      END;
+      // <-- 20160711-WI00-ADV01.01.00-2859-JCD01
+    END;
+
+    PROCEDURE UpdatePmtTermsOnAttachedLines@1000000003(VAR SourceReturnOrderLine_P@1000000000 : Record 37);
+    VAR
+      ReturnOrderAttachedLines_L@1000000001 : Record 37;
+    BEGIN
+      // --> 20160203-APP19-ADV01.01.00-2638-OAN01
+      WITH SourceReturnOrderLine_P DO BEGIN
+        // CVO Line
+        ReturnOrderAttachedLines_L.RESET;
+        ReturnOrderAttachedLines_L.SETRANGE("Document Type","Document Type");
+        ReturnOrderAttachedLines_L.SETRANGE("Document No.","Document No.");
+        ReturnOrderAttachedLines_L.SETRANGE("CVO Item Attached Line","Line No.");
+        IF ReturnOrderAttachedLines_L.FINDSET(TRUE,FALSE) THEN BEGIN
+          ReturnOrderAttachedLines_L.VALIDATE("Payment Terms Code","Payment Terms Code");
+          ReturnOrderAttachedLines_L.VALIDATE("Due Date","Due Date");
+          ReturnOrderAttachedLines_L.MODIFY;
+        END;
+
+        // CVO Corn Line
+        ReturnOrderAttachedLines_L.RESET;
+        ReturnOrderAttachedLines_L.SETRANGE("Document Type","Document Type");
+        ReturnOrderAttachedLines_L.SETRANGE("Document No.","Document No.");
+        ReturnOrderAttachedLines_L.SETRANGE("CVO Corn Item Attached Line","Line No.");
+        IF ReturnOrderAttachedLines_L.FINDSET(TRUE,FALSE) THEN BEGIN
+          ReturnOrderAttachedLines_L.VALIDATE("Payment Terms Code","Payment Terms Code");
+          ReturnOrderAttachedLines_L.VALIDATE("Due Date","Due Date");
+          ReturnOrderAttachedLines_L.MODIFY;
+        END;
+
+        // RPD Line
+        ReturnOrderAttachedLines_L.RESET;
+        ReturnOrderAttachedLines_L.SETRANGE("Document Type","Document Type");
+        ReturnOrderAttachedLines_L.SETRANGE("Document No.","Document No.");
+        ReturnOrderAttachedLines_L.SETRANGE("RPD Item Attached Line","Line No.");
+        IF ReturnOrderAttachedLines_L.FINDSET(TRUE,FALSE) THEN BEGIN
+          ReturnOrderAttachedLines_L.VALIDATE("Payment Terms Code","Payment Terms Code");
+          ReturnOrderAttachedLines_L.VALIDATE("Due Date","Due Date");
+          ReturnOrderAttachedLines_L.MODIFY;
+        END;
+      END;
+      // <-- 20160203-APP19-ADV01.01.00-2638-OAN01
+    END;
+
+    PROCEDURE FindExpeLink@1000000004(SalesLine_P@1000000000 : Record 37) : Integer;
+    VAR
+      ReservationEntry_L@1000000001 : Record 337;
+      TrackingSpecification_L@100000000 : Record 336;
+    BEGIN
+      // --> 20180724-WI00-ADV01.01.00-36579-CJY01
+      IF SalesLine_P."Appl.-from Item Entry" <> 0  THEN
+        EXIT(SalesLine_P."Appl.-from Item Entry");
+
+      ReservationEntry_L.SETRANGE(ReservationEntry_L."Source Subtype",SalesLine_P."Document Type");
+      ReservationEntry_L.SETRANGE(ReservationEntry_L."Source ID",SalesLine_P."Document No.");
+      ReservationEntry_L.SETRANGE(ReservationEntry_L."Source Ref. No.",SalesLine_P."Line No.");
+      ReservationEntry_L.SETRANGE(ReservationEntry_L."Variant Code",SalesLine_P."Variant Code");
+      ReservationEntry_L.SETRANGE(ReservationEntry_L."Location Code",SalesLine_P."Location Code");
+      ReservationEntry_L.SETRANGE(ReservationEntry_L."Source Batch Name",'');
+      ReservationEntry_L.SETRANGE(ReservationEntry_L."Source Prod. Order Line", 0);
+      IF ReservationEntry_L.FINDFIRST THEN
+        EXIT(ReservationEntry_L."Appl.-from Item Entry");
+
+      // --> 20201208-WI00-ADV01.01.00-CC534-MRU01
+      // Si la ligne a d'j. 't' r'ceptionn'e, on regarde dans les 'critures traÎabilit'
+      TrackingSpecification_L.SETRANGE("Source Subtype",SalesLine_P."Document Type");
+      TrackingSpecification_L.SETRANGE("Source ID",SalesLine_P."Document No.");
+      TrackingSpecification_L.SETRANGE("Source Ref. No.",SalesLine_P."Line No.");
+      TrackingSpecification_L.SETRANGE("Variant Code",SalesLine_P."Variant Code");
+      TrackingSpecification_L.SETRANGE("Location Code",SalesLine_P."Location Code");
+      TrackingSpecification_L.SETRANGE("Source Batch Name",'');
+      TrackingSpecification_L.SETRANGE("Source Prod. Order Line", 0);
+      IF TrackingSpecification_L.FINDFIRST THEN
+        EXIT(TrackingSpecification_L."Appl.-from Item Entry");
+      // <-- 20201208-WI00-ADV01.01.00-CC534-MRU01
+
+      EXIT(0);
+      // <-- 20180724-WI00-ADV01.01.00-36579-CJY01
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20140611-APP19-CMC02.02.00-2050-FEC01 : ADDOBJ.
+      20140723-APP19-CMC02.02.00-DRN01 : Refactoring
+      20140725-APP06-TER01.01.00-FHS01 : ADDCODE (Ne pas appliquer d'cote)
+      20140908-APP33-CMC02.02.00-FDA01 : Modified "Negociated Price" -> "Negotiated Price"
+      20140913-APP33-CMC02.02.00-FDA01 : MERGE (Merged code after blocked again the object on Source Safe)
+      20140930-APP01-TER01.01.00-FBE01 : Le Traitement de retarification met . jour le prix unitaire HT et le prix unitaire net
+                                         Si pas de REX et prix n'goci'
+            20141002-APP19-CMC02.02.00-DRN01 : Correction problSme d'accSs concurrentiel dans le cas ou la valorisation d'une ligne
+                                         modifie une autre ligne (Function UpdateVATAmounts de la table 37)
+      20141013-APP19-CMC02.02.00-DRN01 : Remise . 0 du prix unitaire net si Prix unitaire = 0 et prix n'goci' = FALSE
+      20150129-APP01-TER01.01.00-64-SDE01 : ADDCODE (sp64 ternoveo)
+      20150223-APP33-TER01.01.00-TER64-SDE01  : ADDCODE (sp64 ternoveo)
+      20150408-APP40-TER01.01.00-231-FBE : Ne pas calculer de decote sur les retours si ligne "Forc' au moment du Visprix"
+      20150708-APP06-ADV01.01.00-1828-FEC01 : MODCODE (Changement de la valorisation des retours).
+      20151007-APP19-ADV01.01.00-2318-DRN01 : MODCODE (OnRun : MAJ du groupe prix client et du groupe rem. client en cas de MAJ sur le
+                                                       client factur' depuis la saisie de la commande)
+      20151104-APP19-ADV01.01.00-2437-DRN01 : MODCODE (OnRun : conditionner la maj du groupe prix client et du groupe rem. client)
+      20160203-APP19-ADV01.01.00-2638-OAN01 : ADDCODE (Update Payment Terms And Due Date On Return Order Even If VisPrix)
+                                              ADDFUNCTION (GetSalesOrderPaymentTerms, UpdatePmtTermsOnAttachedLines)
+      20160420-WI00-ADV01.01.00-2946-CJY01 : MODCODE (gestion fine du groupe prix)
+      20160711-WI00-ADV01.01.00-2859-JCD01 : MODFUNCTION (GetSalesOrderPaymentTerms)
+      20160713-APP34-ADV01.01.00-1969-OAN01 : ADDCODE (Update Market Price On Retrn Order With Source Document Value)
+      20160727-WI00-ADV01.01.00-2859-VMR01 : MODFUNCTION (GetSalesOrderPaymentTerms ne pas renvoyer la date d''ch'ance)
+      20161007-WI00-ADV01.01.00-2859-CJY01 : MODFUNCTION (refonte du 2859, les rSgles sont chang'es, d'sactivation du code pr'c'dent)
+      20171030-WI00-ADV01.01.00-24077-CJY01 : MODCODE (correction mutation article avec maintient de prix)
+      20180724-WI00-ADV01.01.00-36579-CJY01 : MODCODE (correction cas traÎabilit' retour pointant sur exp'dition)
+      20201208-WI00-ADV01.01.00-CC534-MRU01 : MODCODE (Compl'ment 36579 : gestion du cas o- la ligne a d'j. 't' r'ceptionn'e)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

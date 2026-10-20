@@ -1,0 +1,612 @@
+OBJECT Codeunit 395 FinChrgMemo-Issue
+{
+  OBJECT-PROPERTIES
+  {
+    Date=19/10/15;
+    Heure=00:00:00;
+    Liste versions=NAVW16.00.01,CMC02.02.00,CMB6.00.10.09,TER01.01.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 21=rm,
+                TableData 300=rimd,
+                TableData 304=rimd,
+                TableData 305=rimd;
+    OnRun=VAR
+            "<-- 3LI FUNCTIONS 8060990 -->"@8060985 : Integer;
+            MailMgt_L@8060984 : Codeunit 8060999;
+            Module_L@8060983 : 'Purchase,Sales,Service,Reminder,Finance Charge';
+            DocumentType_L@8060982 : ' ,Quote,Order,Return Order,Blanket Order,Invoice,Credit Memo,Shipment,Receipt';
+            "<-- 3LI Locals 50000-->"@1000000000 : Integer;
+            IssFinChDetail_L@1000000001 : Record 60043;
+            FinChDetail_L@1000000002 : Record 60042;
+          BEGIN
+            WITH FinChrgMemoHeader DO BEGIN
+              IF (PostingDate <> 0D) AND (ReplacePostingDate OR ("Posting Date" = 0D)) THEN
+                VALIDATE("Posting Date",PostingDate);
+              // --> 20131222-FINA18/001-CMC02.02.00-FEC01
+              {BEFORE
+              TESTFIELD("Customer No.");
+              TESTFIELD("Posting Date");
+              TESTFIELD("Document Date");
+              TESTFIELD("Due Date");
+              TESTFIELD("Customer Posting Group");
+              AFTER}
+              TESTFIELD("Posting Date");
+              TESTFIELD("Document Date");
+              TESTFIELD("Due Date");
+              CASE FinChrgMemoHeader."Interest Type" OF
+                FinChrgMemoHeader."Interest Type" ::" " : BEGIN
+                  TESTFIELD("Customer No.");
+                  TESTFIELD("Customer Posting Group");
+                END;
+                FinChrgMemoHeader."Interest Type" ::Debitor : BEGIN
+                  TESTFIELD("Customer No.");
+                  TESTFIELD("Customer Posting Group");
+                END;
+                FinChrgMemoHeader."Interest Type" ::Creditor : BEGIN
+                  TESTFIELD("Vendor No.");
+                  TESTFIELD("Vendor Posting Group");
+                END;
+              END;
+              FinChrgTerms.GET(FinChrgMemoHeader."Fin. Charge Terms Code");
+              IF FinChrgTerms."Interest Calculation Method" =
+                 FinChrgTerms."Interest Calculation Method"::"Total Balance Due" THEN BEGIN
+                TESTFIELD("Bal. Starting Date");
+                TESTFIELD("Bal. Ending Date");
+              END;
+              IF FinChrgTerms."Use Group. Account" THEN
+                TESTFIELD("Group G/L Account No.");
+              // --< 20131222-FINA18/001-CMC02.02.00-FEC01
+              DocDim.SETRANGE("Table ID",DATABASE::"Finance Charge Memo Header");
+              DocDim.SETRANGE("Document Type",DocDim."Document Type"::" ");
+              DocDim.SETRANGE("Document No.","No.");
+              DocDim.SETRANGE("Line No.",0);
+              TempDocDim.RESET;
+              TempDocDim.DELETEALL;
+              DimMgt.CopyDocDimToDocDim(DocDim,TempDocDim);
+              IF NOT DimMgt.CheckDocDimComb(TempDocDim) THEN
+                ERROR(
+                  Text002,
+                  TABLECAPTION,"No.",DimMgt.GetDimCombErr);
+
+              // --> 20131222-FINA18/001-CMC02.02.00-FEC02
+              {BEFORE
+              TableID[1] := DATABASE::Customer;
+              No[1] := "Customer No.";
+              AFTER}
+              CASE "Interest Type" OF
+                "Interest Type"::" " : BEGIN
+                  TableID[1] := DATABASE::Customer;
+                  No[1] := "Customer No.";
+                END;
+                "Interest Type"::Debitor : BEGIN
+                  TableID[1] := DATABASE::Customer;
+                  No[1] := "Customer No.";
+                END;
+                "Interest Type"::Creditor : BEGIN
+                  TableID[1] := DATABASE::Vendor;
+                  No[1] := "Vendor No.";
+                END;
+              END;
+              // --< 20131222-FINA18/001-CMC02.02.00-FEC02
+
+              IF NOT DimMgt.CheckDocDimValuePosting(TempDocDim,TableID,No) THEN
+                ERROR(
+                  Text003,
+                  TABLECAPTION,"No.",DimMgt.GetDimValuePostingErr);
+
+              // --> 20131222-FINA18/001-CMC02.02.00-FEC03
+              {BEFORE
+              CustPostingGr.GET("Customer Posting Group");
+              AFTER}
+              CASE "Interest Type" OF
+                "Interest Type"::" " : CustPostingGr.GET("Customer Posting Group");
+                "Interest Type"::Debitor : CustPostingGr.GET("Customer Posting Group");
+                "Interest Type"::Creditor : VendPostingGr.GET("Vendor Posting Group");
+              END;
+              // --< 20131222-FINA18/001-CMC02.02.00-FEC03
+
+              CALCFIELDS("Interest Amount","Additional Fee","Remaining Amount");
+              IF ("Interest Amount" = 0) AND ("Additional Fee" = 0) AND ("Remaining Amount" = 0) THEN
+                ERROR(Text000);
+              SourceCodeSetup.GET;
+              SourceCodeSetup.TESTFIELD("Finance Charge Memo");
+              SrcCode := SourceCodeSetup."Finance Charge Memo";
+              // --> 20150324-FINA18/001-CMC02.02.00-2845-BRA01
+              // --> 20151019-ADV01.01.00-2405-BDN01
+              // BEFORE
+              //IF FinChrgMemoHeader."Interest Type"=FinChrgMemoHeader."Interest Type"::Creditor THEN BEGIN
+              // AFTER
+              IF FinChrgMemoHeader."Interest Type"=FinChrgMemoHeader."Interest Type"::Debitor THEN BEGIN
+              // <-- 20151019-ADV01.01.00-2405-BDN01
+                SourceCodeSetup.TESTFIELD("Fees Invoice");
+                SrcCode := SourceCodeSetup."Fees Invoice";
+              END;
+              // <-- 20150324-FINA18/001-CMC02.02.00-2845-BRA01
+
+              IF ("Issuing No." = '') AND ("No. Series" <> "Issuing No. Series") THEN BEGIN
+                TESTFIELD("Issuing No. Series");
+                "Issuing No." := NoSeriesMgt.GetNextNo("Issuing No. Series","Posting Date",TRUE);
+                MODIFY;
+                COMMIT;
+              END;
+              IF "Issuing No." = '' THEN
+                DocNo := "No."
+              ELSE
+                DocNo := "Issuing No.";
+
+              FinChrgMemoLine.SETRANGE("Finance Charge Memo No.","No.");
+              IF FinChrgMemoLine.FIND('-') THEN
+                REPEAT
+                  CASE FinChrgMemoLine.Type OF
+                    FinChrgMemoLine.Type::" ":
+                      FinChrgMemoLine.TESTFIELD(Amount,0);
+                    FinChrgMemoLine.Type::"G/L Account":
+                      IF (FinChrgMemoLine.Amount <> 0) AND "Post Additional Fee" THEN BEGIN
+                        FinChrgMemoLine.TESTFIELD("No.");
+                        InitGenJnlLine(GenJnlLine."Account Type"::"G/L Account",
+                                       FinChrgMemoLine."No.",
+                                       FinChrgMemoLine."Line Type" = FinChrgMemoLine."Line Type"::Rounding);
+                        GenJnlLine."Gen. Prod. Posting Group" := FinChrgMemoLine."Gen. Prod. Posting Group";
+                        GenJnlLine."VAT Prod. Posting Group" := FinChrgMemoLine."VAT Prod. Posting Group";
+                        GenJnlLine."VAT Calculation Type" := FinChrgMemoLine."VAT Calculation Type";
+                        IF FinChrgMemoLine."VAT Calculation Type" =
+                           FinChrgMemoLine."VAT Calculation Type"::"Sales Tax"
+                        THEN BEGIN
+                          GenJnlLine."Tax Area Code" := FinChrgMemoHeader."Tax Area Code";
+                          GenJnlLine."Tax Liable" := FinChrgMemoHeader."Tax Liable";
+                          GenJnlLine."Tax Group Code" := FinChrgMemoLine."Tax Group Code";
+                        END;
+                        GenJnlLine."VAT %" := FinChrgMemoLine."VAT %";
+                        GenJnlLine.VALIDATE(Amount,-FinChrgMemoLine.Amount - FinChrgMemoLine."VAT Amount");
+                        GenJnlLine."VAT Amount" := -FinChrgMemoLine."VAT Amount";
+                        GenJnlLine.UpdateLineBalance;
+                        TotalAmount := TotalAmount - GenJnlLine.Amount;
+                        TotalAmountLCY := TotalAmountLCY - GenJnlLine."Balance (LCY)";
+                        // --> 20131222-FINA18/001-CMC02.02.00-FEC04
+                        {BEFORE
+                        GenJnlLine."Bill-to/Pay-to No." := FinChrgMemoHeader."Customer No.";
+                        AFTER}
+                        CASE "Interest Type" OF
+                          "Interest Type"::" " :
+                            GenJnlLine."Bill-to/Pay-to No." := FinChrgMemoHeader."Customer No.";
+                          "Interest Type"::Debitor :
+                            GenJnlLine."Bill-to/Pay-to No." := FinChrgMemoHeader."Customer No.";
+                          "Interest Type"::Creditor :
+                            GenJnlLine."Bill-to/Pay-to No." := FinChrgMemoHeader."Vendor No.";
+                        END;
+                        // --< 20131222-FINA18/001-CMC02.02.00-FEC04
+                        GenJnlLine.INSERT;
+                      END;
+                    FinChrgMemoLine.Type::"Customer Ledger Entry":
+                      BEGIN
+                        FinChrgMemoLine.TESTFIELD("Entry No.");
+                        CustLedgEntry.GET(FinChrgMemoLine."Entry No.");
+                        CustLedgEntry.TESTFIELD("Currency Code",FinChrgMemoHeader."Currency Code");
+                        IF FinChrgMemoLine.Amount < 0 THEN
+                          FinChrgMemoLine.FIELDERROR(Amount,Text001);
+                        FinChrgMemoInterestAmount := FinChrgMemoInterestAmount + FinChrgMemoLine.Amount;
+                        FinChrgMemoInterestVATAmount := FinChrgMemoInterestVATAmount + FinChrgMemoLine."VAT Amount";
+                      END;
+                    // --> 20131224-FINA18/001-CMC02.02.00-FEC01
+                    FinChrgMemoLine.Type::"Total Balance Due": BEGIN
+                      FinChrgMemoInterestAmount := FinChrgMemoInterestAmount + FinChrgMemoLine.Amount;
+                      FinChrgMemoInterestVATAmount := FinChrgMemoInterestVATAmount + FinChrgMemoLine."VAT Amount";
+                    END;
+                    // --< 20131224-FINA18/001-CMC02.02.00-FEC01
+                  END;
+                UNTIL FinChrgMemoLine.NEXT = 0;
+
+              IF (FinChrgMemoInterestAmount <> 0) AND "Post Interest" THEN BEGIN
+                // --> 20131222-FINA18/001-CMC02.02.00-FEC05
+                {BEFORE
+                CustPostingGr.TESTFIELD("Interest Account");
+                InitGenJnlLine(GenJnlLine."Account Type"::"G/L Account",CustPostingGr."Interest Account",TRUE);
+                AFTER}
+                CASE "Interest Type" OF
+                  "Interest Type"::" " : BEGIN
+                    CustPostingGr.TESTFIELD("Interest Account");
+                    InitGenJnlLine(GenJnlLine."Account Type"::"G/L Account",CustPostingGr."Interest Account",TRUE);
+                  END;
+                  "Interest Type"::Debitor : BEGIN
+                    CustPostingGr.TESTFIELD("Interest Account");
+                    InitGenJnlLine(GenJnlLine."Account Type"::"G/L Account",CustPostingGr."Interest Account",TRUE);
+                  END;
+                  "Interest Type"::Creditor : BEGIN
+                    VendPostingGr.TESTFIELD("Interest Account");
+                    InitGenJnlLine(GenJnlLine."Account Type"::"G/L Account",VendPostingGr."Interest Account",TRUE);
+                  END;
+                END;
+                // --< 20131222-FINA18/001-CMC02.02.00-FEC05
+                GenJnlLine.VALIDATE("VAT Bus. Posting Group","VAT Bus. Posting Group");
+                GenJnlLine.VALIDATE(Amount,-FinChrgMemoInterestAmount - FinChrgMemoInterestVATAmount);
+                GenJnlLine.UpdateLineBalance;
+                TotalAmount := TotalAmount - GenJnlLine.Amount;
+                TotalAmountLCY := TotalAmountLCY - GenJnlLine."Balance (LCY)";
+                // --> 20131222-FINA18/001-CMC02.02.00-FEC06
+                {BEFORE
+                GenJnlLine."Bill-to/Pay-to No." := FinChrgMemoHeader."Customer No.";
+                AFTER}
+                CASE "Interest Type" OF
+                  "Interest Type"::" " :
+                    GenJnlLine."Bill-to/Pay-to No." := FinChrgMemoHeader."Customer No.";
+                  "Interest Type"::Debitor :
+                    GenJnlLine."Bill-to/Pay-to No." := FinChrgMemoHeader."Customer No.";
+                  "Interest Type"::Creditor :
+                    GenJnlLine."Bill-to/Pay-to No." := FinChrgMemoHeader."Vendor No.";
+                END;
+                // --< 20131222-FINA18/001-CMC02.02.00-FEC06
+                GenJnlLine.INSERT;
+              END;
+
+              IF (TotalAmount <> 0) OR (TotalAmountLCY <> 0) THEN BEGIN
+                // --> 20131222-FINA18/001-CMC02.02.00-FEC07
+                {BEFORE
+                InitGenJnlLine(GenJnlLine."Account Type"::Customer,"Customer No.",TRUE);
+                AFTER}
+                CASE "Interest Type" OF
+                  "Interest Type"::" " :
+                    InitGenJnlLine(GenJnlLine."Account Type"::Customer,"Customer No.",TRUE);
+                  "Interest Type"::Debitor :
+                    InitGenJnlLine(GenJnlLine."Account Type"::Customer,"Customer No.",TRUE);
+                  "Interest Type"::Creditor :
+                    InitGenJnlLine(GenJnlLine."Account Type"::Vendor,"Vendor No.",TRUE)
+                END;
+                // --< 20131222-FINA18/001-CMC02.02.00-FEC07
+                // --> 20150806-WI00-ADV01.01.00-2066-JCD01
+                CASE "Interest Type" OF
+                  "Interest Type"::" ","Interest Type"::Debitor :
+                    GenJnlLine.VALIDATE("Posting Group",FinChrgMemoHeader."Customer Posting Group");
+                  "Interest Type"::Creditor :
+                    GenJnlLine.VALIDATE("Posting Group",FinChrgMemoHeader."Vendor Posting Group");
+                END;
+                // <-- 20150806-WI00-ADV01.01.00-2066-JCD01
+
+                GenJnlLine.VALIDATE(Amount,TotalAmount);
+                GenJnlLine.VALIDATE("Amount (LCY)",TotalAmountLCY);
+                GenJnlLine.INSERT;
+              END;
+              IF GenJnlLine.FIND('-') THEN BEGIN
+                DimMgt.CopyDocDimToJnlLineDim(TempDocDim,TempJnlLineDim);
+                REPEAT
+                  GenJnlLine2 := GenJnlLine;
+                  GenJnlLine2."Shortcut Dimension 1 Code" := "Shortcut Dimension 1 Code";
+                  GenJnlLine2."Shortcut Dimension 2 Code" := "Shortcut Dimension 2 Code";
+                  GenJnlPostLine.RunWithCheck(GenJnlLine2,TempJnlLineDim);
+                UNTIL GenJnlLine.NEXT = 0;
+              END;
+              GenJnlLine.DELETEALL;
+
+              IF FinChrgMemoInterestAmount <> 0 THEN BEGIN
+                TESTFIELD("Fin. Charge Terms Code");
+                FinChrgTerms.GET("Fin. Charge Terms Code");
+                IF FinChrgTerms."Interest Calculation" IN
+                   [FinChrgTerms."Interest Calculation"::"Closed Entries",
+                    FinChrgTerms."Interest Calculation"::"All Entries"]
+                THEN BEGIN
+                  FinChrgMemoLine.SETRANGE(Type,FinChrgMemoLine.Type::"Customer Ledger Entry");
+                  IF FinChrgMemoLine.FIND('-') THEN
+                    REPEAT
+                      CustLedgEntry.GET(FinChrgMemoLine."Entry No.");
+                      CustLedgEntry.SETFILTER("Date Filter",'..%1',FinChrgMemoHeader."Document Date");
+                      CustLedgEntry.CALCFIELDS("Remaining Amount");
+                      IF CustLedgEntry."Remaining Amount" = 0 THEN BEGIN
+                        CustLedgEntry."Calculate Interest" := FALSE;
+                        CustLedgEntry.MODIFY;
+                      END;
+                      CustLedgEntry2.SETCURRENTKEY("Closed by Entry No.");
+                      CustLedgEntry2.SETRANGE("Closed by Entry No.",CustLedgEntry."Entry No.");
+                      CustLedgEntry2.SETRANGE("Closing Interest Calculated",FALSE);
+                      CustLedgEntry2.MODIFYALL("Closing Interest Calculated",TRUE);
+                    UNTIL FinChrgMemoLine.NEXT = 0;
+                  FinChrgMemoLine.SETRANGE(Type);
+                END;
+              END;
+
+              IssuedFinChrgMemoHeader.TRANSFERFIELDS(FinChrgMemoHeader);
+              IssuedFinChrgMemoHeader."No." := DocNo;
+              IssuedFinChrgMemoHeader."Pre-Assigned No." := "No.";
+              IssuedFinChrgMemoHeader."Source Code" := SrcCode;
+              IssuedFinChrgMemoHeader."User ID" := USERID;
+              IssuedFinChrgMemoHeader.INSERT;
+              DimMgt.MoveDocDimToPostedDocDim(TempDocDim,DATABASE::"Issued Fin. Charge Memo Header",DocNo);
+
+              IF NextEntryNo = 0 THEN BEGIN
+                ReminderEntry.LOCKTABLE;
+                IF ReminderEntry.FIND('+') THEN
+                  NextEntryNo := ReminderEntry."Entry No." + 1
+                ELSE
+                  NextEntryNo := 1;
+              END;
+
+              FinChrgMemoCommentLine.SETRANGE(Type,FinChrgMemoCommentLine.Type::"Finance Charge Memo");
+              FinChrgMemoCommentLine.SETRANGE("No.","No.");
+              IF FinChrgMemoCommentLine.FIND('-') THEN
+                REPEAT
+                  FinChrgMemoCommentLine2.TRANSFERFIELDS(FinChrgMemoCommentLine);
+                  FinChrgMemoCommentLine2.Type := FinChrgMemoCommentLine2.Type::"Issued Finance Charge Memo";
+                  FinChrgMemoCommentLine2."No." := IssuedFinChrgMemoHeader."No.";
+                  FinChrgMemoCommentLine2.INSERT;
+                UNTIL FinChrgMemoCommentLine.NEXT = 0;
+              FinChrgMemoCommentLine.DELETEALL;
+
+              IF FinChrgMemoLine.FIND('-') THEN
+                REPEAT
+                  IF FinChrgMemoLine.Type = FinChrgMemoLine.Type::"Customer Ledger Entry" THEN BEGIN
+                    ReminderEntry.INIT;
+                    ReminderEntry."Entry No." := NextEntryNo;
+                    ReminderEntry.Type := ReminderEntry.Type::"Finance Charge Memo";
+                    ReminderEntry."No." := IssuedFinChrgMemoHeader."No.";
+                    ReminderEntry."Posting Date" := "Posting Date";
+                    ReminderEntry."Due Date" := "Due Date";
+                    ReminderEntry."Document Date" := "Document Date";
+                    ReminderEntry."Customer No." := "Customer No.";
+                    ReminderEntry."Customer Entry No." := FinChrgMemoLine."Entry No.";
+                    ReminderEntry."Document Type" := FinChrgMemoLine."Document Type";
+                    ReminderEntry."Document No." := FinChrgMemoLine."Document No.";
+                    ReminderEntry."Remaining Amount" := FinChrgMemoLine."Remaining Amount";
+                    ReminderEntry."Interest Amount" := FinChrgMemoLine.Amount;
+                    ReminderEntry."Interest Posted" := (FinChrgMemoInterestAmount <> 0) AND "Post Interest";
+                    ReminderEntry."User ID" := USERID;
+                    ReminderEntry.INSERT;
+                    NextEntryNo := NextEntryNo + 1;
+                  END;
+                  IssuedFinChrgMemoLine.TRANSFERFIELDS(FinChrgMemoLine);
+                  IssuedFinChrgMemoLine."Finance Charge Memo No." := IssuedFinChrgMemoHeader."No.";
+                  IssuedFinChrgMemoLine.INSERT;
+                  // --> 20141030-FIN02-TER01.01.00-BRA01
+                  FinChDetail_L.SETRANGE("Finance Charge Memo No.",FinChrgMemoLine."Finance Charge Memo No.");
+                  FinChDetail_L.SETRANGE("Finance Charge Line No.",FinChrgMemoLine."Line No.");
+                  IF FinChDetail_L.FINDSET THEN
+                    REPEAT
+                      IssFinChDetail_L.INIT;
+                      IssFinChDetail_L.TRANSFERFIELDS(FinChDetail_L);
+                      IssFinChDetail_L."Finance Charge Memo No." := IssuedFinChrgMemoHeader."No.";
+                      IssFinChDetail_L.INSERT;
+                    UNTIL FinChDetail_L.NEXT=0;
+                  FinChDetail_L.DELETEALL;
+                  // <-- 20141030-FIN02-TER01.01.00-BRA01
+                UNTIL FinChrgMemoLine.NEXT = 0;
+
+              // --> 20131224-FINA18/001-CMC02.02.00-FEC02
+              IF FinChrgMemoInterestAmount <> 0 THEN BEGIN
+                IF FinChrgTerms."Interest Calculation Method" =
+                  FinChrgTerms."Interest Calculation Method"::"Total Balance Due" THEN BEGIN
+                  ReminderEntry.INIT;
+                  ReminderEntry."Entry No." := NextEntryNo;
+                  ReminderEntry.Type := ReminderEntry.Type::"Finance Charge Memo";
+                  ReminderEntry."No." := IssuedFinChrgMemoHeader."No.";
+                  ReminderEntry."Posting Date" := "Posting Date";
+                  ReminderEntry."Due Date" := "Due Date";
+                  ReminderEntry."Document Date" := "Document Date";
+                  ReminderEntry."Customer No." := "Customer No.";
+                  ReminderEntry."Interest Amount" := FinChrgMemoInterestAmount;
+                  ReminderEntry."Interest Posted" := (FinChrgMemoInterestAmount <> 0) AND "Post Interest";
+                  ReminderEntry."Vendor No." := "Vendor No.";
+                  ReminderEntry."Contact No." := "Contact No.";
+                  ReminderEntry."Interest Type" := "Interest Type";
+                  ReminderEntry."Bal. Starting Date" := "Bal. Starting Date";
+                  ReminderEntry."Bal. Ending Date" := "Bal. Ending Date";
+                  ReminderEntry."Group G/L Account No." := "Group G/L Account No.";
+                  ReminderEntry."Group Account Code" := "Group Account Code";
+                  ReminderEntry."User ID" := USERID;
+                  ReminderEntry.INSERT;
+                END;
+              END;
+              // --< 20131224-FINA18/001-CMC02.02.00-FEC02
+
+              FinChrgMemoLine.DELETEALL;
+              DocDim.DELETEALL;
+              DELETE;
+            END;
+            // -->20130430-8060990/CMB108-CMB6.00.10.09-KEM01
+            MailMgt_L.InsertRec(IssuedFinChrgMemoHeader."No.",Module_L::"Finance Charge",DocumentType_L::" ");
+            // <--20130430-8060990/CMB108-CMB6.00.10.09-KEM01
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=There is nothing to issue.;FRA=Il n''y rien . 'mettre.';
+      Text001@1001 : TextConst 'ENU=must be positive or 0;FRA=doit ^tre positif ou nul';
+      Text002@1002 : TextConst 'ENU=The combination of dimensions used in %1 %2 is blocked. %3;FRA=La combinaison d''axes analytiques utilis'e dans %1 %2 est bloqu'e. %3';
+      Text003@1003 : TextConst 'ENU=A dimension in %1 %2 has caused an error. %3;FRA=Un axe analytique dans %1 %2 a provoqu' une erreur. %3';
+      SourceCodeSetup@1004 : Record 242;
+      CustPostingGr@1005 : Record 92;
+      CustLedgEntry@1006 : Record 21;
+      CustLedgEntry2@1007 : Record 21;
+      FinChrgTerms@1008 : Record 5;
+      FinChrgMemoHeader@1009 : Record 302;
+      FinChrgMemoLine@1010 : Record 303;
+      IssuedFinChrgMemoHeader@1011 : Record 304;
+      IssuedFinChrgMemoLine@1012 : Record 305;
+      FinChrgMemoCommentLine@1013 : Record 306;
+      FinChrgMemoCommentLine2@1014 : Record 306;
+      ReminderEntry@1015 : Record 300;
+      GenJnlLine@1016 : TEMPORARY Record 81;
+      GenJnlLine2@1017 : Record 81;
+      SourceCode@1018 : Record 230;
+      DocDim@1019 : Record 357;
+      TempDocDim@1020 : TEMPORARY Record 357;
+      TempJnlLineDim@1021 : TEMPORARY Record 356;
+      DimMgt@1022 : Codeunit 408;
+      NoSeriesMgt@1023 : Codeunit 396;
+      GenJnlPostLine@1024 : Codeunit 12;
+      DocNo@1025 : Code[20];
+      NextEntryNo@1026 : Integer;
+      ReplacePostingDate@1027 : Boolean;
+      PostingDate@1028 : Date;
+      SrcCode@1029 : Code[10];
+      FinChrgMemoInterestAmount@1030 : Decimal;
+      FinChrgMemoInterestVATAmount@1031 : Decimal;
+      TotalAmount@1032 : Decimal;
+      TotalAmountLCY@1033 : Decimal;
+      TableID@1034 : ARRAY [10] OF Integer;
+      No@1035 : ARRAY [10] OF Code[20];
+      "// 3Li Globals"@8053001 : Integer;
+      VendPostingGr@8053000 : Record 93;
+
+    PROCEDURE Set@6(VAR NewFinChrgMemoHeader@1000 : Record 302;NewReplacePostingDate@1001 : Boolean;NewPostingDate@1002 : Date);
+    BEGIN
+      FinChrgMemoHeader := NewFinChrgMemoHeader;
+      ReplacePostingDate := NewReplacePostingDate;
+      PostingDate := NewPostingDate;
+    END;
+
+    PROCEDURE GetIssuedFinChrgMemo@10(VAR NewIssuedFinChrgMemoHeader@1000 : Record 304);
+    BEGIN
+      NewIssuedFinChrgMemoHeader := IssuedFinChrgMemoHeader;
+    END;
+
+    LOCAL PROCEDURE InitGenJnlLine@7(AccType@1000 : Integer;AccNo@1001 : Code[20];SystemCreatedEntry@1002 : Boolean);
+    BEGIN
+      WITH FinChrgMemoHeader DO BEGIN
+        GenJnlLine.INIT;
+        GenJnlLine."Line No." := GenJnlLine."Line No." + 1;
+        GenJnlLine."Document Type" := GenJnlLine."Document Type"::"Finance Charge Memo";
+        GenJnlLine."Document No." := DocNo;
+        GenJnlLine."Posting Date" := "Posting Date";
+        GenJnlLine."Document Date" := "Document Date";
+        GenJnlLine."Account Type" := AccType;
+        GenJnlLine."Account No." := AccNo;
+        GenJnlLine.VALIDATE("Account No.");
+        IF GenJnlLine."Account Type" = GenJnlLine."Account Type"::"G/L Account" THEN BEGIN
+          GenJnlLine."Gen. Posting Type" := GenJnlLine."Gen. Posting Type"::Sale;
+          GenJnlLine."Gen. Bus. Posting Group" := "Gen. Bus. Posting Group";
+          GenJnlLine."VAT Bus. Posting Group" := "VAT Bus. Posting Group";
+        END;
+        GenJnlLine.VALIDATE("Currency Code","Currency Code");
+        // --> 20131222-FINA18/001-CMC02.02.00-FEC08
+        {BEFORE
+        IF GenJnlLine."Account Type" = GenJnlLine."Account Type"::Customer THEN BEGIN
+        AFTER}
+        IF (GenJnlLine."Account Type" = GenJnlLine."Account Type"::Customer) OR
+           (GenJnlLine."Account Type" = GenJnlLine."Account Type"::Vendor) THEN BEGIN
+        // --< 20131222-FINA18/001-CMC02.02.00-FEC08
+          GenJnlLine.VALIDATE(Amount,TotalAmount);
+          GenJnlLine.VALIDATE("Amount (LCY)",TotalAmountLCY);
+          GenJnlLine."Due Date" := "Due Date";
+        END;
+        GenJnlLine.Description := "Posting Description";
+        // --> 20131222-FINA18/001-CMC02.02.00-FEC09
+        {BEFORE
+        GenJnlLine."Source Type" := GenJnlLine."Source Type"::Customer;
+        GenJnlLine."Source No." :=  "Customer No.";
+        AFTER}
+        CASE "Interest Type" OF
+          "Interest Type"::" " : BEGIN
+            GenJnlLine."Source Type" := GenJnlLine."Source Type"::Customer;
+            GenJnlLine."Source No." :=  "Customer No.";
+          END;
+          "Interest Type"::Debitor : BEGIN
+            GenJnlLine."Source Type" := GenJnlLine."Source Type"::Customer;
+            GenJnlLine."Source No." :=  "Customer No.";
+          END;
+          "Interest Type"::Creditor : BEGIN
+            GenJnlLine."Source Type" := GenJnlLine."Source Type"::Vendor;
+            GenJnlLine."Source No." :=  "Vendor No.";
+            GenJnlLine."External Document No." := DocNo;
+          END;
+        END;
+        // --< 20131222-FINA18/001-CMC02.02.00-FEC09
+        GenJnlLine."Source Code" := SrcCode;
+        GenJnlLine."Reason Code" := "Reason Code";
+        GenJnlLine."System-Created Entry" := SystemCreatedEntry;
+        GenJnlLine."Posting No. Series" := "Issuing No. Series";
+        GenJnlLine."Salespers./Purch. Code" := '';
+        // --> 20150811-ADV01.01.00-2085-BRA01
+        IF "Payment Method Code"<>'' THEN
+          GenJnlLine."Payment Method Code" := "Payment Method Code";
+        // <-- 20150811-ADV01.01.00-2085-BRA01
+      END;
+    END;
+
+    PROCEDURE DeleteIssuedFinChrgLines@1(IssuedFinChrgMemoHeader@1000 : Record 304);
+    VAR
+      IssuedFinChrgMemoLine@1001 : Record 305;
+    BEGIN
+      IssuedFinChrgMemoLine.SETRANGE("Finance Charge Memo No.",IssuedFinChrgMemoHeader."No.");
+      IssuedFinChrgMemoLine.DELETEALL;
+    END;
+
+    PROCEDURE IncrNoPrinted@3(VAR IssuedFinChrgMemoHeader@1000 : Record 304);
+    BEGIN
+      WITH IssuedFinChrgMemoHeader DO BEGIN
+        FIND;
+        "No. Printed" := "No. Printed" + 1;
+        MODIFY;
+        COMMIT;
+      END;
+    END;
+
+    PROCEDURE TestDeleteHeader@19(FinChrgMemoHeader@1000 : Record 302;VAR IssuedFinChrgMemoHeader@1001 : Record 304);
+    BEGIN
+      WITH FinChrgMemoHeader DO BEGIN
+        CLEAR(IssuedFinChrgMemoHeader);
+        SourceCodeSetup.GET;
+        SourceCodeSetup.TESTFIELD("Deleted Document");
+        SourceCode.GET(SourceCodeSetup."Deleted Document");
+
+        IF ("Issuing No. Series" <> '') AND
+           (("Issuing No." <> '') OR ("No. Series" = "Issuing No. Series"))
+        THEN BEGIN
+          IssuedFinChrgMemoHeader.TRANSFERFIELDS(FinChrgMemoHeader);
+          IF "Issuing No." <> '' THEN
+            IssuedFinChrgMemoHeader."No." := "Issuing No.";
+          IssuedFinChrgMemoHeader."Pre-Assigned No. Series" := "No. Series";
+          IssuedFinChrgMemoHeader."Pre-Assigned No." := "No.";
+          IssuedFinChrgMemoHeader."Posting Date" := TODAY;
+          IssuedFinChrgMemoHeader."User ID" := USERID;
+          IssuedFinChrgMemoHeader."Source Code" := SourceCode.Code;
+        END;
+      END;
+    END;
+
+    PROCEDURE DeleteHeader@18(FinChrgMemoHeader@1000 : Record 302;VAR IssuedFinChrgMemoHeader@1001 : Record 304);
+    BEGIN
+      WITH FinChrgMemoHeader DO BEGIN
+        TestDeleteHeader(FinChrgMemoHeader,IssuedFinChrgMemoHeader);
+        IF IssuedFinChrgMemoHeader."No." <> '' THEN BEGIN
+          IssuedFinChrgMemoHeader."Shortcut Dimension 1 Code" := '';
+          IssuedFinChrgMemoHeader."Shortcut Dimension 2 Code" := '';
+          IssuedFinChrgMemoHeader.INSERT;
+          IssuedFinChrgMemoLine.INIT;
+          IssuedFinChrgMemoLine."Finance Charge Memo No." :=  FinChrgMemoHeader."No.";
+          IssuedFinChrgMemoLine."Line No." := 10000;
+          IssuedFinChrgMemoLine.Description := SourceCode.Description;
+          IssuedFinChrgMemoLine.INSERT;
+        END;
+      END;
+    END;
+
+    BEGIN
+    {
+      // -->3LI BEGIN
+
+      20130430-8060990/CMB108-CMB6.00.10.09-KEM01 : ADDCODE (Envoi Email automatiquement)
+      20131222-FINA18/001-CMC02.02.00-FEC01 : ADDCODE.
+      20131222-FINA18/001-CMC02.02.00-FEC02 : MODCODE.
+      20131222-FINA18/001-CMC02.02.00-FEC03 : MODCODE.
+      20131222-FINA18/001-CMC02.02.00-FEC04 : MODCODE.
+      20131222-FINA18/001-CMC02.02.00-FEC05 : MODCODE.
+      20131222-FINA18/001-CMC02.02.00-FEC06 : MODCODE.
+      20131222-FINA18/001-CMC02.02.00-FEC07 : MODCODE.
+      20131222-FINA18/001-CMC02.02.00-FEC08 : MODCODE.
+      20131222-FINA18/001-CMC02.02.00-FEC09 : MODCODE.
+      20131224-FINA18/001-CMC02.02.00-FEC01 : ADDCODE.
+      20131224-FINA18/001-CMC02.02.00-FEC02 : ADDCODE(G'n'ration des 'criture int'r^ts).
+      20140103-FINA18/001-CMC02.02.00-FEC01 : MODCODE.
+      20141030-FIN02-TER01.01.00-BRA01 : ADDCODE (Enregistrement des lignes de d'tails)
+      20150324-FINA18/001-CMC02.02.00-2845-BRA01 : ADDCODE (Code journal facture AGIO)
+      20150806-WI00-ADV01.01.00-2066-JCD01 : MODCODE (Transfert groupe compta client/fourn cr'ation feuille compta facture int'r^t)
+      20150811-ADV01.01.00-2085-BRA01 : ADDCODE (Propagation Code mode de rSglement)
+      20151019-ADV01.01.00-2405-BDN01 : MODCODE (Inversion code journaux int'r^ts/agios)
+
+      // <--3LI END
+    }
+    END.
+  }
+}
+

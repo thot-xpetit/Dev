@@ -1,0 +1,1286 @@
+OBJECT Codeunit 60068 Exelience Import Contract
+{
+  OBJECT-PROPERTIES
+  {
+    Date=13/03/19;
+    Heure=00:00:00;
+    Liste versions=SP3357,SP3386,SP3411,SP3410;
+  }
+  PROPERTIES
+  {
+    TableNo=8061230;
+    OnRun=VAR
+            "<-- 3LI LOCALS -->"@1000000017 : Integer;
+            Result_L@1000000000 : Text[256];
+            FileLogName_L@1000000004 : Text[256];
+            CodeCompany_L@1000000003 : Code[10];
+            FilePath_L@1000000002 : Text[500];
+            FileName_L@1000000005 : Text[500];
+            MsgErr_L@1000000001 : Text[250];
+            File_L@1000000006 : Text[1000];
+          BEGIN
+            CodeUnit_G := Processing;
+            CodeCompany_L := COMPANYNAME;
+
+            LaunchMoteurInterface_G.GET("Connector Name");
+            //mise . jour de la derniSre date ex'cution lors de la premiSre fois
+            IF LaunchMoteurInterface_G."Last Execution" = 0DT THEN BEGIN
+              LaunchMoteurInterface_G."Last Execution" := CURRENTDATETIME;
+              LaunchMoteurInterface_G.MODIFY;
+            END;
+
+            MoteurInterface_G.GetParameter(CodeUnit_G, ConnectorName_G, ImpExpFolder_G, LogFolder_G, ExtensionFile_G, PrefixFile_G);
+            MoteurInterface_G.GetTemplatesCode(ConnectorName_G, ItemTemplateCode_G, CustomerTemplateCode_G, VendorTemplateCode_G,
+              ContactTemplateCode_G, AccountTemplateCode_G, GlobalTemplateCode_G);
+            // --> 20181220-Wi00-ADV01.01.00-3386-MRU01
+            {BEFORE
+            ToolsFile_G.LogInit(LogFolder_G, 'EXEL_CONT');
+            AFTER}
+            ToolsFile_G.LogInit(LogFolder_G, ConnectorName_G);
+            // <-- 20181220-Wi00-ADV01.01.00-3386-MRU01
+            ToolsFile_G.LogInitCodeUnit(CodeUnit_G);
+
+            IF ("File in use" <> '') THEN BEGIN
+              ToolsFile_G.LogInitFileExecute("File in use");
+              ToolsFile_G.SplitFilename ("File in use",FilePath_L,FileName_L);
+
+              {
+              IF NOT FormatFileTest(Rec,FileName_L) THEN
+                ToolsFile_G.LogWriteErreur(STRSUBSTNO(Text60017, "File in use"))
+              ELSE
+                ReadFileToWrkTable("File in use", COMPANYNAME, FALSE);
+              }
+              ReadFileToWrkTable("File in use", COMPANYNAME, FALSE);
+
+              //Contr"le des donn'es issues de l'import du fichier
+              ControlImportedData(FALSE);
+
+              IF ToolsFile_G.LogErreurType() = 'E' THEN BEGIN
+                ExelienceImport_G.DeleteImportedData(ExelienceFileFlowEntry_G);
+
+                CLEAR(MsgErr_L);
+                FileLogName_L := ToolsFile_G.LogName;
+                ToolsFile_G.LogClose();
+
+                MsgErr_L := 'ERREUR ' + FileLogName_L;
+                ERROR(MsgErr_L);
+              END ELSE BEGIN
+                //Traitement des donn'es issues de l'import du fichier
+                InsertCollectContract(FALSE);
+                ExelienceImport_G.InsertExelienceError(ToolsFile_G,ExelienceFileFlowEntry_G);
+
+                IF NOT ToolsFile_G.FileRenameSav("File in use", 'SAV', TRUE) THEN BEGIN
+                  ToolsFile_G.LogWriteInfo(STRSUBSTNO(Text60016,"File in use"));
+                END ELSE
+                  ExelienceImport_G.UpdateFileName(ExelienceFileFlowEntry_G,FilePath_L+'SAV\',FileName_L);
+
+                IF ToolsFile_G.LogErreurType() = 'I' THEN BEGIN
+                  FileLogName_L := ToolsFile_G.LogName;
+                  ToolsFile_G.LogClose();
+                  MoteurInterface_G.InsertLog(CodeUnit_G, FileLogName_L);
+                END ELSE
+                  MoteurInterface_G.InsertOk(CodeUnit_G);
+              END;
+
+            END ELSE BEGIN
+
+              //Contr"le des donn'es pr'sentes dans les tables d'import
+              ControlImportedData(TRUE);
+
+              //Traitement des donn'es
+              InsertCollectContract(TRUE);
+
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      "<-- 3LI GLOBALS -->"@1000000018 : Integer;
+      CodeUnit_G@1000000017 : Integer;
+      MoteurInterface_G@1000000016 : Codeunit 8061230;
+      ToolsFile_G@1000000015 : Codeunit 8053405;
+      ConnectorName_G@1000000014 : Code[20];
+      ImpExpFolder_G@1000000013 : Text[256];
+      LogFolder_G@1000000012 : Text[256];
+      ExtensionFile_G@1000000011 : Text[10];
+      PrefixFile_G@1000000010 : Text[30];
+      ItemTemplateCode_G@1000000009 : Code[20];
+      CustomerTemplateCode_G@1000000008 : Code[20];
+      VendorTemplateCode_G@1000000007 : Code[20];
+      ContactTemplateCode_G@1000000006 : Code[20];
+      AccountTemplateCode_G@1000000005 : Code[20];
+      GlobalTemplateCode_G@1000000004 : Code[20];
+      SetupAlreadyRead_G@1000000003 : Boolean;
+      LaunchMoteurInterface_G@1000000002 : Record 8061230;
+      "<-- 3LI TEXT GLOBALS -->"@1000000057 : TextConst;
+      Text8053600@1000000029 : TextConst 'ENU=OK;FRA=OK';
+      Text8053601@1000000028 : TextConst 'ENU=Issue Read;FRA=ProblSme de lecture';
+      Text8053603@1000000026 : TextConst 'ENU=File doesn''t exist;FRA=Le fichier n''existe pas';
+      ExelienceFileFlowEntry_G@1000000040 : Integer;
+      ExelienceHeaderNo_G@1000000001 : Text[80];
+      Text60000@1000000019 : TextConst 'ENU=Line No. %1 : Incorrect Format Line;FRA=Ligne N› %1 : Format de ligne incorrect';
+      Text60001@1000000020 : TextConst 'ENU=Line No. %1 : Field %2 : Incorrect Data Format;FRA=Ligne N› %1 : Champ %2 : Format de donn'es incorrect';
+      Text60004@1000000023 : TextConst 'ENU=Line No. %1 : Field %2 : Mandatory Data;FRA=Ligne N› %1 : Champ %2 : Donn'e obligatoire';
+      Text60005@1000000024 : TextConst 'ENU=Line No. %1 : Incorrect Transmitter;FRA=Ligne N› %1 : Emetteur incorrect';
+      Text60006@1000000025 : TextConst 'ENU=Line No. %1 : Incorrect Receiver;FRA=Ligne N› %1 : Destinataire incorrect';
+      Text60008@1000000030 : TextConst 'ENU=Line No. %1 : Third Code unknown in Contributor Vendor in the base;FRA=Ligne N› %1 : Code Tiers inexistant dans les Fournisseurs Apporteurs en base';
+      Text60009@1000000031 : TextConst 'ENU=Line No. %1 : Product Code EXELIENCE not previously received in the repository feed;FRA=Ligne N› %1 : Code produit EXELIENCE non reÎu au pr'alable dans le flux r'f'rentiel';
+      Text60010@1000000032 : TextConst 'ENU=Line No. %1 : Product Code EXELIENCE received, but correspondence not made in base;FRA=Ligne N› %1 : Code produit EXELIENCE reÎu, mais correspondance non-effectu'e en base';
+      Text60015@1000000037 : TextConst 'ENU=Line No. %1 : Contract Code already existing in base;FRA=Ligne N› %1 : Code Contrat d'j. existant en base';
+      Text60016@1000000038 : TextConst 'ENU=Can not archive the file;FRA=Archivage du fichier %1 impossible';
+      Text60017@1000000039 : TextConst 'ENU=%1 : Incorrect File Name;FRA=%1 : Nom de fichier incorrect';
+      FileLineNumber_G@1000000000 : Integer;
+      CompanyInfo_G@1000000041 : Record 79;
+      ExelienceImport_G@1000000042 : Codeunit 60069;
+      Text60018@1000000043 : TextConst 'FRA=Ligne N› %1 : Code Contrat d'j. pr'sent dans le fichier';
+      Text60019@1000000021 : TextConst 'FRA=Ligne N› %1 : Champ %2 : Champ obligatoire non pr'sent';
+      Text60020@60000 : TextConst 'ENU=Line No. %1 : Sub-Family Code not specified for this item;FRA=Ligne N› %1 : Code Sous-Famille non sp'cifi' pour cet article';
+      Text60021@60001 : TextConst 'ENU=Line No. %1 : Productivity not specified for this item;FRA=Ligne N› %1 : rendement non pr'sent pour cet article';
+      Text60022@60002 : TextConst 'ENU=Line No. %1 : The species of the article is not allowed for the GNIS contract type;FRA=Ligne N› %1 : L''espSce de l''article n''est pas autoris'e pour le type de contrat GNIS';
+      Text60023@60004 : TextConst 'ENU=Line No. %1 : No template contract for this contract;FRA=Ligne N› %1 : Pas de contrat modSle existant pour ce contrat';
+      TextContractType@60003 : TextConst 'FRA=GNIS';
+      Text60024@60005 : TextConst 'ENU=Line No. %1 : False Item Correspondence;FRA=Ligne N› %1 : Correspondance article erron'e';
+      TextContractDescription@60006 : TextConst 'FRA=Contrat GNIS';
+
+    PROCEDURE ReadFileToWrkTable@1000000014(Filename_P@1000000000 : Text[1000];CompanyNo_P@1000000001 : Code[10];ArchiveFile_P@1000000002 : Boolean) Result_L : Text[30];
+    VAR
+      File_L@1000000003 : File;
+      FileStream_L@1000000004 : InStream;
+      Line_L@1000000006 : Text[1000];
+      CharLF_L@1000000007 : Char;
+      CharRC_L@1000000008 : Char;
+      EndLine_L@1000000009 : Text[2];
+      cduFormatFieldsMgt_L@8053601 : Codeunit 8060985;
+      LineToCut_L@1000000005 : Text[1000];
+      Position_L@1000000010 : Integer;
+      LineNo_L@1000000011 : Integer;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Lit et lance l'action de d'coupage du fichier
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - Filename_P : adresse et nom du fichier
+      //    - CompanyNo_P : N› de soci't' . qui appartient le fichier
+      //    - DeleteFile_P : Indique si le fichier doit ^tre supprim'
+      //----------------------------------------------------------------------------------------------------------------------------------
+
+      GetSetup();
+
+      //Initialisation des variables locales
+      Result_L := Text8053600;
+      CharLF_L := 10;
+      CharRC_L := 13;
+      EndLine_L := FORMAT(CharLF_L) + FORMAT(CharRC_L);
+
+      //V'rification si le fichier exist
+      IF NOT(EXISTS(Filename_P)) THEN
+        Result_L := Text8053603;
+
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //Ouverture du fichier pour lire du texte en lecture seule
+      //----------------------------------------------------------------------------------------------------------------------------------
+        IF Result_L = Text8053600 THEN BEGIN
+          File_L.WRITEMODE(FALSE);
+          File_L.TEXTMODE(TRUE);
+          IF NOT(File_L.OPEN(Filename_P)) THEN
+            Result_L := Text8053601;
+        END;
+
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //D'coupage du fichier pour r'cup'rer chaque ligne
+      //----------------------------------------------------------------------------------------------------------------------------------
+        IF Result_L = Text8053600 THEN BEGIN
+          //R'cup'ration du N› de s'quence du fichier
+          GetNextNo;
+
+          LineNo_L := 1;
+          FileLineNumber_G := 0;
+
+          File_L.CREATEINSTREAM(FileStream_L);
+            REPEAT
+              IF FileStream_L.READTEXT(Line_L) > 0 THEN BEGIN
+                //conversion de ANSI vers ASCII
+                Line_L := cduFormatFieldsMgt_L.Ansi2Ascii(Line_L);
+                Line_L := DELCHR(Line_L, '=', EndLine_L);
+                LineToCut_L := Line_L;
+
+                //Test pr'sence de s'parateur dans la ligne . int'grer
+                Position_L := STRPOS(Line_L, ';');
+                IF Position_L = 0 THEN
+                  ToolsFile_G.LogWriteErreur(STRSUBSTNO(Text60000, LineNo_L));
+
+                ReadLine(Filename_P, LineToCut_L);
+
+                LineNo_L += 1;
+              END;
+            UNTIL FileStream_L.EOS = TRUE;
+
+            //Fermeture du fichier aprSs traitement
+            File_L.CLOSE;
+        END;
+
+      EXIT(Result_L);
+    END;
+
+    PROCEDURE GetSetup@8053683();
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Permet de r'cup'rer le param'trage de l'interface en faisant le moins possible de lecture dans la BDD
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //  Sorties
+      //----------------------------------------------------------------------------------------------------------------------------------
+      IF SetupAlreadyRead_G = FALSE THEN BEGIN
+        SetupAlreadyRead_G := TRUE;
+      END;
+    END;
+
+    PROCEDURE ReadLine@1000000017(Filename_P@8053602 : Text[1000];Line_P@1000000000 : Text[1000]);
+    VAR
+      BufferLine_L@8053606 : Text[1000];
+      Position_L@8053607 : Integer;
+      i_L@8053608 : Integer;
+      TestError_L@1000000068 : Text[250];
+      "-----------------------"@1000000002 : Integer;
+      SeqId_L@1000000004 : Text[100];
+      Type_L@1000000001 : Text[100];
+      FF_FileDateTime_L@1000000005 : Text[100];
+      FF_Transmitter_L@1000000006 : Text[100];
+      FF_Receiver_L@1000000007 : Text[100];
+      FF_ContractRef_L@1000000008 : Text[100];
+      FF_Campaign_L@1000000009 : Text[100];
+      FF_ThirdCode_L@1000000010 : Text[100];
+      FF_ThirdName_L@1000000011 : Text[100];
+      FF_AddressNo_L@1000000012 : Text[100];
+      FF_AddressStreet_L@1000000013 : Text[100];
+      FF_AddressComplement_L@1000000014 : Text[100];
+      FF_AddressPlaceCalled_L@1000000015 : Text[100];
+      FF_PostCode_L@1000000016 : Text[100];
+      FF_City_L@1000000017 : Text[100];
+      FF_MgtInstitution_L@1000000018 : Text[100];
+      FF_MgtSite_L@1000000019 : Text[100];
+      FF_ContractDate_L@1000000020 : Text[100];
+      FF_ContractSurface_L@1000000021 : Text[100];
+      FF_ItemNo_L@1000000022 : Text[100];
+      FF_SpeciesCode_L@1000000023 : Text[100];
+      FF_SpeciesName_L@1000000024 : Text[100];
+      FF_VarietyCode_L@1000000025 : Text[100];
+      FF_VarietyName_L@1000000026 : Text[100];
+      FF_GenerationCode_L@1000000027 : Text[100];
+      FF_GenerationName_L@1000000028 : Text[100];
+      FF_Hybrid_L@1000000029 : Text[100];
+      FF_Organic_L@1000000030 : Text[100];
+      FF_FileLineNumber_L@1000000031 : Text[100];
+      ExelienceFileFlow_L@1000000003 : Record 60105;
+      "------------------------"@1000000032 : Integer;
+      H_ContractRef_L@1000000055 : Text[100];
+      H_CampaignYear_L@1000000054 : Text[100];
+      H_ThirdCode_L@1000000053 : Text[100];
+      H_CompanyName@1000000052 : Text[100];
+      H_AddressNo_L@1000000051 : Text[100];
+      H_AddressStreet_L@1000000050 : Text[100];
+      H_AddressComplement_L@1000000049 : Text[100];
+      H_AddressPlaceCalled_L@1000000048 : Text[100];
+      H_PostCode_L@1000000047 : Text[100];
+      H_City_L@1000000046 : Text[100];
+      H_MgtInstitution_L@1000000045 : Text[100];
+      H_MgtSite_L@1000000044 : Text[100];
+      H_IssueContractDate_L@1000000043 : Text[100];
+      H_DeclaredSurface_L@1000000042 : Text[100];
+      H_ItemNo_L@1000000041 : Text[100];
+      H_SpeciesCode_L@1000000040 : Text[100];
+      H_SpeciesName_L@1000000039 : Text[100];
+      H_VarietyCode_L@1000000038 : Text[100];
+      H_VarietyName_L@1000000037 : Text[100];
+      H_GenerationCode_L@1000000036 : Text[100];
+      H_GenerationName_L@1000000035 : Text[100];
+      H_Hybrid_L@1000000034 : Text[100];
+      H_Organic_L@1000000033 : Text[100];
+      ExelienceHeader_L@1000000056 : Record 60078;
+      "-------------------------"@1000000057 : Integer;
+      L_ContractRef_L@1000000058 : Text[100];
+      L_TypeLineDetail_L@1000000059 : Text[100];
+      L_BatchNo_L@1000000060 : Text[200];
+      L_BatchSource_L@1000000061 : Text[100];
+      L_ExelienceProductCode_L@1000000062 : Text[100];
+      L_EAN13ProductCode_L@1000000063 : Text[100];
+      L_Generation_L@1000000064 : Text[100];
+      L_BatchVariety_L@1000000065 : Text[100];
+      L_HybridDistribution_L@1000000066 : Text[100];
+      ExelienceLine_L@1000000067 : Record 60103;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // D'coupe la ligne pass'e en paramStre pour la traiter
+      // Attention, COMMIT dans cette fonction
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - Filename_P : adresse et nom du fichier
+      //    - Line_P : Ligne . traiter
+      //  Sorties
+      //----------------------------------------------------------------------------------------------------------------------------------
+      BufferLine_L := Line_P;
+
+      SeqId_L := ReadNextItem(BufferLine_L);
+
+      Type_L := ReadNextItem(BufferLine_L);
+
+      CASE Type_L OF
+        'DEBUT':
+          //Traitement de la ligne de d'but de fichier
+          BEGIN
+            FF_FileDateTime_L := ReadNextItem(BufferLine_L);
+            FF_Transmitter_L := ReadNextItem(BufferLine_L);
+            FF_Receiver_L := ReadNextItem(BufferLine_L);
+          END;
+        'COM':
+          //Traitement de la ligne de commentaires
+          BEGIN
+            FF_ContractRef_L := ReadNextItem(BufferLine_L);
+            FF_Campaign_L := ReadNextItem(BufferLine_L);
+            FF_ThirdCode_L := ReadNextItem(BufferLine_L);
+            FF_ThirdName_L := ReadNextItem(BufferLine_L);
+            FF_AddressNo_L := ReadNextItem(BufferLine_L);
+            FF_AddressStreet_L := ReadNextItem(BufferLine_L);
+            FF_AddressComplement_L := ReadNextItem(BufferLine_L);
+            FF_AddressPlaceCalled_L := ReadNextItem(BufferLine_L);
+            FF_PostCode_L := ReadNextItem(BufferLine_L);
+            FF_City_L := ReadNextItem(BufferLine_L);
+            FF_MgtInstitution_L := ReadNextItem(BufferLine_L);
+            FF_MgtSite_L := ReadNextItem(BufferLine_L);
+            FF_ContractDate_L := ReadNextItem(BufferLine_L);
+            FF_ContractSurface_L := ReadNextItem(BufferLine_L);
+            FF_ItemNo_L := ReadNextItem(BufferLine_L);
+            FF_SpeciesCode_L := ReadNextItem(BufferLine_L);
+            FF_SpeciesName_L := ReadNextItem(BufferLine_L);
+            FF_VarietyCode_L := ReadNextItem(BufferLine_L);
+            FF_VarietyName_L := ReadNextItem(BufferLine_L);
+            FF_GenerationCode_L := ReadNextItem(BufferLine_L);
+            FF_GenerationName_L := ReadNextItem(BufferLine_L);
+            FF_Hybrid_L := ReadNextItem(BufferLine_L);
+            FF_Organic_L := ReadNextItem(BufferLine_L);
+          END;
+        'ENT':
+          //Traitement des lignes de type en-t^te
+          BEGIN
+            H_ContractRef_L := ReadNextItem(BufferLine_L);
+            H_CampaignYear_L := ReadNextItem(BufferLine_L);
+            H_ThirdCode_L := ReadNextItem(BufferLine_L);
+            H_CompanyName := ReadNextItem(BufferLine_L);
+            H_AddressNo_L := ReadNextItem(BufferLine_L);
+            H_AddressStreet_L := ReadNextItem(BufferLine_L);
+            H_AddressComplement_L := ReadNextItem(BufferLine_L);
+            H_AddressPlaceCalled_L := ReadNextItem(BufferLine_L);
+            H_PostCode_L := ReadNextItem(BufferLine_L);
+            H_City_L := ReadNextItem(BufferLine_L);
+            H_MgtInstitution_L := ReadNextItem(BufferLine_L);
+            H_MgtSite_L := ReadNextItem(BufferLine_L);
+            H_IssueContractDate_L := ReadNextItem(BufferLine_L);
+            H_DeclaredSurface_L := ReadNextItem(BufferLine_L);
+            H_DeclaredSurface_L := CONVERTSTR(H_DeclaredSurface_L, '.', ',');
+            H_ItemNo_L := ReadNextItem(BufferLine_L);
+            H_SpeciesCode_L := ReadNextItem(BufferLine_L);
+            H_SpeciesName_L := ReadNextItem(BufferLine_L);
+            H_VarietyCode_L := ReadNextItem(BufferLine_L);
+            H_VarietyName_L := ReadNextItem(BufferLine_L);
+            H_GenerationCode_L := ReadNextItem(BufferLine_L);
+            H_GenerationName_L := ReadNextItem(BufferLine_L);
+            H_Hybrid_L := ReadNextItem(BufferLine_L);
+            H_Organic_L := ReadNextItem(BufferLine_L);
+          END;
+        'DET':
+          //Traitement des lignes de type ligne
+          BEGIN
+            L_ContractRef_L := ReadNextItem(BufferLine_L);
+            L_TypeLineDetail_L := ReadNextItem(BufferLine_L);
+            L_BatchNo_L := ReadNextItem(BufferLine_L);
+            L_BatchSource_L := ReadNextItem(BufferLine_L);
+            L_ExelienceProductCode_L := ReadNextItem(BufferLine_L);
+            L_EAN13ProductCode_L := ReadNextItem(BufferLine_L);
+            L_Generation_L := ReadNextItem(BufferLine_L);
+            L_BatchVariety_L := ReadNextItem(BufferLine_L);
+            L_HybridDistribution_L := ReadNextItem(BufferLine_L);
+          END;
+        'FIN':
+          //Traitement de la ligne de type fin
+          BEGIN
+            FF_FileDateTime_L := ReadNextItem(BufferLine_L);
+            FF_Transmitter_L := ReadNextItem(BufferLine_L);
+            FF_Receiver_L := ReadNextItem(BufferLine_L);
+            FF_FileLineNumber_L :=  ReadNextItem(BufferLine_L);
+          END;
+      END;
+
+
+      CASE Type_L OF
+        'DEBUT','COM','FIN':
+          //Ecriture dans la table 60024
+          BEGIN
+            ExelienceFileFlow_L.LOCKTABLE;
+            ExelienceFileFlow_L.INIT;
+
+            ExelienceFileFlow_L."Sequence No." := ExelienceFileFlowEntry_G;
+            ExelienceFileFlow_L."Seq. Number Recording" := SeqId_L;
+            ExelienceFileFlow_L."Import DateTime" := CREATEDATETIME(TODAY,TIME);
+            ExelienceFileFlow_L."File Name" := COPYSTR(Filename_P,1,250);
+            ExelienceFileFlow_L.Status := ExelienceFileFlow_L.Status::"In Process";
+            ExelienceFileFlow_L.Type := Type_L;
+
+            CASE Type_L OF
+              'DEBUT':
+                BEGIN
+                  ExelienceFileFlow_L."File DateTime" := FF_FileDateTime_L;
+                  ExelienceFileFlow_L.Transmitter := FF_Transmitter_L;
+                  ExelienceFileFlow_L.Receiver := FF_Receiver_L;
+
+                END;
+              'COM':
+                BEGIN
+                  ExelienceFileFlow_L."Contract Reference" := FF_ContractRef_L;
+                  ExelienceFileFlow_L.Campaign := FF_Campaign_L;
+                  ExelienceFileFlow_L."Third Code" := FF_ThirdCode_L;
+                  ExelienceFileFlow_L."Third Name" := FF_ThirdName_L;
+                  ExelienceFileFlow_L."Address No." := FF_AddressNo_L;
+                  ExelienceFileFlow_L."Address Street" := FF_AddressStreet_L;
+                  ExelienceFileFlow_L."Address Complement" := FF_AddressComplement_L;
+                  ExelienceFileFlow_L."Address Place Called" := FF_AddressPlaceCalled_L;
+                  ExelienceFileFlow_L."Post Code" := FF_PostCode_L;
+                  ExelienceFileFlow_L.City := FF_City_L;
+                  ExelienceFileFlow_L."Management Institution" := FF_MgtInstitution_L;
+                  ExelienceFileFlow_L."Management Site" := FF_MgtSite_L;
+                  ExelienceFileFlow_L."Contract Date" := FF_ContractDate_L;
+                  ExelienceFileFlow_L."Contract surface" := FF_ContractSurface_L;
+                  ExelienceFileFlow_L."Item No." := FF_ItemNo_L;
+                  ExelienceFileFlow_L."Species Code" := FF_SpeciesCode_L;
+                  ExelienceFileFlow_L."Species Name" := FF_SpeciesName_L;
+                  ExelienceFileFlow_L."Variety Code" := FF_VarietyCode_L;
+                  ExelienceFileFlow_L."Variety Name" := FF_VarietyName_L;
+                  ExelienceFileFlow_L."Generation Code" := FF_GenerationCode_L;
+                  ExelienceFileFlow_L."Generation Name" := FF_GenerationName_L;
+                  ExelienceFileFlow_L.Hybrid := FF_Hybrid_L;
+                  ExelienceFileFlow_L.Organic := FF_Organic_L;
+                END;
+              'FIN':
+                BEGIN
+                  ExelienceFileFlow_L."File DateTime" := FF_FileDateTime_L;
+                  ExelienceFileFlow_L.Transmitter := FF_Transmitter_L;
+                  ExelienceFileFlow_L.Receiver := FF_Receiver_L;
+                  ExelienceFileFlow_L."File Lines Number" := FF_FileLineNumber_L;
+                END;
+            END;
+
+            FileLineNumber_G += 1;
+            ExelienceFileFlow_L."Record Order No." := FileLineNumber_G;
+            ExelienceFileFlow_L."Import Type" := ExelienceFileFlow_L."Import Type"::Contract;
+            ExelienceFileFlow_L.INSERT;
+
+          END;
+        'ENT':
+          //Ecriture dans la table 60078
+          BEGIN
+            ExelienceHeader_L.LOCKTABLE;
+            ExelienceHeader_L.INIT;
+
+            ExelienceHeader_L."Sequence Flow No." := ExelienceFileFlowEntry_G;
+            ExelienceHeader_L."Sequence No." := SeqId_L;
+            ExelienceHeader_L.Status := ExelienceHeader_L.Status::"In Process";
+            ExelienceHeader_L."Record Type" := Type_L;
+
+            ExelienceHeader_L."Contract Reference" := H_ContractRef_L;
+            ExelienceHeader_L."Campaign Year" := H_CampaignYear_L;
+            ExelienceHeader_L."Third Code" := H_ThirdCode_L;
+            ExelienceHeader_L."Multiplier Company Name" := H_CompanyName;
+            ExelienceHeader_L."Multiplier Address No." := H_AddressNo_L;
+            ExelienceHeader_L."Multiplier Address" := H_AddressStreet_L;
+            ExelienceHeader_L."Multiplier Address Complement" := H_AddressComplement_L;
+            ExelienceHeader_L."Multiplier Addr. Place Called" := H_AddressPlaceCalled_L;
+            ExelienceHeader_L."Multiplier Post Code" := H_PostCode_L;
+            ExelienceHeader_L."Multiplier City" := H_City_L;
+            ExelienceHeader_L."Management Institution" := H_MgtInstitution_L;
+            ExelienceHeader_L."Management Site" := H_MgtSite_L;
+            ExelienceHeader_L."Issue Contract Date" := H_IssueContractDate_L;
+            ExelienceHeader_L."Declared surface" := H_DeclaredSurface_L;
+            ExelienceHeader_L."Item No." := H_ItemNo_L;
+            ExelienceHeader_L."Species Code" := H_SpeciesCode_L;
+            ExelienceHeader_L."Species Name" := H_SpeciesName_L;
+            ExelienceHeader_L."Variety Code" := H_VarietyCode_L;
+            ExelienceHeader_L."Variety Name" := H_VarietyName_L;
+            ExelienceHeader_L."Generation Code" := H_GenerationCode_L;
+            ExelienceHeader_L."Generation Name" := H_GenerationName_L;
+            ExelienceHeader_L.Hybrid := H_Hybrid_L;
+            ExelienceHeader_L.Organic := H_Organic_L;
+
+            FileLineNumber_G += 1;
+            ExelienceHeader_L."Record Order No." := FileLineNumber_G;
+            ExelienceHeader_L.INSERT;
+
+            //Sauvegarde du N› d'en-t^te pour faire le lien avec les lignes
+            ExelienceHeaderNo_G := SeqId_L;
+          END;
+        'DET':
+          //Ecriture dans la table 60103
+          BEGIN
+            ExelienceLine_L.LOCKTABLE;
+            ExelienceLine_L.INIT;
+
+            ExelienceLine_L."Sequence Flow No." := ExelienceFileFlowEntry_G;
+            ExelienceLine_L."Sequence Header No." := ExelienceHeaderNo_G;
+            ExelienceLine_L."Sequence No." := SeqId_L;
+            ExelienceLine_L.Status := ExelienceLine_L.Status::"In Process";
+            ExelienceLine_L."Record Type" := Type_L;
+
+            ExelienceLine_L."Contract Reference" := L_ContractRef_L;
+            ExelienceLine_L."Type Line Detail" := L_TypeLineDetail_L;
+            ExelienceLine_L."Batch No." := L_BatchNo_L;
+            ExelienceLine_L."Batch Source" := L_BatchSource_L;
+            ExelienceLine_L."Exelience Product Code" := L_ExelienceProductCode_L;
+            ExelienceLine_L."EAN13 Product Code" := L_EAN13ProductCode_L;
+            ExelienceLine_L.Generation := L_Generation_L;
+            ExelienceLine_L."Batch Variety" := L_BatchVariety_L;
+            ExelienceLine_L."Hybrid Distribution" := L_HybridDistribution_L;
+
+            FileLineNumber_G += 1;
+            ExelienceLine_L."Record Order No." := FileLineNumber_G;
+            ExelienceLine_L.INSERT;
+          END;
+      END;
+    END;
+
+    PROCEDURE ReadNextItem@8053600(VAR Var_Line_P@8053600 : Text[1000]) Result_L : Text[50];
+    VAR
+      Position_L@8053601 : Integer;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // R'cupSre le prochain 'l'ment de la liste 'tant s'par' par des ; et l'enlSve de la liste
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - Var_Line_P : Ligne . traiter
+      //  Sorties
+      //    - Result_L : la prochain 'l'ment de la liste
+      //----------------------------------------------------------------------------------------------------------------------------------
+
+      Position_L := STRPOS(Var_Line_P, ';');
+      IF Position_L > 0 THEN BEGIN
+        Result_L := COPYSTR(Var_Line_P, 1, Position_L - 1);
+        Var_Line_P := COPYSTR(Var_Line_P, Position_L + 1, STRLEN(Var_Line_P));
+      END ELSE BEGIN
+      //Dernier 'l'ment de la liste
+        Result_L := Var_Line_P;
+        Var_Line_P := '';
+      END;
+      EXIT(Result_L);
+    END;
+
+    PROCEDURE GetNextNo@1000000011();
+    VAR
+      ExelienceFileFlow_L@1000000000 : Record 60105;
+      ExelienceHeader_L@1000000002 : Record 60078;
+      ExelienceLine_L@1000000003 : Record 60103;
+    BEGIN
+      ExelienceFileFlow_L.RESET;
+      IF ExelienceFileFlow_L.FINDLAST THEN
+        ExelienceFileFlowEntry_G := ExelienceFileFlow_L."Sequence No." + 1
+      ELSE
+        ExelienceFileFlowEntry_G := 1;
+    END;
+
+    PROCEDURE ControlImportedData@1000000008(Global_P@1000000000 : Boolean);
+    BEGIN
+      //Traitement global de contr"le sur toutes les donn'es import'es sauf les donn'es trait'es
+      //On supprime les erreurs
+      EraseExelienceError;
+
+      //Contr"le du type + longueur + existence des donn'es
+      //ControlTypeExelienceFileFlow;
+      ControlTypeExelienceHeader;
+      //ControlTypeExelienceLine;
+
+      //Contr"les sp'cifiques
+      //ExelienceImport_G.ControlStructure(ToolsFile_G,Global_P,ExelienceFileFlowEntry_G);
+
+      //Contr"les propres . l'import des contrats
+      ControlContractData(Global_P);
+
+      //Mise . jour des statuts des enregistrements des diff'rentes tables
+      ExelienceImport_G.UpdateErrorStatus;
+    END;
+
+    PROCEDURE ControlTypeExelienceFileFlow@1000000016();
+    VAR
+      ExelienceFileFlow_L@1000000003 : Record 60105;
+      LineNo_L@1000000000 : Text[100];
+    BEGIN
+      ExelienceFileFlow_L.RESET;
+      ExelienceFileFlow_L.SETFILTER(Status,'<>%1',ExelienceFileFlow_L.Status::Processed);
+      ExelienceFileFlow_L.SETRANGE("Import Type", ExelienceFileFlow_L."Import Type"::Contract);
+      IF ExelienceFileFlow_L.FINDFIRST THEN REPEAT
+        WITH ExelienceFileFlow_L DO BEGIN
+          LineNo_L := "Seq. Number Recording";
+
+          IF NOT ExelienceImport_G.IntegerControl(10, "Seq. Number Recording", TRUE) THEN
+            ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Seq. Number Recording"))
+                        ,"Sequence No.",'','', "Record Order No.");
+          IF NOT ExelienceImport_G.StringControl(12, Type, TRUE) THEN
+            ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION(Type))
+                        ,"Sequence No.",'','', "Record Order No.");
+
+          CASE Type OF
+            'DEBUT':
+              BEGIN
+                IF NOT ExelienceImport_G.StringControl(20, "File DateTime", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("File DateTime"))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(20, Transmitter, FALSE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION(Transmitter))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(20, Receiver, FALSE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION(Receiver))
+                              ,"Sequence No.",'','', "Record Order No.");
+              END;
+            'COM':
+              BEGIN
+                IF NOT ExelienceImport_G.StringControl(30, "Contract Reference", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Contract Reference"))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, Campaign, TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION(Campaign))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, "Third Code", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Third Code"))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, "Third Name", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Third Name"))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, "Address No.", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Address No."))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, "Address Street", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Address Street"))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, "Address Complement", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Address Complement"))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, "Address Place Called", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Address Place Called"))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, "Post Code", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Post Code"))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, City, TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION(City))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, "Management Institution", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Management Institution"))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, "Management Site", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Management Site"))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, "Contract Date", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Contract Date"))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, "Contract surface", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Contract surface"))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, "Item No.", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Item No."))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, "Species Code", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Species Code"))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, "Species Name", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Species Name"))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, "Variety Code", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Variety Code"))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, "Variety Name", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Variety Name"))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, "Generation Code", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Generation Code"))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, "Generation Name", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Generation Name"))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, Hybrid, TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION(Hybrid))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(30, Organic, TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION(Organic))
+                              ,"Sequence No.",'','', "Record Order No.");
+              END;
+            'FIN':
+              BEGIN
+                IF NOT ExelienceImport_G.StringControl(20, "File DateTime", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("File DateTime"))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(20, Transmitter, FALSE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION(Transmitter))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.StringControl(20, Receiver, FALSE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION(Receiver))
+                              ,"Sequence No.",'','', "Record Order No.");
+                IF NOT ExelienceImport_G.IntegerControl(12, "File Lines Number", TRUE) THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("File Lines Number"))
+                              ,"Sequence No.",'','', "Record Order No.");
+              END;
+          END;
+
+        END;
+      UNTIL ExelienceFileFlow_L.NEXT = 0;
+    END;
+
+    PROCEDURE ControlTypeExelienceHeader@1000000018();
+    VAR
+      ExelienceHeader_L@1000000002 : Record 60078;
+      LineFileFlowNo_L@1000000000 : Integer;
+      LineHeaderNo_L@1000000001 : Text[100];
+      ExelienceFileFlow_L@1000000003 : Record 60105;
+      ExelienceFileFlow_SequenceNo_L@1000000004 : Integer;
+    BEGIN
+      ExelienceFileFlow_L.RESET;
+      ExelienceFileFlow_L.SETRANGE(Status,ExelienceFileFlow_L.Status::"In Process");
+      ExelienceFileFlow_L.SETRANGE("Import Type", ExelienceFileFlow_L."Import Type"::Contract);
+      IF ExelienceFileFlow_L.FINDFIRST THEN REPEAT
+        IF ExelienceFileFlow_SequenceNo_L <> ExelienceFileFlow_L."Sequence No." THEN BEGIN
+          ExelienceHeader_L.RESET;
+          ExelienceHeader_L.SETRANGE(Status,ExelienceHeader_L.Status::"In Process");
+          ExelienceHeader_L.SETRANGE("Sequence Flow No.", ExelienceFileFlow_L."Sequence No.");
+          IF ExelienceHeader_L.FINDFIRST THEN REPEAT
+            WITH ExelienceHeader_L DO BEGIN
+              LineFileFlowNo_L := "Sequence Flow No.";
+              LineHeaderNo_L := "Sequence No.";
+
+              {
+              IF NOT ExelienceImport_G.IntegerControl(10, "Sequence No.", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Sequence No."))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(12, "Record Type", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Record Type"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(13, "Contract Reference", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Contract Reference"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.IntegerControl(4, "Campaign Year", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Campaign Year"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(16, "Third Code", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Third Code"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(60, "Multiplier Company Name", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Multiplier Company Name"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(5, "Multiplier Address No.", FALSE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Multiplier Address No."))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(64, "Multiplier Address", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Multiplier Address"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(64, "Multiplier Address Complement", FALSE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Multiplier Address Complement"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(20, "Multiplier Addr. Place Called", FALSE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Multiplier Addr. Place Called"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(10, "Multiplier Post Code", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Multiplier Post Code"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(64, "Multiplier City", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Multiplier City"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.IntegerControl(4, "Management Institution", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Management Institution"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.IntegerControl(4, "Management Site", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Management Site"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(10, "Issue Contract Date", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Issue Contract Date"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.DecimalControl(10,2, "Declared surface", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Declared surface"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(30, "Item No.", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Item No."))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(20, "Species Code", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Species Code"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(10, "Species Name", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Species Name"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(50, "Variety Code", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Variety Code"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(50, "Variety Name", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Variety Name"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(8, "Generation Code", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Generation Code"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(8, "Generation Name", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION("Generation Name"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(1, Hybrid, FALSE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION(Hybrid))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(1, Organic, FALSE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineHeaderNo_L,FIELDCAPTION(Organic))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              }
+              IF NOT ExelienceImport_G.IsNotEmptyControl("Sequence No.") THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60019,LineHeaderNo_L,FIELDCAPTION("Sequence No."))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.IsNotEmptyControl("Record Type") THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60019,LineHeaderNo_L,FIELDCAPTION("Record Type"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.IsNotEmptyControl("Contract Reference") THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60019,LineHeaderNo_L,FIELDCAPTION("Contract Reference"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.IsNotEmptyControl("Campaign Year") THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60019,LineHeaderNo_L,FIELDCAPTION("Campaign Year"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.IsNotEmptyControl("Third Code") THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60019,LineHeaderNo_L,FIELDCAPTION("Third Code"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.IsNotEmptyControl("Issue Contract Date") THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60019,LineHeaderNo_L,FIELDCAPTION("Issue Contract Date"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.IsNotEmptyControl("Declared surface") THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60019,LineHeaderNo_L,FIELDCAPTION("Declared surface"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+              IF NOT ExelienceImport_G.IsNotEmptyControl("Item No.") THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60019,LineHeaderNo_L,FIELDCAPTION("Item No."))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,'', "Record Order No.");
+            END;
+          UNTIL ExelienceHeader_L.NEXT = 0;
+          ExelienceFileFlow_SequenceNo_L := ExelienceFileFlow_L."Sequence No.";
+        END;
+      UNTIL ExelienceFileFlow_L.NEXT = 0;
+    END;
+
+    PROCEDURE ControlTypeExelienceLine@1000000019();
+    VAR
+      ExelienceLine_L@1000000001 : Record 60103;
+      LineFileFlowNo_L@1000000000 : Integer;
+      LineHeaderNo_L@1000000002 : Text[80];
+      LineNo_L@1000000003 : Text[80];
+      ExelienceFileFlow_L@1000000004 : Record 60105;
+      ExelienceFileFlow_SequenceNo_L@1000000005 : Integer;
+    BEGIN
+      ExelienceFileFlow_L.RESET;
+      ExelienceFileFlow_L.SETRANGE(Status,ExelienceFileFlow_L.Status::"In Process");
+      ExelienceFileFlow_L.SETRANGE("Import Type", ExelienceFileFlow_L."Import Type"::Contract);
+      IF ExelienceFileFlow_L.FINDFIRST THEN REPEAT
+        IF ExelienceFileFlow_SequenceNo_L <> ExelienceFileFlow_L."Sequence No." THEN BEGIN
+          ExelienceLine_L.RESET;
+          ExelienceLine_L.SETRANGE(Status,ExelienceLine_L.Status::"In Process");
+          ExelienceLine_L.SETRANGE("Sequence Flow No.", ExelienceFileFlow_L."Sequence No.");
+          IF ExelienceLine_L.FINDFIRST THEN REPEAT
+            WITH ExelienceLine_L DO BEGIN
+              LineFileFlowNo_L := "Sequence Flow No.";
+              LineHeaderNo_L := "Sequence Header No.";
+              LineNo_L := "Sequence No.";
+
+              IF NOT ExelienceImport_G.IntegerControl(10, "Sequence No.", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Sequence No."))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,LineNo_L, "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(12, "Record Type", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Record Type"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,LineNo_L, "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(13, "Contract Reference", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Contract Reference"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,LineNo_L, "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(20, "Type Line Detail", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Type Line Detail"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,LineNo_L, "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(150, "Batch No.", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Batch No."))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,LineNo_L, "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(5, "Batch Source", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Batch Source"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,LineNo_L, "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(30, "Exelience Product Code", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Exelience Product Code"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,LineNo_L, "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(20, "EAN13 Product Code", FALSE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("EAN13 Product Code"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,LineNo_L, "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(8, Generation, TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION(Generation))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,LineNo_L, "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(64, "Batch Variety", TRUE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Batch Variety"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,LineNo_L, "Record Order No.");
+              IF NOT ExelienceImport_G.StringControl(1, "Hybrid Distribution", FALSE) THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60001,LineNo_L,FIELDCAPTION("Hybrid Distribution"))
+                            ,LineFileFlowNo_L,LineHeaderNo_L,LineNo_L, "Record Order No.");
+
+            END;
+          UNTIL ExelienceLine_L.NEXT = 0;
+          ExelienceFileFlow_SequenceNo_L := ExelienceFileFlow_L."Sequence No.";
+        END;
+      UNTIL ExelienceFileFlow_L.NEXT = 0;
+    END;
+
+    PROCEDURE ControlContractData@1000000002(Global_P@1000000005 : Boolean);
+    VAR
+      ExelienceFileFlow_L@1000000000 : Record 60105;
+      ExelienceHeader_L@1000000001 : Record 60078;
+      Vendor_L@1000000002 : Record 23;
+      ThirdCode_L@1000000003 : Text[100];
+      ItemSNO_L@1000000004 : Record 60100;
+      ContractRef_L@1000000006 : Text[100];
+      ExelienceHeader2_L@1000000007 : Record 60078;
+      ExelienceFileFlow_SequenceNo_L@1000000008 : Integer;
+      CMCSpeciesForPurchContract_L@60000 : Record 8053318;
+      Item_L@60001 : Record 27;
+      CMCCollectContractTemplate_L@60002 : Record 8052983;
+    BEGIN
+      {
+      //Contr"le de l'emetteur et du destinataire (pr'sents dans les lignes DEBUT et FIN)
+      CompanyInfo_G.GET;
+
+      ExelienceFileFlow_L.RESET;
+      ExelienceFileFlow_L.SETRANGE("Import Type", ExelienceFileFlow_L."Import Type"::Contract);
+      ExelienceFileFlow_L.SETFILTER(Status, '<>%1', ExelienceFileFlow_L.Status::Processed);
+      ExelienceFileFlow_L.SETFILTER(Type, '%1|%2', 'DEBUT', 'FIN');
+      IF NOT Global_P THEN
+        ExelienceFileFlow_L.SETRANGE("Sequence No.", ExelienceFileFlowEntry_G);
+      IF ExelienceFileFlow_L.FINDFIRST THEN REPEAT
+        IF ExelienceFileFlow_L.Transmitter <> '' THEN
+          IF ExelienceFileFlow_L.Transmitter <> CompanyInfo_G."Seed Partner GLN Code" THEN
+            ExelienceImport_G.InsertError(STRSUBSTNO(Text60005,ExelienceFileFlow_L."Seq. Number Recording")
+                                          ,ExelienceFileFlow_L."Sequence No.",'','',0);
+        IF ExelienceFileFlow_L.Receiver <> '' THEN
+          IF ExelienceFileFlow_L.Receiver <> CompanyInfo_G."GLN Code" THEN
+            ToolsFile_G.LogWriteErreur(STRSUBSTNO(Text60006,ExelienceFileFlow_L."Seq. Number Recording"));
+
+      UNTIL ExelienceFileFlow_L.NEXT = 0;
+      }
+
+      ExelienceFileFlow_L.RESET;
+      ExelienceFileFlow_L.SETRANGE("Import Type", ExelienceFileFlow_L."Import Type"::Contract);
+      ExelienceFileFlow_L.SETRANGE(Status, ExelienceFileFlow_L.Status::"In Process");
+      IF NOT Global_P THEN
+        ExelienceFileFlow_L.SETRANGE("Sequence No.", ExelienceFileFlowEntry_G);
+      IF ExelienceFileFlow_L.FINDFIRST THEN REPEAT
+        IF ExelienceFileFlow_SequenceNo_L <> ExelienceFileFlow_L."Sequence No." THEN BEGIN
+          //Contr"le dans les lignes de type ENT
+          ExelienceHeader_L.RESET;
+          ExelienceHeader_L.SETRANGE(Status, ExelienceHeader_L.Status::"In Process");
+          ExelienceHeader_L.SETRANGE("Sequence Flow No.", ExelienceFileFlow_L."Sequence No.");
+          IF ExelienceHeader_L.FINDFIRST THEN REPEAT
+            WITH ExelienceHeader_L DO BEGIN
+              //V'rification du Code Tiers
+              //On retire le premier caractSre : U pour UNEAL, T pour TERNOVEO
+              ThirdCode_L := COPYSTR("Third Code", 2);
+              Vendor_L.RESET;
+              Vendor_L.SETRANGE("No.", ThirdCode_L);
+              Vendor_L.SETRANGE("Contributor Vendor", TRUE);
+              IF NOT Vendor_L.FINDFIRST THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60008,"Sequence No.")
+                                              ,"Sequence Flow No.","Sequence No.",'',"Record Order No.");
+
+              //Contr"le du Code Produit Exelience
+              ItemSNO_L.RESET;
+              IF ItemSNO_L.GET(ExelienceHeader_L."Item No.") THEN BEGIN
+                IF ItemSNO_L."Correspondance num'ro article" = '' THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60010,"Sequence No.")
+                                                ,"Sequence Flow No.","Sequence No.",'',"Record Order No.")
+                // --> 20181112-WI00-ADV01.01.00-3357-MRU01
+                ELSE BEGIN
+                  //Contr"le si l'espSce de l'article est bien autoris'e pour le type de contrat . cr'er
+                  // --> 20190121-WI00-ADV01.01.00-40508-MRU01
+                  {BEFORE
+                  Item_L.GET(ItemSNO_L."Correspondance num'ro article");
+                  AFTER}
+                  IF NOT Item_L.GET(ItemSNO_L."Correspondance num'ro article") THEN
+                    ExelienceImport_G.InsertError(STRSUBSTNO(Text60024,"Sequence No.")
+                                                  ,"Sequence Flow No.","Sequence No.",'',"Record Order No.")
+                  ELSE BEGIN
+                  // <-- 20190121-WI00-ADV01.01.00-40508-MRU01
+                  IF NOT CMCSpeciesForPurchContract_L.GET(TextContractType, Item_L."Species Code") THEN
+                    ExelienceImport_G.InsertError(STRSUBSTNO(Text60022,"Sequence No.")
+                                                  ,"Sequence Flow No.","Sequence No.",'',"Record Order No.");
+
+                  //Contr"le si un modSle de contrat GNIS correspond . cette espSce (TERNOVEO)
+                  IF COMPANYNAME = 'TERNOVEO' THEN BEGIN
+                    CMCCollectContractTemplate_L.RESET;
+                    CMCCollectContractTemplate_L.SETRANGE(Type, CMCCollectContractTemplate_L.Type::Template);
+                    CMCCollectContractTemplate_L.SETRANGE("Contract Type", TextContractType);
+                    CMCCollectContractTemplate_L.SETRANGE("Campaign No.", "Campaign Year");
+                    CMCCollectContractTemplate_L.SETRANGE(Status, CMCCollectContractTemplate_L.Status::Locked);
+                    CMCCollectContractTemplate_L.SETRANGE("Item No.", Item_L."No.");
+                    CMCCollectContractTemplate_L.SETRANGE("Species Code", Item_L."Species Code");
+                    IF NOT CMCCollectContractTemplate_L.FINDFIRST THEN
+                      ExelienceImport_G.InsertError(STRSUBSTNO(Text60023,"Sequence No.")
+                                                    ,"Sequence Flow No.","Sequence No.",'',"Record Order No.");
+                  END;
+                  // --> 20190121-WI00-ADV01.01.00-40508-MRU01
+                  END;
+                  // <-- 20190121-WI00-ADV01.01.00-40508-MRU01
+                END;
+                // <-- 20181112-WI00-ADV01.01.00-3357-MRU01
+              END ELSE
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60009,"Sequence No.")
+                                              ,"Sequence Flow No.","Sequence No.",'',"Record Order No.");
+
+              //Contr"le si la r'f'rence contrat est pr'sente sur plusieurs lignes ENT du fichier
+              ExelienceHeader2_L.RESET;
+              ExelienceHeader2_L.COPYFILTERS(ExelienceHeader_L);
+              ExelienceHeader2_L.SETRANGE("Sequence Flow No.", "Sequence Flow No.");
+              ExelienceHeader2_L.SETFILTER("Record Order No.", '>%1', "Record Order No.");
+              ExelienceHeader2_L.SETRANGE("Contract Reference", "Contract Reference");
+              IF ExelienceHeader2_L.FINDFIRST THEN
+                ExelienceImport_G.InsertError(STRSUBSTNO(Text60018,ExelienceHeader2_L."Sequence No.")
+                                              ,ExelienceHeader2_L."Sequence Flow No."
+                                              ,ExelienceHeader2_L."Sequence No.",'',ExelienceHeader2_L."Record Order No.");
+            END;
+          UNTIL ExelienceHeader_L.NEXT = 0;
+          ExelienceFileFlow_SequenceNo_L := ExelienceFileFlow_L."Sequence No.";
+        END;
+      UNTIL ExelienceFileFlow_L.NEXT = 0;
+    END;
+
+    PROCEDURE FormatFileTest@1000000006(VAR InterfaceEnginesetup_P@1000000003 : Record 8061230;FileName_P@1000000000 : Text[205]) : Boolean;
+    VAR
+      FileName_L@1000000001 : Text[250];
+      Prefix_L@1000000002 : Text[30];
+      Annee_L@1000000004 : Text[30];
+      Mois_L@1000000005 : Text[30];
+      Jour_L@1000000006 : Text[30];
+      Heure_L@1000000007 : Text[30];
+      Minute_L@1000000008 : Text[30];
+      Sec_L@1000000009 : Text[30];
+      FileNameWithoutPrefix_L@1000000011 : Text[250];
+      FileNameWithoutExtAndPrefix_L@1000000012 : Text[250];
+      cpt_L@1000000013 : Integer;
+      MsgErr_L@1000000014 : Text[250];
+      Date_L@1000000015 : Date;
+      Time_L@1000000016 : Time;
+    BEGIN
+      // F_E_U_CONTRAT_JJ_MM_AAAA_HH_MN_SS : UNEAL
+      // F_E_T_CONTRAT_JJ_MM_AAAA_HH_MN_SS : TERNOVEO
+
+      FileName_L := FileName_P;
+      Prefix_L := COPYSTR(FileName_L,1,STRLEN(InterfaceEnginesetup_P."File Prefix"));
+      cpt_L := STRLEN(Prefix_L)+1;
+
+      Jour_L := COPYSTR(FileName_L,cpt_L,2);
+      Mois_L := COPYSTR(FileName_L,cpt_L+3,2);
+      Annee_L := COPYSTR(FileName_L,cpt_L+6,4);
+      Heure_L := COPYSTR(FileName_L,cpt_L+11,2);
+      Minute_L := COPYSTR(FileName_L,cpt_L+14,2);
+      Sec_L := COPYSTR(FileName_L,cpt_L+17,2);
+
+      IF NOT EVALUATE(Date_L, STRSUBSTNO('%1%2%3', Jour_L,Mois_L,Annee_L)) THEN
+        EXIT(FALSE);
+      IF NOT EVALUATE(Time_L, STRSUBSTNO('%1%2%3', Heure_L, Minute_L, Sec_L)) THEN
+        EXIT(FALSE);
+
+      IF (COPYSTR(FileName_L,cpt_L+2,1) <> '_')
+         OR (COPYSTR(FileName_L,cpt_L+5,1) <> '_')
+         OR (COPYSTR(FileName_L,cpt_L+10,1)<> '_')
+         OR (COPYSTR(FileName_L,cpt_L+13,1)<> '_')
+         OR (COPYSTR(FileName_L,cpt_L+16,1) <> '_')
+         OR (COPYSTR(FileName_L,cpt_L+19,1) <> '.')
+         OR ((UPPERCASE(COPYSTR(FileName_L,cpt_L+20))) <> UPPERCASE(InterfaceEnginesetup_P."File extension")) THEN
+        EXIT(FALSE)
+      ELSE
+        EXIT(TRUE);
+    END;
+
+    PROCEDURE InsertCollectContract@1000000009(Global_P@1000000006 : Boolean);
+    VAR
+      ExelienceFileFlow_L@1000000000 : Record 60105;
+      ExelienceHeader_L@1000000001 : Record 60078;
+      CMCCollectionContract_L@1000000002 : Record 8052983;
+      CMCSetup_L@1000000003 : Record 8052982;
+      NoSeriesMgt_L@1000000004 : Codeunit 396;
+      ExelienceFileFlow_SequenceNo_L@1000000007 : Integer;
+      ItemSNO_L@1000000008 : Record 60100;
+      Item_L@1000000005 : Record 27;
+      CMCSubFamily_L@60000 : Record 8052987;
+      CMCCollectContractTemplate_L@60001 : Record 8052983;
+    BEGIN
+      ExelienceFileFlow_L.RESET;
+      ExelienceFileFlow_L.SETRANGE("Import Type", ExelienceFileFlow_L."Import Type"::Contract);
+      ExelienceFileFlow_L.SETRANGE(Status, ExelienceFileFlow_L.Status::"In Process");
+      IF NOT Global_P THEN
+        ExelienceFileFlow_L.SETRANGE("Sequence No.", ExelienceFileFlowEntry_G);
+      IF ExelienceFileFlow_L.FINDFIRST THEN REPEAT
+        IF ExelienceFileFlow_SequenceNo_L <> ExelienceFileFlow_L."Sequence No." THEN BEGIN
+          ExelienceHeader_L.RESET;
+          ExelienceHeader_L.SETRANGE("Sequence Flow No.", ExelienceFileFlow_L."Sequence No.");
+          ExelienceHeader_L.SETRANGE(Status, ExelienceHeader_L.Status::"In Process");
+          ExelienceHeader_L.CALCFIELDS(Errors);
+          IF ExelienceHeader_L.FINDFIRST THEN REPEAT
+            WITH ExelienceHeader_L DO BEGIN
+              IF Errors = 0 THEN BEGIN
+                CMCCollectionContract_L.RESET;
+                CMCCollectionContract_L.SETRANGE("Paper Reference Contract No.", "Contract Reference");
+                IF CMCCollectionContract_L.FINDFIRST THEN
+                  ExelienceImport_G.InsertError(STRSUBSTNO(Text60015, "Sequence No.")
+                              ,"Sequence Flow No.","Sequence No.",'', "Record Order No.")
+                ELSE BEGIN
+                  CMCCollectionContract_L.RESET;
+                  CMCCollectionContract_L.LOCKTABLE;
+                  CMCCollectionContract_L.INIT;
+
+                  CMCSetup_L.GET;
+                  //NoSeriesMgt_L.InitSeries(CMCSetup_L."Collection Contract Nos.",'',0D
+                  //                         ,CMCCollectionContract_L."No.",CMCCollectionContract_L."No. Series");
+                  CMCCollectionContract_L."No." := NoSeriesMgt_L.GetNextNo(CMCSetup_L."Collection Contract Nos.", 0D, TRUE);
+
+                  IF CMCCollectionContract_L."No." <> '' THEN BEGIN
+                    CMCCollectionContract_L.INSERT;
+
+                    ItemSNO_L.GET("Item No.");
+                    Item_L.GET(ItemSNO_L."Correspondance num'ro article");
+
+                    CMCCollectionContract_L.VALIDATE("Campaign No.", "Campaign Year");
+                    CMCCollectionContract_L.Type := CMCCollectionContract_L.Type::Contract;
+                    CMCCollectionContract_L.VALIDATE("Contract Type", TextContractType);
+
+                    IF COMPANYNAME = 'TERNOVEO' THEN BEGIN
+                      CMCCollectContractTemplate_L.RESET;
+                      CMCCollectContractTemplate_L.SETRANGE(Type, CMCCollectContractTemplate_L.Type::Template);
+                      CMCCollectContractTemplate_L.SETRANGE("Contract Type", TextContractType);
+                      CMCCollectContractTemplate_L.SETRANGE("Campaign No.", "Campaign Year");
+                      CMCCollectContractTemplate_L.SETRANGE(Status, CMCCollectContractTemplate_L.Status::Locked);
+                      CMCCollectContractTemplate_L.SETRANGE("Item No.", Item_L."No.");
+                      CMCCollectContractTemplate_L.SETRANGE("Species Code", Item_L."Species Code");
+                      CMCCollectContractTemplate_L.FINDFIRST;
+                      CMCCollectionContract_L.VALIDATE("Template No.", CMCCollectContractTemplate_L."No.");
+                    END;
+
+                    CMCCollectionContract_L."Paper Reference Contract No." := "Contract Reference";
+                    // --> 20190313-Wi00-ADV01.01.00-3410-MRU01
+                    IF COMPANYNAME <> 'TERNOVEO' THEN
+                    // <-- 20190313-Wi00-ADV01.01.00-3410-MRU01
+                    CMCCollectionContract_L."External Contract No." := "Contract Reference";
+                    CMCCollectionContract_L."Collection Type" := CMCCollectionContract_L."Collection Type"::Purchase;
+                    CMCCollectionContract_L.Status := CMCCollectionContract_L.Status::Locked;
+                    CMCCollectionContract_L.VALIDATE("Vendor No.", COPYSTR("Third Code", 2));
+                    EVALUATE(CMCCollectionContract_L."Creation Date", "Issue Contract Date");
+                    // --> 20181105-WI00-ADV01.01.00-3357-MRU01
+                    EVALUATE(CMCCollectionContract_L."Sign-Off Date", "Issue Contract Date");
+                    // <-- 20181105-WI00-ADV01.01.00-3357-MRU01
+                    CMCCollectionContract_L.VALIDATE("Species Code", Item_L."Species Code");
+                    CMCCollectionContract_L.VALIDATE("Item No.", Item_L."No.");
+                    // --> 20181105-WI00-ADV01.01.00-3357-MRU01
+                    {BEFORE
+                    EVALUATE(CMCCollectionContract_L.Quantity, "Declared surface");
+                    CMCCollectionContract_L.VALIDATE(Quantity);
+                    AFTER}
+                    EVALUATE(CMCCollectionContract_L.Area, "Declared surface");
+                    IF NOT CMCSubFamily_L.GET(Item_L."Sub-Family Code") THEN
+                      ToolsFile_G.LogWriteInfo(STRSUBSTNO(Text60020,"Sequence No."))
+                    ELSE BEGIN
+                      IF CMCSubFamily_L."Productivity (t/ha)" = 0 THEN
+                        ToolsFile_G.LogWriteInfo(STRSUBSTNO(Text60021,"Sequence No."));
+                      EVALUATE(CMCCollectionContract_L.Quantity, "Declared surface");
+                      CMCCollectionContract_L.VALIDATE(Quantity, CMCCollectionContract_L.Quantity * CMCSubFamily_L."Productivity (t/ha)"
+      );
+                    END;
+                    // <-- 20181105-WI00-ADV01.01.00-3357-MRU01
+
+                    EVALUATE(CMCCollectionContract_L."Last Modification Date", "Issue Contract Date");
+                    CMCCollectionContract_L."Creator User" := 'EXELIENCE';
+
+                    // --> 20190313-Wi00-ADV01.01.00-3411-MRU01
+                    CMCCollectionContract_L.Description := TextContractDescription;
+                    // <-- 20190313-Wi00-ADV01.01.00-3411-MRU01
+
+                    CMCCollectionContract_L.MODIFY;
+
+                    ExelienceImport_G.UpdateStatus(ExelienceHeader_L);
+
+                  END;
+                END;
+              END;
+            END;
+          UNTIL ExelienceHeader_L.NEXT = 0;
+          ExelienceFileFlow_SequenceNo_L := ExelienceFileFlow_L."Sequence No.";
+        END;
+      UNTIL ExelienceFileFlow_L.NEXT = 0;
+
+      // --> 20190107-WI00-ADV01.01.00-40508-MRU01
+      ExelienceImport_G.UpdateErrorStatus;
+      // <-- 20190107-WI00-ADV01.01.00-40508-MRU01
+    END;
+
+    PROCEDURE EraseExelienceError@1000000021();
+    VAR
+      ExelienceError_L@1000000000 : Record 60104;
+      ExelienceFileFlow_L@1000000002 : Record 60105;
+      ExelienceHeader_L@100000000 : Record 60078;
+      ExelienceLine_L@100000001 : Record 60103;
+    BEGIN
+      ExelienceFileFlow_L.RESET;
+      ExelienceFileFlow_L.SETRANGE("Import Type", ExelienceFileFlow_L."Import Type"::Contract);
+      ExelienceFileFlow_L.SETRANGE(Status, ExelienceFileFlow_L.Status::"In Process");
+      IF ExelienceFileFlow_L.FINDSET THEN REPEAT
+        ExelienceError_L.RESET;
+        ExelienceError_L.SETRANGE("Sequence Flow No.", ExelienceFileFlow_L."Sequence No.");
+        ExelienceError_L.SETRANGE("Sequence Header No.", '');
+        ExelienceError_L.SETRANGE("Sequence Line No.", '');
+        IF NOT ExelienceError_L.ISEMPTY THEN
+        ExelienceError_L.DELETEALL;
+      UNTIL ExelienceFileFlow_L.NEXT = 0;
+
+      ExelienceHeader_L.RESET;
+      ExelienceHeader_L.SETRANGE(Status, ExelienceFileFlow_L.Status::"In Process");
+      IF ExelienceHeader_L.FINDSET THEN REPEAT
+        ExelienceFileFlow_L.RESET;
+        ExelienceFileFlow_L.SETRANGE("Sequence No.", ExelienceHeader_L."Sequence Flow No.");
+        IF ExelienceFileFlow_L.FINDSET THEN BEGIN
+          IF ExelienceFileFlow_L."Import Type" = ExelienceFileFlow_L."Import Type"::Contract THEN BEGIN
+            ExelienceError_L.RESET;
+            ExelienceError_L.SETRANGE("Sequence Flow No.", ExelienceFileFlow_L."Sequence No.");
+            ExelienceError_L.SETRANGE("Sequence Header No.", ExelienceHeader_L."Sequence No.");
+            ExelienceError_L.SETRANGE("Sequence Line No.", '');
+            IF NOT ExelienceError_L.ISEMPTY THEN
+              ExelienceError_L.DELETEALL;
+          END;
+        END;
+      UNTIL ExelienceHeader_L.NEXT = 0;
+
+      ExelienceLine_L.RESET;
+      ExelienceLine_L.SETRANGE(Status, ExelienceFileFlow_L.Status::"In Process");
+      IF ExelienceLine_L.FINDSET THEN REPEAT
+        ExelienceFileFlow_L.RESET;
+        ExelienceFileFlow_L.SETRANGE("Sequence No.", ExelienceLine_L."Sequence Flow No.");
+        IF ExelienceFileFlow_L.FINDSET THEN BEGIN
+          IF ExelienceFileFlow_L."Import Type" = ExelienceFileFlow_L."Import Type"::Contract THEN BEGIN
+            ExelienceError_L.RESET;
+            ExelienceError_L.SETRANGE("Sequence Flow No.", ExelienceFileFlow_L."Sequence No.");
+            ExelienceError_L.SETRANGE("Sequence Header No.", ExelienceLine_L."Sequence Header No.");
+            ExelienceError_L.SETRANGE("Sequence Line No.", ExelienceLine_L."Sequence No.");
+            IF NOT ExelienceError_L.ISEMPTY THEN
+              ExelienceError_L.DELETEALL;
+          END;
+        END;
+      UNTIL ExelienceLine_L.NEXT = 0;
+    END;
+
+    BEGIN
+    {
+      //--> 3LI BEGIN
+      20180912-WI00-ADV01.01.00-3357-MRU01 CREATE Object
+      20181105-WI00-ADV01.01.00-3357-MRU01 Specification v9
+      20181112-WI00-ADV01.01.00-3357-MRU01 Contr"le suppl'mentaire
+      20181212-WI00-ADV01.01.00-3357-MRU01 Modification num'ro table 60024 -> 60105
+      20181220-Wi00-ADV01.01.00-3386-MRU01 Passage du ConnecteurName pour le nom du log
+      20190107-WI00-ADV01.01.00-40508-MRU01 Si erreur . l'insertion, mise . jour des statuts
+      20190121-WI00-ADV01.01.00-40508-MRU01 Si correspondance mais article non pr'sent, message d'erreur
+      20190313-Wi00-ADV01.01.00-3411-MRU01 'Contrat GNIS' dans la description du Contrat cr''
+      20190313-Wi00-ADV01.01.00-3410-MRU01 Pour TERNOVEO on ne renseigne plus le N› de contrat externe
+      //<-- 3LI END
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,232 @@
+OBJECT Report 8053385 CMC- Calculate Reserve
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02/03/16;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Calculate Reserve;
+               FRA=Calculer provisions];
+    ProcessingOnly=Oui;
+    OnPreReport=BEGIN
+                  GLSetup_G.GET;
+                  GLSetup_G.TESTFIELD("VAT % For Reserve");
+
+                  IF CalculationDate_G = 0D THEN
+                    ERROR(Text8061500);
+
+                  ReserveEntry_G.RESET;
+                  IF ReserveEntry_G.FINDLAST THEN BEGIN
+                    IF CalculationDate_G <= ReserveEntry_G."Reserve Date" THEN
+                      ERROR(Text8061501);
+                  END;
+                END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table18;
+        OnAfterGetRecord=BEGIN
+                           //Calculate balance due for each customer posting group
+                           CustLedgerEntryTMP_G.DELETEALL;
+                           EntryNo_G := 1;
+                           CustomerPostingGroup_G.RESET;
+                           IF CustomerPostingGroup_G.FINDFIRST THEN REPEAT
+                             IF CustomerPostingGroup_G."Calculate Reserve" THEN BEGIN
+                               CustLedgerEntryTMP_G.RESET;
+                               CustLedgerEntryTMP_G.SETRANGE("CV No.","No.");
+                               CustLedgerEntryTMP_G.SETRANGE("CV Posting Group",CustomerPostingGroup_G.Code);
+                               IF NOT CustLedgerEntryTMP_G.FINDFIRST THEN BEGIN
+                                 CustLedgerEntryTMP_G.INIT;
+                                 CustLedgerEntryTMP_G."Entry No." := EntryNo_G;
+                                 CustLedgerEntryTMP_G."CV No." := "No.";
+                                 CustLedgerEntryTMP_G."CV Posting Group" := CustomerPostingGroup_G.Code;
+                                 CustLedgerEntryTMP_G.INSERT;
+                                 EntryNo_G := EntryNo_G + 1;
+                               END;
+                               CustLedgerEntry_G.RESET;
+                               CustLedgerEntry_G.SETCURRENTKEY("Customer No.",Open);
+                               CustLedgerEntry_G.SETRANGE("Customer No.","No.");
+                               CustLedgerEntry_G.SETRANGE(Open,TRUE);
+                               CustLedgerEntry_G.SETRANGE("Due Date",0D,CalculationDate_G);
+                               CustLedgerEntry_G.SETRANGE("Customer Posting Group",CustomerPostingGroup_G.Code);
+                               IF CustLedgerEntry_G.FINDFIRST THEN BEGIN
+                                 REPEAT
+                                   CustLedgerEntry_G.CALCFIELDS("Remaining Amt. (LCY)");
+                                   CustLedgerEntryTMP_G."Remaining Amt. (LCY)" := CustLedgerEntryTMP_G."Remaining Amt. (LCY)" +
+                                                                                  CustLedgerEntry_G."Remaining Amt. (LCY)";
+                                   CustLedgerEntryTMP_G.MODIFY;
+                                 UNTIL CustLedgerEntry_G.NEXT=0;
+                               END;
+                             END;
+                           UNTIL CustomerPostingGroup_G.NEXT=0;
+
+                           CustLedgerEntryTMP_G.RESET;
+                           IF CustLedgerEntryTMP_G.FINDFIRST THEN
+                           REPEAT
+                             //Calculate reserve net change
+                             ReserveEntry_G.RESET;
+                             // --> 20160229-FINA22-ADV01.01.00-2773-JCD
+                             {//BEFORE
+                             ReserveEntry_G.SETCURRENTKEY("Customer No.","Reserve Date");
+                             }//AFTER
+                             ReserveEntry_G.SETCURRENTKEY("Customer No.","Reserve Date","Receivables Account");
+                             // <-- 20160229-FINA22-ADV01.01.00-2773-JCD
+                             ReserveEntry_G.SETRANGE("Customer No.","No.");
+                             ReserveEntry_G.SETRANGE("Receivables Account",CustLedgerEntryTMP_G."CV Posting Group");
+                             IF ReserveEntry_G.FINDLAST THEN BEGIN
+                               ReserveOrigAmount_G := ReserveEntry_G."Original Amount";
+                               // --> 20160229-FINA22-ADV01.01.00-2773-JCD
+                               {BEFORE
+                               ReserveNetChange_G := ReserveEntry_G.Balance;
+                               }//AFTER
+                               // <-- 20160229-FINA22-ADV01.01.00-2773-JCD
+                               ReserveCustPostingGroup_G := ReserveEntry_G."Receivables Account";
+                               // --> 20160229-FINA22-ADV01.01.00-2773-JCD
+                               ReserveEntry_G.CALCSUMS(Balance);
+                               ReserveNetChange_G := ReserveEntry_G.Balance;
+                               // <-- 20160229-FINA22-ADV01.01.00-2773-JCD
+                             END
+                             ELSE BEGIN
+                               ReserveOrigAmount_G := 0;
+                               ReserveNetChange_G := 0;
+                               ReserveCustPostingGroup_G := '';
+                             END;
+                             // --> 20160229-FINA22-ADV01.01.00-2773-JCD
+                             {BEFORE
+                             IF CustLedgerEntryTMP_G."Remaining Amt. (LCY)" = 0 THEN BEGIN
+                               IF ReserveNetChange_G <> 0 THEN
+                                 CreateReserveEntry(0,ReserveNetChange_G,0,ReserveCustPostingGroup_G);
+                             }
+                             IF CustLedgerEntryTMP_G."Remaining Amt. (LCY)" < 0 THEN BEGIN
+                               IF ReserveNetChange_G <> 0 THEN
+                                 CreateReserveEntry(0,0,-ReserveNetChange_G,ReserveCustPostingGroup_G);
+                             // <-- 20160229-FINA22-ADV01.01.00-2773-JCD
+                             END
+                             ELSE BEGIN
+                               IF CustLedgerEntryTMP_G."Remaining Amt. (LCY)" <> ReserveOrigAmount_G THEN
+                                 CreateReserveEntry(CustLedgerEntryTMP_G."Remaining Amt. (LCY)",
+                                                    CustLedgerEntryTMP_G."Remaining Amt. (LCY)" / (1 + (GLSetup_G."VAT % For Reserve" / 100)),
+                                                    - (ReserveNetChange_G - CustLedgerEntryTMP_G."Remaining Amt. (LCY)"
+                                                       / (1 + (GLSetup_G."VAT % For Reserve" / 100))),
+                                                    CustLedgerEntryTMP_G."CV Posting Group");
+                             END;
+                           UNTIL CustLedgerEntryTMP_G.NEXT=0;
+                         END;
+
+        ReqFilterFields=No.,Customer Posting Group;
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=9020;
+      Height=3410;
+    }
+    CONTROLS
+    {
+      { 1000000000;TextBox;3300 ;1210 ;1700 ;440  ;SourceExpr=CalculationDate_G }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1000000000;;Container;
+                  CaptionML=ENU=`;
+                  ContainerType=ContentArea }
+
+      { 1000000001;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             FRA=Options];
+                  GroupType=Group }
+
+      { 1000000002;2;Field  ;
+                  Name=CalculationDate;
+                  CaptionML=[ENU=Calculation Date;
+                             FRA=Date calcul];
+                  SourceExpr=CalculationDate_G }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      GLSetup_G@1000000006 : Record 98;
+      CustomerPostingGroup_G@1000000000 : Record 92;
+      ReserveEntry_G@1000000002 : Record 8053379;
+      Campaign_G@1000000005 : Record 8052991;
+      CustLedgerEntry_G@1000000007 : Record 21;
+      CustLedgerEntryTMP_G@1000000008 : TEMPORARY Record 382;
+      CalculationDate_G@1000000001 : Date;
+      ReserveOrigAmount_G@1000000013 : Decimal;
+      ReserveNetChange_G@1000000003 : Decimal;
+      NextEntryNo_G@1000000004 : Integer;
+      EntryNo_G@1000000010 : Integer;
+      ReserveCustPostingGroup_G@1000000009 : Code[10];
+      Text8061500@1000000011 : TextConst 'ENU=Calculation date must be filled;FRA=Date de calcul doit ^tre d'finie';
+      Text8061501@1000000012 : TextConst 'ENU=Calculation date must be older than last transaction;FRA=La date de calcul doit ^tre sup'rieure . la date du dernier traitement';
+
+    PROCEDURE CreateReserveEntry@1000000000(OriginalAmount_P@1000000000 : Decimal;Amount_P@1000000001 : Decimal;Balance_P@1000000002 : Decimal;CustPostingGroup_P@1000000003 : Code[10]);
+    BEGIN
+      ReserveEntry_G.RESET;
+      IF ReserveEntry_G.FINDLAST THEN
+        NextEntryNo_G := ReserveEntry_G."Entry No." + 1
+      ELSE
+        NextEntryNo_G := 1;
+      Campaign_G.RESET;
+      Campaign_G.SETFILTER("Starting Date",'<=%1',CalculationDate_G);
+      Campaign_G.SETFILTER("Ending Date",'>=%1',CalculationDate_G);
+      IF NOT Campaign_G.FINDFIRST THEN
+        Campaign_G.INIT;
+
+      ReserveEntry_G.INIT;
+      ReserveEntry_G."Entry No." := NextEntryNo_G;
+      ReserveEntry_G."Campaign No." := Campaign_G."No.";
+      ReserveEntry_G."Customer No." := Customer."No.";
+      ReserveEntry_G.Name := Customer.Name;
+      ReserveEntry_G."Receivables Account" := CustPostingGroup_P;
+      ReserveEntry_G."Original Amount" := OriginalAmount_P;
+      ReserveEntry_G.Amount := Amount_P;
+      ReserveEntry_G.Balance := Balance_P;
+      ReserveEntry_G."Reserve Date" := CalculationDate_G;
+      ReserveEntry_G.INSERT;
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+      20131218-FINA22-CMC02.02.00-BDN : Creation
+      20160229-FINA22-ADV01.01.00-2773-JCD : Erreur calcul pr'vision . partir de la premiSre 'criture
+      // --> 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

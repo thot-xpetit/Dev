@@ -1,0 +1,170 @@
+OBJECT Codeunit 8053014 CMC Calc Average Analysis
+{
+  OBJECT-PROPERTIES
+  {
+    Date=01/04/26;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,TER01.01.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      CMCStatusMgt_G@1000000000 : Codeunit 8052985;
+
+    PROCEDURE CalcAvgAnalysisCellActiveLot@8053000(CellCode_P@8053000 : Code[10];LocationCode_P@8053001 : Code[10];AnalysisCode_P@8053003 : Code[10]) : Decimal;
+    VAR
+      RecCellLocation_L@8053002 : Record 8053031;
+      RecItemLdgEntry_L@8053004 : Record 32;
+      RecPostedRcptsLine_L@8053005 : Record 8053104;
+      RecPostedRcptAnalysis_L@8053006 : Record 8052996;
+      AverageQty_L@8053007 : Decimal;
+      Value_L@8053008 : Decimal;
+      RecPostedReceipts_L@8053009 : Record 8052995;
+      RecCellTransfAnalysis_L@1000000000 : Record 60062;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Calcule la moyenne d'une analyse des r'ceptions collecte valid'es pour un lot actif d'une cellule donn'e
+      // + r'ceptions transfert
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - CellCode_P : Code cellule
+      //   - LocationCode_P : Code magasin
+      //   - AnalysisCode_P : Code analyse
+      // Sorties:
+      //   - Valeur moyenne de l'analyse
+      //----------------------------------------------------------------------------------------------------------
+      RecCellLocation_L.GET(LocationCode_P,CellCode_P);
+      IF RecCellLocation_L."Active Lot No." = '' THEN
+        EXIT(0);
+      RecItemLdgEntry_L.SETCURRENTKEY("Item No.","Location Code","Cell Code","Lot No.","Posting Date");
+      RecItemLdgEntry_L.SETRANGE("Item No.",RecCellLocation_L."Active Item No.");
+      RecItemLdgEntry_L.SETRANGE("Location Code",LocationCode_P);
+      RecItemLdgEntry_L.SETRANGE("Cell Code",CellCode_P);
+      RecItemLdgEntry_L.SETRANGE("Lot No.",RecCellLocation_L."Active Lot No.");
+      RecItemLdgEntry_L.SETFILTER("Entry Type",'%1|%2|%3',RecItemLdgEntry_L."Entry Type"::Purchase,
+        RecItemLdgEntry_L."Entry Type"::Transfer,RecItemLdgEntry_L."Entry Type"::"Positive Adjmt.");
+      IF RecItemLdgEntry_L.FIND('-') THEN
+        REPEAT
+          CASE RecItemLdgEntry_L."Entry Type" OF
+            RecItemLdgEntry_L."Entry Type"::Purchase :
+            BEGIN
+              RecPostedRcptsLine_L.SETCURRENTKEY("Item Ledger Entry No.");
+              RecPostedRcptsLine_L.SETRANGE("Item Ledger Entry No.",RecItemLdgEntry_L."Entry No.");
+              // --> 20150527-CER156-TER01.01.00-424-BSI01
+              RecPostedRcptsLine_L.SETFILTER("Receipt Type",'<>%1',RecPostedRcptsLine_L."Receipt Type"::Resumption);
+              // <-- 20150527-CER156-TER01.01.00-424-BSI01
+              //1 seule ligne de r'ception valid'e par 'criture article (1,1)
+              IF RecPostedRcptsLine_L.FINDFIRST THEN BEGIN
+                // --> 20150610-CER151-TER01.01.00-410-BSI01
+                {before
+                //Somme des quantit's des lignes de r'ceptions valid'es pour le calcul de la moyenne
+                AverageQty_L += RecPostedRcptsLine_L.Quantity;
+                after}
+                // <-- 20150610-CER151-TER01.01.00-410-BSI01
+                IF RecPostedRcptAnalysis_L.GET(RecPostedRcptAnalysis_L."Receipt Type"::Receipt,RecPostedRcptsLine_L."No.",AnalysisCode_P
+                ) THEN
+                  // --> 20260401-WI00-ADV01.01.00-40397-SAN01
+                  IF (RecPostedRcptAnalysis_L.Value <> 0) AND (NOT CMCStatusMgt_G.GetActivateRealValues) THEN BEGIN
+                   // <-- 20260401-WI00-ADV01.01.00-40397-SAN01
+                    //Somme des valeurs d'analyse x quantit's des lignes de r'ceptions valid'es
+                    Value_L += RecPostedRcptAnalysis_L.Value * RecPostedRcptsLine_L.Quantity;
+                    // --> 20150610-CER151-TER01.01.00-410-BSI01
+                    //Somme des quantit's des lignes de r'ceptions valid'es pour le calcul de la moyenne
+                    AverageQty_L += RecPostedRcptsLine_L.Quantity;
+                    // <-- 20150610-CER151-TER01.01.00-410-BSI01
+                  END;
+                  // --> 20260401-WI00-ADV01.01.00-40397-SAN01
+                  IF (RecPostedRcptAnalysis_L."Real Value" <> 0) AND (CMCStatusMgt_G.GetActivateRealValues)  THEN BEGIN
+                    Value_L += RecPostedRcptAnalysis_L."Real Value" * RecPostedRcptsLine_L."Brut Quantity";
+                    AverageQty_L += RecPostedRcptsLine_L."Brut Quantity";
+                  END;
+                  // <-- 20260401-WI00-ADV01.01.00-40397-SAN01
+              END;
+            END;
+
+
+            RecItemLdgEntry_L."Entry Type"::Transfer :
+            BEGIN
+              RecPostedReceipts_L.SETCURRENTKEY("Item Ledger Entry No.");
+              RecPostedReceipts_L.SETRANGE("Item Ledger Entry No.",RecItemLdgEntry_L."Entry No." - 1);
+              // --> 20150527-CER156-TER01.01.00-424-BSI01
+              RecPostedReceipts_L.SETFILTER("Receipt Type",'<>%1',RecPostedReceipts_L."Receipt Type"::Resumption);
+              // <-- 20150527-CER156-TER01.01.00-424-BSI01
+              IF RecPostedReceipts_L.FINDFIRST THEN BEGIN
+                //AverageQty_L += RecPostedReceipts_L."Standard Weight";
+                IF RecPostedRcptAnalysis_L.GET(RecPostedRcptAnalysis_L."Receipt Type"::Transfert,RecPostedReceipts_L."No.",
+      AnalysisCode_P)
+                THEN
+                  IF RecPostedRcptAnalysis_L.Value  <> 0 THEN BEGIN
+                    Value_L += RecPostedRcptAnalysis_L.Value * RecPostedReceipts_L."Standard Weight";
+                    // --> 20150610-CER151-TER01.01.00-410-BSI01
+                    AverageQty_L += RecPostedReceipts_L."Standard Weight";
+                    // <-- 20150610-CER151-TER01.01.00-410-BSI01
+                  END;
+              END;
+              // --> 20150722-CER89-TER01.01.00-1785-BSI01
+              IF (RecItemLdgEntry_L."Posted Intervention Entry No." <> 0) AND RecItemLdgEntry_L.Positive THEN BEGIN
+                CLEAR(RecCellTransfAnalysis_L);
+                RecCellTransfAnalysis_L.SETRANGE("Entry No.",RecItemLdgEntry_L."Posted Intervention Entry No.");
+                RecCellTransfAnalysis_L.SETRANGE("Analysis Code",AnalysisCode_P);
+                IF RecCellTransfAnalysis_L.FIND('-') THEN
+                  IF RecCellTransfAnalysis_L.Value <> 0 THEN BEGIN
+                    Value_L += RecCellTransfAnalysis_L.Value * RecItemLdgEntry_L.Quantity;
+                    AverageQty_L += RecItemLdgEntry_L.Quantity;
+                  END;
+              END;
+              // <-- 20150722-CER89-TER01.01.00-1785-BSI01
+
+            END;
+
+            RecItemLdgEntry_L."Entry Type"::"Positive Adjmt." :
+            BEGIN
+              RecPostedReceipts_L.SETCURRENTKEY("Item Ledger Entry No.");
+              RecPostedReceipts_L.SETRANGE("Item Ledger Entry No.",RecItemLdgEntry_L."Entry No.");
+              // --> 20150527-CER156-TER01.01.00-424-BSI01
+              RecPostedReceipts_L.SETFILTER("Receipt Type",'<>%1',RecPostedReceipts_L."Receipt Type"::Resumption);
+              // <-- 20150527-CER156-TER01.01.00-424-BSI01
+              IF RecPostedReceipts_L.FINDFIRST THEN BEGIN
+                //AverageQty_L += RecPostedReceipts_L."Standard Weight";
+                IF RecPostedRcptAnalysis_L.GET(RecPostedRcptAnalysis_L."Receipt Type"::Transfert,
+                  RecPostedReceipts_L."No.",AnalysisCode_P)
+                THEN
+                IF RecPostedRcptAnalysis_L.Value <> 0 THEN BEGIN
+                  Value_L += RecPostedRcptAnalysis_L.Value * RecPostedReceipts_L."Standard Weight";
+                  // --> 20150527-CER156-TER01.01.00-424-BSI01
+                  AverageQty_L += RecPostedReceipts_L."Standard Weight";
+                  // <-- 20150527-CER156-TER01.01.00-424-BSI01
+                END;
+              END;
+            END;
+          END;
+        UNTIL RecItemLdgEntry_L.NEXT = 0;
+
+      IF AverageQty_L <> 0 THEN
+        EXIT(ROUND(Value_L / AverageQty_L));
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20121115-Gen04-CMC02.02.00-DRN01 : NEWOBJ
+      20121217-Gen04-CMC02.02.00-PPE : MODOBJ (Calculate Average analysis with transfers)
+      20121221-Gen04-CMC02.02.00-PPE : MODOBJ (Calculate Average analysis with transfers)
+      20131212-GEN04-CMC02.02.00-209-BSA01 : ADDCODE (Prendre en compte les r'ceptions de type transfert ind'pendant)
+      20140331-GEN04-CMC02.02.00-1867-DRN01 : Correction calcul de la moyenne sur les r'ceptions transfert ind'pendant + Refactoring
+      20150527-CER156-TER01.01.00-424-BSI01 : ADDCODE (Ne pas tenir compte des 'critures articles li'es aux bons de reprise)
+      20150610-CER151-TER01.01.00-410-BSI01 : ADDCODE (Ne pas tenir compte des analyses dont la valeur est nulle)
+      20150722-CER89-TER01.01.00-1785-BSI01 : ADDCODE (Prise en compte des analyses transilage dans le calcul de la moyenne)
+      20260401-WI00-ADV01.01.00-40397-SAN01 : MODFUNCT (CalcAvgAnalysisCellActiveLot)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,360 @@
+OBJECT Codeunit 413 AnalysisViewEntryToGLEntries
+{
+  OBJECT-PROPERTIES
+  {
+    Date=06/02/13;
+    Heure=00:00:00;
+    Liste versions=NAVW15.00,CMB6.00.01;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      AnalysisView@1000 : Record 363;
+      GLSetup@1001 : Record 98;
+
+    PROCEDURE GetGLEntries@1(VAR AnalysisViewEntry@1000 : Record 365;VAR TempGLEntry@1001 : Record 17);
+    VAR
+      GLEntry@1002 : Record 17;
+      TempGLEntry2@1003 : TEMPORARY Record 17;
+      AnalysisViewFilter@1004 : Record 364;
+      LedgEntryDim@1005 : Record 355;
+      LedgEntryDimBlanks@1006 : Record 355;
+      AccountingPeriod@1013 : Record 50;
+      StartDate@1007 : Date;
+      EndDate@1008 : Date;
+      GlobalDimValue@1009 : Code[20];
+      MinEntryNo@1010 : Integer;
+      MaxEntryNo@1011 : Integer;
+      IncludeBlanks@1012 : Boolean;
+    BEGIN
+      AnalysisView.GET(AnalysisViewEntry."Analysis View Code");
+
+      IF AnalysisView."Date Compression" = AnalysisView."Date Compression"::None THEN BEGIN
+        IF GLEntry.GET(AnalysisViewEntry."Entry No.") THEN BEGIN
+          TempGLEntry := GLEntry;
+          TempGLEntry.INSERT;
+        END;
+        EXIT;
+      END;
+
+      GLSetup.GET;
+      TempGLEntry2.DELETEALL;
+
+      StartDate := AnalysisViewEntry."Posting Date";
+      EndDate := StartDate;
+
+      WITH AnalysisView DO
+        IF StartDate < "Starting Date" THEN
+          StartDate := 0D
+        ELSE
+          IF (AnalysisViewEntry."Posting Date" = NORMALDATE(AnalysisViewEntry."Posting Date")) AND
+             NOT ("Date Compression" IN ["Date Compression"::None,"Date Compression"::Day])
+          THEN
+            CASE "Date Compression" OF
+              "Date Compression"::Week:
+                EndDate := CALCDATE('<+6D>',AnalysisViewEntry."Posting Date");
+              "Date Compression"::Month:
+                EndDate := CALCDATE('<+1M-1D>',AnalysisViewEntry."Posting Date");
+              "Date Compression"::Quarter:
+                EndDate := CALCDATE('<+3M-1D>',AnalysisViewEntry."Posting Date");
+              "Date Compression"::Year:
+                EndDate := CALCDATE('<+1Y-1D>',AnalysisViewEntry."Posting Date");
+              "Date Compression"::Period:
+                BEGIN
+                  AccountingPeriod."Starting Date" := AnalysisViewEntry."Posting Date";
+                  IF AccountingPeriod.NEXT <> 0 THEN
+                    EndDate := CALCDATE('<-1D>',AccountingPeriod."Starting Date")
+                  ELSE
+                    EndDate := 31129999D
+                END;
+            END;
+
+      WITH GLEntry DO BEGIN
+        SETCURRENTKEY("G/L Account No.","Posting Date");
+        SETRANGE("G/L Account No.",AnalysisViewEntry."G/L Account No.");
+        SETRANGE("Posting Date",StartDate,EndDate);
+        SETRANGE("Entry No.",0,AnalysisView."Last Entry No.");
+
+        IF GetGlobalDimValue(GLSetup."Global Dimension 1 Code",AnalysisViewEntry,GlobalDimValue) THEN
+          GLEntry.SETRANGE("Global Dimension 1 Code",GlobalDimValue)
+        ELSE
+          IF AnalysisViewFilter.GET(AnalysisViewEntry."Analysis View Code",GLSetup."Global Dimension 1 Code")
+          THEN
+            GLEntry.SETFILTER("Global Dimension 1 Code",AnalysisViewFilter."Dimension Value Filter");
+
+        IF GetGlobalDimValue(GLSetup."Global Dimension 2 Code",AnalysisViewEntry,GlobalDimValue) THEN
+          GLEntry.SETRANGE("Global Dimension 2 Code",GlobalDimValue)
+        ELSE
+          IF AnalysisViewFilter.GET(AnalysisViewEntry."Analysis View Code",GLSetup."Global Dimension 2 Code")
+          THEN
+            GLEntry.SETFILTER("Global Dimension 2 Code",AnalysisViewFilter."Dimension Value Filter");
+
+        IF FIND('-') THEN
+          REPEAT
+            IF DimEntryOK("Entry No.",AnalysisView."Dimension 1 Code",AnalysisViewEntry."Dimension 1 Value Code") AND
+               DimEntryOK("Entry No.",AnalysisView."Dimension 2 Code",AnalysisViewEntry."Dimension 2 Value Code") AND
+               DimEntryOK("Entry No.",AnalysisView."Dimension 3 Code",AnalysisViewEntry."Dimension 3 Value Code") AND
+               DimEntryOK("Entry No.",AnalysisView."Dimension 4 Code",AnalysisViewEntry."Dimension 4 Value Code")
+            THEN BEGIN
+              TempGLEntry2 := GLEntry;
+              TempGLEntry2.INSERT;
+            END;
+          UNTIL NEXT = 0;
+      END;
+
+      // Check for filters set...
+      TempGLEntry2.SETCURRENTKEY("Entry No.");
+      IF NOT TempGLEntry2.FIND('-') THEN
+        EXIT;
+      MinEntryNo := TempGLEntry2."Entry No.";
+      TempGLEntry2.FIND('+');
+      MaxEntryNo := TempGLEntry2."Entry No.";
+      LedgEntryDim.SETRANGE("Table ID",DATABASE::"G/L Entry");
+      LedgEntryDim.SETRANGE("Entry No.",MinEntryNo,MaxEntryNo);
+      LedgEntryDim."Table ID" := DATABASE::"G/L Entry";
+      WITH AnalysisViewFilter DO BEGIN
+        SETRANGE("Analysis View Code",AnalysisViewEntry."Analysis View Code");
+        IF FIND('-') THEN
+          REPEAT
+            IncludeBlanks := FilterIncludesBlanks(AnalysisViewFilter."Dimension Value Filter");
+            LedgEntryDim.SETRANGE("Dimension Code",AnalysisViewFilter."Dimension Code");
+            LedgEntryDim."Dimension Code" := AnalysisViewFilter."Dimension Code";
+            LedgEntryDim.SETFILTER("Dimension Value Code",AnalysisViewFilter."Dimension Value Filter");
+
+            IF TempGLEntry2.FIND('-') THEN
+              REPEAT
+                LedgEntryDim."Entry No." := TempGLEntry2."Entry No.";
+                IF NOT LedgEntryDim.FIND THEN
+                  IF IncludeBlanks THEN BEGIN
+                    IF LedgEntryDimBlanks.GET(DATABASE::"G/L Entry",TempGLEntry2."Entry No.",AnalysisViewFilter."Dimension Code") THEN
+                      TempGLEntry2.DELETE;
+                  END ELSE
+                    TempGLEntry2.DELETE;
+              UNTIL TempGLEntry2.NEXT = 0;
+          UNTIL NEXT = 0;
+      END;
+      TempGLEntry2.RESET;
+      IF TempGLEntry2.FIND('-') THEN
+        REPEAT
+          TempGLEntry := TempGLEntry2;
+          TempGLEntry.INSERT;
+        UNTIL TempGLEntry2.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE DimEntryOK@10(EntryNo@1000 : Integer;Dim@1001 : Code[20];DimValue@1002 : Code[20]) : Boolean;
+    VAR
+      LedgEntryDim@1003 : Record 355;
+    BEGIN
+      IF Dim = '' THEN
+        EXIT(TRUE);
+
+      // --> 20090302-8061020-CMB6.00.01-FEC02
+      // BEFORE
+      {
+      IF LedgEntryDim.GET(DATABASE::"G/L Entry",EntryNo,Dim) THEN
+      }
+      // AFTER
+      IF LedgEntryDim.GET(DATABASE::"Dim. Ledger Entry",EntryNo,LedgEntryDim.Type::"Regular Dimension",Dim) THEN
+      // <-- 20090302-8061020-CMB6.00.01-FEC02
+        EXIT(LedgEntryDim."Dimension Value Code" = DimValue)
+      ELSE
+        EXIT(DimValue = '');
+    END;
+
+    LOCAL PROCEDURE GetGlobalDimValue@2(GlobalDim@1000 : Code[20];VAR AnalysisViewEntry@1001 : Record 365;VAR GlobalDimValue@1002 : Code[20]) : Boolean;
+    VAR
+      IsGlobalDim@1003 : Boolean;
+    BEGIN
+      CASE GlobalDim OF
+        AnalysisView."Dimension 1 Code":
+          BEGIN
+            IsGlobalDim := TRUE;
+            GlobalDimValue := AnalysisViewEntry."Dimension 1 Value Code";
+          END;
+        AnalysisView."Dimension 2 Code":
+          BEGIN
+            IsGlobalDim := TRUE;
+            GlobalDimValue := AnalysisViewEntry."Dimension 2 Value Code";
+          END;
+        AnalysisView."Dimension 3 Code":
+          BEGIN
+            IsGlobalDim := TRUE;
+            GlobalDimValue := AnalysisViewEntry."Dimension 3 Value Code";
+          END;
+        AnalysisView."Dimension 4 Code":
+          BEGIN
+            IsGlobalDim := TRUE;
+            GlobalDimValue := AnalysisViewEntry."Dimension 4 Value Code";
+          END;
+      END;
+      EXIT(IsGlobalDim);
+    END;
+
+    LOCAL PROCEDURE FilterIncludesBlanks@17(NewFilter@1000 : Code[250]) : Boolean;
+    VAR
+      TempDimBuf@1001 : TEMPORARY Record 360;
+    BEGIN
+      WITH TempDimBuf DO BEGIN
+        DELETEALL; // Necessary because of C/SIDE error
+        INIT;
+        INSERT;
+        SETFILTER("Dimension Code",NewFilter);
+        EXIT(FIND('-'));
+      END;
+    END;
+
+    PROCEDURE "<<3LI FUNCTIONS>>"@8061733();
+    BEGIN
+    END;
+
+    PROCEDURE GetDimLedgerEntries@8061732(VAR AnalysisViewEntry_P@8061733 : Record 365;VAR TempGLEntry_P@8061732 : Record 8061732);
+    VAR
+      GLEntry_L@8061745 : Record 8061732;
+      TempGLEntry2_L@8061744 : TEMPORARY Record 8061732;
+      AnalysisViewFilter_L@8061743 : Record 364;
+      LedgEntryDim_L@8061742 : Record 355;
+      LedgEntryDimBlanks_L@8061741 : Record 355;
+      AccountingPeriod_L@8061740 : Record 50;
+      StartDate_L@8061739 : Date;
+      EndDate_L@8061738 : Date;
+      GlobalDimValue_L@8061737 : Code[20];
+      MinEntryNo_L@8061736 : Integer;
+      MaxEntryNo_L@8061735 : Integer;
+      IncludeBlanks_L@8061734 : Boolean;
+    BEGIN
+      // --> 20090302-8061020-CMB6.00.01-FEC01
+
+      AnalysisView.GET(AnalysisViewEntry_P."Analysis View Code");
+
+      IF AnalysisView."Date Compression" = AnalysisView."Date Compression"::None THEN BEGIN
+        IF GLEntry_L.GET(AnalysisViewEntry_P."Entry No.") THEN BEGIN
+          TempGLEntry_P := GLEntry_L;
+          TempGLEntry_P.INSERT;
+        END;
+        EXIT;
+      END;
+
+      GLSetup.GET;
+      TempGLEntry2_L.DELETEALL;
+
+      StartDate_L := AnalysisViewEntry_P."Posting Date";
+      EndDate_L := StartDate_L;
+
+      WITH AnalysisView DO
+        IF StartDate_L < "Starting Date" THEN
+          StartDate_L := 0D
+        ELSE
+          IF (AnalysisViewEntry_P."Posting Date" = NORMALDATE(AnalysisViewEntry_P."Posting Date")) AND
+             NOT ("Date Compression" IN ["Date Compression"::None,"Date Compression"::Day])
+          THEN
+            CASE "Date Compression" OF
+              "Date Compression"::Week:
+                EndDate_L := CALCDATE('<+6D>',AnalysisViewEntry_P."Posting Date");
+              "Date Compression"::Month:
+                EndDate_L := CALCDATE('<+1M-1D>',AnalysisViewEntry_P."Posting Date");
+              "Date Compression"::Quarter:
+                EndDate_L := CALCDATE('<+3M-1D>',AnalysisViewEntry_P."Posting Date");
+              "Date Compression"::Year:
+                EndDate_L := CALCDATE('<+1Y-1D>',AnalysisViewEntry_P."Posting Date");
+              "Date Compression"::Period:
+                BEGIN
+                  AccountingPeriod_L."Starting Date" := AnalysisViewEntry_P."Posting Date";
+                  IF AccountingPeriod_L.NEXT <> 0 THEN
+                    EndDate_L := CALCDATE('<-1D>',AccountingPeriod_L."Starting Date")
+                  ELSE
+                    EndDate_L := 31129999D
+                END;
+            END;
+
+      WITH GLEntry_L DO BEGIN
+        SETCURRENTKEY("G/L Account No.","Posting Date");
+        SETRANGE("G/L Account No.",AnalysisViewEntry_P."G/L Account No.");
+        SETRANGE("Posting Date",StartDate_L,EndDate_L);
+        SETRANGE("Entry No.",0,AnalysisView."Last Entry No.");
+
+        IF GetGlobalDimValue(GLSetup."Global Dimension 1 Code",AnalysisViewEntry_P,GlobalDimValue_L) THEN
+          GLEntry_L.SETRANGE("Global Dimension 1 Code",GlobalDimValue_L)
+        ELSE
+          IF AnalysisViewFilter_L.GET(AnalysisViewEntry_P."Analysis View Code",GLSetup."Global Dimension 1 Code")
+          THEN
+            GLEntry_L.SETFILTER("Global Dimension 1 Code",AnalysisViewFilter_L."Dimension Value Filter");
+
+        IF GetGlobalDimValue(GLSetup."Global Dimension 2 Code",AnalysisViewEntry_P,GlobalDimValue_L) THEN
+          GLEntry_L.SETRANGE("Global Dimension 2 Code",GlobalDimValue_L)
+        ELSE
+          IF AnalysisViewFilter_L.GET(AnalysisViewEntry_P."Analysis View Code",GLSetup."Global Dimension 2 Code")
+          THEN
+            GLEntry_L.SETFILTER("Global Dimension 2 Code",AnalysisViewFilter_L."Dimension Value Filter");
+
+        IF FIND('-') THEN
+          REPEAT
+            IF DimEntryOK("Entry No.",AnalysisView."Dimension 1 Code",AnalysisViewEntry_P."Dimension 1 Value Code") AND
+               DimEntryOK("Entry No.",AnalysisView."Dimension 2 Code",AnalysisViewEntry_P."Dimension 2 Value Code") AND
+               DimEntryOK("Entry No.",AnalysisView."Dimension 3 Code",AnalysisViewEntry_P."Dimension 3 Value Code") AND
+               DimEntryOK("Entry No.",AnalysisView."Dimension 4 Code",AnalysisViewEntry_P."Dimension 4 Value Code")
+            THEN BEGIN
+              TempGLEntry2_L := GLEntry_L;
+              TempGLEntry2_L.INSERT;
+            END;
+          UNTIL NEXT = 0;
+      END;
+
+      // Check for filters set...
+      TempGLEntry2_L.SETCURRENTKEY("Entry No.");
+      IF NOT TempGLEntry2_L.FIND('-') THEN
+        EXIT;
+      MinEntryNo_L := TempGLEntry2_L."Entry No.";
+      TempGLEntry2_L.FIND('+');
+      MaxEntryNo_L := TempGLEntry2_L."Entry No.";
+      LedgEntryDim_L.SETRANGE("Table ID",DATABASE::"Dim. Ledger Entry");
+      LedgEntryDim_L.SETRANGE("Entry No.",MinEntryNo_L,MaxEntryNo_L);
+      LedgEntryDim_L."Table ID" := DATABASE::"G/L Entry";
+      WITH AnalysisViewFilter_L DO BEGIN
+        SETRANGE("Analysis View Code",AnalysisViewEntry_P."Analysis View Code");
+        IF FIND('-') THEN
+          REPEAT
+            IncludeBlanks_L := FilterIncludesBlanks(AnalysisViewFilter_L."Dimension Value Filter");
+            LedgEntryDim_L.SETRANGE("Dimension Code",AnalysisViewFilter_L."Dimension Code");
+            LedgEntryDim_L."Dimension Code" := AnalysisViewFilter_L."Dimension Code";
+            LedgEntryDim_L.SETFILTER("Dimension Value Code",AnalysisViewFilter_L."Dimension Value Filter");
+
+            IF TempGLEntry2_L.FIND('-') THEN
+              REPEAT
+                LedgEntryDim_L."Entry No." := TempGLEntry2_L."Entry No.";
+                IF NOT LedgEntryDim_L.FIND THEN
+                  IF IncludeBlanks_L THEN BEGIN
+                    IF LedgEntryDimBlanks_L.GET(DATABASE::"Dim. Ledger Entry",TempGLEntry2_L."Entry No.",
+                                              AnalysisViewFilter_L."Dimension Code"
+      )
+                      THEN
+                      TempGLEntry2_L.DELETE;
+                  END ELSE
+                    TempGLEntry2_L.DELETE;
+              UNTIL TempGLEntry2_L.NEXT = 0;
+          UNTIL NEXT = 0;
+      END;
+      TempGLEntry2_L.RESET;
+      IF TempGLEntry2_L.FIND('-') THEN
+        REPEAT
+          TempGLEntry_P := TempGLEntry2_L;
+          TempGLEntry_P.INSERT;
+        UNTIL TempGLEntry2_L.NEXT = 0;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20090302-8061020-CMB6.00.01-FEC01 : ADDFUNC (Fonction GetDimLedgerEntries).
+      20090302-8061020-CMB6.00.01-FEC02 : MODCODE (Code).
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

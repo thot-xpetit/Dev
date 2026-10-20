@@ -1,0 +1,815 @@
+OBJECT Report 8053108 CMC Calculate Average Harvest
+{
+  OBJECT-PROPERTIES
+  {
+    Date=29/06/16;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,TER01.01.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=CMC Calculate Average Harvest;
+               FRA=Calculer moyenne moisson];
+    ProcessingOnly=Oui;
+    OnInitReport=BEGIN
+                   TestOnParameter;
+                 END;
+
+    OnPreReport=BEGIN
+                  // --> 20141014-CER37-TER01.01.00-PDC01
+                  RecSetup_G.GET;
+                  // <-- 20141010-CER37-TER01.01.00-PDC01
+                END;
+
+    OnPostReport=BEGIN
+                   MESSAGE(Text0003);
+                   PAverageHarvestList_G.NotFromMenu(TRUE);
+                   // --> 20141014-CER37-TER01.01.00-PDC01
+                   PAverageHarvestList_G.SetFiltersNotfromMenu(CampainNo_G,PeriodCode_G,CurrVendor_G,AnalyseFilter_G);
+                   // <-- 20141010-CER37-TER01.01.00-PDC01
+                   // --> 20150116-CER41/001-CMC02.02.00-2709-FHS01
+                   VendorFilter_G := "CMC Posted Receipts".GETFILTER("Vendor No.");
+                   SpecieFilter_G := "CMC Posted Receipts".GETFILTER("Species Code");
+                   PAverageHarvestList_G.SetParameter(CampainNo_G, SpecieFilter_G, VendorFilter_G, AnalyseFilter_G, PeriodCode_G);
+                   // <-- 20150116-CER41/001-CMC02.02.00-2709-FHS01
+                   PAverageHarvestList_G.RUN;
+                 END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table8052995;
+        DataItemTableView=SORTING(Receipt Type,Campaign No.,Vendor No.,Shipment Date,Canceled)
+                          ORDER(Ascending)
+                          WHERE(Receipt Type=FILTER(Receipt),
+                                Canceled=FILTER(Non),
+                                Vendor No.=FILTER(<>''));
+        OnPreDataItem=BEGIN
+                        IF (PeriodStartDate_G = 0D) OR (PeriodEndDate_G = 0D) THEN
+                          ERROR(Text001);
+                        SETRANGE("Campaign No.",CampainNo_G);
+                        SETRANGE("Shipment Date",PeriodStartDate_G,PeriodEndDate_G);
+                        RecTempVendor_G.DELETEALL;
+                        CurrVendor_G := '';
+
+                        // --> 20150212-CER37-TER01.01.00-RMZ01
+                        IF RecSetup_G."Disponible activation" THEN
+                          SETFILTER(Status,'<>%1',Status::Open);
+                        // <-- 20150212-CER37-TER01.01.00-RMZ01
+
+                        Window_G.OPEN(Text0005+'\'+'\'+Text0006+'\'+Text0007+'\'+Text0008);
+                      END;
+
+        OnAfterGetRecord=VAR
+                           RecPostedReceiptsLine_L@1000000000 : Record 8053104;
+                           RecPostedReceipts_L@1000000001 : Record 8052995;
+                           IncludeVendor_L@1000000002 : Boolean;
+                           BonVide_L@1000000003 : Boolean;
+                         BEGIN
+                           IncludeVendor_L := TRUE;
+                           CLEAR(RecPostedReceipts_L);
+                           RecPostedReceipts_L.SETRANGE("Receipt Type",RecPostedReceipts_L."Receipt Type"::Receipt);
+                           RecPostedReceipts_L.SETRANGE("Vendor No.","Vendor No.");
+                           RecPostedReceipts_L.SETRANGE(Canceled,FALSE);
+                           // --> 20160629-WI00-ADV01.01.00-3037-SDE
+                           RecPostedReceipts_L.SETRANGE("Campaign No.",CampainNo_G);
+                           RecPostedReceipts_L.SETRANGE("Shipment Date",PeriodStartDate_G,PeriodEndDate_G);
+                           BonVide_L:=FALSE;
+                           // <-- 20160629-WI00-ADV01.01.00-3037-SDE
+
+                           // --> 20140811-CER23-CMC02.02.00-2438-FHS01
+                           IF SpecieFilter_G <> '' THEN
+                             RecPostedReceipts_L.SETRANGE("Species Code", SpecieFilter_G);
+                           // <-- 20140811-CER23-CMC02.02.00-2438-FHS01
+                           IF RecPostedReceipts_L.FIND('-') THEN
+                             // --> 20140512-CER41-CMC02.02.00-2043-BSI01
+                             IF NOT Simulation_G THEN
+                             // <-- 20140512-CER41-CMC02.02.00-2043-BSI01
+                               // --> 20141014-CER37-TER01.01.00-PDC01
+                               IF RecSetup_G."Average Impact Stock" <> RecSetup_G."Average Impact Stock"::"Invoice on average no stock impact" THEN
+                               // <-- 20141010-CER37-TER01.01.00-PDC01
+                                 REPEAT
+                                   CLEAR(RecPostedReceiptsLine_L);
+                                   RecPostedReceiptsLine_L.SETCURRENTKEY("Receipt Type","No.","Resump No.","Canceled Line","Cancellation line",Invoiced);
+                                   RecPostedReceiptsLine_L.SETRANGE("Receipt Type",RecPostedReceiptsLine_L."Receipt Type"::Receipt);
+                                   RecPostedReceiptsLine_L.SETRANGE("No.",RecPostedReceipts_L."No.");
+                                   RecPostedReceiptsLine_L.SETRANGE("Canceled Line",FALSE);
+                                   RecPostedReceiptsLine_L.SETRANGE("Cancellation line",FALSE);
+                                   RecPostedReceiptsLine_L.SETRANGE("Resump No.",'');
+                                   // --> 20160629-WI00-ADV01.01.00-3037-SDE
+                                   //ce controle est n'cessaire pour le calcul des moyennes, pas la cr'ation des factures.
+                                   {
+                                   IF RecPostedReceiptsLine_L.ISEMPTY THEN // si un seul bon mais tout sur de la reprise
+                                     BonVide_L:=TRUE
+                                   ELSE  BEGIN
+                                     RecPostedReceiptsLine_L.SETRANGE(Invoiced,FALSE);
+                                     IF NOT RecPostedReceiptsLine_L.ISEMPTY THEN // existe une ligne non factur'e
+                                       IncludeVendor_L := FALSE;
+                                   END;
+                                   }
+                                   IF NOT RecPostedReceiptsLine_L.ISEMPTY THEN
+                                   BEGIN
+                                     RecPostedReceiptsLine_L.SETRANGE(Invoiced,FALSE);
+                                     IF NOT RecPostedReceiptsLine_L.ISEMPTY THEN
+                                       IncludeVendor_L := FALSE;
+                                   END;
+
+                               UNTIL (RecPostedReceipts_L.NEXT = 0) OR (IncludeVendor_L = FALSE);
+
+                           //IF IncludeVendor_L THEN
+                           IF IncludeVendor_L AND (BonVide_L=FALSE) THEN
+                           // <-- 20160629-WI00-ADV01.01.00-3037-SDE
+                             IF NOT RecTempVendor_G.GET(RecPostedReceipts_L."Vendor No.") THEN BEGIN
+                               RecTempVendor_G.INIT;
+                               RecTempVendor_G."No." := RecPostedReceipts_L."Vendor No.";
+                               RecTempVendor_G.INSERT;
+                               Window_G.UPDATE(1,RecTempVendor_G."No.");
+                             END;
+
+                           RecPostedReceipts_G.SETFILTER("Vendor No.",GETFILTER("Vendor No."));
+                           SETRANGE("Vendor No.","Vendor No.");
+                           FINDLAST;
+
+                           SETFILTER("Vendor No.",RecPostedReceipts_G.GETFILTER("Vendor No."));
+                         END;
+
+        ReqFilterFields=Vendor No.;
+        GroupTotalFields=Vendor No.;
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemTable=Table8053009;
+        DataItemTableView=SORTING(Campain No.,Bonis Refaction Code,Analysis Code)
+                          WHERE(Average Calculation=CONST(Oui));
+        OnPreDataItem=BEGIN
+                        // --> 20141010-CER37-TER01.01.00-PDC01
+                        CurrReport.BREAK;
+                        // <-- 20141010-CER37-TER01.01.00-PDC01
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           // --> 20141010-CER37-TER01.01.00-PDC01
+                           {
+                           CMCPostedReceiptAnalysis_G.SETRANGE("Analysis Code","Analysis Code");
+                           IF CMCPostedReceiptAnalysis_G.FINDSET THEN
+                             REPEAT
+                               IF CMCPostedReceiptAnalysis_G."Averaged Value"<>0 THEN
+                                 ERROR(Text60000);
+                             UNTIL CMCPostedReceiptAnalysis_G.NEXT=0;
+                           }
+                           // <-- 20141010-CER37-TER01.01.00-PDC01
+                         END;
+
+        ReqFilterFields=Analysis Code;
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemTable=Table2000000026;
+        DataItemTableView=SORTING(Num'ro)
+                          WHERE(Num'ro=CONST(1));
+        OnPreDataItem=BEGIN
+                        // --> 20140506-CER41-CMC02.02.00-2010-BSI01
+                        RecTempPostedReceipts_G.DELETEALL;
+                        RecTempPostedReceipts2_G.DELETEALL;
+                        // <-- 20140506-CER41-CMC02.02.00-2010-BSI01
+                        //Window_G.OPEN(Text0005+'\'+'\'+Text0006+'\'+Text0007+'\'+Text0008);
+                      END;
+
+        OnAfterGetRecord=VAR
+                           RecPostedReceipts_L@1000000003 : Record 8052995;
+                           RecPostedReceiptAnalysis_L@1000000002 : Record 8052996;
+                           RecPostedReceiptAnalysis2_L@1000000005 : Record 8052996;
+                           RecItem_L@1000000001 : Record 27;
+                           RecBonisRefaction_L@1000000000 : Record 8053009;
+                           IncludeBon_L@1000000004 : Boolean;
+                           SumNetWeight_L@1000000006 : Decimal;
+                           FilterGroup_L@1000000007 : Integer;
+                           ResultSumNetWeight2_L@1000000008 : Decimal;
+                           recSpeciesTmp_L@1000000009 : TEMPORARY Record 8052988;
+                           SumAnalysisValue_L@1000000010 : Decimal;
+                           RecPostedReceiptsLine_L@1000000011 : Record 8053104;
+                           BonVide_L@1000000012 : Boolean;
+                           RecPostedReceiptAnalysis3_L@1000000013 : Record 8052996;
+                         BEGIN
+                           IF RecTempVendor_G.FIND('-') THEN
+                           REPEAT
+                             Window_G.UPDATE(1,RecTempVendor_G."No.");
+                             SumNetWeight_L := 0;
+                             // Parcourir tous les bons d'un apporteur pour v'rifier leur inclusion dans le calcul de la moyenne
+                             CLEAR(RecPostedReceipts_L);
+                             RecPostedReceipts_L.SETCURRENTKEY("Receipt Type", "Campaign No.", "Vendor No.", "Shipment Date", Canceled);
+                             FilterGroup_L := RecPostedReceipts_L.FILTERGROUP(9);
+                             RecPostedReceipts_L.COPYFILTERS("CMC Posted Receipts");
+                             RecPostedReceipts_L.FILTERGROUP(FilterGroup_L);
+                             RecPostedReceipts_L.SETRANGE("Receipt Type",RecPostedReceipts_L."Receipt Type"::Receipt);
+                             RecPostedReceipts_L.SETRANGE("Campaign No.",CampainNo_G);
+                             RecPostedReceipts_L.SETRANGE("Vendor No.",RecTempVendor_G."No.");
+                             RecPostedReceipts_L.SETRANGE("Shipment Date",PeriodStartDate_G,PeriodEndDate_G);
+                             RecPostedReceipts_L.SETRANGE("Posted Purch Avg Harv Inv No.",'');
+                             IF SpecieFilter_G <> '' THEN
+                               RecPostedReceipts_L.SETRANGE("Species Code", SpecieFilter_G);
+                             RecPostedReceipts_L.SETRANGE(Canceled,FALSE);
+
+                             // bon par bon
+                             IF RecPostedReceipts_L.FIND('-') THEN
+                             REPEAT
+                               IncludeBon_L := TRUE;
+                               IF RecSetup_G."Disponible activation" THEN
+                                 RecPostedReceipts_L.TESTFIELD(Status,RecPostedReceipts_L.Status::Released);
+                               RecItem_L.GET(RecPostedReceipts_L."Item No.");
+
+                               CLEAR(RecPostedReceiptAnalysis_L);
+                               RecPostedReceiptAnalysis_L.SETRANGE("Receipt Type",RecPostedReceiptAnalysis_L."Receipt Type"::Receipt);
+                               RecPostedReceiptAnalysis_L.SETRANGE("Receipt No.",RecPostedReceipts_L."No.");
+
+                               IF AnalyseFilter_G <> '' THEN
+                                 RecPostedReceiptAnalysis_L.SETRANGE("Analysis Code", AnalyseFilter_G);
+                               IF "CMC Bonis Refaction".GETFILTER("Analysis Code") <> '' THEN
+                                 "CMC Bonis Refaction".COPYFILTER("Analysis Code",RecPostedReceiptAnalysis_L."Analysis Code");
+                               // par analyse du bon  , si une analyse hors norme, on ne prends pas le bon
+                               IF RecPostedReceiptAnalysis_L.FIND('-') THEN
+                               REPEAT
+                                 //ole
+                                 //Mise . 0 des analyses simul'es pour tous les bons.
+                                 IF Simulation_G THEN
+                                 BEGIN
+                                   RecPostedReceiptAnalysis_L."Average Simulated Value" := 0;
+                                   RecPostedReceiptAnalysis_L.MODIFY;
+                                 END;
+                                 //ole
+
+                                 IF RecBonisRefaction_L.GET(CampainNo_G,RecItem_L."Bonis Refaction Code",
+                                                         RecPostedReceiptAnalysis_L."Analysis Code") THEN
+                                 IF (RecBonisRefaction_L."Average Calculation"=TRUE) AND NOT
+                                    ((RecPostedReceiptAnalysis_L.Value >= RecBonisRefaction_L."Lower Value") AND
+                                    (RecPostedReceiptAnalysis_L.Value <= RecBonisRefaction_L."Upper Value")) THEN
+                                   IncludeBon_L := FALSE;
+                               UNTIL (RecPostedReceiptAnalysis_L.NEXT = 0) OR (IncludeBon_L = FALSE);
+
+
+                           // --> 20160629-WI00-ADV01.01.00-3037-SDE
+                               BonVide_L:=FALSE;
+                               IF (IncludeBon_L) THEN BEGIN
+                                 CLEAR(RecPostedReceiptsLine_L);
+                                 RecPostedReceiptsLine_L.SETCURRENTKEY("Receipt Type","No.","Resump No.","Canceled Line","Cancellation line",Invoiced);
+                                 RecPostedReceiptsLine_L.SETRANGE("Receipt Type",RecPostedReceiptsLine_L."Receipt Type"::Receipt);
+                                 RecPostedReceiptsLine_L.SETRANGE("No.",RecPostedReceipts_L."No.");
+                                 RecPostedReceiptsLine_L.SETRANGE("Canceled Line",FALSE);
+                                 RecPostedReceiptsLine_L.SETRANGE("Cancellation line",FALSE);
+                                 RecPostedReceiptsLine_L.SETRANGE("Resump No.",'');
+                                 //RecPostedReceiptsLine_L.SETRANGE("TAF Document No",''); // on garde le taf
+                                 IF RecPostedReceiptsLine_L.ISEMPTY THEN
+                                   BonVide_L:=TRUE;
+                               END;
+
+                           // <-- 20160629-WI00-ADV01.01.00-3037-SDE
+                               // si ok on garde le bon
+                               IF (IncludeBon_L) AND (BonVide_L=FALSE)  THEN BEGIN
+                                 RecTempPostedReceipts_G.INIT;
+                                 RecTempPostedReceipts_G := RecPostedReceipts_L;
+                                 RecTempPostedReceipts_G.INSERT;
+                                 RecTempPostedReceipts2_G.INIT;
+                                 RecTempPostedReceipts2_G := RecPostedReceipts_L;
+                                 RecTempPostedReceipts2_G.Invoiced := NOT(ReceiptNotInvoiced(RecTempPostedReceipts2_G."No."));
+                                 RecTempPostedReceipts2_G.INSERT;
+                               END;
+                             UNTIL RecPostedReceipts_L.NEXT = 0;
+
+                             //Construction d'une liste temporaire d'espSce pour l'agirculteur
+                             recSpeciesTmp_L.RESET;
+                             recSpeciesTmp_L.DELETEALL;
+                             RecTempPostedReceipts_G.RESET;
+                             RecTempPostedReceipts_G.SETCURRENTKEY("Vendor No.", "Species Code");
+                             RecTempPostedReceipts_G.SETRANGE("Vendor No.", RecTempVendor_G."No.");
+                             IF RecTempPostedReceipts_G.FINDSET THEN
+                               REPEAT
+                                 recSpeciesTmp_L.INIT;
+                                 recSpeciesTmp_L.Code := RecTempPostedReceipts_G."Species Code";
+                                 recSpeciesTmp_L.INSERT;
+                                 RecTempPostedReceipts_G.SETFILTER("Species Code", '>%1', recSpeciesTmp_L.Code);
+                               UNTIL RecTempPostedReceipts_G.FINDFIRST = FALSE;
+
+                             // on boucle par espSce
+                             // --> 20160629-WI00-ADV01.01.00-3037-SDE
+                             RecPostedReceiptAnalysisTMP_G.DELETEALL;
+                             // <-- 20160629-WI00-ADV01.01.00-3037-SDE
+                             recSpeciesTmp_L.RESET;
+                             IF recSpeciesTmp_L.FINDSET(FALSE, FALSE) THEN
+                             REPEAT
+                               RecTempPostedReceipts_G.SETCURRENTKEY("Vendor No.", "Species Code");
+                               RecTempPostedReceipts_G.SETRANGE("Vendor No.",RecTempVendor_G."No.");
+                               RecTempPostedReceipts_G.SETRANGE("Species Code", recSpeciesTmp_L.Code);
+                               IF RecTempPostedReceipts_G.FIND('-') THEN
+                               REPEAT
+                                 RecItem_L.GET(RecTempPostedReceipts_G."Item No.");
+                                 Window_G.UPDATE(2, recSpeciesTmp_L.Code);
+
+                                 CLEAR(RecPostedReceiptAnalysis2_L);
+                                 RecPostedReceiptAnalysis2_L.SETRANGE("Receipt Type",RecPostedReceiptAnalysis2_L."Receipt Type"::Receipt);
+                                 RecPostedReceiptAnalysis2_L.SETRANGE("Receipt No.",RecTempPostedReceipts_G."No.");
+                                 IF AnalyseFilter_G <> '' THEN
+                                   RecPostedReceiptAnalysis2_L.SETRANGE("Analysis Code", AnalyseFilter_G);
+                                 IF "CMC Bonis Refaction".GETFILTER("Analysis Code") <> '' THEN
+                                   "CMC Bonis Refaction".COPYFILTER("Analysis Code",RecPostedReceiptAnalysis2_L."Analysis Code");
+
+                                 IF RecPostedReceiptAnalysis2_L.FIND('-') THEN
+                                 REPEAT
+                                   IF RecBonisRefaction_L.GET(CampainNo_G,RecItem_L."Bonis Refaction Code",
+                                                           RecPostedReceiptAnalysis2_L."Analysis Code") THEN
+                                     // Calcul de la moyenne
+                                     IF RecBonisRefaction_L."Average Calculation" THEN BEGIN
+                                       //ResultSumNetWeight2_L :=  SumNetWeight2(RecTempVendor_G."No.", RecPostedReceiptAnalysis2_L."Analysis Code",
+                                       //  recSpeciesTmp_L.Code, SumAnalysisValue_L);
+                                       ResultSumNetWeight2_L:=CalcAnalyseAverage(RecTempVendor_G."No.", RecPostedReceiptAnalysis2_L."Analysis Code",
+                                                               recSpeciesTmp_L.Code);
+                                       IF NOT Simulation_G THEN BEGIN
+                                         IF (RecPostedReceiptAnalysis2_L."Averaged Value"=0) AND
+                                           (ResultSumNetWeight2_L <> 0)
+                                         THEN
+                                         BEGIN
+                                           RecPostedReceiptAnalysis2_L."Averaged Value" :=ResultSumNetWeight2_L;
+                                           //ROUND((SumAnalysisValue_L /
+                                           //  ResultSumNetWeight2_L),0.01)
+                                         END;
+                                       END ELSE
+                                       BEGIN
+                                         IF ResultSumNetWeight2_L <> 0 THEN
+                                           RecPostedReceiptAnalysis2_L."Average Simulated Value" :=ResultSumNetWeight2_L;
+                                           //ROUND((SumAnalysisValue_L /
+                                           //ResultSumNetWeight2_L),0.01);
+                                       END;
+                                       RecPostedReceiptAnalysis2_L.MODIFY;
+                                     END;
+                                 UNTIL RecPostedReceiptAnalysis2_L.NEXT = 0;
+                                 Window_G.UPDATE(3,RecTempPostedReceipts_G."No.");
+                               UNTIL RecTempPostedReceipts_G.NEXT = 0;
+                             UNTIL recSpeciesTmp_L.NEXT = 0;
+                           UNTIL RecTempVendor_G.NEXT = 0;
+                         END;
+
+        OnPostDataItem=BEGIN
+                         Window_G.CLOSE;
+                       END;
+
+      }
+      SECTIONS
+      {
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=9020;
+      Height=3520;
+      SaveValues=Oui;
+    }
+    CONTROLS
+    {
+      { 1000000002;TextBox;3850 ;880  ;1700 ;440  ;SourceExpr=CampainNo_G }
+      { 1000000003;Label  ;440  ;880  ;3300 ;440  ;ParentControl=1000000002 }
+      { 1000000004;TextBox;3850 ;1650 ;1700 ;440  ;SourceExpr=PeriodCode_G;
+                                                   OnValidate=VAR
+                                                                RecAverageHarvestPeriod_L@1000000000 : Record 8053481;
+                                                              BEGIN
+                                                                RecAverageHarvestPeriod_L.GET(CampainNo_G,PeriodCode_G);
+                                                                PeriodStartDate_G := RecAverageHarvestPeriod_L."Period Starting Date";
+                                                                PeriodEndDate_G := RecAverageHarvestPeriod_L."Period Ending Date";
+                                                              END;
+                                                               }
+      { 1000000005;Label  ;440  ;1650 ;3300 ;440  ;ParentControl=1000000004 }
+      { 1000000006;CheckBox;3850;220  ;440  ;440  ;ShowCaption=Non;
+                                                   SourceExpr=Simulation_G }
+      { 1000000007;Label  ;440  ;220  ;3300 ;440  ;ParentControl=1000000006 }
+      { 1000000000;TextBox;3850 ;2310 ;1700 ;440  ;SourceExpr=PeriodStartDate_G }
+      { 1000000001;TextBox;3850 ;2970 ;1700 ;440  ;SourceExpr=PeriodEndDate_G }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      OnOpenPage=BEGIN
+                   // --> 20140811-CER23-CMC02.02.00-2438-FHS01
+                   //BEFORE
+                   {
+                   CLEAR(CampainNo_G);
+                   CLEAR(PeriodCode_G);
+                   CLEAR(PeriodStartDate_G);
+                   CLEAR(PeriodEndDate_G);
+                   }
+                   //AFTER
+                   // <-- 20140811-CER23-CMC02.02.00-2438-FHS01
+
+                   IF NotFromMenu_G=TRUE THEN BEGIN //lancer de la page
+                     SimulationEditable_G:=TRUE;
+                     Simulation_G:=FALSE;
+                   END ELSE BEGIN  //lancer du menu
+                     SimulationEditable_G:=FALSE;
+                     Simulation_G:=TRUE;
+                   END;
+
+                   // --> 20140811-CER23-CMC02.02.00-2438-FHS01
+                   IF VendorFilter_G <> '' THEN BEGIN
+                     "CMC Posted Receipts".SETRANGE("Vendor No.", VendorFilter_G);
+                   END;
+                   // <-- 20140811-CER23-CMC02.02.00-2438-FHS01
+
+                   // --> 20141014-CER37-TER01.01.00-PDC01
+                   RecSetup_G.GET;
+                   IF RecSetup_G."Average Impact Stock" = RecSetup_G."Average Impact Stock"::"Invoice on average no stock impact" THEN
+                     SimulationEditable_G:=TRUE;
+                   // <-- 20141010-CER37-TER01.01.00-PDC01
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 8053000; ;Container ;
+                  ContainerType=ContentArea }
+
+      { 8053001;1;Group     ;
+                  CaptionML=FRA=Options;
+                  GroupType=Group }
+
+      { 1000000000;2;Field  ;
+                  Name=Simulation;
+                  CaptionML=[ENU=Simulation;
+                             FRA=Simulation];
+                  SourceExpr=Simulation_G;
+                  Editable=SimulationEditable_G }
+
+      { 8053002;2;Field     ;
+                  Name=Campagne;
+                  SourceExpr=CampainNo_G;
+                  TableRelation="CMC Campaign";
+                  OnValidate=BEGIN
+                               CLEAR(PeriodCode_G);
+                               CLEAR(PeriodStartDate_G);
+                               CLEAR(PeriodEndDate_G);
+                             END;
+
+                  OnLookup=BEGIN
+                             // --> 20150512-CER105-TER01.01.00-309-BSI01
+                             CampainNoLookUp;
+                             // <-- 20150512-CER105-TER01.01.00-309-BSI01
+                           END;
+                            }
+
+      { 8053003;2;Field     ;
+                  Name=Code p'riode;
+                  SourceExpr=PeriodCode_G;
+                  OnValidate=VAR
+                               RecAverageHarvestPeriod_L@8053000 : Record 8053481;
+                             BEGIN
+                               RecAverageHarvestPeriod_L.GET(CampainNo_G,PeriodCode_G);
+                               PeriodStartDate_G := RecAverageHarvestPeriod_L."Period Starting Date";
+                               PeriodEndDate_G := RecAverageHarvestPeriod_L."Period Ending Date";
+                             END;
+
+                  OnLookup=VAR
+                             RecAverageHarvestPeriod_L@8053001 : Record 8053481;
+                           BEGIN
+                             IF CampainNo_G <> '' THEN BEGIN
+                               CLEAR(RecAverageHarvestPeriod_L);
+                               RecAverageHarvestPeriod_L.FILTERGROUP(2);
+                               RecAverageHarvestPeriod_L.SETRANGE("Campaign No.",CampainNo_G);
+                               RecAverageHarvestPeriod_L.SETRANGE("Period Blocked",FALSE);
+                               RecAverageHarvestPeriod_L.FILTERGROUP(0);
+                               IF PAGE.RUNMODAL(PAGE::"CMC Average Harvest Periods",RecAverageHarvestPeriod_L) = ACTION::LookupOK THEN BEGIN
+                                 PeriodCode_G := RecAverageHarvestPeriod_L."Period Code";
+                                 PeriodStartDate_G := RecAverageHarvestPeriod_L."Period Starting Date";
+                                 PeriodEndDate_G := RecAverageHarvestPeriod_L."Period Ending Date";
+                               END;
+                             END;
+                           END;
+                            }
+
+      { 8053004;2;Field     ;
+                  Name=Date d'but p'riode;
+                  SourceExpr=PeriodStartDate_G;
+                  Editable=FALSE }
+
+      { 8053005;2;Field     ;
+                  Name=Date fin p'riode;
+                  SourceExpr=PeriodEndDate_G;
+                  Editable=FALSE }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      CampainNo_G@8053000 : Code[10];
+      PeriodCode_G@8053001 : Code[10];
+      PeriodStartDate_G@8053002 : Date;
+      PeriodEndDate_G@8053003 : Date;
+      RecTempVendor_G@8053005 : TEMPORARY Record 23;
+      Text001@1000000000 : TextConst 'FRA=Veuillez choisir une p'riode.';
+      Text0002@8053006 : TextConst 'FRA="Le lancement de ce traitement n'cessite que le champ %1 de la table %2 soit %3 ou %4. "';
+      CurrVendor_G@1000000002 : Code[20];
+      Text0003@8053004 : TextConst 'FRA=Traitement termin'.';
+      RecTempPostedReceipts_G@1000000001 : TEMPORARY Record 8052995;
+      RecTempPostedReceipts2_G@1000000003 : TEMPORARY Record 8052995;
+      RecSpecies_G@1000000004 : Record 8052988;
+      Simulation_G@1000000005 : Boolean;
+      Window_G@1000000006 : Dialog;
+      Text0005@1000000008 : TextConst 'FRA=Calcul de la moyenne par apporteur par espSce :';
+      Text0006@1000000009 : TextConst 'FRA=Apporteur  #1###########';
+      Text0007@1000000010 : TextConst 'FRA=EspSce  #2###########';
+      Text0008@1000000011 : TextConst 'FRA=Traitement du bon N›  #3###########';
+      NotFromMenu_G@8053007 : Boolean;
+      SimulationEditable_G@8053008 : Boolean INDATASET;
+      PAverageHarvestList_G@8053009 : Page 8087858;
+      CampainNoEditable_G@8053100 : Integer;
+      SpecieFilter_G@8053101 : Code[10];
+      VendorFilter_G@8053102 : Code[20];
+      AnalyseFilter_G@8053103 : Code[10];
+      CMCPostedReceiptAnalysis_G@60000 : Record 8052996;
+      Text60000@60001 : TextConst 'ENU=The average was been calculated for period. You can change the analyse averages on page Posted Rceipt Laboratory Analysis.;FRA=La moyenne a d'j. 't' calcul'e pour la p'riode. Vous pouvez modifier les moyennes d''analyses dans l'''cran Analyses laboratoire r'ceptions valid'es.';
+      RecSetup_G@60002 : Record 8052982;
+      LastReceipt_G@1000000007 : Code[20];
+      LastInvoiced_G@1000000012 : Boolean;
+      RecPostedReceipts_G@1000000013 : Record 8052995;
+      RecPostedReceiptAnalysisTMP_G@1000000014 : TEMPORARY Record 8052996;
+
+    PROCEDURE TestOnParameter@8053001();
+    VAR
+      RecSetup_L@1000000000 : Record 8052982;
+    BEGIN
+      RecSetup_L.GET;
+      IF NOT ((RecSetup_L."Average Impact Stock" = RecSetup_L."Average Impact Stock"::"Refraction Invoice") OR
+              (RecSetup_L."Average Impact Stock" = RecSetup_L."Average Impact Stock"::"Invoice on average no stock impact")) THEN
+        ERROR(Text0002,RecSetup_L.FIELDCAPTION(RecSetup_L."Average Impact Stock"),
+      // --> 20141001-CER37-TER01.01.00-PDC01
+              //RecSetup_L.TABLECAPTION,FORMAT(RecSetup_L."Average Impact Stock"::"Refraction Invoice"));
+              RecSetup_L.TABLECAPTION,FORMAT(RecSetup_L."Average Impact Stock"::"Refraction Invoice"),
+                                      FORMAT(RecSetup_L."Average Impact Stock"::"Invoice on average no stock impact"));
+      // <-- 20141001-CER37-TER01.01.00-PDC01
+    END;
+
+    PROCEDURE SumAnalysisValue@1000000000(VendorNo@1000000002 : Code[20];AnalysisCode_P@1000000004 : Code[10];SpecieCode@1000000000 : Code[10]) AnalysisValue_Result : Decimal;
+    VAR
+      RecPostedReceiptAnalysis_L@1000000001 : Record 8052996;
+    BEGIN
+      AnalysisValue_Result := 0;
+      RecTempPostedReceipts2_G.SETCURRENTKEY("Vendor No.", "Species Code");
+      RecTempPostedReceipts2_G.SETRANGE("Vendor No.",VendorNo);
+      RecTempPostedReceipts2_G.SETRANGE("Species Code",SpecieCode);
+      IF RecSetup_G."Average Impact Stock" = RecSetup_G."Average Impact Stock"::"Invoice on average no stock impact" THEN
+        RecTempPostedReceipts2_G.SETRANGE(Invoiced, FALSE);
+      IF RecTempPostedReceipts2_G.FIND('-') THEN
+      REPEAT
+        IF RecPostedReceiptAnalysis_L.GET(RecPostedReceiptAnalysis_L."Receipt Type"::Receipt,
+          RecTempPostedReceipts2_G."No.",AnalysisCode_P)
+        THEN
+          AnalysisValue_Result += (RecPostedReceiptAnalysis_L.Value * RecTempPostedReceipts2_G."Standard Weight");
+      UNTIL RecTempPostedReceipts2_G.NEXT = 0;
+    END;
+
+    PROCEDURE SumNetWeight@1000000002() SumNetWeight_Res : Decimal;
+    BEGIN
+      // Calcul de la somme des poids nets de toutes les r'ceptions valid'es d'un apporteur
+      SumNetWeight_Res := 0;
+      RecTempPostedReceipts_G.CALCSUMS("Standard Weight");
+      SumNetWeight_Res := RecTempPostedReceipts_G."Standard Weight";
+    END;
+
+    PROCEDURE NotFromMenu@8053000(NotFromMenu_P@8053000 : Boolean);
+    BEGIN
+      NotFromMenu_G:=NotFromMenu_P;
+    END;
+
+    PROCEDURE GetParameter@8053104(CampagnFilter_P@8053105 : Code[10];SpecieFilter_P@8053106 : Code[10];VendorFilter_P@8053107 : Code[20];AnalyseFilter_P@8053108 : Code[10];PeriodCode_P@8053109 : Code[10]);
+    VAR
+      RecAverageHarvestPeriod_L@1000000005 : Record 8053481;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Permet d'indiquer les paramStres de la page appelante
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - CampagnFilter_P : Filtre campagne
+      //    - SpecieFilter_P : Filtre espSce
+      //    - VendorFilter_P : Filtre fournisseur
+      //    - AnalyseFilter_P : Filtre analyse
+      //    - PeriodCode_P : Filtre r'riode
+      //    - PeriodStartDate_P : Filtre d'but p'riode
+      //    - PeriodEndDate_P : Filtre fin p'riode
+      //  Sorties
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // --> 20140811-CER23-CMC02.02.00-2438-FHS01
+      IF CampagnFilter_P <> '' THEN
+        CampainNo_G := CampagnFilter_P;
+      IF PeriodCode_P <> '' THEN
+        PeriodCode_G := PeriodCode_P;
+      IF (CampainNo_G <> '') AND (PeriodCode_G <> '') THEN BEGIN
+        IF RecAverageHarvestPeriod_L.GET(CampainNo_G,PeriodCode_G) THEN BEGIN
+        PeriodStartDate_G := RecAverageHarvestPeriod_L."Period Starting Date";
+        PeriodEndDate_G := RecAverageHarvestPeriod_L."Period Ending Date";
+      END;
+      END;
+
+      IF SpecieFilter_P <> '' THEN BEGIN
+        SpecieFilter_G := SpecieFilter_P;
+        "CMC Posted Receipts".SETRANGE("Species Code", SpecieFilter_P);
+      END;
+      IF VendorFilter_P <> '' THEN BEGIN
+        VendorFilter_G := VendorFilter_P;
+      END;
+      IF AnalyseFilter_P <> '' THEN
+        AnalyseFilter_G := AnalyseFilter_P;
+      // <-- 20140811-CER23-CMC02.02.00-2438-FHS01
+    END;
+
+    PROCEDURE SumNetWeight2@60000(VendorNo@60002 : Code[10];AnalysisCode_P@60001 : Code[10];SpecieCode@60000 : Code[10];VAR AnalysisValue_Result@1000000000 : Decimal) SumNetWeight_Res : Decimal;
+    VAR
+      RecPostedReceiptAnalysis_L@60003 : Record 8052996;
+    BEGIN
+      // --> 20141024-CER37-TER01.01.00-PDC01
+      // Calcul de la somme des poids nets de toutes les r'ceptions valid'es d'un apporteur
+      SumNetWeight_Res := 0;
+      AnalysisValue_Result := 0;
+      RecTempPostedReceipts2_G.SETCURRENTKEY("Vendor No.", "Species Code");
+      RecTempPostedReceipts2_G.SETRANGE("Vendor No.",VendorNo);
+      RecTempPostedReceipts2_G.SETRANGE("Species Code",SpecieCode);
+      IF RecSetup_G."Average Impact Stock" = RecSetup_G."Average Impact Stock"::"Invoice on average no stock impact" THEN
+        RecTempPostedReceipts2_G.SETRANGE(Invoiced, FALSE);
+      IF RecTempPostedReceipts2_G.FIND('-') THEN
+        REPEAT
+          IF RecPostedReceiptAnalysis_L.GET(RecPostedReceiptAnalysis_L."Receipt Type"::Receipt,
+             RecTempPostedReceipts2_G."No.",AnalysisCode_P) THEN BEGIN
+            IF RecPostedReceiptAnalysis_L.Value<>0 THEN
+              SumNetWeight_Res += RecTempPostedReceipts2_G."Standard Weight";
+            AnalysisValue_Result += (RecPostedReceiptAnalysis_L.Value * RecTempPostedReceipts2_G."Standard Weight");
+          END;
+        UNTIL RecTempPostedReceipts2_G.NEXT = 0;
+    END;
+
+    PROCEDURE ReceiptNotInvoiced@60001(ReceiptNo_P@60001 : Code[20]) : Boolean;
+    VAR
+      PostedRecLine_L@60000 : Record 8053104;
+    BEGIN
+      // --> 20150805-Wi00-ADV01.01.00-2081-FHS01
+      IF LastReceipt_G <> ReceiptNo_P THEN BEGIN
+      // <-- 20150805-Wi00-ADV01.01.00-2081-FHS01
+      // --> 20141218-CER37-TER01.01.00-PDC01
+        PostedRecLine_L.SETRANGE("Receipt Type",PostedRecLine_L."Receipt Type"::Receipt);
+        PostedRecLine_L.SETRANGE("No.",ReceiptNo_P);
+        PostedRecLine_L.SETRANGE(Invoiced,TRUE);
+      // --> 20150805-Wi00-ADV01.01.00-2081-FHS01
+      //BEFORE
+      //EXIT(PostedRecLine_L.ISEMPTY);
+      //AFTER
+        LastInvoiced_G := PostedRecLine_L.ISEMPTY;
+        LastReceipt_G := ReceiptNo_P;
+      END;
+      EXIT(LastInvoiced_G);
+      // <-- 20150805-Wi00-ADV01.01.00-2081-FHS01
+      // <-- 20141218-CER37-TER01.01.00-PDC01
+    END;
+
+    PROCEDURE CampainNoLookUp@60002();
+    VAR
+      CMCSetup_L@60000 : Record 8052982;
+      RecCampaign_L@60001 : Record 8052991;
+      PageCampains_L@60002 : Page 8052994;
+    BEGIN
+      CLEAR(RecCampaign_L);
+      CMCSetup_L.GET;
+      IF CMCSetup_L."Display Only Open & Rele. Camp" THEN BEGIN
+        RecCampaign_L.FILTERGROUP(2);
+        RecCampaign_L.SETRANGE(Status,RecCampaign_L.Status::Released);
+        RecCampaign_L.FILTERGROUP(0);
+      END;
+
+      PageCampains_L.SETTABLEVIEW(RecCampaign_L);
+      PageCampains_L.LOOKUPMODE := TRUE;
+      IF PageCampains_L.RUNMODAL = ACTION::LookupOK THEN BEGIN
+        PageCampains_L.GETRECORD(RecCampaign_L);
+        CampainNo_G := RecCampaign_L."No.";
+      END;
+    END;
+
+    PROCEDURE CalcAnalyseAverage@1000000005(VendorNo@60002 : Code[10];AnalysisCode_P@60001 : Code[10];SpecieCode@60000 : Code[10]) AverageValue_Res : Decimal;
+    VAR
+      RecPostedReceiptAnalysis_L@60003 : Record 8052996;
+      RecPostedReceiptsLine_L@1000000000 : Record 8053104;
+      SumNetWeight_L@1000000001 : Decimal;
+      AnalysisValue_L@1000000002 : Decimal;
+      HarvestWeight_L@1000000003 : Decimal;
+      PostedReceipt_L@1000000004 : Record 8052995;
+    BEGIN
+      // --> 20160629-WI00-ADV01.01.00-3037-SDE
+      RecPostedReceiptAnalysisTMP_G.DELETEALL;
+      // <-- 20160629-WI00-ADV01.01.00-3037-SDE
+      RecPostedReceiptAnalysisTMP_G.RESET;
+      RecPostedReceiptAnalysisTMP_G.SETRANGE("Analysis Code",AnalysisCode_P);
+
+      IF NOT RecPostedReceiptAnalysisTMP_G.FINDSET THEN BEGIN
+        SumNetWeight_L := 0;
+        AnalysisValue_L := 0;
+        RecTempPostedReceipts2_G.SETCURRENTKEY("Vendor No.", "Species Code");
+        RecTempPostedReceipts2_G.SETRANGE("Vendor No.",VendorNo);
+        RecTempPostedReceipts2_G.SETRANGE("Species Code",SpecieCode);
+        IF RecSetup_G."Average Impact Stock" = RecSetup_G."Average Impact Stock"::"Invoice on average no stock impact" THEN
+          RecTempPostedReceipts2_G.SETRANGE(Invoiced, FALSE);
+        IF RecTempPostedReceipts2_G.FIND('-') THEN
+          REPEAT
+            // --> 20160629-WI00-ADV01.01.00-3037-SDE
+            HarvestWeight_L := 0;
+            // <-- 20160629-WI00-ADV01.01.00-3037-SDE
+            IF RecPostedReceiptAnalysis_L.GET(RecPostedReceiptAnalysis_L."Receipt Type"::Receipt,
+               RecTempPostedReceipts2_G."No.",AnalysisCode_P) AND (RecPostedReceiptAnalysis_L.Value<>0) THEN BEGIN
+                CLEAR(RecPostedReceiptsLine_L);
+                RecPostedReceiptsLine_L.SETCURRENTKEY("Receipt Type","No.","Resump No.","Canceled Line","Cancellation line",Invoiced);
+                RecPostedReceiptsLine_L.SETRANGE("Receipt Type",RecPostedReceiptsLine_L."Receipt Type"::Receipt);
+                RecPostedReceiptsLine_L.SETRANGE("No.",RecTempPostedReceipts2_G."No.");
+                RecPostedReceiptsLine_L.SETRANGE("Canceled Line",FALSE);
+                RecPostedReceiptsLine_L.SETRANGE("Cancellation line",FALSE);
+                RecPostedReceiptsLine_L.SETRANGE("Resump No.",'');
+                IF RecPostedReceiptsLine_L.FINDSET THEN
+                  REPEAT
+                    // --> 20160629-WI00-ADV01.01.00-3037-SDE
+                    {
+                    SumNetWeight_L += RecPostedReceiptsLine_L.Quantity;
+                    AnalysisValue_L += (RecPostedReceiptAnalysis_L.Value * RecPostedReceiptsLine_L.Quantity);
+                    }
+                    IF RecSetup_G."Average Impact Stock" = RecSetup_G."Average Impact Stock"::"Invoice on average no stock impact"
+                    THEN
+                    BEGIN
+                      SumNetWeight_L += RecPostedReceiptsLine_L.Quantity;
+                      AnalysisValue_L += (RecPostedReceiptAnalysis_L.Value * RecPostedReceiptsLine_L.Quantity);
+                      HarvestWeight_L += RecPostedReceiptsLine_L.Quantity;
+                    END ELSE
+                    BEGIN
+                      SumNetWeight_L += RecPostedReceiptsLine_L."Brut Quantity";
+                      AnalysisValue_L += (RecPostedReceiptAnalysis_L.Value * RecPostedReceiptsLine_L."Brut Quantity");
+                      HarvestWeight_L += RecPostedReceiptsLine_L."Brut Quantity";
+                    END;
+                    // <-- 20160629-WI00-ADV01.01.00-3037-SDE
+                  UNTIL RecPostedReceiptsLine_L.NEXT=0;
+
+                // --> 20160629-WI00-ADV01.01.00-3037-SDE
+                PostedReceipt_L.GET(RecTempPostedReceipts2_G."Receipt Type",RecTempPostedReceipts2_G."No.");
+                PostedReceipt_L."Harvest weight" := HarvestWeight_L;
+                // <-- 20160629-WI00-ADV01.01.00-3037-SDE
+                PostedReceipt_L.MODIFY;
+            END;
+          UNTIL RecTempPostedReceipts2_G.NEXT = 0;
+
+          RecPostedReceiptAnalysisTMP_G.RESET;
+          RecPostedReceiptAnalysisTMP_G.INIT;
+          RecPostedReceiptAnalysisTMP_G."Analysis Code":=AnalysisCode_P;
+          IF SumNetWeight_L>0 THEN
+            RecPostedReceiptAnalysisTMP_G."Averaged Value":=ROUND(AnalysisValue_L/SumNetWeight_L,0.01)
+          ELSE
+            RecPostedReceiptAnalysisTMP_G."Averaged Value":=0;
+          RecPostedReceiptAnalysisTMP_G.INSERT;
+      END;
+      AverageValue_Res:=RecPostedReceiptAnalysisTMP_G."Averaged Value";
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20140417-CER41-CMC02.02.00-BSI01 : Create Obj
+      20140506-CER41-CMC02.02.00-2010-BSI01 : ADDCODE (Changement de la m'thode de calcul de la moyenne)
+      20140512-CER41-CMC02.02.00-2043-BSI01 : ADDCODE (Ajout de la Simulation)
+      20140514-CER41-CMC02.02.00-BSI01 : ADDCODE (Ajout des dialogues)
+      20140811-CER23-CMC02.02.00-2438-FHS01 : MODCODE (passe le CurrVendor_G sur un code20) et r'cupSre les params
+      20140814-CER23-CMC02.02.00-2437-BGS01 : MODFUNC(SumAnalysisValue - changed lenght for parameter VendorNo from 10 to 20)
+      20141001-CER37-TER01.01.00-PDC01 : ADDDATAITEM( "CMC Bonis Refaction")
+      20141010-CER37-TER01.01.00-PDC01 : ADDCODE(Entier - OnAfterGetRecord)
+      20141014-CER37-TER01.01.00-PDC01 : ADDCODE (Correction)
+      20141024-CER37-TER01.01.00-PDC01 : ADDFUNTION(SumNetWeight2)
+      20141030-CER37-TER01.01.00-PDC01 : Correction
+      20141217-CER37-TER01.01.00-PDC01 : Average values calculated from standard weight (no more from net weight)
+      20141218-CER37-TER01.01.00-PDC01 : Only include receipts not invoiced on average calculation
+      20150116-CER41/001-CMC02.02.00-2709-FHS01 : ADDCODE (Permet de pr'ciser les filtres via l'appel par un report)
+      20150212-CER37-TER01.01.00-RMZ01: ADDFILTER(Status=FILTER(<>Open))
+      20150213-CER37-TER01.01.00-RMZ01: REMOVEFILTER,ADDCODE(CMC Posted Receipts - OnPreDataItem,Entier - OnAfterGetRecord)
+      20150512-CER105-TER01.01.00-309-BSI01 : ADDCODE (G'rer lookup du champ "N› campagne" par code)
+      20150804-Wi00-ADV01.01.00-2076-FHS01 : MODCODE (Prend en compte les filtres du DataItem)
+      20150805-Wi00-ADV01.01.00-2081-FHS01 : MODCODE (Optimisation)
+      20150903-CER41-ADV01.01.00-2202-BSI01 : ADDCODE (Correction bogue)
+      20160629-WI00-ADV01.01.00-3037-SDE : MODCODE
+      // <-- 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

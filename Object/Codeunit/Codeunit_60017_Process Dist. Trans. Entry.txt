@@ -1,0 +1,566 @@
+OBJECT Codeunit 60017 Process Dist. Trans. Entry
+{
+  OBJECT-PROPERTIES
+  {
+    Date=24/04/26;
+    Heure=00:00:00;
+    Liste versions=TER01.01.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    TableNo=60057;
+    OnRun=BEGIN
+            CASE Type OF
+              Type::"Credit Memo" :
+                CreateAndPostCreditMemo(Rec);
+              Type::"Re-invoicing" :
+                CreateAndPostInvoices(Rec);
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      ReleaseSalesDoc_G@1000000002 : Codeunit 414;
+      SalesPost_G@1000000000 : Codeunit 80;
+      CustDocDistEntry_G@1000000001 : Record 60005;
+      Text60000@1000000003 : TextConst 'FRA=N› exp'dition %1 : du %2 Site %3';
+      PostedDocNo_G@1000000004 : Code[20];
+      LastErrorTxt_G@1000000005 : Text[250];
+      PaymentTerms_L@1000000006 : Record 3;
+
+    PROCEDURE CreateAndPostCreditMemo@1000000002(VAR DistTransEntry_P@1000000001 : Record 60057);
+    VAR
+      SalesInvHeader_L@1000000000 : Record 112;
+      SalesHeader_L@1000000002 : Record 36;
+      FromSalesInvLine_L@1000000003 : Record 113;
+      SalesLine_L@1000000004 : Record 37;
+      SalesShipLine_L@1000000005 : Record 111;
+      ValueEntry_L@1000000006 : Record 5802;
+      SalesCred@1000000007 : Record 115;
+      PostedSalesDocDisc_L@1000000009 : Record 8053178;
+      SalesDocDiscount_L@1000000008 : Record 8053177;
+      CrMemoNo_L@60000 : Code[20];
+      DistTransEntry_L@1000000010 : Record 60057;
+      FromSalesInvLine2_L@1000000011 : Record 113;
+      NoSeriesMgt_L@1000000012 : Codeunit 396;
+      SalesSetup_L@1000000013 : Record 311;
+      ArianeMgt_L@1000000014 : Codeunit 60125;
+    BEGIN
+      DistTransEntry_L.GET(DistTransEntry_P."Transaction Entry No.",1);
+
+      SalesInvHeader_L.GET(DistTransEntry_L."Dest. Doc. No.");
+
+      SalesHeader_L.INIT;
+      SalesHeader_L."Document Type" := SalesHeader_L."Document Type"::"Credit Memo";
+      SalesHeader_L."No." := '';
+      SalesHeader_L.INSERT(TRUE);
+      SalesHeader_L.SetHideValidationDialog(TRUE);
+      SalesHeader_L."Document Type":= SalesHeader_L."Document Type"::"Credit Memo";
+      SalesHeader_L.VALIDATE("Posting Date",DistTransEntry_P."Posting Date");
+      SalesHeader_L."Document Date" := SalesInvHeader_L."Document Date";
+      SalesHeader_L.VALIDATE("Sell-to Customer No.",SalesInvHeader_L."Sell-to Customer No.");
+      SalesHeader_L.VALIDATE("Bill-to Customer No.",SalesInvHeader_L."Bill-to Customer No.");
+      // --> 20160602-APP21-TER01.01.00-2636-OAN01
+      // BEFORE
+      {SalesHeader_L.VALIDATE("Shipment Date",SalesInvHeader_L."Shipment Date");}
+      // AFTER
+      SalesSetup_L.GET;
+      SalesHeader_L."Dist. Shpt Posting Date" := SourceShptDistPostingDate(DistTransEntry_L);
+      NoSeriesMgt_L.SetDefaultSeries(SalesHeader_L."Return Receipt No. Series",SalesSetup_L."Posted Return Receipt Nos.");
+      SalesHeader_L."Return Receipt No." := NoSeriesMgt_L.GetNextNo(SalesHeader_L."Return Receipt No. Series",
+                                                                    SalesHeader_L."Dist. Shpt Posting Date",TRUE);
+      SalesHeader_L.VALIDATE("Shipment Date",SalesHeader_L."Dist. Shpt Posting Date");
+      // <-- 20160602-APP21-TER01.01.00-2636-OAN01
+      SalesHeader_L."Location Code":=SalesInvHeader_L."Location Code";
+      SalesHeader_L."Shipment Method Code":= SalesInvHeader_L."Shipment Method Code";
+      SalesHeader_L."Shipping Agent Code" := SalesInvHeader_L."Shipping Agent Code";
+      SalesHeader_L."Annulment Doc. No." := SalesInvHeader_L."No.";
+      SalesHeader_L."Applies-to Doc. Type" := SalesHeader_L."Applies-to Doc. Type"::Invoice;
+      SalesHeader_L."Applies-to Doc. No." := SalesInvHeader_L."No.";
+
+      // --> 20160520-APP21-TER01.01.00-3019-OAN01
+      SalesHeader_L."Payment Terms Code" := SalesInvHeader_L."Payment Terms Code";
+      // <-- 20160520-APP21-TER01.01.00-3019-OAN01
+
+      // --> 20160509-APP21-TER01.01.00-2935-OAN01
+      PaymentTerms_L.GET(SalesInvHeader_L."Payment Terms Code");
+      IF PaymentTerms_L.GET(SalesInvHeader_L."Payment Terms Code") THEN
+        SalesHeader_L."Due Date" := CALCDATE(PaymentTerms_L."Due Date Calculation",DistTransEntry_P."Posting Date")
+      ELSE
+        SalesHeader_L."Due Date" := SalesInvHeader_L."Due Date";
+      SalesHeader_L."Fixed Due Date" := SalesInvHeader_L."Fixed Due Date";
+      // <-- 20160509-APP21-TER01.01.00-2935-OAN01
+      // --> 20260224-WI00-ADV01.01.00-44037-CJY
+      SalesHeader_L."Send to Approved Platform" := ArianeMgt_L.SalesHeaderSendAPDistribution(SalesHeader_L);
+      // <-- 20260224-WI00-ADV01.01.00-44037-CJY
+      SalesHeader_L.MODIFY(TRUE);
+      // --> 20150818-APP21-TER01.01.00-2147-FBE01
+      SalesLine_L.SetSuspendTaxInsert(TRUE);
+      // <-- 20150818-APP21-TER01.01.00-2147-FBE01
+      FromSalesInvLine_L.RESET;
+      FromSalesInvLine_L.SETRANGE("Document No.",SalesInvHeader_L."No.");
+      FromSalesInvLine_L.SETRANGE(Type,FromSalesInvLine_L.Type::Item);
+      IF FromSalesInvLine_L.FINDFIRST THEN
+        REPEAT
+          SalesLine_L.SetHideValidationDialog(TRUE); // 20160602-APP21-TER01.01.00-2636-OAN01
+          SalesLine_L.INIT;
+          SalesLine_L."Document Type" := SalesLine_L."Document Type"::"Credit Memo";
+          SalesLine_L."Document No." := SalesHeader_L."No.";
+          SalesLine_L."Sell-to Customer No." := SalesHeader_L."Sell-to Customer No.";
+          SalesLine_L."Line No." := FromSalesInvLine_L."Line No.";
+          SalesLine_L.INSERT(TRUE);
+          SalesLine_L.VALIDATE(Type,FromSalesInvLine_L.Type);
+          SalesLine_L.VALIDATE("No.",FromSalesInvLine_L."No.");
+          SalesLine_L.VALIDATE("Variant Code",FromSalesInvLine_L."Variant Code");
+          SalesLine_L.VALIDATE("Location Code",FromSalesInvLine_L."Location Code");
+          SalesLine_L.VALIDATE("Unit of Measure Code",FromSalesInvLine_L."Unit of Measure Code");
+          SalesLine_L.VALIDATE(Quantity,FromSalesInvLine_L.Quantity);
+          // --> 20171109-WI00-ADV01.01.00-3302-CJY02
+          SalesLine_L.VALIDATE("Customer Price Group",FromSalesInvLine_L."Customer Price Group");
+          // <-- 20171109-WI00-ADV01.01.00-3302-CJY02
+          SalesLine_L.VALIDATE("Unit Price",FromSalesInvLine_L."Unit Price");
+          SalesLine_L.VALIDATE("Line Discount %",FromSalesInvLine_L."Line Discount %");
+          SalesLine_L."Negotiated Price":=FromSalesInvLine_L."Negociated Price";
+          SalesLine_L."Budgeted Unit Price":=FromSalesInvLine_L."Budgeted Unit Price";
+          SalesLine_L."ECD Calculation Priority":=FromSalesInvLine_L."ECD Calculation Priority" ;
+          SalesLine_L.UpdateECDUnitAmount;
+          SalesLine_L."Market Price":=FromSalesInvLine_L."Market Price";
+          SalesLine_L."Third Grouping":=FromSalesInvLine_L."Third Grouping";
+          // --> 20150903-APP19-ADV01.01.00-1901-FBE01
+          SalesLine_L."Kit BOM No." := FromSalesInvLine_L."Kit BOM No.";
+          // <-- 20150903-APP19-ADV01.01.00-1901-FBE01
+          IF SalesShipLine_L.GET(FromSalesInvLine_L."Shipment No.",FromSalesInvLine_L."Shipment Line No.") THEN
+            SalesLine_L.VALIDATE("Appl.-from Item Entry",SalesShipLine_L."Item Shpt. Entry No.")
+          ELSE BEGIN
+            ValueEntry_L.SETCURRENTKEY("Document No.");
+            ValueEntry_L.SETRANGE("Document No.",FromSalesInvLine_L."Document No.");
+            ValueEntry_L.SETRANGE("Document Type",ValueEntry_L."Document Type"::"Sales Invoice");
+            ValueEntry_L.SETRANGE("Document Line No.",FromSalesInvLine_L."Line No.");
+            IF ValueEntry_L.FINDFIRST THEN
+              SalesLine_L.VALIDATE("Appl.-from Item Entry",ValueEntry_L."Item Ledger Entry No.");
+          END;
+          SalesLine_L.MODIFY(TRUE);
+
+          PostedSalesDocDisc_L.RESET;
+          PostedSalesDocDisc_L.SETRANGE("Document Type",PostedSalesDocDisc_L."Document Type"::Invoice);
+          PostedSalesDocDisc_L.SETRANGE("Document No.",FromSalesInvLine_L."Document No.");
+          PostedSalesDocDisc_L.SETRANGE("Document Line No.",FromSalesInvLine_L."Line No.");
+          IF PostedSalesDocDisc_L.FINDSET THEN
+            REPEAT
+              SalesDocDiscount_L.INIT;
+              SalesDocDiscount_L.TRANSFERFIELDS(PostedSalesDocDisc_L);
+              SalesDocDiscount_L."Document Type" := SalesLine_L."Document Type";
+              SalesDocDiscount_L."Document No." := SalesLine_L."Document No.";
+              SalesDocDiscount_L."Document Line No." := SalesLine_L."Line No.";
+              SalesDocDiscount_L.INSERT;
+            UNTIL PostedSalesDocDisc_L.NEXT = 0;
+          // --> 20151007-APP21-ADV01.01.00-1995-SDE01
+          // insert text li'
+          FromSalesInvLine2_L.RESET;
+          FromSalesInvLine2_L.SETRANGE("Document No.",FromSalesInvLine_L."Document No.");
+          FromSalesInvLine2_L.SETRANGE("Attached to Line No.",FromSalesInvLine_L."Line No.");
+          IF FromSalesInvLine2_L.FINDSET THEN
+            REPEAT
+              SalesLine_L.INIT;
+              SalesLine_L."Document Type" := SalesLine_L."Document Type"::"Credit Memo";
+              SalesLine_L."Document No." := SalesHeader_L."No.";
+              SalesLine_L."Sell-to Customer No." := SalesHeader_L."Sell-to Customer No.";
+              SalesLine_L."Line No." := FromSalesInvLine2_L."Line No.";
+              SalesLine_L."Attached to Line No.":=FromSalesInvLine2_L."Attached to Line No.";
+              SalesLine_L.INSERT(TRUE);
+              SalesLine_L.VALIDATE(Type,FromSalesInvLine2_L.Type);
+              SalesLine_L.Description :=FromSalesInvLine2_L.Description;
+              SalesLine_L."Description 2":=FromSalesInvLine2_L."Description 2";
+              SalesLine_L.MODIFY(TRUE);
+            UNTIL FromSalesInvLine2_L.NEXT=0;
+          // <-- 20151007-APP21-ADV01.01.00-1995-SDE01
+
+        UNTIL FromSalesInvLine_L.NEXT=0;
+      // --> 20150818-APP21-TER01.01.00-2147-FBE01
+      SalesLine_L.SetSuspendTaxInsert(FALSE);
+      SalesLine_L.RecalcTaxLine(SalesHeader_L);
+      // <-- 20150818-APP21-TER01.01.00-2147-FBE01
+
+      ReleaseSalesDoc_G.RUN(SalesHeader_L);
+
+      COMMIT;
+
+      PostedDocNo_G := '';
+      CLEAR(SalesPost_G);
+      IF SalesPost_G.RUN(SalesHeader_L) THEN
+        PostedDocNo_G := SalesHeader_L."Last Posting No."
+      ELSE BEGIN
+        LastErrorTxt_G := COPYSTR(GETLASTERRORTEXT,1,250);
+        SalesHeader_L.GET(SalesHeader_L."Document Type", SalesHeader_L."No.");
+        SalesHeader_L.DELETE(TRUE);
+        COMMIT;
+        ERROR(LastErrorTxt_G);
+      END;
+    END;
+
+    PROCEDURE CreateAndPostInvoices@1000000005(VAR DistTransEntry_P@1000000011 : Record 60057);
+    VAR
+      SalesInvHeader_L@1000000006 : Record 112;
+      SalesShptLine_L@1000000000 : Record 111;
+      TmpSalesInvLine_L@1000000004 : TEMPORARY Record 113;
+      SalesHeader_L@1000000001 : Record 36;
+      SalesLine_L@1000000003 : Record 37;
+      NextLineNo_L@1000000002 : Integer;
+      ApplyToItemEntry_L@1000000008 : Integer;
+      PostedSalesDocDisc_L@1000000009 : Record 8053178;
+      SalesDocDiscount_L@1000000010 : Record 8053177;
+      ValueEntry_L@60001 : Record 5802;
+      Description_L@60002 : Text[250];
+      Location_L@60003 : Record 14;
+      DistTransEntry_L@1000000007 : Record 60057;
+      DistTransEntry2_L@1000000005 : Record 60057;
+      TmpSalesLineComment_L@1000000012 : TEMPORARY Record 37;
+      LineNo_L@1000000013 : Integer;
+      FromSalesInvLine2_L@1000000014 : Record 113;
+      PaymentTerms_L@1000000015 : Record 3;
+      SalesShipmentHeader_L@1000000016 : Record 110;
+      ArianeMgt_L@1000000017 : Codeunit 60125;
+    BEGIN
+      DistTransEntry_L.GET(DistTransEntry_P."Transaction Entry No.",1);
+      DistTransEntry2_L.GET(DistTransEntry_P."Transaction Entry No.",2);
+      SalesInvHeader_L.GET(DistTransEntry_L."Dest. Doc. No.");
+
+      SalesHeader_L.INIT;
+      SalesHeader_L."Document Type" := SalesHeader_L."Document Type"::Invoice;
+      SalesHeader_L."No." := '';
+      SalesHeader_L.INSERT(TRUE);
+      SalesHeader_L.VALIDATE("Posting Date",DistTransEntry_P."Posting Date");
+      SalesHeader_L."Document Date" := SalesInvHeader_L."Document Date";
+      SalesHeader_L.VALIDATE("Sell-to Customer No.",DistTransEntry_P."Customer No.");
+      // --> 20160602-APP21-TER01.01.00-2636-OAN01
+      // BEFORE
+      {SalesHeader_L.VALIDATE("Shipment Date",SalesInvHeader_L."Shipment Date");}
+      // AFTER
+      SalesHeader_L."Dist. Shpt Posting Date" := SourceShptDistPostingDate(DistTransEntry_L);
+      SalesHeader_L.VALIDATE("Shipment Date",SalesHeader_L."Dist. Shpt Posting Date");
+      // <-- 20160602-APP21-TER01.01.00-2636-OAN01
+      SalesHeader_L."Location Code":=SalesInvHeader_L."Location Code";
+      SalesHeader_L."Shipment Method Code":= SalesInvHeader_L."Shipment Method Code";
+      SalesHeader_L."Shipping Agent Code" := SalesInvHeader_L."Shipping Agent Code";
+      SalesHeader_L."Annulment Doc. No." := SalesInvHeader_L."No.";
+      SalesHeader_L.Distributed := TRUE;
+      SalesHeader_L."Shipping No." := STRSUBSTNO('%1/%2',DistTransEntry_P."Source Doc. No.",DistTransEntry_P."Customer No.");
+      // --> 20191125-WI00-ADV01.01.00-46643-MRU01
+      {BEFORE
+      SalesHeader_L."Payment Method Code" := SalesInvHeader_L."Payment Method Code";
+      AFTER}
+      //On garde de mode de paiement du Client r'parti si il existe, sinon on reprend celui de la facture pr'c'dente
+      IF SalesHeader_L."Payment Method Code" = '' THEN
+        SalesHeader_L."Payment Method Code" := SalesInvHeader_L."Payment Method Code";
+      // <-- 20191125-WI00-ADV01.01.00-46643-MRU01
+      SalesHeader_L."Third Grouping" := SalesInvHeader_L."Third Grouping";
+      SalesHeader_L."SO Group Code" := SalesInvHeader_L."SO Group Code" ;
+      SalesHeader_L."Prod. Activity Code" := SalesInvHeader_L."Prod. Activity Code";
+      SalesHeader_L."Grouping Code" := SalesInvHeader_L."Grouping Code";
+      // --> 20160414-APP21-TER01.01.00-2935-OAN01
+      // BEFORE
+      {SalesHeader_L."Due Date" := SalesInvHeader_L."Due Date";}
+      // AFTER
+      IF PaymentTerms_L.GET(SalesInvHeader_L."Payment Terms Code") THEN
+        SalesHeader_L."Due Date" := CALCDATE(PaymentTerms_L."Due Date Calculation",DistTransEntry_P."Posting Date")
+      ELSE
+        SalesHeader_L."Due Date" := SalesInvHeader_L."Due Date";
+      // <-- 20160414-APP21-TER01.01.00-2935-OAN01
+      SalesHeader_L."Payment Terms Code" := SalesInvHeader_L."Payment Terms Code";
+      SalesHeader_L."Fixed Due Date" := SalesInvHeader_L."Fixed Due Date";
+      // --> 20260224-WI00-ADV01.01.00-44037-CJY
+      SalesHeader_L."Send to Approved Platform" := ArianeMgt_L.SalesHeaderSendAPDistribution(SalesHeader_L);
+      // <-- 20260224-WI00-ADV01.01.00-44037-CJY
+
+      SalesHeader_L.MODIFY(TRUE);
+
+      // --> 20150818-APP21-TER01.01.00-2147-FBE01
+      SalesLine_L.SetSuspendTaxInsert(TRUE);
+      LineNo_L := 0;
+      // <-- 20150818-APP21-TER01.01.00-2147-FBE01
+
+      CustDocDistEntry_G.RESET;
+      CustDocDistEntry_G.SETRANGE("Document Type",CustDocDistEntry_G."Document Type"::Shipment);
+      CustDocDistEntry_G.SETRANGE("Document No.",DistTransEntry_P."Source Doc. No.");
+      CustDocDistEntry_G.SETRANGE("Distributed Customer No.",DistTransEntry_P."Customer No.");
+      IF CustDocDistEntry_G.FINDSET THEN
+        REPEAT
+
+          SalesShptLine_L.GET(CustDocDistEntry_G."Document No.",CustDocDistEntry_G."Document Line No.");
+          CLEAR(TmpSalesInvLine_L);
+          TmpSalesInvLine_L.DELETEALL;
+          SalesShptLine_L.GetSalesInvLines(TmpSalesInvLine_L);
+          TmpSalesInvLine_L.FINDLAST; // Getting Last Invoice Line to get pricing detail.
+
+          IF TmpSalesInvLine_L."Location Code" <> '' THEN
+            Location_L.GET(TmpSalesInvLine_L."Location Code");
+          // --> 20150818-APP21-TER01.01.00-2147-FBE02
+          {
+          //BEFORE
+          SalesLine_L.INIT;
+          SalesLine_L."Document Type" := SalesHeader_L."Document Type";
+          SalesLine_L."Document No." := SalesHeader_L."No.";
+          SalesLine_L."Line No." := NewLineNo(SalesHeader_L,TmpSalesInvLine_L."Line No.");
+          Description_L := STRSUBSTNO(Text60000, DistTransEntry_P."Source Doc. No.",
+                           DistTransEntry_P."Posting Date", Location_L.Name);
+          SalesLine_L.Description := COPYSTR(Description_L, 1, 50);
+          SalesLine_L."Description 2" := COPYSTR(Description_L, 51, 100);
+          SalesLine_L.INSERT;
+          //AfTER
+          }
+          TmpSalesLineComment_L.INIT;
+          TmpSalesLineComment_L."Document Type" := SalesHeader_L."Document Type";
+          TmpSalesLineComment_L."Document No." := SalesHeader_L."No.";
+          LineNo_L += 10000;
+          TmpSalesLineComment_L."Line No." := LineNo_L ;
+          Description_L := STRSUBSTNO(Text60000, DistTransEntry_P."Source Doc. No.",
+                           DistTransEntry_P."Posting Date", Location_L.Name);
+          // --> 20160926-WI00-ADV01.01.00-2636-CJY01
+          IF DistTransEntry_P."Source Doc. Type" = DistTransEntry_P."Source Doc. Type"::"Sales Shipment" THEN BEGIN
+            IF SalesShipmentHeader_L.GET(DistTransEntry_P."Source Doc. No.") THEN
+              Description_L := STRSUBSTNO(Text60000, DistTransEntry_P."Source Doc. No.",
+                               SalesShipmentHeader_L."Posting Date", Location_L.Name);
+          END;
+          // <-- 20160926-WI00-ADV01.01.00-2636-CJY01
+
+          TmpSalesLineComment_L.Description := COPYSTR(Description_L, 1, 50);
+          TmpSalesLineComment_L."Description 2" := COPYSTR(Description_L, 51, 100);
+          TmpSalesLineComment_L."Attached to Line No." := TmpSalesInvLine_L."Line No.";
+          TmpSalesLineComment_L.INSERT;
+          // <-- 20150818-APP21-TER01.01.00-2147-FBE02
+
+          SalesLine_L.INIT;
+          SalesLine_L.SetHideValidationDialog(TRUE); // 20160602-APP21-TER01.01.00-2636-OAN01
+          SalesLine_L."Document Type" := SalesHeader_L."Document Type";
+          SalesLine_L."Document No." := SalesHeader_L."No.";
+          SalesLine_L."Line No." := TmpSalesInvLine_L."Line No.";
+          SalesLine_L.INSERT(TRUE);
+          SalesLine_L.VALIDATE(Type,SalesShptLine_L.Type);
+          SalesLine_L.VALIDATE("No.",SalesShptLine_L."No.");
+          // --> 20171221-WI00-ADV01.01.00-3286-FBE01
+          SalesLine_L."Build Kit" := FALSE;
+          // <-- 20171221-WI00-ADV01.01.00-3286-FBE01
+          SalesLine_L.VALIDATE(Type,TmpSalesInvLine_L.Type);
+          SalesLine_L.VALIDATE("No.",TmpSalesInvLine_L."No.");
+          // --> 20171221-WI00-ADV01.01.00-3286-FBE01
+          SalesLine_L."Build Kit" := FALSE;
+          // <-- 20171221-WI00-ADV01.01.00-3286-FBE01
+          SalesLine_L.VALIDATE("Variant Code",TmpSalesInvLine_L."Variant Code");
+          SalesLine_L.VALIDATE("Location Code",TmpSalesInvLine_L."Location Code");
+          SalesLine_L.VALIDATE("Unit of Measure Code",TmpSalesInvLine_L."Unit of Measure Code");
+          SalesLine_L.Distributed:=TRUE;
+          SalesLine_L.VALIDATE(Quantity,CustDocDistEntry_G."Distribution Qty.");
+          // --> 20170912-WI00-ADV01.01.00-3302-CJY01
+          SalesLine_L.VALIDATE("Customer Price Group",TmpSalesInvLine_L."Customer Price Group");
+          // <-- 20170912-WI00-ADV01.01.00-3302-CJY01
+          SalesLine_L.VALIDATE("Unit Price",TmpSalesInvLine_L."Unit Price");
+          SalesLine_L.VALIDATE("Line Discount %",TmpSalesInvLine_L."Line Discount %");
+          SalesLine_L."Negotiated Price" := TmpSalesInvLine_L."Negociated Price";
+          SalesLine_L."Budgeted Unit Price":=TmpSalesInvLine_L."Budgeted Unit Price";
+          SalesLine_L."ECD Calculation Priority":=TmpSalesInvLine_L."ECD Calculation Priority";
+          SalesLine_L.UpdateECDUnitAmount;
+          SalesLine_L."Market Price" := TmpSalesInvLine_L."Market Price";
+          SalesLine_L."Third Grouping" := TmpSalesInvLine_L."Third Grouping";
+          // --> 20150903-APP19-ADV01.01.00-1901-FBE01
+          SalesLine_L."Kit BOM No." := TmpSalesInvLine_L."Kit BOM No.";
+          // <-- 20150903-APP19-ADV01.01.00-1901-FBE01
+
+          // --> 20161003-APP34-ADV01.01.00-1969-OAN01
+          SalesLine_L."Source Order No." := SalesShptLine_L."Order No.";
+          SalesLine_L."Source Order Line No." := SalesShptLine_L."Order Line No.";
+          // <-- 20161003-APP34-ADV01.01.00-1969-OAN01
+
+          ValueEntry_L.RESET;
+          ValueEntry_L.SETCURRENTKEY("Document No.");
+          ValueEntry_L.SETRANGE("Document No.",DistTransEntry2_L."Dest. Doc. No.");
+          ValueEntry_L.SETRANGE("Document Type",ValueEntry_L."Document Type"::"Sales Credit Memo");
+          ValueEntry_L.SETRANGE("Document Line No.",TmpSalesInvLine_L."Line No.");
+          IF ValueEntry_L.FINDSET THEN
+            SalesLine_L."Appl.-to Item Entry" := ValueEntry_L."Item Ledger Entry No.";
+
+          SalesLine_L.MODIFY(TRUE);
+
+          PostedSalesDocDisc_L.RESET;
+          PostedSalesDocDisc_L.SETRANGE("Document Type",PostedSalesDocDisc_L."Document Type"::Invoice);
+          PostedSalesDocDisc_L.SETRANGE("Document No.",DistTransEntry_L."Dest. Doc. No.");
+          PostedSalesDocDisc_L.SETRANGE("Document Line No.",TmpSalesInvLine_L."Line No.");
+          IF PostedSalesDocDisc_L.FINDSET THEN
+            REPEAT
+              SalesDocDiscount_L.INIT;
+              SalesDocDiscount_L.TRANSFERFIELDS(PostedSalesDocDisc_L);
+              SalesDocDiscount_L."Document Type" := SalesLine_L."Document Type";
+              SalesDocDiscount_L."Document No." := SalesLine_L."Document No.";
+              SalesDocDiscount_L."Document Line No." := SalesLine_L."Line No.";
+              SalesDocDiscount_L.INSERT;
+            UNTIL PostedSalesDocDisc_L.NEXT = 0;
+          // --> 20151007-APP21-ADV01.01.00-1995-SDE01
+          // insert text li'
+          FromSalesInvLine2_L.RESET;
+          FromSalesInvLine2_L.SETRANGE("Document No.",TmpSalesInvLine_L."Document No.");
+          FromSalesInvLine2_L.SETRANGE("Attached to Line No.",TmpSalesInvLine_L."Line No.");
+          IF FromSalesInvLine2_L.FINDSET THEN
+            REPEAT
+              SalesLine_L.INIT;
+              SalesLine_L."Document Type" := SalesHeader_L."Document Type";
+              SalesLine_L."Document No." := SalesHeader_L."No.";
+              SalesLine_L."Sell-to Customer No." := SalesHeader_L."Sell-to Customer No.";
+              SalesLine_L."Line No." := FromSalesInvLine2_L."Line No.";
+              SalesLine_L."Attached to Line No.":=FromSalesInvLine2_L."Attached to Line No.";
+              SalesLine_L.INSERT(TRUE);
+              SalesLine_L.VALIDATE(Type,FromSalesInvLine2_L.Type);
+              SalesLine_L.Description :=FromSalesInvLine2_L.Description;
+              SalesLine_L."Description 2":=FromSalesInvLine2_L."Description 2";
+              SalesLine_L.MODIFY(TRUE);
+            UNTIL FromSalesInvLine2_L.NEXT=0;
+          // <-- 20151007-APP21-ADV01.01.00-1995-SDE01
+
+
+        UNTIL CustDocDistEntry_G.NEXT = 0;
+      // --> 20150818-APP21-TER01.01.00-2147-FBE01
+      SalesLine_L.SetSuspendTaxInsert(FALSE);
+      SalesLine_L.RecalcTaxLine(SalesHeader_L);
+      // <-- 20150818-APP21-TER01.01.00-2147-FBE01
+
+      // --> 20150818-APP21-TER01.01.00-2147-FBE02
+      // insere les commentaires sauvegard's dans table temp
+      IF TmpSalesLineComment_L.FINDSET THEN
+      REPEAT
+          SalesLine_L.INIT;
+          SalesLine_L.TRANSFERFIELDS(TmpSalesLineComment_L);
+          SalesLine_L."Line No." := NewLineNo(SalesHeader_L,TmpSalesLineComment_L."Attached to Line No.");
+          SalesLine_L."Attached to Line No." := 0;
+          SalesLine_L.INSERT;
+      UNTIL TmpSalesLineComment_L.NEXT = 0;
+      // <-- 20150818-APP21-TER01.01.00-2147-FBE02
+
+      ReleaseSalesDoc_G.RUN(SalesHeader_L);
+
+      COMMIT;
+
+      PostedDocNo_G := '';
+      CLEAR(SalesPost_G);
+      IF SalesPost_G.RUN(SalesHeader_L) THEN
+        PostedDocNo_G := SalesHeader_L."Last Posting No."
+      ELSE BEGIN
+        LastErrorTxt_G := COPYSTR(GETLASTERRORTEXT,1,250);
+        SalesHeader_L.DELETE(TRUE);
+        COMMIT;
+        ERROR(LastErrorTxt_G);
+      END;
+    END;
+
+    PROCEDURE NewLineNo@8053062(RecSalesHead_P@60000 : Record 36;LineNo_P@8053000 : Integer) NewLineNo_L : Integer;
+    VAR
+      RecSalesLine_L@8053002 : Record 37;
+    BEGIN
+      CLEAR(RecSalesLine_L);
+      RecSalesLine_L.SETRANGE("Document Type",RecSalesHead_P."Document Type");
+      RecSalesLine_L.SETRANGE("Document No.",RecSalesHead_P."No.");
+      RecSalesLine_L.SETFILTER("Line No.",'<%1',LineNo_P);
+      // --> 20150818-APP21-TER01.01.00-2147-FBE03
+      //IF RecSalesLine_L.FINDFIRST THEN
+      IF RecSalesLine_L.FINDLAST THEN
+      // <-- 20150818-APP21-TER01.01.00-2147-FBE03
+        NewLineNo_L := ROUND((RecSalesLine_L."Line No." + LineNo_P) / 2, 1)
+      ELSE
+        NewLineNo_L := ROUND((LineNo_P/2),1);
+    END;
+
+    PROCEDURE GetPostedDocNo@1000000001() : Code[20];
+    BEGIN
+      EXIT(PostedDocNo_G);
+    END;
+
+    PROCEDURE GetLastPostError@1000000000() : Text[250];
+    BEGIN
+      EXIT(LastErrorTxt_G);
+    END;
+
+    PROCEDURE SourceShptDistPostingDate@1000000009(DistTransEntry_P@1000000000 : Record 60057) Res_PostingDate : Date;
+    VAR
+      SalesOrderHdr_L@1000000002 : Record 36;
+      SalesShptHdr_L@1000000001 : Record 110;
+      InvtSetup_L@1000000003 : Record 313;
+      GLSetup_L@1000000004 : Record 98;
+      UserSetup_L@1000000007 : Record 91;
+      AllowPostingFrom_L@1000000005 : Date;
+      AllowPostingTo_L@1000000006 : Date;
+      Text60000_L@1000000008 : TextConst 'ENU=is not within your range of allowed posting dates;FRA=%1 n''appartient pas . la plage de dates de comptabilisation autoris'e.';
+    BEGIN
+      // --> 20160602-APP21-TER01.01.00-2636-OAN01
+      Res_PostingDate := 0D;
+
+      WITH DistTransEntry_P DO BEGIN
+        CASE DistTransEntry_P."Source Doc. Type" OF
+          DistTransEntry_P."Source Doc. Type"::"Sales Order": BEGIN
+            IF NOT SalesOrderHdr_L.GET(SalesOrderHdr_L."Document Type"::Order,DistTransEntry_P."Source Doc. No.") THEN
+              EXIT;
+            SalesShptHdr_L.SETCURRENTKEY("Order No.");
+            SalesShptHdr_L.SETRANGE("Order No.",DistTransEntry_P."Source Doc. No.");
+            IF NOT SalesShptHdr_L.FINDLAST THEN
+              EXIT;
+            Res_PostingDate := SalesShptHdr_L."Posting Date";
+          END;
+        END;
+      END;
+
+      // Check If Source Shipment Posting Date Is Allowed
+      InvtSetup_L.GET;
+      GLSetup_L.GET;
+      AllowPostingFrom_L := GLSetup_L."Allow Posting From";
+      AllowPostingTo_L := GLSetup_L."Allow Posting To";
+      IF AllowPostingTo_L = 0D THEN
+        AllowPostingTo_L := 31129999D;
+
+      IF (Res_PostingDate < AllowPostingFrom_L) THEN
+        Res_PostingDate := AllowPostingFrom_L;
+
+      IF (Res_PostingDate > AllowPostingTo_L) THEN
+        Res_PostingDate := AllowPostingTo_L;
+
+      IF (USERID <> '') AND UserSetup_L.GET(USERID) THEN BEGIN
+        AllowPostingFrom_L := UserSetup_L."Allow Posting From";
+        AllowPostingTo_L := UserSetup_L."Allow Posting To";
+        IF (Res_PostingDate < AllowPostingFrom_L) AND (AllowPostingFrom_L <> 0D) THEN
+          ERROR(Text60000_L,Res_PostingDate);
+        IF (Res_PostingDate > AllowPostingTo_L) AND (AllowPostingTo_L <> 0D) THEN
+          ERROR(Text60000_L,Res_PostingDate);
+      END;
+      // <-- 20160602-APP21-TER01.01.00-2636-OAN01
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+
+      20150622-APP21-TER01.01.00-462-FEC01 : ADDOBJ (Nouvel objet).
+      20150818-APP21-TER01.01.00-2147-FBE01 : MODFUNC CreateAndPostInvoices Correction cr'ation lignes avec taxes (RPD)
+      20150818-APP21-TER01.01.00-2147-FBE02 : MODFUNC CreateAndPostInvoices Ajout commentaire aprSs insertion lignes taxes (RPD)
+      20150818-APP21-TER01.01.00-2147-FBE03 : Correction calcul N› de ligne pour commentaire
+      20150903-APP19-ADV01.01.00-1901-FBE01 : ADDCODE Faire suivre "Kit Bom No" lors de la r'partition
+      20151007-APP21-ADV01.01.00-1995-SDE01 : ADDCODE (Int'gration des textes 'tendus).
+      20160414-APP21-TER01.01.00-2935-OAN01 : MODCODE (Calculate New Due Date Using Posting Date And Order Payment Terms)
+                                              MODFUNCTION (CreateAndPostInvoices)
+      20160509-APP21-TER01.01.00-2935-OAN01 : MODCODE (Calculate New Due Date Using Posting Date And Order Payment Terms)
+                                              MODFUNCTION (CreateAndPostCreditMemo)
+      20160520-APP21-TER01.01.00-3019-OAN01 : MODCODE (Change Due Date Type When Invoice Distrib. Shipment)
+                                              MODFUNCTION (CreateAndPostCreditMemo)
+      20160602-APP21-TER01.01.00-2636-OAN01 : ADDCODE (Manage Shipment / Return Shipment Posting Date)
+                                              ADDCODE (For CreditMemo, Create Sales Return And Post-It)
+                                              ADDFUNCTION (SourceShptDistPostingDate)
+      20160926-WI00-ADV01.01.00-2636-CJY01 : MODCODE ("posting date" of Shipment on Invoice Text line)
+      20161003-APP34-ADV01.01.00-1969-OAN01 : ADDCODE (Add Source Document No. And Source Document Line No.)
+      20170912-WI00-ADV01.01.00-3302-CJY01 : MODCODE (r'cup'ration "groupe prix client" lors de la refacturation)
+      20171109-WI00-ADV01.01.00-3302-CJY02 : MODCODE (Correction : prise en compte de l'avoir g'n'r')
+      20171221-WI00-ADV01.01.00-3286-FBE01 : MODFUNCT(CreateAndPostInvoices, RAZ "Build Kit")
+      20191125-WI00-ADV01.01.00-46643-MRU01 : MODCODE (Lors de la r'partition, reprise du mode de rSglement du client)
+      20260224-WI00-ADV01.01.00-44037-CJY : ADDCODE (inversement, transmettre . la PA la facture finale r'partie si le client est OK)
+
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

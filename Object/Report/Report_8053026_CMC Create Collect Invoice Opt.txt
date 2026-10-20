@@ -1,0 +1,615 @@
+OBJECT Report 8053026 CMC Create Collect Invoice Opt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=04/05/16;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,TER01.01.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Create Collect Invoice;
+               FRA=G'n'rer facture collecte];
+    ProcessingOnly=Oui;
+    OnInitReport=BEGIN
+                   G_OneInvPerContr:=TRUE;
+
+                   IF VNR_G = '' THEN
+                     VNR_G := 'VNR';
+                 END;
+
+    OnPreReport=BEGIN
+                  // filtre sur campagne du contrat
+                  IF diCollContract.GETFILTER("Campaign No.") = '' THEN
+                    ERROR(Text8053015);
+                END;
+
+    OnPostReport=VAR
+                   RptCreateSalesInvResum_L@1000000000 : Report 8053100;
+                 BEGIN
+                   IF GUIALLOWED THEN
+                    IF NOT G_HideDialog THEN
+                      G_Win.CLOSE;
+
+                   // --> 20150109-CER42-TER01.01.00-FBE01
+                   CMCSetup_G.GET;
+                   IF CMCSetup_G."Include Resumpt. Purch. Inv." THEN BEGIN
+                     diPostedReceipts.SETRANGE("Receipt Type",diPostedReceipts."Receipt Type"::Resumption);
+                     IF NOT diPostedReceipts.ISEMPTY THEN BEGIN
+                       COMMIT;
+                       CLEAR(RptCreateSalesInvResum_L);
+                       RptCreateSalesInvResum_L.SETTABLEVIEW(diPostedReceipts);
+                       RptCreateSalesInvResum_L.SetParameters(G_PostingDateReq,G_DocDateReq,TRUE);
+                       RptCreateSalesInvResum_L.USEREQUESTFORM := FALSE;
+                       RptCreateSalesInvResum_L.RUN;
+                     END;
+                   END;
+                   // <-- 20150109-CER42-TER01.01.00-FBE01
+                 END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table5050;
+        DataItemTableView=SORTING(No.);
+        DataItemVarName=diContact;
+        OnPreDataItem=VAR
+                        recCollectReceipt_L@1000000000 : Record 8052993;
+                      BEGIN
+                        G_PurchSetup.GET;
+                        G_PurchSetup.TESTFIELD("Invoice Nos.");
+
+                        // Test sur le planning + autres
+                        CMCSetup_G.GET;
+                        IF CMCSetup_G."Use Cereals Invoicing Schedule" THEN BEGIN
+                          IF ReceiptDate_G = 0D THEN
+                            ERROR(Text8053014);
+                        END ELSE
+                          IF diPostedReceipts.GETFILTER("Posting Date") = '' THEN
+                            ERROR(Text8053003);
+
+                        IF G_PostingDateReq = 0D THEN
+                          ERROR(Text8053005);
+                        IF G_DocDateReq = 0D THEN
+                          ERROR(Text8053006);
+
+                        recVendorTmp_G.DELETEALL;
+                        CampaingCode_G := recCollectReceipt_L.GetCampainNo('', WORKDATE, WORKDATE);
+
+                        // --> 20150601-CER42-TER01.01.00-FBE01
+                        // --> 20150109-CER42-TER01.01.00-FBE01
+                        //IF CMCSetup_G."Invoice Resumpt. as Neg. Coll." THEN
+                        //  SETFILTER("Receipt Type",'%1|%2',"Receipt Type"::Receipt,"Receipt Type"::Resumption)
+                        //ELSE
+                        //  SETRANGE("Receipt Type","Receipt Type"::Receipt);
+                        // <-- 20150109-CER42-TER01.01.00-FBE01
+                        // <-- 20150601-CER42-TER01.01.00-FBE01
+
+                        IF GUIALLOWED THEN
+                          IF NOT G_HideDialog THEN
+                            G_Win.OPEN(Text8053010);
+
+                        Time_G := TIME;
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           IF diContact."Vendor No." = '' THEN
+                             CurrReport.SKIP;
+                         END;
+
+        OnPostDataItem=BEGIN
+                         G_Win.CLOSE;
+
+                         diPostedReceipts.FILTERGROUP := 4;
+                         diPostedReceipts.SETRANGE("Vendor No.");
+                         diPostedReceipts.FILTERGROUP := 0;
+                       END;
+
+        ReqFilterFields=No.,Salesperson Code;
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=1;
+        DataItemTable=Table23;
+        DataItemVarName=diVendor;
+        OnAfterGetRecord=BEGIN
+                           IF (TIME - Time_G) > 500 THEN BEGIN
+                             Time_G := TIME;
+                             G_Win.UPDATE(1, diVendor."No.");
+                           END;
+                         END;
+
+        ReqFilterFields=No.,Payment Terms Code;
+        DataItemLink=No.=FIELD(Vendor No.);
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=2;
+        DataItemTable=Table8052995;
+        DataItemTableView=SORTING(Status,Canceled,Vendor No.,Species Code,Receipt Type)
+                          ORDER(Ascending)
+                          WHERE(Status=FILTER(Released));
+        DataItemVarName=diPostedReceipts;
+        OnPreDataItem=BEGIN
+                        // --> 20150601-CER42-TER01.01.00-FBE01
+                        IF CMCSetup_G."Invoice Resumpt. as Neg. Coll." THEN
+                          SETFILTER("Receipt Type",'%1|%2',"Receipt Type"::Receipt,"Receipt Type"::Resumption)
+                        ELSE
+                          SETRANGE("Receipt Type","Receipt Type"::Receipt);
+                        // <-- 20150601-CER42-TER01.01.00-FBE01
+                      END;
+
+        OnAfterGetRecord=VAR
+                           CMCPostedReceiptsLine@1000000000 : Record 8053104;
+                         BEGIN
+                           // --> 20150812-CER15-ADV01.01.00-2126-JCD01
+                           {BEFORE
+                           IF NOT(recVendorTmp_G.GET(diVendor."No.")) THEN BEGIN
+                             recVendorTmp_G := diVendor;
+                             recVendorTmp_G.INSERT;
+                           END;
+                           CurrReport.BREAK;
+                           }//AFTER
+
+                           CMCPostedReceiptsLine.RESET;
+                           CMCPostedReceiptsLine.SETRANGE("Receipt Type","Receipt Type");
+                           CMCPostedReceiptsLine.SETRANGE("No.","No.");
+                           CMCPostedReceiptsLine.SETRANGE(Invoiced,FALSE);
+                           IF CMCPostedReceiptsLine.FINDSET THEN REPEAT
+                             IF NOT recVendorTmp_G.GET(CMCPostedReceiptsLine."Distributed Vendor No.") THEN BEGIN
+                               CLEAR(recVendorTmp_G);
+                               recVendorTmp_G."No." := CMCPostedReceiptsLine."Distributed Vendor No.";
+                               recVendorTmp_G.INSERT;
+                             END;
+                           UNTIL CMCPostedReceiptsLine.NEXT = 0;
+                           // <-- 20150812-CER15-ADV01.01.00-2126-JCD01
+                         END;
+
+        ReqFilterFields=No.,Vendor No.,Posting Date,Location Code;
+        DataItemLink=Vendor No.=FIELD(No.);
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemTable=Table2000000026;
+        DataItemTableView=SORTING(Num'ro);
+        PrintOnlyIfDetail=Oui;
+        OnPreDataItem=BEGIN
+                        VendorTotal_G := recVendorTmp_G.COUNT;
+                        G_ReceiptCount := 0;
+                        G_InvoiceCount := 0;
+                        G_CrMemoCount  := 0;
+                        VendorCount_G := 0;
+
+                        SETRANGE(Num'ro, 1, recVendorTmp_G.COUNT);
+
+                        IF GUIALLOWED THEN
+                          IF NOT G_HideDialog THEN
+                            G_Win.OPEN(Text8053001 + Text8053002);
+
+                        cduCreateInv_G.ResetPrevious();
+
+                        cduCreateInv_G.Init(CMCSetup_G, G_PostingDateReq, G_DocDateReq, ReceiptDate_G, DueDate_G, GroupingCode_G, VNR_G,
+                          CampaingCode_G, G_OneInvPerContr);
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           IF Num'ro = 1 THEN
+                             recVendorTmp_G.FIND('-')
+                           ELSE
+                             recVendorTmp_G.NEXT;
+                           G_Win.UPDATE(1, recVendorTmp_G."No.");
+                           VendorCount_G += 1;
+                           IF VendorTotal_G <> 0 THEN
+                             G_Win.UPDATE(3, ROUND((VendorCount_G / VendorTotal_G) * 10000, 1));
+                         END;
+
+        OnPostDataItem=BEGIN
+                         COMMIT;
+                         IF NOT cduCreateInv_G.RUN() THEN BEGIN
+                           //Insertion du log
+                           RecBatchLog_G.CreateLog(RecBatchLog_G."Source Type"::Vendor, recVendorTmp_G."No.",
+                             GETLASTERRORTEXT, RecBatchLog_G."Process Type"::"Create Collect Invoice");
+                           CountError_G += 1;
+                         END ELSE
+                           cduCreateInv_G.GetResult(G_InvoiceCount, G_CrMemoCount);
+                         CLEAR(cduCreateInv_G);
+                         // --> 20150609-Wi00-CMC02.02.00-3052-FHS01
+                         COMMIT;
+                         // <-- 20150609-Wi00-CMC02.02.00-3052-FHS01
+
+                         IF GUIALLOWED THEN
+                           IF NOT G_HideDialog THEN
+                             MESSAGE(STRSUBSTNO(Text8053007, G_ReceiptCount, G_InvoiceCount, G_CrMemoCount, CountError_G));
+                       END;
+
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=1;
+        DataItemTable=Table8052983;
+        DataItemTableView=SORTING(Type,Vendor No.,Collection Type,Species Code,Item No.,Due Date)
+                          WHERE(Type=CONST(Contract),
+                                Collection Type=CONST(Purchase));
+        DataItemVarName=diCollContract;
+        OnPreDataItem=BEGIN
+                        SETRANGE("Vendor No.", recVendorTmp_G."No.");
+                      END;
+
+        OnAfterGetRecord=BEGIN
+
+                           cduCreateInv_G.Init(CMCSetup_G, G_PostingDateReq, G_DocDateReq, ReceiptDate_G, DueDate_G, GroupingCode_G, VNR_G,
+                             CampaingCode_G, G_OneInvPerContr);
+                           // --> 2050605-WI00-CMC02.02.00-3045-FBE01
+                           //cduCreateInv_G.MajDate(diCollContract, RecTmpDate_G);
+                           cduCreateInv_G.MajDate(diCollContract, RecTmpDate_G,RecTmpVATBusPostGp_G);
+                           // <-- 2050605-WI00-CMC02.02.00-3045-FBE01
+                         END;
+
+        OnPostDataItem=BEGIN
+                         COMMIT;
+                         IF NOT cduCreateInv_G.RUN() THEN BEGIN
+                           //Insertion du log
+                           RecBatchLog_G.CreateLog(RecBatchLog_G."Source Type"::Vendor, recVendorTmp_G."No.",
+                             GETLASTERRORTEXT, RecBatchLog_G."Process Type"::"Create Collect Invoice");
+                           CountError_G += 1;
+                         END ELSE
+                           cduCreateInv_G.GetResult(G_InvoiceCount, G_CrMemoCount);
+                         CLEAR(cduCreateInv_G);
+                         // --> 20150609-Wi00-CMC02.02.00-3052-FHS01
+                         COMMIT;
+                         // <-- 20150609-Wi00-CMC02.02.00-3052-FHS01
+
+                         cduCreateInv_G.Init(CMCSetup_G, G_PostingDateReq, G_DocDateReq, ReceiptDate_G, DueDate_G, GroupingCode_G, VNR_G,
+                           CampaingCode_G, G_OneInvPerContr);
+                       END;
+
+        ReqFilterFields=No.,Contract Type,Next Payment Date,Campaign No.;
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=2;
+        DataItemTable=Table2000000026;
+        DataItemTableView=SORTING(Num'ro);
+        DataItemVarName=NbRecDueDate;
+        OnPreDataItem=BEGIN
+                        SETRANGE(Num'ro, 1, RecTmpDate_G.COUNT);
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           IF NbRecDueDate.Num'ro=1 THEN
+                             RecTmpDate_G.FIND('-')
+                           ELSE
+                             RecTmpDate_G.NEXT;
+                         END;
+
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=3;
+        DataItemTable=Table2000000026;
+        DataItemTableView=SORTING(Num'ro);
+        DataItemVarName=GpeCptMarchTVA;
+        OnPreDataItem=BEGIN
+                        // --> 2050605-WI00-CMC02.02.00-3045-FBE01
+                        SETRANGE(Num'ro, 1, RecTmpVATBusPostGp_G.COUNT);
+                        // <-- 2050605-WI00-CMC02.02.00-3045-FBE01
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           // --> 2050605-WI00-CMC02.02.00-3045-FBE01
+                           IF Num'ro=1 THEN
+                             RecTmpVATBusPostGp_G.FIND('-')
+                           ELSE
+                             RecTmpVATBusPostGp_G.NEXT;
+                           // <-- 2050605-WI00-CMC02.02.00-3045-FBE01
+                         END;
+
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=4;
+        DataItemTable=Table8053104;
+        DataItemTableView=SORTING(Contract No.,Invoiced,Canceled Line,Cancellation line,VAT Bus. Posting Group,Receipt Type,No.,Line No.)
+                          WHERE(Invoiced=FILTER(Non),
+                                Purchase Document No.=FILTER(''),
+                                Collection Type=FILTER(Purchase),
+                                Quantity To Invoice=FILTER(<>0),
+                                Canceled Line=FILTER(Non),
+                                Prepay Invoice No.=FILTER(=''),
+                                Posted Prepay CrediMemo No.=FILTER(=''),
+                                Prepay CreditMemo No.=FILTER(=''));
+        DataItemVarName=diPostedReceiptsLine;
+        OnPreDataItem=BEGIN
+                        SETRANGE("Contract Due Date", RecTmpDate_G."D'but p'riode");
+                        // -- >20150605-WI00-CMC02.02.00-3045-FBE01
+                        SETRANGE(diPostedReceiptsLine."VAT Bus. Posting Group",RecTmpVATBusPostGp_G.Code);
+                        // <-- 20150605-WI00-CMC02.02.00-3045-FBE01
+                      END;
+
+        OnAfterGetRecord=VAR
+                           L_recPostedReceipts2@8053003 : Record 8052995;
+                         BEGIN
+                           IF IsReceptOK(diPostedReceiptsLine) = FALSE THEN
+                             CurrReport.SKIP;
+
+                           IF CMCSetup_G."Use Cereals Invoicing Schedule" THEN BEGIN
+                             L_recPostedReceipts2.GET(diPostedReceiptsLine."Receipt Type", diPostedReceiptsLine."No.");
+                             IF NOT (L_recPostedReceipts2."Posting Date" <= ReceiptDate_G) THEN
+                               CurrReport.SKIP;
+                           END;
+
+                           // --> 20151007-CER15-ADV01.01.00-2218-SDE01
+                           IF diPostedReceiptsLine."Cancellation line" AND (NOT (diPostedReceiptsLine."Purchase Date" <= ReceiptDate_G)) THEN
+                             CurrReport.SKIP;
+                           // <-- 20151007-CER15-ADV01.01.00-2218-SDE01
+
+                           G_ReceiptCount += 1;
+                           IF GUIALLOWED THEN
+                             IF NOT G_HideDialog THEN BEGIN
+                               G_Win.UPDATE(2, "No.");
+                             END;
+                           cduCreateInv_G.AddPostedReceiptsLine(diPostedReceiptsLine, diCollContract);
+                         END;
+
+        DataItemLinkReference=diCollContract;
+        DataItemLink=Contract No.=FIELD(No.);
+      }
+      SECTIONS
+      {
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=10610;
+      Height=1870;
+      SaveValues=Oui;
+    }
+    CONTROLS
+    {
+      { 8053000;TextBox   ;3410 ;220  ;1650 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Posting Date;
+                                                              FRA=Date comptabilisation];
+                                                   SourceExpr=G_PostingDateReq;
+                                                   OnAfterValidate=BEGIN
+                                                                     G_DocDateReq:=G_PostingDateReq
+                                                                   END;
+                                                                    }
+      { 8053001;Label     ;0    ;220  ;3300 ;440  ;ParentControl=8053000 }
+      { 8053002;TextBox   ;3410 ;770  ;1650 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Document Date;
+                                                              FRA=Date document];
+                                                   SourceExpr=G_DocDateReq }
+      { 8053003;Label     ;0    ;770  ;3300 ;440  ;ParentControl=8053002 }
+      { 8053006;CheckBox  ;9240 ;220  ;440  ;440  ;InPage=-1;
+                                                   ShowCaption=Non;
+                                                   CaptionML=[ENU=One Invoice Per Contract;
+                                                              FRA=Une facture par contrat];
+                                                   SourceExpr=G_OneInvPerContr }
+      { 8053007;Label     ;5390 ;220  ;3740 ;440  ;ParentControl=8053006 }
+      { 8053008;TextBox   ;3410 ;1320 ;1650 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Due Date;
+                                                              FRA=Date d''ch'ance];
+                                                   SourceExpr=DueDate_G }
+      { 8053009;Label     ;0    ;1320 ;3300 ;440  ;ParentControl=8053008 }
+      { 8053010;TextBox   ;8800 ;770  ;1700 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Receipt Date;
+                                                              FRA=Date de r'ception];
+                                                   SourceExpr=ReceiptDate_G }
+      { 8053011;Label     ;5390 ;770  ;3300 ;440  ;ParentControl=8053010 }
+      { 8053012;TextBox   ;8800 ;1320 ;1700 ;440  ;ValidateTableRelation=Non;
+                                                   CaptionML=[ENU=Variety Code not fulfilled;
+                                                              FRA=Code variet' non renseign'e];
+                                                   SourceExpr=VNR_G;
+                                                   TableRelation="CMC Variety" }
+      { 8053013;Label     ;5390 ;1320 ;3300 ;440  ;ParentControl=8053012 }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Oui;
+      OnOpenPage=BEGIN
+                   ReceiptDateVisible_G := FALSE;
+                   CMCSetup_G.GET;
+                   IF CMCSetup_G."Use Cereals Invoicing Schedule" THEN
+                     ReceiptDateVisible_G := TRUE;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 8053003; ;Container ;
+                  ContainerType=ContentArea }
+
+      { 8053004;1;Group     ;
+                  CaptionML=[ENU=Options;
+                             FRA=Options];
+                  GroupType=Group }
+
+      { 8053013;2;Field     ;
+                  CaptionML=[ENU=Posting Date;
+                             FRA=Date comptabilisation];
+                  SourceExpr=G_PostingDateReq;
+                  OnValidate=BEGIN
+                               G_DocDateReq:=G_PostingDateReq
+                             END;
+                              }
+
+      { 8053012;2;Field     ;
+                  CaptionML=[ENU=Document Date;
+                             FRA=Date document];
+                  SourceExpr=G_DocDateReq }
+
+      { 8053011;2;Field     ;
+                  CaptionML=[ENU=Due Date bordereau;
+                             FRA=Date 'ch'ance bordereau];
+                  SourceExpr=DueDate_G;
+                  Visible=NOT ReceiptDateVisible_G }
+
+      { 8053010;2;Field     ;
+                  CaptionML=[ENU=Receipt Date;
+                             FRA=Date de r'ception];
+                  SourceExpr=ReceiptDate_G;
+                  Visible=ReceiptDateVisible_G;
+                  Editable=FALSE;
+                  OnDrillDown=VAR
+                                CerealsInvSch_L@8053002 : Record 8053274;
+                                CollectRecipt_L@8053001 : Record 8052993;
+                                pgCerealsInvSch_L@8053000 : Page 8053576;
+                              BEGIN
+                                CerealsInvSch_L.RESET;
+                                CerealsInvSch_L.SETRANGE("Campaign No.",CollectRecipt_L.GetCampainNo('', WORKDATE, WORKDATE));
+                                pgCerealsInvSch_L.SETTABLEVIEW(CerealsInvSch_L);
+                                pgCerealsInvSch_L.EDITABLE(FALSE);
+                                pgCerealsInvSch_L.LOOKUPMODE(TRUE);
+                                IF (pgCerealsInvSch_L.RUNMODAL = ACTION::LookupOK) THEN BEGIN
+                                  pgCerealsInvSch_L.GETRECORD(CerealsInvSch_L);
+                                  ReceiptDate_G := CerealsInvSch_L."Collect Ending Date";
+                                END;
+                              END;
+                               }
+
+      { 8053009;2;Field     ;
+                  CaptionML=[ENU=One invoice by contract;
+                             FRA=Une facture par contrat];
+                  SourceExpr=G_OneInvPerContr }
+
+      { 8053000;2;Field     ;
+                  CaptionML=[ENU=Grouping Code;
+                             FRA=Code de regroupement];
+                  SourceExpr=GroupingCode_G;
+                  TableRelation="CMC Grouping Code" }
+
+      { 8053014;2;Field     ;
+                  CaptionML=[ENU=Variety Code not fulfilled;
+                             FRA=Code variet' non renseign'e];
+                  SourceExpr=VNR_G;
+                  TableRelation="CMC Variety" }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      G_PostingDateReq@8053002 : Date;
+      G_DocDateReq@8053003 : Date;
+      G_HideDialog@8053016 : Boolean;
+      G_Win@8053017 : Dialog;
+      Text8053001@8053018 : TextConst 'ENU=Collect Invoicing compute ...\\;FRA=Facturation des bordereaux de collecte ...\ Apporteur #1#########\';
+      Text8053002@8053019 : TextConst 'ENU=Posted Receipt              #1#########\;FRA=R'ception valid'e  #2######### @3@@@@@@@@@@@@@@@@@@';
+      G_ReceiptCount@8053020 : Integer;
+      G_InvoiceCount@8053022 : Integer;
+      G_CrMemoCount@8053023 : Integer;
+      Text8053003@8053034 : TextConst 'ENU=Please enter a Posting Date period filter in the tab Posted Receipts;FRA=Veuillez saisir une p'riode dans le filtre Date comptabilisation de l''onglet R'ceptions valid'es.';
+      Text8053005@8053036 : TextConst 'ENU=Please enter the posting date.;FRA=Veuillez saisir une date de comptabilisation.';
+      Text8053006@8053037 : TextConst 'ENU=Please enter the document date.;FRA=Veuillez saisir une date du document.';
+      Text8053007@8053038 : TextConst 'ENU=Documents Creations Finished.\\#1## Posted Receipts Line dispatched proceeded\#2## Invoices created\#3## Credit Memo created\#4## errors;FRA=G'n'ration des documents termin'e.\\#1## Lignes de r'ceptions ventil'es valid'es trait'es\#2## Factures g'n'r'es\#3## Avoirs g'n'r's\#4## erreurs';
+      Text8053009@8053042 : TextConst 'ENU=Receipt no. %1 ( Cancelation %2 );FRA=Bon de r'ception %1 ( Annulation %2 )';
+      Text8053010@8053043 : TextConst 'ENU=Sorting Vendor #1########;FRA=Tri fournisseur #1########';
+      G_PurchSetup@8053013 : Record 312;
+      recVendorTmp_G@8053044 : TEMPORARY Record 23;
+      G_OneInvPerContr@8053048 : Boolean;
+      DueDate_G@8053053 : Date;
+      ReceiptDate_G@8053056 : Date;
+      ReceiptDateVisible_G@8053057 : Boolean INDATASET;
+      CMCSetup_G@8053058 : Record 8052982;
+      Text8053014@8053059 : TextConst 'ENU=Please select the Receipt Date from the Cereals Invoicing Schedule;FRA=Veuillez s'lectionner une date de r'ception dans le planning de facturation.';
+      GroupingCode_G@8053064 : Code[10];
+      RecTmpDate_G@8053065 : TEMPORARY Record 2000000007;
+      Text8053015@8053066 : TextConst 'ENU=You must enter Campaign Code filter on Contract;FRA=Vous devez saisir un code campagne en filtre contrat';
+      CampaingCode_G@8053010 : Code[10];
+      VNR_G@8053069 : Code[10];
+      VendorCount_G@8053008 : Integer;
+      VendorTotal_G@8053011 : Integer;
+      cduCreateInv_G@8053014 : Codeunit 8053066;
+      RecBatchLog_G@8053030 : Record 8053505;
+      CountError_G@8053027 : Integer;
+      Time_G@1000000000 : Time;
+      RecTmpVATBusPostGp_G@8053000 : TEMPORARY Record 323;
+
+    PROCEDURE SetHideDialog@8053004(L_HideD@8053000 : Boolean);
+    BEGIN
+      G_HideDialog := L_HideD;
+    END;
+
+    PROCEDURE IsReceptOK@8053009(P_CMCPostedReceiptsLine@8053000 : Record 8053104) Res_OK : Boolean;
+    VAR
+      CMCPostedReceipts_L@8053001 : Record 8052995;
+      recPostedReceiptsTmp_L@1000000000 : TEMPORARY Record 8052995;
+    BEGIN
+      // test sur donn'es du bon
+      // test sur controle de bon
+      CMCPostedReceipts_L.GET(P_CMCPostedReceiptsLine."Receipt Type", P_CMCPostedReceiptsLine."No.");
+      IF CMCSetup_G."Controled Shipment" AND (CMCPostedReceipts_L.Controlled = FALSE) THEN
+        EXIT(FALSE);
+
+      recPostedReceiptsTmp_L := CMCPostedReceipts_L;
+      recPostedReceiptsTmp_L.INSERT;
+      recPostedReceiptsTmp_L.COPYFILTERS(diPostedReceipts);
+      EXIT(NOT(recPostedReceiptsTmp_L.ISEMPTY));
+
+      // test dans le filtre initial
+      diPostedReceipts := CMCPostedReceipts_L;
+      EXIT(diPostedReceipts.FIND('='));
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20141020-Wi00-CMC02.02.00-FHS01 : NEWOBJ
+      20141105-Wi00-CMC02.02.00-FHS01 : MODCONST (Corrige message final)
+      20141119-CER15-CMC02.02.00-FHS01 : MODCODE (Nouvelle version g'rant les erreurs)
+      20150109-CER42-TER01.01.00-FBE01 : Gestion de Reprises
+      20150122-CER15-CMC02.02.00-2713-FHS01 : MODCODE (Corrige le fonctionnement de la finalisation)
+      20150520-Wi00-CMC02.02.00-3003-FHS01 : MODCODE (Optimisation)
+      20150601-CER42-TER01.01.00-FBE01 : D'placement de code suite optimisation (20150520-Wi00-CMC02.02.00-3003-FHS01)
+      20150605-WI00-CMC02.02.00-3045-FBE01 : Gestion VAT Bus. Posting Group . la ligne, Ajout du DataItem GpeCptMarchTVA
+      20150609-Wi00-CMC02.02.00-3052-FHS01 : MODCODE (Diminue la dur'e des transactions)
+      20150630-CER15-CMC02.02.00-3078-DRN01 : MODEOBJECT (Suppression filtre Canceled sur DataItem CMC Posted Receipts)
+      20150812-CER15-ADV01.01.00-2126-JCD01 : ADDCODE
+      20151007-CER15-ADV01.01.00-2218-SDE01 : ADDCODE  (cas des annulation avec date > date r'ception)
+      20160429-Wi00-ADV01.01.00-1868-JCD01 : ADDCODE (filtres sur "prepay " . vide dans  Dataitem "CMC Posted Receipts Line"
+
+      // <-- 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

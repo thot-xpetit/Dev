@@ -1,0 +1,737 @@
+OBJECT Codeunit 8053375 CMC Disribution Jnl Post Line
+{
+  OBJECT-PROPERTIES
+  {
+    Date=31/01/24;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    TableNo=8053356;
+    Permissions=TableData 17=rm,
+                TableData 25=rm;
+    OnRun=BEGIN
+            DistrJnlLine_G.COPY(Rec);
+            Code;
+
+            Rec := DistrJnlLine_G;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      DistrJnlLine_G@8053000 : Record 8053356;
+      LastDocNo_G@8053004 : Code[20];
+      LastLineNo_G@8053003 : Integer;
+      LastDate_G@8053002 : Date;
+      LastDocType_G@8053001 : ' ,Payment,Invoice,Credit Memo,Finance Charge Memo,Reminder';
+      NextEntryNo_G@8053005 : Integer;
+      CapitalEntry_G@8053007 : Record 8053357;
+      CapitalSetup_G@8053006 : Record 8053350;
+      AccountingPeriod_G@8053008 : Record 50;
+      GenJnlLine_G@8053009 : Record 81;
+      NextGLLineNo_G@8053010 : Integer;
+      Amount_G@8053011 : Decimal;
+      GenJnlPostLine_G@8053012 : Codeunit 12;
+      GLRec_G@8053013 : Record 45;
+      CapJnlLine_G@8053014 : Record 8053356;
+      GenJnlPostBatch_G@8061300 : Codeunit 13;
+      TotalBalAmount_G@8053015 : Decimal;
+      SrcCode_G@8053016 : Code[10];
+      Text60000@1000000000 : TextConst 'ENU=Member %1 Prlvt liberatoire;FRA=Adh'rent %1 Prlvt liberatoire';
+      Text60001@1000000002 : TextConst 'ENU=Member %1 Social Prlvt;FRA=&liberatoire';
+      BlockedAmount_G@1000000001 : Decimal;
+      BlkAccountCreditLibel_G@1000000003 : Text[50];
+
+    PROCEDURE Code@8053001();
+    VAR
+      MvtTypeRec_L@8053000 : Record 8053353;
+      CapitalPostLine_L@8053001 : Codeunit 8053350;
+      CapJnlTemplate_L@8053002 : Record 8053354;
+      PostMvtRec_L@8053003 : Record 8053365;
+      GLEntry_L@8053004 : Record 17;
+      HistorisationDistribution_L@1000000001 : Record 60071;
+      CapitalSocial_L@1000000000 : Record 8087796;
+    BEGIN
+      CapitalSetup_G.GET;
+      // --> 20160922-Wi00-ADV01.01.00-3140-JCD01 - test avant : si plantage . 'critures . moiti' valid'e
+      CapitalSetup_G.TESTFIELD("Distr. Mbr. Journal Template");
+      CapitalSetup_G.TESTFIELD("Distr. Mbr. Journal Batch");
+      CapitalSetup_G.TESTFIELD("Distribution Mvt Type");
+      MvtTypeRec_L.GET(CapitalSetup_G."Distribution Mvt Type");
+      MvtTypeRec_L.TESTFIELD(Accounting);
+      // <-- 20160922-Wi00-ADV01.01.00-3140-JCD01
+
+      IF CapitalSetup_G."Distribution Source Code"<>'' THEN
+        SrcCode_G := CapitalSetup_G."Distribution Source Code"
+      ELSE BEGIN
+        CapJnlTemplate_L.GET(CapitalSetup_G."Distr. Mbr. Journal Template");
+        SrcCode_G := CapJnlTemplate_L."Source Code";
+      END;
+      NextGLLineNo_G := 10000;
+
+      WITH DistrJnlLine_G DO BEGIN
+        LOCKTABLE;
+        IF EmptyDistrLine THEN BEGIN
+          LastDocNo_G := "Document No.";
+          LastLineNo_G := "Line No.";
+          LastDate_G := "Posting Date";
+          EXIT;
+        END;
+
+        InitCodeUnit;
+        CLEAR(TotalBalAmount_G);
+
+        IF Dividend <>0 THEN
+          PostGLDividend;
+        IF Interest <>0 THEN
+          PostGLInterest;
+        IF "Social Plt." <>0 THEN
+          PostGLSocialPlt;
+        IF Discount <>0 THEN
+          PostGLDiscount;
+        // --> 20160922-Wi00-ADV01.01.00-3140-JCD01 - Cumul des lignes vendor - une ligne en fin de doc
+        {BEFORE
+        IF "Sousc. Ret" >0 THEN
+          PostSRI;
+        }
+        // <-- 20160922-Wi00-ADV01.01.00-3140-JCD01
+
+        IF TotalBalAmount_G <>0 THEN
+          PostBalAccount;
+        // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+        {BEFORE
+        PostCapitalEntry;
+        }
+        // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+
+        // --> 20231113-WI00-ADV01.01.00-3633-IJI01
+        IF "Blocked Account" THEN
+          PostBlockedAccount;
+        // <-- 20231113-WI00-ADV01.01.00-3633-IJI01
+
+
+        // ** Retenue sur capital **//
+        IF "Part Type To Restraint" >0 THEN BEGIN
+          CapJnlLine_G.INIT;
+          // --> 20160922-Wi00-ADV01.01.00-3140-JCD01 - test avant : si plantage . 'critures . moiti' valid'e
+          {BEFORE :
+          CapitalSetup_G.TESTFIELD("Distr. Mbr. Journal Template");
+          CapitalSetup_G.TESTFIELD("Distr. Mbr. Journal Batch");
+          CapitalSetup_G.TESTFIELD("Distribution Mvt Type");
+          }
+          // <-- 20160922-Wi00-ADV01.01.00-3140-JCD01
+          CapJnlLine_G."Capital Journal Template" := CapitalSetup_G."Distr. Mbr. Journal Template";
+          CapJnlLine_G."Capital Batch Name" := CapitalSetup_G."Distr. Mbr. Journal Batch";
+          CapJnlLine_G."Line No." := NextEntryNo_G;
+          NextEntryNo_G +=1;
+          // --> 20160922-Wi00-ADV01.01.00-3140-JCD01 - test avant : si plantage . 'critures . moiti' valid'e
+          {BEFORE
+          MvtTypeRec_L.GET(CapitalSetup_G."Distribution Mvt Type");
+          MvtTypeRec_L.TESTFIELD(Accounting);
+          }
+          // <-- 20160922-Wi00-ADV01.01.00-3140-JCD01
+          CapJnlLine_G."Posting Date" := "Posting Date";
+          CapJnlLine_G.VALIDATE("Movement Type", CapitalSetup_G."Distribution Mvt Type");
+          CapJnlLine_G."Account No." := "Account No.";
+          CapJnlLine_G.VALIDATE("Part Type",CapitalSetup_G."Restraint Part Type");
+          CapJnlLine_G."Document No." := "Document No.";
+          CapJnlLine_G.Description := Description;
+          CapJnlTemplate_L.GET(CapitalSetup_G."Distr. Mbr. Journal Template");
+          CapJnlLine_G."Source Code" := SrcCode_G;
+          CapJnlLine_G."No. Series" :=  CapJnlTemplate_L."No. Series";
+          CapJnlLine_G."Posting No. Series" := CapJnlTemplate_L."Posting No. Series";
+          CapJnlLine_G."G/L Posting No. Series" := CapJnlTemplate_L."G/L Posting No. Series";
+          CapJnlLine_G.VALIDATE(Quantity, "Part Type To Restraint");
+          // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+          CapJnlLine_G."Due Date" := "Due Date";
+          // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+          CLEAR(CapitalPostLine_L);
+          CapitalPostLine_L.SetSourceCode(SrcCode_G);
+          CapitalPostLine_L.RunWithoutCheck(CapJnlLine_G);
+        END;
+        // --> 20161019-Wi00-ADV01.01.00-3140-JCD01
+        HistorisationDistribution_L.TRANSFERFIELDS(DistrJnlLine_G);
+        // --> 20231113-WI00-ADV01.01.00-3633-IJI01
+        // --> 20240131-WI00-ADV01.01.00-CC70225-IJI01
+        IF "Blocked Account" THEN
+        // <-- 20240131-WI00-ADV01.01.00-CC70225-IJI01
+        HistorisationDistribution_L."Blocked Account Amount" := BlockedAmount_G;
+        // <-- 20231113-WI00-ADV01.01.00-3633-IJI01
+        IF HistorisationDistribution_L.INSERT THEN BEGIN
+          CapitalSocial_L.SETCURRENTKEY(ADHERENT,NO_CAMPAGNE);
+          CapitalSocial_L.SETRANGE(ADHERENT,HistorisationDistribution_L."Account No.");
+          CapitalSocial_L.SETRANGE(NO_CAMPAGNE,HistorisationDistribution_L."Campaign No.");
+          IF CapitalSocial_L.FIND('-') THEN BEGIN
+            CapitalSocial_L.CAPITAL_STATUTAIRE_DIST := HistorisationDistribution_L."Statutory Capital";
+            CapitalSocial_L.MODIFY;
+          END;
+        // --> 20161104-Wi00-ADV01.01.00-3140-JCD01
+        END;
+        DELETE;
+        COMMIT;
+        // <-- 20161019-Wi00-ADV01.01.00-3140-JCD01
+      END;
+    END;
+
+    LOCAL PROCEDURE InitCodeUnit@24();
+    BEGIN
+      WITH DistrJnlLine_G DO BEGIN
+        IF NextEntryNo_G = 0 THEN BEGIN
+          CapitalEntry_G.LOCKTABLE;
+          IF CapitalEntry_G.FINDLAST THEN BEGIN
+            NextEntryNo_G := CapitalEntry_G."Entry No." + 1;
+          END ELSE
+            NextEntryNo_G := 1;
+        END;
+        LastDocNo_G := "Document No.";
+        LastLineNo_G := "Line No.";
+        LastDate_G := "Posting Date";
+
+        AccountingPeriod_G.RESET;
+        AccountingPeriod_G.SETCURRENTKEY(Closed);
+        AccountingPeriod_G.SETRANGE(Closed,FALSE);
+        AccountingPeriod_G.FINDFIRST;
+      END;
+    END;
+
+    PROCEDURE InitGenJnlLine@8053013();
+    VAR
+      NoSeriesMgt_L@8053000 : Codeunit 396;
+      GenJnlTemplate_L@8053001 : Record 80;
+      GenJnlBatch_L@1000000000 : Record 232;
+    BEGIN
+      WITH GenJnlLine_G DO BEGIN
+        INIT;
+        "Journal Template Name" := CapitalSetup_G."Distr. Gen. Journal Template";
+        GenJnlTemplate_L.GET("Journal Template Name");
+        "Journal Batch Name" := CapitalSetup_G."Distr. Gen. Journal Batch";
+        "Line No." := NextGLLineNo_G;
+         NextGLLineNo_G+= 10000;
+        // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+        {BEFORE
+        IF (DistrJnlLine_G."G/L Posting No. Series"<>'') THEN
+          "Document No." := NoSeriesMgt_L.GetNextNo(DistrJnlLine_G."G/L Posting No. Series", WORKDATE, TRUE)
+        ELSE
+          "Document No." := DistrJnlLine_G."Document No.";
+        AFTER}
+        "Document No." := DistrJnlLine_G."Document No.";
+        GenJnlBatch_L.GET("Journal Template Name","Journal Batch Name");
+        "Posting No. Series" := GenJnlBatch_L."Posting No. Series";
+        // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+        "Posting Date" := DistrJnlLine_G."Posting Date";
+        "Source Code" := SrcCode_G;
+        // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+        {BEFORE
+        "Posting No. Series" := DistrJnlLine_G."G/L Posting No. Series";
+        }
+        // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+      END;
+    END;
+
+    PROCEDURE PostGLDividend@8053002();
+    VAR
+      Contact_L@8053000 : Record 5050;
+      Text8053000_L@8053001 : TextConst 'ENU=Member %1 Dividend;FRA=Adh'rent %1 Dividende';
+    BEGIN
+      InitGenJnlLine;
+      CapitalSetup_G.TESTFIELD("Dividend Account No.");
+      GenJnlLine_G.VALIDATE("Account Type", GenJnlLine_G."Account Type"::"G/L Account");
+      GenJnlLine_G.VALIDATE("Account No.", CapitalSetup_G."Dividend Account No.");
+      Contact_L.GET(DistrJnlLine_G."Account No.");
+      IF DistrJnlLine_G."Posting Description" <>'' THEN
+        GenJnlLine_G.Description := DistrJnlLine_G."Posting Description"
+      ELSE
+        GenJnlLine_G.Description := COPYSTR(STRSUBSTNO(Text8053000_L, DistrJnlLine_G.Description), 1, 50);
+      GenJnlLine_G.VALIDATE("Debit Amount", DistrJnlLine_G.Dividend);
+      // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+      GenJnlLine_G."Due Date" := DistrJnlLine_G."Due Date";
+      // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+      TotalBalAmount_G += DistrJnlLine_G.Dividend;
+      GenJnlLine_G.INSERT;
+    END;
+
+    PROCEDURE PostGLInterest@8053003();
+    VAR
+      Contact_L@8053000 : Record 5050;
+      Text8053000_L@8053001 : TextConst 'ENU=Member %1 Interest;FRA=Adh'rent %1 Int'r^t';
+    BEGIN
+      InitGenJnlLine;
+      CapitalSetup_G.TESTFIELD("Interset Account No.");
+      GenJnlLine_G.VALIDATE("Account Type", GenJnlLine_G."Account Type"::"G/L Account");
+      GenJnlLine_G.VALIDATE("Account No.", CapitalSetup_G."Interset Account No.");
+      Contact_L.GET(DistrJnlLine_G."Account No.");
+      IF DistrJnlLine_G."Posting Description" <>'' THEN
+        GenJnlLine_G.Description := DistrJnlLine_G."Posting Description"
+      ELSE
+        GenJnlLine_G.Description := COPYSTR(STRSUBSTNO(Text8053000_L, DistrJnlLine_G.Description), 1, 50);
+      GenJnlLine_G.VALIDATE("Debit Amount", DistrJnlLine_G.Interest);
+      // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+      GenJnlLine_G."Due Date" := DistrJnlLine_G."Due Date";
+      // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+      TotalBalAmount_G += DistrJnlLine_G.Interest;
+      GenJnlLine_G.INSERT;
+    END;
+
+    PROCEDURE PostGLSocialPlt@8053004();
+    VAR
+      Contact_L@8053000 : Record 5050;
+      Text8053000_L@8053001 : TextConst 'ENU=Member %1 Social Prlvt;FRA="Adh'rent %1 Prlvt social "';
+    BEGIN
+      InitGenJnlLine;
+      CapitalSetup_G.TESTFIELD("Social Prlt. Account No.");
+      GenJnlLine_G.VALIDATE("Account Type", GenJnlLine_G."Account Type"::"G/L Account");
+      GenJnlLine_G.VALIDATE("Account No.", CapitalSetup_G."Social Prlt. Account No.");
+      Contact_L.GET(DistrJnlLine_G."Account No.");
+      IF DistrJnlLine_G."Posting Description" <>'' THEN
+        GenJnlLine_G.Description := DistrJnlLine_G."Posting Description"
+      ELSE
+        GenJnlLine_G.Description := COPYSTR(STRSUBSTNO(Text8053000_L, DistrJnlLine_G.Description), 1, 50);
+      GenJnlLine_G.VALIDATE("Credit Amount", DistrJnlLine_G."Social Plt.");
+      // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+      GenJnlLine_G."Due Date" := DistrJnlLine_G."Due Date";
+      // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+      TotalBalAmount_G -= DistrJnlLine_G."Social Plt.";
+      GenJnlLine_G.INSERT;
+      // --> 20160922-Wi00-ADV01.01.00-3140-JCD01
+      IF DistrJnlLine_G."Discharge Retrievement" <> 0 THEN BEGIN
+        CapitalSetup_G.TESTFIELD("Disc. Retr. Account No.");
+        // On cumul si m^me compte
+        IF CapitalSetup_G."Disc. Retr. Account No." = CapitalSetup_G."Social Prlt. Account No." THEN BEGIN
+          GenJnlLine_G.GET(GenJnlLine_G."Journal Template Name",GenJnlLine_G."Journal Batch Name",GenJnlLine_G."Line No.");
+          IF DistrJnlLine_G."Posting Description" = '' THEN
+            GenJnlLine_G.Description := COPYSTR(GenJnlLine_G.Description + Text60001, 1, 50);
+          GenJnlLine_G.VALIDATE("Credit Amount", GenJnlLine_G."Credit Amount" + DistrJnlLine_G."Discharge Retrievement");
+          GenJnlLine_G.MODIFY;
+        END ELSE BEGIN
+          InitGenJnlLine;
+          GenJnlLine_G.VALIDATE("Account Type", GenJnlLine_G."Account Type"::"G/L Account");
+          GenJnlLine_G.VALIDATE("Account No.", CapitalSetup_G."Disc. Retr. Account No.");
+          IF DistrJnlLine_G."Posting Description" <>'' THEN
+            GenJnlLine_G.Description := DistrJnlLine_G."Posting Description"
+          ELSE
+            GenJnlLine_G.Description := COPYSTR(STRSUBSTNO(Text60000, DistrJnlLine_G.Description), 1, 50);
+          GenJnlLine_G.VALIDATE("Credit Amount", DistrJnlLine_G."Discharge Retrievement");
+          // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+          GenJnlLine_G."Due Date" := DistrJnlLine_G."Due Date";
+          // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+          GenJnlLine_G.INSERT;
+        END;
+        TotalBalAmount_G -= DistrJnlLine_G."Discharge Retrievement";
+      END;
+      // <-- 20160922-Wi00-ADV01.01.00-3140-JCD01
+    END;
+
+    PROCEDURE PostGLDiscount@8053005();
+    VAR
+      Contact_L@8053000 : Record 5050;
+      Text8053000_L@8053001 : TextConst 'ENU=Member %1 Discount;FRA=Adh'rent %1 Ristourne';
+      Campaign_L@1000000000 : Record 8052991;
+      AnalysisReportLine_L@1000000001 : Record 8053361;
+      IntRistourne_L@1000000002 : Integer;
+      DecAmountNoVAT@1000000003 : Decimal;
+    BEGIN
+      // --> 20161201-Wi00-ADV01.01.00-3213-JCD01
+      {BEFORE
+      InitGenJnlLine;
+      CapitalSetup_G.TESTFIELD("Discount Account No.");
+      GenJnlLine_G.VALIDATE("Account Type", GenJnlLine_G."Account Type"::"G/L Account");
+      GenJnlLine_G.VALIDATE("Account No.", CapitalSetup_G."Discount Account No.");
+      Contact_L.GET(DistrJnlLine_G."Account No.");
+      IF DistrJnlLine_G."Posting Description" <>'' THEN
+        GenJnlLine_G.Description := DistrJnlLine_G."Posting Description"
+      ELSE
+        GenJnlLine_G.Description := COPYSTR(STRSUBSTNO(Text8053000_L, DistrJnlLine_G.Description), 1, 50);
+      GenJnlLine_G.VALIDATE("Debit Amount", DistrJnlLine_G.Discount);
+      // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+      GenJnlLine_G."Due Date" := DistrJnlLine_G."Due Date";
+      // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+      TotalBalAmount_G += DistrJnlLine_G.Discount;
+
+      GenJnlLine_G.INSERT;
+      AFTER}
+      // Gestion ristourne avec TVA
+      DecAmountNoVAT := 0;
+      // --> 20161201-Wi00-ADV01.01.00-3213-JCD01
+      {BEFORE
+      CapitalSetup_G.TESTFIELD("With VAT Discount Account No.");
+      IF DistrJnlLine_G."Discount With VAT" = FALSE THEN BEGIN
+        DecAmountNoVAT := DistrJnlLine_G.Discount;
+      END ELSE BEGIN
+      }
+      // <-- 20161201-Wi00-ADV01.01.00-3213-JCD01
+        Campaign_L.GET(DistrJnlLine_G."Campaign No.");
+        AnalysisReportLine_L.RESET;
+        AnalysisReportLine_L.SETRANGE(Code,Campaign_L."Disc. Distribution Table Code");
+        AnalysisReportLine_L.SETRANGE("Line Type",AnalysisReportLine_L."Line Type"::"Funnel Filter");
+        IntRistourne_L := 0;
+        IF AnalysisReportLine_L.FIND('-') THEN REPEAT
+          IntRistourne_L += 1;
+          CASE IntRistourne_L OF
+          1 : BEGIN
+                IF AnalysisReportLine_L."Gen. Prod. Posting Group Purch" = '' THEN
+                  DecAmountNoVAT += DistrJnlLine_G."Discount 1"
+                ELSE
+                  // --> 20161201-Wi00-ADV01.01.00-3213-JCD01
+                  {BEFORE
+                  PostGLDiscountInsert(DistrJnlLine_G."Discount 1",AnalysisReportLine_L."Gen. Prod. Posting Group Purch");
+                  AFTER}
+                  PostGLDiscountInsert(DistrJnlLine_G."Discount 1",AnalysisReportLine_L."Gen. Prod. Posting Group Purch",
+                      AnalysisReportLine_L."Purch Discount Account No.");
+                  // <-- 20161201-Wi00-ADV01.01.00-3213-JCD01
+              END;
+          2 : BEGIN
+                IF AnalysisReportLine_L."Gen. Prod. Posting Group Purch" = '' THEN
+                  DecAmountNoVAT += DistrJnlLine_G."Discount 2"
+                ELSE
+                  // --> 20161201-Wi00-ADV01.01.00-3213-JCD01
+                  {BEFORE
+                  PostGLDiscountInsert(DistrJnlLine_G."Discount 2",AnalysisReportLine_L."Gen. Prod. Posting Group Purch");
+                  AFTER}
+                  PostGLDiscountInsert(DistrJnlLine_G."Discount 2",AnalysisReportLine_L."Gen. Prod. Posting Group Purch",
+                      AnalysisReportLine_L."Purch Discount Account No.");
+                  // <-- 20161201-Wi00-ADV01.01.00-3213-JCD01
+              END;
+          3 : BEGIN
+                IF AnalysisReportLine_L."Gen. Prod. Posting Group Purch" = '' THEN
+                  DecAmountNoVAT += DistrJnlLine_G."Discount 3"
+                ELSE
+                  // --> 20161201-Wi00-ADV01.01.00-3213-JCD01
+                  {BEFORE
+                  PostGLDiscountInsert(DistrJnlLine_G."Discount 3",AnalysisReportLine_L."Gen. Prod. Posting Group Purch");
+                  AFTER}
+                  PostGLDiscountInsert(DistrJnlLine_G."Discount 3",AnalysisReportLine_L."Gen. Prod. Posting Group Purch",
+                      AnalysisReportLine_L."Purch Discount Account No.");
+                  // <-- 20161201-Wi00-ADV01.01.00-3213-JCD01
+              END;
+          4 : BEGIN
+                IF AnalysisReportLine_L."Gen. Prod. Posting Group Purch" = '' THEN
+                  DecAmountNoVAT += DistrJnlLine_G."Discount 4"
+                ELSE
+                  // --> 20161201-Wi00-ADV01.01.00-3213-JCD01
+                  {BEFORE
+                  PostGLDiscountInsert(DistrJnlLine_G."Discount 4",AnalysisReportLine_L."Gen. Prod. Posting Group Purch");
+                  AFTER}
+                  PostGLDiscountInsert(DistrJnlLine_G."Discount 4",AnalysisReportLine_L."Gen. Prod. Posting Group Purch",
+                      AnalysisReportLine_L."Purch Discount Account No.");
+                  // <-- 20161201-Wi00-ADV01.01.00-3213-JCD01
+              END;
+          5 : BEGIN
+                IF AnalysisReportLine_L."Gen. Prod. Posting Group Purch" = '' THEN
+                  DecAmountNoVAT += DistrJnlLine_G."Discount 5"
+                ELSE
+                  // --> 20161201-Wi00-ADV01.01.00-3213-JCD01
+                  {BEFORE
+                  PostGLDiscountInsert(DistrJnlLine_G."Discount 5",AnalysisReportLine_L."Gen. Prod. Posting Group Purch");
+                  AFTER}
+                  PostGLDiscountInsert(DistrJnlLine_G."Discount 5",AnalysisReportLine_L."Gen. Prod. Posting Group Purch",
+                      AnalysisReportLine_L."Purch Discount Account No.");
+                  // <-- 20161201-Wi00-ADV01.01.00-3213-JCD01
+              END;
+          // --> 20211005-WI00-ADV01.01.00-SP3574-MRU01
+          6 : BEGIN
+                IF AnalysisReportLine_L."Gen. Prod. Posting Group Purch" = '' THEN
+                  DecAmountNoVAT += DistrJnlLine_G."Discount 6"
+                ELSE
+                  PostGLDiscountInsert(DistrJnlLine_G."Discount 6",AnalysisReportLine_L."Gen. Prod. Posting Group Purch",
+                      AnalysisReportLine_L."Purch Discount Account No.");
+              END;
+          7 : BEGIN
+                IF AnalysisReportLine_L."Gen. Prod. Posting Group Purch" = '' THEN
+                  DecAmountNoVAT += DistrJnlLine_G."Discount 7"
+                ELSE
+                  PostGLDiscountInsert(DistrJnlLine_G."Discount 7",AnalysisReportLine_L."Gen. Prod. Posting Group Purch",
+                      AnalysisReportLine_L."Purch Discount Account No.");
+              END;
+          8 : BEGIN
+                IF AnalysisReportLine_L."Gen. Prod. Posting Group Purch" = '' THEN
+                  DecAmountNoVAT += DistrJnlLine_G."Discount 8"
+                ELSE
+                  PostGLDiscountInsert(DistrJnlLine_G."Discount 8",AnalysisReportLine_L."Gen. Prod. Posting Group Purch",
+                      AnalysisReportLine_L."Purch Discount Account No.");
+              END;
+          9 : BEGIN
+                IF AnalysisReportLine_L."Gen. Prod. Posting Group Purch" = '' THEN
+                  DecAmountNoVAT += DistrJnlLine_G."Discount 9"
+                ELSE
+                  PostGLDiscountInsert(DistrJnlLine_G."Discount 9",AnalysisReportLine_L."Gen. Prod. Posting Group Purch",
+                      AnalysisReportLine_L."Purch Discount Account No.");
+              END;
+          10 : BEGIN
+                IF AnalysisReportLine_L."Gen. Prod. Posting Group Purch" = '' THEN
+                  DecAmountNoVAT += DistrJnlLine_G."Discount 10"
+                ELSE
+                  PostGLDiscountInsert(DistrJnlLine_G."Discount 10",AnalysisReportLine_L."Gen. Prod. Posting Group Purch",
+                      AnalysisReportLine_L."Purch Discount Account No.");
+              END;
+          // <-- 20211005-WI00-ADV01.01.00-SP3574-MRU01
+          END;
+        UNTIL AnalysisReportLine_L.NEXT = 0;
+      // --> 20161201-Wi00-ADV01.01.00-3213-JCD01
+      {BEFORE
+      END;
+      PostGLDiscountInsert(DecAmountNoVAT,'');
+      AFTER}
+      PostGLDiscountInsert(DecAmountNoVAT,'','');
+      // <-- 20161201-Wi00-ADV01.01.00-3213-JCD01
+
+      // <-- 20161201-Wi00-ADV01.01.00-3213-JCD01
+    END;
+
+    PROCEDURE PostSRI@8053006();
+    VAR
+      Contact_L@8053000 : Record 5050;
+      Text8053000_L@8053001 : TextConst 'ENU=Member %1 ISR Payment;FRA=Adh'rent %1 Paiement SRI';
+    BEGIN
+      InitGenJnlLine;
+      Contact_L.GET(DistrJnlLine_G."Account No.");
+      GenJnlLine_G.VALIDATE("Account Type", GenJnlLine_G."Account Type"::Vendor);
+      GenJnlLine_G.VALIDATE("Account No.", Contact_L."Vendor No.");
+      IF DistrJnlLine_G."Posting Description" <>'' THEN
+        GenJnlLine_G.Description := DistrJnlLine_G."Posting Description"
+      ELSE
+        GenJnlLine_G.Description := COPYSTR(STRSUBSTNO(Text8053000_L, DistrJnlLine_G.Description), 1, 50);
+      GenJnlLine_G.VALIDATE("Credit Amount", DistrJnlLine_G."Sousc. Ret");
+      // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+      GenJnlLine_G."Due Date" := DistrJnlLine_G."Due Date";
+      // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+      TotalBalAmount_G -= DistrJnlLine_G."Sousc. Ret";
+      GenJnlLine_G.INSERT;
+    END;
+
+    PROCEDURE PostCapitalEntry@8053025();
+    VAR
+      GLEntry_L@8053000 : Record 17;
+      Text8053000_L@8053001 : TextConst 'ENU=Member %1 SRI mvt;FRA=Adh'rent %1 mvt SRI';
+    BEGIN
+      WITH DistrJnlLine_G DO BEGIN
+        CapitalEntry_G.INIT;
+        CapitalEntry_G."Entry No." := NextEntryNo_G;
+        NextEntryNo_G+=1;
+        CapitalEntry_G."Member No." := "Account No.";
+        CapitalEntry_G."Posting Date" := "Posting Date";
+        CapitalEntry_G."Document No." := "Document No.";
+        CapitalEntry_G.Description := STRSUBSTNO(Text8053000_L,Description);
+        CapitalEntry_G."Capital Batch Name" := "Capital Batch Name";
+        CapitalEntry_G."User Code" := USERID;
+        CapitalEntry_G."System-Created Entry" := TRUE;
+        CapitalEntry_G."Posting Description" := "Posting Description";
+        CapitalEntry_G."Campaign No." := "Campaign No.";
+        CapitalEntry_G."Distribution Entry" := TRUE;
+        CapitalEntry_G."G/L Posted" := TRUE;
+        GLEntry_L.GET(GLRec_G."From Entry No.");
+        GLEntry_L.LOCKTABLE;
+        CapitalEntry_G."G/L Document No." := GLEntry_L."Document No.";
+        CapitalEntry_G."G/L Registers No." := GLRec_G."No.";
+        CapitalEntry_G.INSERT;
+      END;
+    END;
+
+    PROCEDURE PostBalAccount@8053000();
+    VAR
+      Contact_L@8053000 : Record 5050;
+      Text8053000_L@8053001 : TextConst 'ENU=Distribution %1;FRA=PIECE N› %1 DECISIONS A.G.';
+      GLEntry_L@1000000000 : Record 17;
+      VendorLedgEntry_L@1000000001 : Record 25;
+      IntTransactionNo_L@1000000002 : Integer;
+      CVLedgerEntry_L@1000000003 : Record 8053380;
+    BEGIN
+      InitGenJnlLine;
+      Contact_L.GET(DistrJnlLine_G."Account No.");
+      GenJnlLine_G.VALIDATE("Account Type", GenJnlLine_G."Account Type"::Vendor);
+      GenJnlLine_G.VALIDATE("Account No.", Contact_L."Vendor No.");
+      // --> 20161010-Wi00-ADV01.01.00-3140-JCD01
+      {BEFORE
+      IF DistrJnlLine_G."Posting Description" <>'' THEN
+        GenJnlLine_G.Description := DistrJnlLine_G."Posting Description"
+      ELSE
+        GenJnlLine_G.Description := COPYSTR(STRSUBSTNO(Text8053000_L, DistrJnlLine_G."Posting Date"), 1, 50);
+      AFTER}
+      GenJnlLine_G.Description := COPYSTR(STRSUBSTNO(Text8053000_L, GenJnlLine_G."Document No."), 1, 50);
+      // <--  20161010-Wi00-ADV01.01.00-3140-JCD01
+      GenJnlLine_G.VALIDATE("Credit Amount", TotalBalAmount_G);
+      // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+      GenJnlLine_G."Due Date" := DistrJnlLine_G."Due Date";
+      // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+      GenJnlLine_G.INSERT;
+
+      CLEAR(GenJnlPostBatch_G);
+      GenJnlPostBatch_G.SetFrmDistribution(TRUE);
+      GenJnlPostBatch_G.RUN(GenJnlLine_G);
+      GenJnlPostBatch_G.GetGLReg(GLRec_G);
+      // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+      GLEntry_L.RESET;
+      IF GLEntry_L.GET(GLRec_G."From Entry No.") THEN BEGIN
+        DistrJnlLine_G."Document No." := GLEntry_L."Document No.";
+        DistrJnlLine_G.MODIFY;
+        // --> 20161010-Wi00-ADV01.01.00-3140-JCD01
+        IntTransactionNo_L := GLEntry_L."Transaction No.";
+        REPEAT
+          IF GLEntry_L."Source No." <> '' THEN BEGIN
+            GLEntry_L.Description := COPYSTR(STRSUBSTNO(Text8053000_L, GLEntry_L."Document No."), 1, 50);
+            GLEntry_L.MODIFY;
+
+            // --> 20231113-WI00-ADV01.01.00-3633-IJI01
+            BlkAccountCreditLibel_G := GLEntry_L.Description;
+            // <-- 20231113-WI00-ADV01.01.00-3633-IJI01
+
+            IF VendorLedgEntry_L.GET(GLEntry_L."Entry No.") THEN BEGIN
+              VendorLedgEntry_L.Description := GLEntry_L.Description;
+              VendorLedgEntry_L.MODIFY;
+              IF CVLedgerEntry_L.GET(CVLedgerEntry_L."Customer / Vendor"::Vendor,GLEntry_L."Entry No.") THEN BEGIN
+                CVLedgerEntry_L.Description := GLEntry_L.Description;
+                CVLedgerEntry_L.MODIFY;
+              END;
+            END;
+          END;
+        UNTIL (GLEntry_L.NEXT = 0) OR (GLEntry_L."Transaction No." <> IntTransactionNo_L);
+        // <-- 20161010-Wi00-ADV01.01.00-3140-JCD01
+      END;
+      // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+    END;
+
+    PROCEDURE PostGLDiscountInsert@1000000002(DecAmount_P@1000000004 : Decimal;CodGenProdPostingGroup_P@1000000005 : Code[10];CodAccount_P@1000000006 : Code[20]);
+    VAR
+      Text8053000_L@8053001 : TextConst 'ENU=Member %1 Discount;FRA=Adh'rent %1 Ristourne';
+      GenProductPostingGroup_L@1000000000 : Record 251;
+      PurchInvLine_L@1000000001 : Record 123;
+      Contact_L@1000000002 : Record 5050;
+      Text8053001_L@1000000003 : TextConst 'ENU=Member %1 Discount;FRA=Adh'rent %1 Ristourne avec TVA';
+    BEGIN
+      // --> 20161201-Wi00-ADV01.01.00-3213-JCD01
+      IF DecAmount_P = 0 THEN
+        EXIT;
+
+      InitGenJnlLine;
+
+      GenJnlLine_G.VALIDATE("Account Type", GenJnlLine_G."Account Type"::"G/L Account");
+      // --> 20161201-Wi00-ADV01.01.00-3213-JCD01
+      {BEFORE
+      IF CodGenProdPostingGroup_P = '' THEN
+        GenJnlLine_G.VALIDATE("Account No.", CapitalSetup_G."Discount Account No.")
+      ELSE
+        GenJnlLine_G.VALIDATE("Account No.", CapitalSetup_G."With VAT Discount Account No.");
+      AFTER}
+      IF CodAccount_P = '' THEN
+        GenJnlLine_G.VALIDATE("Account No.", CapitalSetup_G."Discount Account No.")
+      ELSE
+        GenJnlLine_G.VALIDATE("Account No.", CodAccount_P);
+      // <-- 20161201-Wi00-ADV01.01.00-3213-JCD01
+
+      IF DistrJnlLine_G."Posting Description" <>'' THEN
+        GenJnlLine_G.Description := DistrJnlLine_G."Posting Description"
+      ELSE
+          GenJnlLine_G.Description := COPYSTR(STRSUBSTNO(Text8053000_L, DistrJnlLine_G.Description), 1, 50);
+
+      IF CodGenProdPostingGroup_P <> '' THEN BEGIN
+        Contact_L.GET(DistrJnlLine_G."Account No.");
+        GenProductPostingGroup_L.GET(CodGenProdPostingGroup_P);
+        PurchInvLine_L.RESET;
+        PurchInvLine_L.SETCURRENTKEY("Buy-from Vendor No.");
+        PurchInvLine_L.SETRANGE("Buy-from Vendor No.",Contact_L."Vendor No.");
+        PurchInvLine_L.SETRANGE("Compain No.",DistrJnlLine_G."Campaign No.");
+        PurchInvLine_L.SETRANGE("Gen. Prod. Posting Group",CodGenProdPostingGroup_P);
+        PurchInvLine_L.SETRANGE("VAT Prod. Posting Group",GenProductPostingGroup_L."Def. VAT Prod. Posting Group");
+        PurchInvLine_L.SETFILTER("VAT %",'<>%1',0);
+        // --> 20161201-Wi00-ADV01.01.00-3213-JCD01
+        IF PurchInvLine_L.ISEMPTY THEN
+          PurchInvLine_L.SETRANGE("VAT %");
+        // <-- 20161201-Wi00-ADV01.01.00-3213-JCD01
+        IF PurchInvLine_L.FIND('-') THEN BEGIN
+          GenJnlLine_G."Gen. Posting Type" := GenJnlLine_G."Gen. Posting Type"::Purchase;
+          GenJnlLine_G."Gen. Bus. Posting Group" := PurchInvLine_L."Gen. Bus. Posting Group";
+          GenJnlLine_G."Gen. Prod. Posting Group" := PurchInvLine_L."Gen. Prod. Posting Group";
+          GenJnlLine_G."VAT Bus. Posting Group" := PurchInvLine_L."VAT Bus. Posting Group";
+          GenJnlLine_G.VALIDATE("VAT Prod. Posting Group",PurchInvLine_L."VAT Prod. Posting Group");
+          IF GenJnlLine_G."VAT %" <> 0 THEN BEGIN
+            DecAmount_P := ROUND(DecAmount_P * (1 + (GenJnlLine_G."VAT %"/100)),0.01);
+            GenJnlLine_G.Description := COPYSTR(STRSUBSTNO(Text8053001_L, DistrJnlLine_G.Description), 1, 50);
+          END;
+        END;
+      END;
+
+      GenJnlLine_G.VALIDATE("Debit Amount", DecAmount_P);
+      GenJnlLine_G."Due Date" := DistrJnlLine_G."Due Date";
+      TotalBalAmount_G += GenJnlLine_G."Debit Amount";
+
+      GenJnlLine_G.INSERT;
+
+      // <-- 20161201-Wi00-ADV01.01.00-3213-JCD01
+    END;
+
+    PROCEDURE PostBlockedAccount@1000000001();
+    VAR
+      Contact_L@1000000000 : Record 5050;
+      BlockedAmount_L@1000000001 : Decimal;
+      Text_L00001@1000000002 : TextConst 'FRA=Transfert compte courant bloqu'';
+      Vendor_L@1000000003 : Record 23;
+    BEGIN
+      // --> 20231113-WI00-ADV01.01.00-3633-IJI01
+      BlockedAmount_G := 0;
+      CapitalSetup_G.TESTFIELD("Bloc. Chek. Acc. Posting Group");
+      BlockedAmount_L := TotalBalAmount_G - DistrJnlLine_G."Sousc. Ret";
+
+      IF BlockedAmount_L < CapitalSetup_G."Chek. Acc. Minimum Amount"  THEN
+        EXIT;
+
+      //Ligne d'bit
+      InitGenJnlLine;
+      GenJnlLine_G.VALIDATE("Account Type", GenJnlLine_G."Account Type"::Vendor);
+      Contact_L.GET(DistrJnlLine_G."Account No.");
+      Vendor_L.GET(Contact_L."Vendor No.");
+      GenJnlLine_G.VALIDATE("Account No.", Contact_L."Vendor No.");
+      GenJnlLine_G.Description := Text_L00001;
+      GenJnlLine_G.VALIDATE("Debit Amount", BlockedAmount_L);
+      GenJnlLine_G.VALIDATE("Posting Group", Vendor_L."Vendor Posting Group");
+      GenJnlLine_G."Due Date" := DistrJnlLine_G."Due Date";
+      GenJnlLine_G.INSERT;
+
+
+      //Ligne cr'dit
+      InitGenJnlLine;
+      GenJnlLine_G.VALIDATE("Account Type", GenJnlLine_G."Account Type"::Vendor);
+      GenJnlLine_G.VALIDATE("Account No.", Contact_L."Vendor No.");
+      GenJnlLine_G.Description := BlkAccountCreditLibel_G;
+      GenJnlLine_G.VALIDATE("Credit Amount", BlockedAmount_L);
+      GenJnlLine_G.VALIDATE("Posting Group", CapitalSetup_G."Bloc. Chek. Acc. Posting Group");
+      GenJnlLine_G."Due Date" := DistrJnlLine_G."Due Date";
+      GenJnlLine_G.INSERT;
+
+      //CLEAR(GenJnlPostBatch_G);
+      //GenJnlPostBatch_G.SetFrmDistribution(TRUE);
+      GenJnlPostBatch_G.RUN(GenJnlLine_G);
+      //GenJnlPostBatch_G.GetGLReg(GLRec_G);
+
+
+      BlockedAmount_G := BlockedAmount_L;
+      // <-- 20231113-WI00-ADV01.01.00-3633-IJI01
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+
+      20130625-FINA15-CMC02.02.00-WSA01 : CREATEOBJ
+      20130703-FINA15-CMC02.02.00-BRA01 : ADDCODE (CopyStr(Description))
+      20131107-FINA15-CMC02.02.00-0808-WSA01 : ADDCODE (Gestion validation distribution en une seule feuille compta)
+      20131108-FINA15-CMC02.02.00-0808-BRA01 : ADDCODE (Paiement de la SRI)
+      20131115-Wi00-CMC02.02.00-0926-WSA01 : ADDCODE (gestion des codes journaux)
+      20160922-Wi00-ADV01.01.00-3140-JCD01 : MODCODE (Ajout pr'lSvement obligatoire + Cumul ligne Vendor)
+      20160926-Wi00-ADV01.01.00-3140-JCD01 : ADDCODE (Ajout date d''ch'ance + gestion souche de n›)
+      20161010-Wi00-ADV01.01.00-3140-JCD01 : ADDCODE (gestion libell' distribution)
+      20161019-Wi00-ADV01.01.00-3140-JCD01 : ADDCODE (historisation si erreur validation dans ligne suivante)
+      20161104-Wi00-ADV01.01.00-3140-JCD01 : ADDCODE (Historisation ristourne exceptionnel)
+      20161108-Wi00-ADV01.01.00-3140-JCD01 : MODCODE (Suite changement de cl' table historisation distribution)
+      20161201-Wi00-ADV01.01.00-3213-JCD01 : ADDCODE (TVA sur ristourne)
+      20161201-Wi00-ADV01.01.00-3213-JCD01 : MODCODE (Function PostGLDiscountInsert ajout paramStre + changement comptabilisation ristourn
+      20211005-WI00-ADV01.01.00-SP3574-MRU01 : ADDCODE (Gestion 5 ristournes suppl'mentaires)
+      20231113-WI00-ADV01.01.00-3633-IJI01 : ADDCODE (Gestion compte bloqu')
+      20240131-WI00-ADV01.01.00-CC70225-IJI01 : MODCODE (remettre . z'ro montant transfer compte bloqu')
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

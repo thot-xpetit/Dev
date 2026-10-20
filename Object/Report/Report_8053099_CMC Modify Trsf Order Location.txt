@@ -1,0 +1,326 @@
+OBJECT Report 8053099 CMC Modify Trsf Order Location
+{
+  OBJECT-PROPERTIES
+  {
+    Date=30/10/14;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 32=rm,
+                TableData 120=rm,
+                TableData 121=rm,
+                TableData 5802=rm;
+    CaptionML=[ENU=CMB Modify Trsf Order Location;
+               FRA=Modifier dest. transfert];
+    ProcessingOnly=Oui;
+    OnPostReport=BEGIN
+                   // V'rification pr'alables
+
+                   IF TransferNo_G = '' THEN
+                     ERROR(Text1000000021);
+
+                   TransferHeader_G.GET(TransferNo_G);
+
+                   IF (TrsfToLocationCode_G = '') THEN
+                     ERROR(Text1000000015);
+
+                   // Identification des fournisseurs anciens et nouveaux
+                   xTrsfToLocation_G.GET(TransferHeader_G."Transfer-to Code");
+                   TrsfToLocation_G.GET(TrsfToLocationCode_G);
+
+                   // V'rification si une modification est demand'e.
+                   IF xTrsfToLocation_G.Code = TrsfToLocation_G.Code THEN
+                     ERROR(Text1000000022);
+
+                   // V'rification si le document peut ^tre trait'
+                   CheckTransfer(TransferHeader_G);
+
+                   // Mise . jour du document
+                   UpdateTransfer(TransferHeader_G);
+
+                   // Traitement des documents d'exp'dition
+                   TrsfShipmHeader_G.RESET;
+                   TrsfShipmHeader_G.SETRANGE("Transfer Order No.",TransferHeader_G."No.");
+                   IF TrsfShipmHeader_G.FINDSET THEN
+                     REPEAT
+                       UpdateTrsfShipmHeader(TrsfShipmHeader_G);
+                     UNTIL TrsfShipmHeader_G.NEXT = 0;
+
+                   // --> 20140225-LOG16/001-CMC02.02.00-1760-FEC02
+                   // Traitement des warehouse request
+                   UpdateWhseRequest;
+                   // --< 20140225-LOG16/001-CMC02.02.00-1760-FEC02
+
+                   // Message de fin de traitement
+                   MESSAGE(Text1000000023);
+                 END;
+
+  }
+  DATAITEMS
+  {
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=9020;
+      Height=3410;
+    }
+    CONTROLS
+    {
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1000000000;;Container;
+                  ContainerType=ContentArea }
+
+      { 1000000001;1;Group  ;
+                  GroupType=Group }
+
+      { 1000000003;2;Field  ;
+                  CaptionML=[ENU=Document No.;
+                             FRA=N› transfert];
+                  SourceExpr=TransferNo_G;
+                  TableRelation="Transfer Header";
+                  OnValidate=BEGIN
+                               ValidateDocNo;
+                             END;
+                              }
+
+      { 1000000004;2;Field  ;
+                  CaptionML=[ENU=Vendor No.;
+                             FRA=Code prov. transfert];
+                  SourceExpr=TrsfFromLocationCode_G;
+                  TableRelation=Location;
+                  Editable=FALSE }
+
+      { 1000000006;2;Field  ;
+                  CaptionML=FRA=Nom prov. transfert;
+                  SourceExpr=TrsfFromLocationName_G;
+                  Editable=FALSE }
+
+      { 1000000005;2;Field  ;
+                  CaptionML=[ENU=Pay-to Vendor No.;
+                             FRA=Code dest. transfert];
+                  SourceExpr=TrsfToLocationCode_G;
+                  TableRelation=Location.Code WHERE (Use As In-Transit=CONST(Non));
+                  OnValidate=BEGIN
+                               GetLocationNames;
+                             END;
+                              }
+
+      { 1000000007;2;Field  ;
+                  CaptionML=FRA=Nom dest. transfert;
+                  SourceExpr=TrsfToLocationName_G;
+                  Editable=FALSE }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      TrsfFromLocationCode_G@1000000011 : Code[20];
+      TrsfFromLocationName_G@1000000018 : Text[50];
+      TrsfToLocationCode_G@1000000012 : Code[20];
+      TrsfToLocationName_G@1000000019 : Text[50];
+      xTrsfToLocation_G@1000000009 : Record 14;
+      TrsfToLocation_G@1000000002 : Record 14;
+      TransferNo_G@1000000004 : Code[20];
+      TransferHeader_G@1000000006 : Record 5740;
+      TrsfShipmHeader_G@1000000005 : Record 5744;
+      Text1000000021@1000000021 : TextConst 'FRA=Vous devez renseigner un num'ro de document.';
+      Text1000000015@1000000015 : TextConst 'FRA=Vous devez renseigner le nouveau magasin de destination . appliquer.';
+      UndoPostingMgt_G@1000000016 : Codeunit 5817;
+      TempItemLedgEntry_G@1000000017 : TEMPORARY Record 32;
+      Text1000000020@1000000020 : TextConst 'FRA=Le transfert a d'j. 't' r'ceptionn'.';
+      Text1000000022@1000000022 : TextConst 'FRA=Aucune modification n''a 't' apport'e au transfert.';
+      Text1000000023@1000000023 : TextConst 'FRA=Le transfert a 't' trait' avec succSs.';
+      Text1000000000@1000000000 : TextConst 'FRA=Il existe une r'ception entrep"t en cours pour ce transfert.';
+
+    PROCEDURE CheckTransfer@1000000000(TransferHeader_P@1000000001 : Record 5740);
+    VAR
+      TransferLine_L@1000000000 : Record 5741;
+      WhseRcptLine_L@1000000002 : Record 7317;
+    BEGIN
+      TransferHeader_P.TESTFIELD(Status,TransferHeader_P.Status::Open);
+
+      TransferLine_L.RESET;
+      TransferLine_L.SETRANGE("Document No.",TransferHeader_P."No.");
+      IF TransferLine_L.FINDSET THEN
+        REPEAT
+
+          IF TransferLine_L."Quantity Received" <> 0 THEN
+            ERROR(Text1000000020);
+
+          WhseRcptLine_L.RESET;
+          WhseRcptLine_L.SETRANGE("Source Type",DATABASE::"Transfer Line");
+          WhseRcptLine_L.SETRANGE("Source Subtype",1);
+          WhseRcptLine_L.SETRANGE("Source No.",TransferHeader_P."No.");
+          IF WhseRcptLine_L.FINDSET THEN
+            ERROR(Text1000000000);
+
+        UNTIL TransferLine_L.NEXT = 0;
+    END;
+
+    PROCEDURE UpdateTransfer@1000000002(VAR TransferHeader_P@1000000000 : Record 5740);
+    VAR
+      TransferLine_L@1000000001 : Record 5741;
+    BEGIN
+      WITH TransferHeader_P DO BEGIN
+
+        "Transfer-to Code" := TrsfToLocation_G.Code;
+        "Transfer-to Name" := TrsfToLocation_G.Name;
+        "Transfer-to Name 2" := TrsfToLocation_G."Name 2";
+        "Transfer-to Address" := TrsfToLocation_G.Address;
+        "Transfer-to Address 2" := TrsfToLocation_G."Address 2";
+        "Transfer-to Post Code" := TrsfToLocation_G."Post Code";
+        "Transfer-to City" := TrsfToLocation_G.City;
+        "Transfer-to County" := TrsfToLocation_G.County;
+        "Trsf.-to Country/Region Code" := TrsfToLocation_G."Country/Region Code";
+        MODIFY;
+
+        TransferLine_L.RESET;
+        TransferLine_L.SETRANGE("Document No.",TransferHeader_P."No.");
+        IF TransferLine_L.FINDSET THEN
+          REPEAT
+
+            TransferLine_L."Transfer-to Code" := TrsfToLocation_G.Code;
+            TransferLine_L.MODIFY;
+
+          UNTIL TransferLine_L.NEXT = 0;
+
+      END;
+    END;
+
+    PROCEDURE UpdateTrsfShipmHeader@1000000001(VAR TrsfShipmHeader_P@1000000000 : Record 5744);
+    VAR
+      TrsfShipmLine_L@1000000001 : Record 5745;
+      ItemLedgerEntry_L@1000000002 : Record 32;
+    BEGIN
+      WITH TrsfShipmHeader_P DO BEGIN
+        "Transfer-to Code" := TrsfToLocation_G.Code;
+        "Transfer-to Name" := TrsfToLocation_G.Name;
+        "Transfer-to Name 2" := TrsfToLocation_G."Name 2";
+        "Transfer-to Address" := TrsfToLocation_G.Address;
+        "Transfer-to Address 2" := TrsfToLocation_G."Address 2";
+        "Transfer-to Post Code" := TrsfToLocation_G."Post Code";
+        "Transfer-to City" := TrsfToLocation_G.City;
+        "Transfer-to County" := TrsfToLocation_G.County;
+        "Trsf.-to Country/Region Code" := TrsfToLocation_G."Country/Region Code";
+        MODIFY;
+
+        TrsfShipmLine_L.RESET;
+        TrsfShipmLine_L.SETRANGE("Document No.",TrsfShipmHeader_P."No.");
+        IF TrsfShipmLine_L.FINDSET THEN
+          REPEAT
+
+            TrsfShipmLine_L."Transfer-to Code" := TrsfToLocation_G.Code;
+            TrsfShipmLine_L.MODIFY;
+
+          UNTIL TrsfShipmLine_L.NEXT = 0;
+
+        ItemLedgerEntry_L.RESET;
+        ItemLedgerEntry_L.SETCURRENTKEY("Document No.");
+        ItemLedgerEntry_L.SETRANGE("Document No.","No.");
+        ItemLedgerEntry_L.SETRANGE("Document Type",ItemLedgerEntry_L."Document Type"::"Transfer Shipment");
+        IF ItemLedgerEntry_L.FINDSET THEN
+          REPEAT
+
+            ItemLedgerEntry_L."Trsf.-from / to Location Code" := TrsfToLocation_G.Code;
+            ItemLedgerEntry_L.MODIFY;
+
+          UNTIL ItemLedgerEntry_L.NEXT = 0;
+
+      END;
+    END;
+
+    PROCEDURE ValidateDocNo@1000000007();
+    BEGIN
+      IF TransferNo_G <> '' THEN BEGIN
+        TransferHeader_G.GET(TransferNo_G);
+        CheckTransfer(TransferHeader_G);
+        TrsfFromLocationCode_G := TransferHeader_G."Transfer-from Code";
+        TrsfToLocationCode_G := TransferHeader_G."Transfer-to Code";
+        GetLocationNames;
+      END ELSE
+        ClearLocationInfo;
+    END;
+
+    PROCEDURE GetLocationNames@1000000009();
+    VAR
+      Location_L@1000000000 : Record 14;
+    BEGIN
+      IF TrsfFromLocationCode_G <> '' THEN BEGIN
+        Location_L.GET(TrsfFromLocationCode_G);
+        TrsfFromLocationName_G := Location_L.Name;
+      END ELSE
+        TrsfFromLocationName_G := '';
+
+      IF TrsfToLocationCode_G <> '' THEN BEGIN
+        Location_L.GET(TrsfToLocationCode_G);
+        TrsfToLocationName_G := Location_L.Name;
+      END ELSE
+        TrsfToLocationName_G := '';
+
+      Location_L.TESTFIELD("Use As In-Transit",FALSE);
+    END;
+
+    PROCEDURE ClearLocationInfo@1000000008();
+    BEGIN
+      TrsfFromLocationCode_G := '';
+      TrsfFromLocationName_G := '';
+      TrsfToLocationCode_G := '';
+      TrsfToLocationName_G := '';
+    END;
+
+    PROCEDURE UpdateWhseRequest@8053000();
+    VAR
+      WhseRequest_L@8053000 : Record 5765;
+      WhseRequest2_L@8053001 : Record 5765;
+      Location_L@8053002 : Record 14;
+    BEGIN
+      // --> 20140225-LOG16/001-CMC02.02.00-1760-FEC01
+
+      WhseRequest_L.RESET;
+      WhseRequest_L.SETRANGE(Type,WhseRequest_L.Type::Inbound);
+      WhseRequest_L.SETRANGE("Location Code",xTrsfToLocation_G.Code);
+      WhseRequest_L.SETRANGE("Source Type",DATABASE::"Transfer Line");
+      WhseRequest_L.SETRANGE("Source Subtype",WhseRequest_L."Source Subtype"::"1");
+      WhseRequest_L.SETRANGE("Source No.",TransferNo_G);
+      IF WhseRequest_L.FINDSET THEN BEGIN
+        IF Location_L.RequireReceive(TrsfToLocationCode_G) THEN BEGIN
+          WhseRequest2_L.INIT;
+          WhseRequest2_L.TRANSFERFIELDS(WhseRequest_L);
+          WhseRequest2_L."Location Code" := TrsfToLocationCode_G;
+          WhseRequest2_L."Destination No." := TrsfToLocationCode_G;
+          WhseRequest2_L.INSERT;
+        END;
+        WhseRequest_L.DELETE;
+      END;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+
+      20131028-LOG16/001-CMC02.02.00-1192-FEC01 : ADDOBJ (Cr'ation de l'objet).
+      20140225-LOG16/001-CMC02.02.00-1760-FEC01 : ADDFUNC (UpdateWhseRequest)
+      20140225-LOG16/001-CMC02.02.00-1760-FEC02 : ADDCODE (Lancement de la fonction UpdateWhseRequest)
+
+      // --> 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

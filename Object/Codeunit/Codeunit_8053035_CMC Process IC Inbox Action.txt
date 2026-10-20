@@ -1,0 +1,299 @@
+OBJECT Codeunit 8053035 CMC Process IC Inbox Action
+{
+  OBJECT-PROPERTIES
+  {
+    Date=13/05/16;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,ADV01,.01.00;
+  }
+  PROPERTIES
+  {
+    TableNo=8061230;
+    OnRun=BEGIN
+            Code;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text8053000@8053000 : TextConst 'FRA=La transaction %1 du partenaire %2 ne peut pas ^tre trait'e tant que la transaction %3 n''est pas valid'e. Veuillez relancer la transaction %3.';
+      RecHandledInboxTrans_G@8053002 : Record 420;
+      RecInboxTransTmp_G@8053005 : TEMPORARY Record 418;
+      ErrorOccured_G@8053003 : Boolean;
+      Text8053001@8053004 : TextConst 'ENU=There are errors in the IC Inbox Transaction.;FRA=Il y a des erreurs dans la boOte de r'ception IC.';
+      cduICInboxOutboxMgt_G@8053001 : Codeunit 427;
+
+    PROCEDURE Code@8053000();
+    VAR
+      Rec_InboxTransaction_L@8053000 : Record 418;
+      Rec_InboxTransaction2_L@8053001 : Record 418;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Lecture de la boite de reception IC filtr'e sur les flux c'r'ales et appel de la fonction de process
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   -
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      WITH Rec_InboxTransaction_L DO BEGIN
+        SETCURRENTKEY("Transaction No.","IC Partner Code","Transaction Source","Document Type");
+        // Filtre sur les flux IC c'r'ales
+        SETRANGE("Source Type","Source Type"::"Purchase Collect Document","Source Type"::"Shipping Document");
+        SETRANGE("Line Action","Line Action"::Accept);
+        SETRANGE("Processed By Interace Engine",FALSE);
+        ErrorOccured_G := FALSE;
+        IF FINDSET THEN
+          REPEAT
+            Rec_InboxTransaction2_L.GET("Transaction No.","IC Partner Code","Transaction Source","Document Type");
+            ProcessMessage(Rec_InboxTransaction2_L);
+          UNTIL NEXT = 0;
+        //Renvoie une erreur au moteur pour la gestion du log
+        IF ErrorOccured_G THEN
+          ERROR(Text8053001);
+      END;
+    END;
+
+    PROCEDURE ProcessMessage@8053002(VAR RecInboxTransaction_P@8053000 : Record 418);
+    VAR
+      RecInboxTransaction_L@8053001 : Record 418;
+      RecHInboxReceiptHeader_L@8053002 : Record 8053291;
+      DocumentNo_L@8053003 : Code[20];
+      RecHandedInboxPostDel_L@8053004 : Record 8053341;
+      RecHandledInboxShipOrd_L@1000000000 : Record 8053472;
+    BEGIN
+      //-------------------------------------------------------------------------------------------------------------------
+      // Ex'cuter le process de validation du message IC
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecInboxTransaction_P : Record transaction . traiter
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      WITH RecInboxTransaction_P DO BEGIN
+        FIND;
+
+        //V'rifier qu'il n'y a pas une transaction ant'rieure en erreur pour le m^me document
+        RecInboxTransaction_L.SETCURRENTKEY("Transaction No.","IC Partner Code","Source Type","Document Type","Document No.");
+        RecInboxTransaction_L.SETFILTER("Transaction No.",'<%1',"Transaction No.");
+        RecInboxTransaction_L.SETRANGE("IC Partner Code","IC Partner Code");
+        RecInboxTransaction_L.SETRANGE("Source Type","Source Type");
+        RecInboxTransaction_L.SETRANGE("Document Type","Document Type");
+        RecInboxTransaction_L.SETRANGE("Document No.","Document No.");
+        IF RecInboxTransaction_L.FINDLAST THEN BEGIN
+          "Error Message" := STRSUBSTNO(Text8053000,"Transaction No.","IC Partner Code",RecInboxTransaction_L."Transaction No.");;
+          "Processed By Interace Engine" := TRUE;
+          ErrorOccured_G := TRUE;
+          MODIFY;
+          COMMIT;
+          EXIT;
+        END;
+
+        //Initialise la transaction IC et le type action document dans le cdu ICInboxOutboxMgt
+        CLEAR(cduICInboxOutboxMgt_G);
+        cduICInboxOutboxMgt_G.SetDocActionType(RecInboxTransaction_P);
+
+        IF cduICInboxOutboxMgt_G.RUN THEN BEGIN
+          //Suppression de l'en-t^te boOte r'ception IC
+          CASE "Source Type" OF
+            "Source Type"::"Purchase Collect Document" :
+            BEGIN
+              cduICInboxOutboxMgt_G.DeleteInBoxCollectReceipt;
+              RecHInboxReceiptHeader_L.GET("Transaction No.","IC Partner Code",RecInboxTransaction_P."Transaction Source");
+              DocumentNo_L := RecHInboxReceiptHeader_L."No.";
+            END;
+            //Cas des livraisons collecte
+            "Source Type"::"Sales Collect Document" :
+            BEGIN
+              IF "Document Type" = "Document Type"::"Collect Delivery" THEN BEGIN
+                cduICInboxOutboxMgt_G.DeleteInboxDelivery;
+                RecHandedInboxPostDel_L.GET("Transaction No.","IC Partner Code","Transaction Source");
+                DocumentNo_L := RecHandedInboxPostDel_L."No.";
+              END;
+            END;
+            "Source Type"::"Transfer Collect Document" :
+            BEGIN
+              //Cas des livraisons transfert collecte
+              IF "Document Type" = "Document Type"::"Collect Transfer Delivery" THEN BEGIN
+                cduICInboxOutboxMgt_G.DeleteInboxDelivery;
+                RecHandedInboxPostDel_L.GET("Transaction No.","IC Partner Code",RecInboxTransaction_P."Transaction Source");
+                DocumentNo_L := RecHandedInboxPostDel_L."No.";
+              //Cas des r'ceptions transfert collecte
+              END ELSE BEGIN
+                cduICInboxOutboxMgt_G.DeleteInBoxCollectReceipt;
+                RecHInboxReceiptHeader_L.GET("Transaction No.","IC Partner Code",RecInboxTransaction_P."Transaction Source");
+                DocumentNo_L := RecHInboxReceiptHeader_L."No.";
+              END;
+            END;
+            "Source Type"::"Item Journal Line" :
+            BEGIN
+              cduICInboxOutboxMgt_G.DeleteInboxItemJnlLine;
+              DocumentNo_L := RecInboxTransaction_P."Document No.";
+            END;
+            "Source Type"::"Shipping Document" :
+            BEGIN
+              cduICInboxOutboxMgt_G.DeleteInboxShipOrder;
+              RecHandledInboxShipOrd_L.GET("Transaction No.","IC Partner Code",RecInboxTransaction_P."Transaction Source");
+              DocumentNo_L := RecHandledInboxShipOrd_L."No.";
+            END;
+          END;
+
+          //Insertion de la transaction boOte r'ception IC trait'e
+          RecHandledInboxTrans_G.TRANSFERFIELDS(RecInboxTransaction_P);
+          RecHandledInboxTrans_G."Document No." := DocumentNo_L;
+          RecHandledInboxTrans_G.Status := RecHandledInboxTrans_G.Status::Posted;
+          RecHandledInboxTrans_G.INSERT;
+
+          //Suppression de la transaction boOte r'ception IC
+          DELETE;
+
+          //Commit transaction boOte r'ception IC
+          COMMIT;
+        END ELSE BEGIN
+          "Error Message" := GETLASTERRORTEXT;
+          "Processed By Interace Engine" := TRUE;
+          ErrorOccured_G := TRUE;
+          MODIFY;
+          COMMIT;
+        END;
+      END;
+    END;
+
+    PROCEDURE ProcessMessageManual@8053001(VAR RecInboxTransaction_P@8053000 : Record 418);
+    VAR
+      RecInboxTransaction_L@8053001 : Record 418;
+      RecHInboxReceiptHeader_L@8053002 : Record 8053291;
+      DocumentNo_L@8053003 : Code[20];
+      RecHandedInboxPostDel_L@8053004 : Record 8053341;
+      RecHandledInboxShipOrd_L@1000000000 : Record 8053472;
+    BEGIN
+      //-------------------------------------------------------------------------------------------------------------------
+      // Ex'cuter le process de validation du message IC en mode manuel
+      // Appel dans le rpt 511
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecInboxTransaction_P : Record transaction . traiter
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      WITH RecInboxTransaction_P DO BEGIN
+        //Recherche des transactions li'es au m^me document
+        RecInboxTransaction_L.SETCURRENTKEY("Transaction No.","IC Partner Code","Source Type","Document Type","Document No.");
+        RecInboxTransaction_L.SETRANGE("IC Partner Code","IC Partner Code");
+        RecInboxTransaction_L.SETRANGE("Source Type","Source Type");
+        RecInboxTransaction_L.SETRANGE("Document Type","Document Type");
+        RecInboxTransaction_L.SETRANGE("Document No.","Document No.");
+        IF RecInboxTransaction_L.FINDSET THEN BEGIN
+          ErrorOccured_G := FALSE;
+          REPEAT
+            //Initialise la transaction IC et le type action document dans le cdu ICInboxOutboxMgt
+            CLEAR(cduICInboxOutboxMgt_G);
+            cduICInboxOutboxMgt_G.SetDocActionType(RecInboxTransaction_L);
+
+            IF cduICInboxOutboxMgt_G.RUN THEN BEGIN
+              //Suppression de l'en-t^te boOte r'ception IC
+              CASE "Source Type" OF
+                "Source Type"::"Purchase Collect Document" :
+                BEGIN
+                  cduICInboxOutboxMgt_G.DeleteInBoxCollectReceipt;
+                  RecHInboxReceiptHeader_L.GET(RecInboxTransaction_L."Transaction No.",RecInboxTransaction_L."IC Partner Code",
+                    RecInboxTransaction_L."Transaction Source");
+                  DocumentNo_L := RecHInboxReceiptHeader_L."No.";
+                END;
+                //Cas des livraisons collecte
+                "Source Type"::"Sales Collect Document" :
+                BEGIN
+                  IF "Document Type" = "Document Type"::"Collect Delivery" THEN BEGIN
+                    cduICInboxOutboxMgt_G.DeleteInboxDelivery;
+                    RecHandedInboxPostDel_L.GET(RecInboxTransaction_L."Transaction No.",RecInboxTransaction_L."IC Partner Code",
+                      RecInboxTransaction_L."Transaction Source");
+                    DocumentNo_L := RecHandedInboxPostDel_L."No.";
+                  END;
+                END;
+                "Source Type"::"Transfer Collect Document" :
+                BEGIN
+                  //Cas des livraisons transfert collecte
+                  IF "Document Type" = "Document Type"::"Collect Transfer Delivery" THEN BEGIN
+                    cduICInboxOutboxMgt_G.DeleteInboxDelivery;
+                    RecHandedInboxPostDel_L.GET(RecInboxTransaction_L."Transaction No.",RecInboxTransaction_L."IC Partner Code",
+                      RecInboxTransaction_L."Transaction Source");
+                    DocumentNo_L := RecHandedInboxPostDel_L."No.";
+                  //Cas des r'ceptions transfert collecte
+                  END ELSE BEGIN
+                    cduICInboxOutboxMgt_G.DeleteInBoxCollectReceipt;
+                    RecHInboxReceiptHeader_L.GET(RecInboxTransaction_L."Transaction No.",RecInboxTransaction_L."IC Partner Code",
+                      RecInboxTransaction_L."Transaction Source");
+                    DocumentNo_L := RecHInboxReceiptHeader_L."No.";
+                  END;
+                END;
+                "Source Type"::"Item Journal Line" :
+                BEGIN
+                  cduICInboxOutboxMgt_G.DeleteInboxItemJnlLine;
+                  DocumentNo_L := RecInboxTransaction_L."Document No.";
+                END;
+                "Source Type"::"Shipping Document" :
+                BEGIN
+                  // --> 20160513-GEN15/001-ADV01.01.00-2813-NED
+                  IF NOT ErrorOccured_G THEN BEGIN
+                  // <-- 20160513-GEN15/001-ADV01.01.00-2813-NED
+                    cduICInboxOutboxMgt_G.DeleteInboxShipOrder;
+                    RecHandledInboxShipOrd_L.GET(RecInboxTransaction_L."Transaction No.",RecInboxTransaction_L."IC Partner Code",
+                                                  RecInboxTransaction_L."Transaction Source");
+                    DocumentNo_L := RecHandledInboxShipOrd_L."No.";
+                  // --> 20160513-GEN15/001-ADV01.01.00-2813-NED
+                  END;
+                  // <-- 20160513-GEN15/001-ADV01.01.00-2813-NED
+                END;
+              END;
+              // --> 20160513-GEN15/001-ADV01.01.00-2813-NED
+              IF NOT ErrorOccured_G THEN BEGIN
+              // <-- 20160513-GEN15/001-ADV01.01.00-2813-NED
+                //Insertion de la transaction boOte r'ception IC trait'e
+                RecHandledInboxTrans_G.TRANSFERFIELDS(RecInboxTransaction_L);
+                RecHandledInboxTrans_G."Document No." := DocumentNo_L;
+                RecHandledInboxTrans_G.Status := RecHandledInboxTrans_G.Status::Posted;
+                RecHandledInboxTrans_G.INSERT;
+
+                //Suppression de la transaction boOte r'ception IC
+                RecInboxTransaction_L.DELETE;
+              // --> 20160513-GEN15/001-ADV01.01.00-2813-NED
+              END;
+              // <-- 20160513-GEN15/001-ADV01.01.00-2813-NED
+              //Commit transaction boOte r'ception IC
+              COMMIT;
+            END ELSE BEGIN
+              RecInboxTransaction_L."Error Message" := GETLASTERRORTEXT;
+              ErrorOccured_G := TRUE;
+              RecInboxTransaction_L.MODIFY;
+              COMMIT;
+            END;
+          // --> 20160513-GEN15/001-ADV01.01.00-2813-NED
+          //UNTIL (RecInboxTransaction_L.NEXT = 0) OR ErrorOccured_G;
+          UNTIL (RecInboxTransaction_L.NEXT = 0) OR (ErrorOccured_G AND ("Source Type" <> "Source Type"::"Shipping Document"));
+          // <-- 20160513-GEN15/001-ADV01.01.00-2813-NED
+        END;
+      END;
+    END;
+
+    BEGIN
+    {
+      // --> 3Li BEGIN
+      20131120-Gen15/001-CMC02.02.00-FBE : CREATE
+      20140116-GEN15/001-CMC02.02.00-DRN01 : Gestion des livraisons transfert collecte IC
+      20140118-GEN15/001-CMC02.02.00-DRN01 : Gestion des r'ceptions transfert collecte IC
+      20140130-Gen15/001-CMC02.02.00-FBE01 : Gestion des Item Journal Line (inventaires silos partag's)
+      20140220-GEN15/001-CMC02.02.00-DRN01 : Gestion du moteur d'interface
+                                             Ajout fonction ProcessMessageManual
+      20140304-GEN15/001-CMC02.02.00-FBE01 : Gestion des ordres de chargement
+      20140312-GEN15/001-CMC02.02.00-FBE01 : Gestion des ordres de chargement pour l'appel par le moteur
+      20140319-GEN15/001-CMC02.02.00-DRN01 : Gestion du moteur d'interface
+                                             Correction erreur sur transaction multiple
+      20160513-GEN15/001-ADV01.01.00-2813-NED : MODFUNCT (ProcessMessageManual Gestion des OC bloqu' dans boOte transaction)
+      // <-- 3Li END
+    }
+    END.
+  }
+}
+

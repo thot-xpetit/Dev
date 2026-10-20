@@ -1,0 +1,710 @@
+OBJECT Codeunit 60092 Create Cost Plus Purch. Doc
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25/06/20;
+    Heure=00:00:00;
+    Liste versions=SP3446;
+  }
+  PROPERTIES
+  {
+    TableNo=60127;
+    OnRun=VAR
+            PagesCreateDoc_L@1000000000 : Page 60204;
+            NbTotalLines_L@1000000001 : Integer;
+            DefaultVendorNo_L@1000000002 : Code[20];
+          BEGIN
+            CLEAR(PagesCreateDoc_L);
+
+            PagesCreateDoc_L.SetQuantityToPost(DisplayQuantity_G);
+            PagesCreateDoc_L.SetAmountToPost(DisplayAmount_G);
+            PagesCreateDoc_L.SetDate;
+
+            PagesCreateDoc_L.SetFinalDocType(FinalDocType_G);
+            // --> 20200603-WI00-ADV01.01.00-3446-CJY01
+            PagesCreateDoc_L.SetCampain(CampainNo_G);
+            // <-- 20200603-WI00-ADV01.01.00-3446-CJY01
+
+            //on utilise TempCostPlusLedgerEntryVend_G pour d'terminer si nous avons un
+            //fournisseur unique pour toutes les lignes, dans ce cas, on pr'remplie
+            NbTotalLines_L := TempCostPlusLedgerEntryVend_G.COUNT;
+            IF NbTotalLines_L > 0 THEN BEGIN
+              TempCostPlusLedgerEntryVend_G.FINDFIRST;
+              TempCostPlusLedgerEntryVend_G.CALCFIELDS("Default Vendor No. Final doc");
+              DefaultVendorNo_L := TempCostPlusLedgerEntryVend_G."Default Vendor No. Final doc";
+              TempCostPlusLedgerEntryVend_G.SETRANGE("Default Vendor No. Final doc",DefaultVendorNo_L);
+              IF TempCostPlusLedgerEntryVend_G.COUNT = NbTotalLines_L THEN
+                PagesCreateDoc_L.SetSourceNo(DefaultVendorNo_L);
+            END;
+
+            IF PagesCreateDoc_L.RUNMODAL = ACTION::OK THEN BEGIN
+              Amount_G := PagesCreateDoc_L.GetAmount();
+              PagesCreateDoc_L.GetSourceNo(VendorNo_G);
+              PagesCreateDoc_L.GetDates(PostingDate_G, DocDate_G);
+              // --> 20200603-WI00-ADV01.01.00-3446-CJY01
+              //on r'cupSre la campagne si elle a 't' modifi'e par l'utilisateur
+              PagesCreateDoc_L.GetCampain(CampainNo_G);
+              // <-- 20200603-WI00-ADV01.01.00-3446-CJY01
+
+              CreatePurchaseDoc(Rec);
+
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Quantity_G@1000000000 : Decimal;
+      Amount_G@1000000001 : Decimal;
+      CostPlusLedgerEntry_G@1000000002 : Record 60127;
+      DocNo_G@1000000003 : Code[20];
+      CostPlusLedgerEntryVerifVend_G@1000000004 : Record 60127;
+      VendorNo_G@1000000005 : Code[20];
+      PostingDate_G@1000000006 : Date;
+      DocDate_G@1000000007 : Date;
+      Text60000@1000000008 : TextConst 'FRA=Cost Plus';
+      ApplyItemVAT_G@1000000009 : Boolean;
+      Text60001@1000000010 : TextConst 'FRA=Impossible de g'n'rer le document, il manque le code frais annexe sur le Code Cost Plus %1';
+      DocumentDimension_G@1000000012 : Record 357;
+      GroupeComptaTvaArticle_G@1000000011 : Code[10];
+      cduCMCDimensions_G@1000000014 : Codeunit 8053004;
+      cduDimMgt_G@1000000013 : Codeunit 408;
+      PostingDescription_G@1000000015 : Text[100];
+      FinalDocType_G@1000000016 : 'Facture,Avoir';
+      DisplayQuantity_G@1000000017 : Decimal;
+      DisplayAmount_G@1000000018 : Decimal;
+      CampainNo_G@1000000019 : Code[10];
+      TempCostPlusLedgerEntryVend_G@1000000020 : TEMPORARY Record 60127;
+
+    PROCEDURE SetQuantity@8053005(DisplayQuantity_P@1000000001 : Decimal;Quantity_P@1000000000 : Decimal);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Affecte la quantit' de l'avoir g'n'r'
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Entr'es : Quantity_P : Quantit' global du document . g'n'rer
+      //----------------------------------------------------------------------------------------------------------------------------------
+
+      DisplayQuantity_G := DisplayQuantity_P;
+      Quantity_G:= Quantity_P;
+    END;
+
+    PROCEDURE SetAmount@8053001(DisplayAmount_P@1000000001 : Decimal;Amount_P@1000000000 : Decimal);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Affecte le montant de l'avoir g'n'r'
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Entr'es : Amount_P : Montant global g'n'rer
+      //----------------------------------------------------------------------------------------------------------------------------------
+      DisplayAmount_G := DisplayAmount_P;
+      Amount_G := Amount_P;
+    END;
+
+    PROCEDURE CreatePurchaseDoc@8053006(VAR CostPlusLedgerEntry_P@8053000 : Record 60127);
+    VAR
+      "<< 3LI LOCALS >>"@8053004 : Integer;
+      CMCSetup_L@8053006 : Record 8052982;
+      DefaultDim_L@8053015 : Record 352;
+      DocDimTemp_L@8053016 : TEMPORARY Record 357;
+      ItemLedgerEntry_L@8053005 : Record 32;
+      TempCostPlusLedgerEntry_L@8053003 : TEMPORARY Record 60127;
+      TempCostPlusLedgerEntry2_L@8053013 : TEMPORARY Record 60127;
+      PurchaseHeader_L@8053009 : Record 38;
+      PurchaseLine_L@8053008 : Record 39;
+      PurchItemChargeAssignment_L@8053007 : Record 5805;
+      Item_L@8053012 : Record 27;
+      TotalQuantity_L@8053002 : Decimal;
+      UnitAmount_L@8053001 : Decimal;
+      LineNo_L@8053010 : Integer;
+      LinePurchNo_L@8053011 : Integer;
+      VATRateChangeConversion_L@8053017 : Codeunit 550;
+      ItemVariant_L@8053018 : Record 5401;
+      CostPlusLedgerEntry_L@1000000000 : Record 60127;
+      CostPlusList_L@1000000001 : Record 60118;
+    BEGIN
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // G'nSre la facture Cost Plus
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Entrees : CostPlusLedgerEntry_P : Ecritures Cost Plus . partir desquelles la RFC sera calcul'e
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      SetRecordsToTemp(CostPlusLedgerEntry_P, TempCostPlusLedgerEntry_L);
+      SetRecordsToTempItemCharge(CostPlusLedgerEntry_P, TempCostPlusLedgerEntry2_L);
+      LinePurchNo_L := 10000;
+
+      IF DocNo_G = '' THEN BEGIN
+        PurchaseHeader_L.INIT;
+        // --> 20200414-WI00-ADV01.01.00-3446-CJY01
+        {BEFORE
+        IF Amount_G >= 0 THEN
+          PurchaseHeader_L."Document Type" := PurchaseHeader_L."Document Type"::Invoice
+        ELSE
+          PurchaseHeader_L."Document Type" := PurchaseHeader_L."Document Type"::"Credit Memo";
+        AFTER}
+        IF FinalDocType_G = FinalDocType_G::Facture THEN
+         PurchaseHeader_L."Document Type" := PurchaseHeader_L."Document Type"::Invoice
+        ELSE
+          PurchaseHeader_L."Document Type" := PurchaseHeader_L."Document Type"::"Credit Memo";
+
+        // <-- 20200414-WI00-ADV01.01.00-3446-CJY01
+        PurchaseHeader_L."No." := '';
+        PurchaseHeader_L.INSERT(TRUE);
+        PurchaseHeader_L.VALIDATE("Buy-from Vendor No.", VendorNo_G);
+        PurchaseHeader_L.VALIDATE("Cost Plus" , TRUE);
+        PurchaseHeader_L.VALIDATE("Posting Date", PostingDate_G);
+        PurchaseHeader_L.VALIDATE("Document Date", DocDate_G);
+        PurchaseHeader_L.VALIDATE("Posting Description", PostingDescription_G);
+        PurchaseHeader_L.MODIFY(TRUE);
+      END;
+      CMCSetup_L.GET;
+      TempCostPlusLedgerEntry2_L.RESET;
+      IF TempCostPlusLedgerEntry2_L.FINDSET THEN BEGIN
+        REPEAT
+          Item_L.GET(TempCostPlusLedgerEntry2_L."Item No.");
+
+          PurchaseLine_L.INIT;
+          //PurchaseLine_L.SetControlIntraCom(TRUE);
+          // EXISTE dans le cadre RFC ACHAT (a garder dans le cadre Cost Plus ?)
+
+          PurchaseLine_L."Document Type" := PurchaseHeader_L."Document Type";
+          PurchaseLine_L.VALIDATE("Document No.", PurchaseHeader_L."No.");
+          PurchaseLine_L.VALIDATE("Line No.", LinePurchNo_L);
+          PurchaseLine_L.INSERT(TRUE);
+
+          PurchaseLine_L.VALIDATE(Type, PurchaseLine_L.Type::"Charge (Item)");
+          CostPlusList_L.GET(TempCostPlusLedgerEntry2_L."Cost Plus Code");
+          IF CostPlusList_L."Item Charge No." = '' THEN
+            ERROR(Text60001,CostPlusList_L.Code);
+
+          PurchaseLine_L.VALIDATE("No.", CostPlusList_L."Item Charge No.");
+          // --> 20200423-WI00-ADV01.01.00-3446-CJY01
+          //RETRAIT
+          // --> 20200618-WI00-ADV01.01.00-3446-CJY01
+
+          // --> 20200625-WI00-ADV01.01.00-3446-SCR01
+          IF PurchaseLine_L."Shortcut Dimension 2 Code" = '' THEN
+            PurchaseLine_L.VALIDATE("Shortcut Dimension 2 Code",Item_L."Global Dimension 2 Code");
+          // <-- 20200625-WI00-ADV01.01.00-3446-SCR01
+
+
+          IF (TempCostPlusLedgerEntry2_L."Variant Code" <> '') AND
+             (ItemVariant_L.GET(TempCostPlusLedgerEntry2_L."Item No.",TempCostPlusLedgerEntry2_L."Variant Code"))
+          THEN
+            PurchaseLine_L.VALIDATE(Description,COPYSTR(STRSUBSTNO(TempCostPlusLedgerEntry2_L."Cost Plus Code" + ' - ' +
+              ItemVariant_L.Description),1,MAXSTRLEN(PurchaseLine_L.Description)))
+          ELSE
+            PurchaseLine_L.VALIDATE(Description,COPYSTR(STRSUBSTNO(TempCostPlusLedgerEntry2_L."Cost Plus Code" + ' - ' +
+              Item_L.Description),1,MAXSTRLEN(PurchaseLine_L.Description)));
+
+           // <-- 20200618-WI00-ADV01.01.00-3446-CJY01
+           // <-- 20200423-WI00-ADV01.01.00-3446-CJY01
+          PurchaseLine_L.VALIDATE("Location Code",TempCostPlusLedgerEntry2_L."Location Code");
+
+          IF PurchaseHeader_L."Document Type" = PurchaseHeader_L."Document Type"::Invoice THEN
+            PurchaseLine_L.VALIDATE(Quantity, TempCostPlusLedgerEntry2_L."Invoiced Quantity")
+          ELSE
+            PurchaseLine_L.VALIDATE(Quantity, -TempCostPlusLedgerEntry2_L."Invoiced Quantity");
+          {
+          VATRateChangeConversion_L.GetOldVat(TempCostPlusLedgerEntry2_L."Posting Date",
+            PurchaseLine_L."Gen. Prod. Posting Group",Item_L."VAT Prod. Posting Group",Item_L."No.");
+
+          //voir TVA une fois la g'n'ration fonctionnelle
+          IF ApplyItemVAT_G THEN
+            PurchaseLine_L.VALIDATE("VAT Prod. Posting Group",Item_L."VAT Prod. Posting Group")
+          ELSE
+            PurchaseLine_L.VALIDATE("VAT Prod. Posting Group",GroupeComptaTvaArticle_G);
+          }
+          //MESSAGE('Cost Plus Unit Am. to Invoice %1, Quantity %2',TempCostPlusLedgerEntry2_L."Cost Plus Unit Am. to Invoice",
+          //PurchaseLine_L.Quantity);
+          IF PurchaseLine_L.Quantity <> 0 THEN  BEGIN
+            IF PurchaseHeader_L."Document Type" = PurchaseHeader_L."Document Type"::Invoice THEN
+              PurchaseLine_L.VALIDATE("Direct Unit Cost", TempCostPlusLedgerEntry2_L."Cost Plus Unit Am. to Invoice"
+               / PurchaseLine_L.Quantity)
+            ELSE
+              PurchaseLine_L.VALIDATE("Direct Unit Cost", -TempCostPlusLedgerEntry2_L."Cost Plus Unit Am. to Invoice"
+               / PurchaseLine_L.Quantity);
+
+          END;
+          PurchaseLine_L.VALIDATE("CMC Campaign No.",CampainNo_G);
+
+          // --> 20200623-WI00-ADV01.01.00-3446-CJY01
+          // <-- 20200623-WI00-ADV01.01.00-3446-CJY01
+          PurchaseLine_L.MODIFY(TRUE);
+          {
+          PurchaseLine_L.CreateDim(27,Item_L."No.",DATABASE::Job,PurchaseLine_L."Job No.",DATABASE::"Responsibility Center",
+            PurchaseLine_L."Responsibility Center",DATABASE::"Work Center",PurchaseLine_L."Work Center No.");
+
+
+          // ------------------------------------------------------------------------
+          // Copie Axes Analytiques Article
+          // ------------------------------------------------------------------------
+          cduCMCDimensions_G.DimPurchFromItem(DocDimTemp_L, PurchaseLine_L, Item_L."No.");
+          cduDimMgt_G.TransferTempToDimToDocDim(DocDimTemp_L);
+          // ------------------------------------------------------------------------
+          }
+          //on cr'e notre analytique si n'cessaire
+          {IF AxeGenAvoir_G <> '' THEN BEGIN
+            IF DimValueAxeGenAvoir_G = '' THEN
+              ERROR(Text60000,AxeGenAvoir_G);
+            //On cr'e notre ligne analytique
+            DocumentDimension_G."Table ID" := 39;
+            DocumentDimension_G."Document Type" := DocumentDimension_G."Document Type"::"Credit Memo";
+            DocumentDimension_G."Document No." := PurchaseLine_L."Document No.";
+            DocumentDimension_G."Line No." := PurchaseLine_L."Line No.";
+            DocumentDimension_G.Type := 0;
+            DocumentDimension_G."Dimension Code" := AxeGenAvoir_G;
+            DocumentDimension_G."Dimension Value Code" := DimValueAxeGenAvoir_G;
+            IF NOT DocumentDimension_G.INSERT(TRUE) THEN
+              DocumentDimension_G.MODIFY(TRUE);
+
+          END;
+          }
+
+          LinePurchNo_L := LinePurchNo_L + 10000;
+
+          TempCostPlusLedgerEntry_L.SETCURRENTKEY("Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group","Cost Plus Code",
+            "Rupture Prix Unit Fac");
+
+          TempCostPlusLedgerEntry_L.SETRANGE("Item No.", TempCostPlusLedgerEntry2_L."Item No.");
+          TempCostPlusLedgerEntry_L.SETRANGE("VAT Bus. Posting Group", TempCostPlusLedgerEntry2_L."VAT Bus. Posting Group");
+          TempCostPlusLedgerEntry_L.SETRANGE("VAT Prod. Posting Group", TempCostPlusLedgerEntry2_L."VAT Prod. Posting Group");
+          TempCostPlusLedgerEntry_L.SETRANGE("Cost Plus Code", TempCostPlusLedgerEntry2_L."Cost Plus Code");
+          TempCostPlusLedgerEntry_L.SETRANGE("Rupture Prix Unit Fac", TempCostPlusLedgerEntry2_L."Rupture Prix Unit Fac");
+          TempCostPlusLedgerEntry_L.FINDSET;
+
+
+          REPEAT
+
+            ItemLedgerEntry_L.GET(TempCostPlusLedgerEntry_L."Item Ledger Entry No.");
+
+            PurchItemChargeAssignment_L.RESET;
+            PurchItemChargeAssignment_L.SETRANGE("Document Type", PurchaseLine_L."Document Type");
+            PurchItemChargeAssignment_L.SETRANGE("Document No.", PurchaseLine_L."Document No.");
+            PurchItemChargeAssignment_L.SETRANGE("Document Line No.", PurchaseLine_L."Line No.");
+            PurchItemChargeAssignment_L.SETRANGE("Unit Cost", TempCostPlusLedgerEntry_L."Rupture Prix Unit Fac");
+
+            LineNo_L := 10000;
+            IF PurchItemChargeAssignment_L.FINDLAST THEN
+              LineNo_L := PurchItemChargeAssignment_L."Line No." + 10000;
+
+            PurchItemChargeAssignment_L.INIT;
+            PurchItemChargeAssignment_L."Document Type" := PurchaseLine_L."Document Type";
+            PurchItemChargeAssignment_L."Document No." := PurchaseLine_L."Document No.";
+            PurchItemChargeAssignment_L."Document Line No." := PurchaseLine_L."Line No.";
+            PurchItemChargeAssignment_L."Line No." := LineNo_L;
+
+            PurchItemChargeAssignment_L."Applies-to Doc. Type" := GetDocType(ItemLedgerEntry_L."Document Type");
+            PurchItemChargeAssignment_L."Applies-to Doc. No." := ItemLedgerEntry_L."Document No.";
+            PurchItemChargeAssignment_L."Applies-to Doc. Line No." := ItemLedgerEntry_L."Document Line No.";
+
+            PurchItemChargeAssignment_L.VALIDATE("Item Charge No.", CostPlusList_L."Item Charge No.");
+            PurchItemChargeAssignment_L.VALIDATE("Item No.", ItemLedgerEntry_L."Item No.");
+            PurchItemChargeAssignment_L.VALIDATE(Description, ItemLedgerEntry_L.Description);
+
+            PurchItemChargeAssignment_L.VALIDATE("Unit Cost", TempCostPlusLedgerEntry_L."Cost Plus Unit Am. to Invoice");
+
+            PurchItemChargeAssignment_L."Cost Plus Ledger Entry No." := TempCostPlusLedgerEntry_L."Entry No.";
+            PurchItemChargeAssignment_L.INSERT(TRUE);
+            //TEST
+            //MESSAGE('Insertion frais annexe sur doc type %1, N› Doc %2, N› ligne Doc %3',
+              //STRSUBSTNO('%1',PurchaseLine_L."Document Type"),
+             // PurchaseLine_L."Document No.",PurchaseLine_L."Line No.");
+            //TEST
+            IF PurchaseHeader_L."Document Type" = PurchaseHeader_L."Document Type"::Invoice THEN
+              PurchItemChargeAssignment_L.VALIDATE("Qty. to Assign",
+                PurchItemChargeAssignment_L."Qty. to Assign" + TempCostPlusLedgerEntry_L."Valued Quantity")
+            ELSE
+              PurchItemChargeAssignment_L.VALIDATE("Qty. to Assign",
+                PurchItemChargeAssignment_L."Qty. to Assign" - TempCostPlusLedgerEntry_L."Valued Quantity");
+
+            PurchItemChargeAssignment_L."Amount to Assign" :=
+              PurchItemChargeAssignment_L."Qty. to Assign" * TempCostPlusLedgerEntry_L."Cost Plus Unit Am. to Invoice";
+
+            PurchItemChargeAssignment_L.MODIFY(TRUE);
+
+            // -----------------------------------------------------------------------
+            IF CostPlusLedgerEntry_L.GET(TempCostPlusLedgerEntry_L."Entry No.") THEN BEGIN
+              CostPlusLedgerEntry_L."Cost Plus Unit Am. to Invoice" := 0;
+              // --> 20170512-WI00-ADV01.01.00-25595-CJY01
+              CostPlusLedgerEntry_L."Rupture Prix Unit Fac" := 0;
+              // <-- 20170512-WI00-ADV01.01.00-25595-CJY01
+              CostPlusLedgerEntry_L.MODIFY(TRUE);
+            END;
+
+            // -----------------------------------------------------------------------
+          UNTIL TempCostPlusLedgerEntry_L.NEXT =0;
+        UNTIL TempCostPlusLedgerEntry2_L.NEXT=0;
+
+      END;
+    END;
+
+    PROCEDURE SetRecordsToTemp@8053003(VAR CostPlusLedgerEntry_P@8053000 : Record 60127;VAR TempCostPlusLedgerEntry_P@8053001 : TEMPORARY Record 60127);
+    VAR
+      CostPlusList_L@1000000000 : Record 60118;
+    BEGIN
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Copie les enregistrements en table temporaire pour traitement.
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Entrees :
+      //  - CostPlusLedgerEntry_P ....: Ecritures Cost Plus . copier
+      //  - TempCostPlusLedgerEntry_P : Table temporaire . remplir
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      TempCostPlusLedgerEntry_P.DELETEALL;
+
+      IF CostPlusLedgerEntry_P.FIND('-') THEN BEGIN
+        REPEAT
+          TempCostPlusLedgerEntry_P := CostPlusLedgerEntry_P;
+          //on gSre ici la valeur de frais annexe param'tr' dans le "chapeau" Cost Plus
+          CostPlusList_L.GET(CostPlusLedgerEntry_P."Cost Plus Code");
+          IF CostPlusList_L."Item Charge No." = '' THEN
+            ERROR(Text60001,CostPlusList_L.Code);
+          TempCostPlusLedgerEntry_P."Item Charge No." := CostPlusList_L."Item Charge No.";
+          TempCostPlusLedgerEntry_P.INSERT;
+        UNTIL CostPlusLedgerEntry_P.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE SetRecordsToTemp2@8053012(VAR CostPlusLedgerEntry_P@8053000 : Record 60127;VAR TempCostPlusLedgerEntry_P@8053001 : TEMPORARY Record 60127);
+    BEGIN
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Copie les enregistrements en table temporaire pour traitement pour regroupement par article et Groupe TVA
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Entrees :
+      //  - CostPlusLedgerEntry_P ....: Ecritures Cost Plus . copier
+      //  - TempCostPlusLedgerEntry_P : Table temporaire . remplir
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      TempCostPlusLedgerEntry_P.DELETEALL;
+      IF CostPlusLedgerEntry_P.FINDSET(FALSE,FALSE) THEN BEGIN
+        REPEAT
+          TempCostPlusLedgerEntry_P.SETCURRENTKEY("Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group","Cost Plus Code",
+            "Rupture Prix Unit Fac");
+          TempCostPlusLedgerEntry_P.SETRANGE("Item No.", CostPlusLedgerEntry_P."Item No.");
+          TempCostPlusLedgerEntry_P.SETRANGE("VAT Bus. Posting Group", CostPlusLedgerEntry_P."VAT Bus. Posting Group");
+          TempCostPlusLedgerEntry_P.SETRANGE("VAT Prod. Posting Group", CostPlusLedgerEntry_P."VAT Prod. Posting Group");
+          TempCostPlusLedgerEntry_P.SETRANGE("Cost Plus Code", CostPlusLedgerEntry_P."Cost Plus Code");
+          TempCostPlusLedgerEntry_P.SETRANGE("Rupture Prix Unit Fac", CostPlusLedgerEntry_P."Rupture Prix Unit Fac");
+          IF NOT TempCostPlusLedgerEntry_P.FINDFIRST THEN BEGIN
+            TempCostPlusLedgerEntry_P.RESET;
+            TempCostPlusLedgerEntry_P := CostPlusLedgerEntry_P;
+            //du fait du "temp" on d'tourne l'usage du champ "unitaire" pour un calcul par quantit' le temps de l'op'ration
+            TempCostPlusLedgerEntry_P."Cost Plus Unit Am. to Invoice" := TempCostPlusLedgerEntry_P."Cost Plus Unit Am. to Invoice" *
+            CostPlusLedgerEntry_P."Invoiced Quantity";
+            TempCostPlusLedgerEntry_P.INSERT;
+          END ELSE BEGIN
+            TempCostPlusLedgerEntry_P."Invoiced Quantity" :=
+              TempCostPlusLedgerEntry_P."Invoiced Quantity" + CostPlusLedgerEntry_P."Invoiced Quantity";
+            TempCostPlusLedgerEntry_P."Cost Plus Unit Am. to Invoice" :=
+              TempCostPlusLedgerEntry_P."Cost Plus Unit Am. to Invoice" +
+              (CostPlusLedgerEntry_P."Cost Plus Unit Am. to Invoice" * CostPlusLedgerEntry_P."Invoiced Quantity");
+            TempCostPlusLedgerEntry_P.MODIFY;
+          END;
+        UNTIL CostPlusLedgerEntry_P.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE GetDocType@8053010(DocType_P@8053000 : Integer) GetDocType_L : Integer;
+    BEGIN
+      GetDocType_L := 0;
+
+      CASE DocType_P OF
+        5 :
+          GetDocType_L := 6;
+        6 :
+          GetDocType_L := 11;
+        7 :
+          GetDocType_L := 8;
+        8 :
+          GetDocType_L := 12;
+      END;
+
+      EXIT(GetDocType_L);
+    END;
+
+    PROCEDURE SetRecordsToTempItemCharge@1000000002(VAR CostPlusLedgerEntry_P@8053000 : Record 60127;VAR TempCostPlusLedgerEntry_P@8053001 : TEMPORARY Record 60127);
+    BEGIN
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Copie les enregistrements en table temporaire pour traitement pour regroupement par article et Groupe TVA
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Entrees :
+      //  - CostPlusLedgerEntry_P ....: Ecritures Cost Plus . copier
+      //  - TempCostPlusLedgerEntry_P : Table temporaire . remplir
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      TempCostPlusLedgerEntry_P.DELETEALL;
+      IF CostPlusLedgerEntry_P.FINDSET(FALSE,FALSE) THEN BEGIN
+        REPEAT
+          TempCostPlusLedgerEntry_P.SETCURRENTKEY("Item Charge No.","Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group",
+          "Cost Plus Code","Rupture Prix Unit Fac");
+          TempCostPlusLedgerEntry_P.SETRANGE("Item Charge No.",CostPlusLedgerEntry_P."Item Charge No.");
+          TempCostPlusLedgerEntry_P.SETRANGE("Item No.", CostPlusLedgerEntry_P."Item No.");
+          TempCostPlusLedgerEntry_P.SETRANGE("VAT Bus. Posting Group", CostPlusLedgerEntry_P."VAT Bus. Posting Group");
+          TempCostPlusLedgerEntry_P.SETRANGE("VAT Prod. Posting Group", CostPlusLedgerEntry_P."VAT Prod. Posting Group");
+          TempCostPlusLedgerEntry_P.SETRANGE("Cost Plus Code", CostPlusLedgerEntry_P."Cost Plus Code");
+          TempCostPlusLedgerEntry_P.SETRANGE("Rupture Prix Unit Fac", CostPlusLedgerEntry_P."Rupture Prix Unit Fac");
+          IF NOT TempCostPlusLedgerEntry_P.FINDFIRST THEN BEGIN
+            TempCostPlusLedgerEntry_P.RESET;
+            TempCostPlusLedgerEntry_P := CostPlusLedgerEntry_P;
+            //du fait du "temp" on d'tourne l'usage du champ "unitaire" pour un calcul par quantit' le temps de l'op'ration
+            TempCostPlusLedgerEntry_P."Cost Plus Unit Am. to Invoice" := TempCostPlusLedgerEntry_P."Cost Plus Unit Am. to Invoice" *
+            CostPlusLedgerEntry_P."Invoiced Quantity";
+            TempCostPlusLedgerEntry_P.INSERT;
+          END ELSE BEGIN
+            TempCostPlusLedgerEntry_P."Invoiced Quantity" :=
+              TempCostPlusLedgerEntry_P."Invoiced Quantity" + CostPlusLedgerEntry_P."Invoiced Quantity";
+            TempCostPlusLedgerEntry_P."Cost Plus Unit Am. to Invoice" :=
+              TempCostPlusLedgerEntry_P."Cost Plus Unit Am. to Invoice" +
+              (CostPlusLedgerEntry_P."Cost Plus Unit Am. to Invoice" * CostPlusLedgerEntry_P."Invoiced Quantity");
+            TempCostPlusLedgerEntry_P.MODIFY;
+          END;
+        UNTIL CostPlusLedgerEntry_P.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CreateCreditMemo@1000000001(VAR CostPlusLedgerEntry_P@8053000 : Record 60127);
+    VAR
+      "<< 3LI LOCALS >>"@8053004 : Integer;
+      CMCSetup_L@8053006 : Record 8052982;
+      DefaultDim_L@8053015 : Record 352;
+      DocDimTemp_L@8053016 : TEMPORARY Record 357;
+      ItemLedgerEntry_L@8053005 : Record 32;
+      TempCostPlusLedgerEntry_L@8053003 : TEMPORARY Record 60127;
+      TempCostPlusLedgerEntry2_L@8053013 : TEMPORARY Record 60127;
+      PurchaseHeader_L@8053009 : Record 38;
+      PurchaseLine_L@8053008 : Record 39;
+      PurchItemChargeAssignment_L@8053007 : Record 5805;
+      Item_L@8053012 : Record 27;
+      TotalQuantity_L@8053002 : Decimal;
+      UnitAmount_L@8053001 : Decimal;
+      LineNo_L@8053010 : Integer;
+      LinePurchNo_L@8053011 : Integer;
+      VATRateChangeConversion_L@8053017 : Codeunit 550;
+      ItemVariant_L@8053018 : Record 5401;
+      CostPlusLedgerEntry_L@1000000000 : Record 60127;
+      CostPlusList_L@1000000001 : Record 60118;
+    BEGIN
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // G'nSre la facture Cost Plus
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Entrees : CostPlusLedgerEntry_P : Ecritures Cost Plus . partir desquelles la RFC sera calcul'e
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      SetRecordsToTemp(CostPlusLedgerEntry_P, TempCostPlusLedgerEntry_L);
+      SetRecordsToTempItemCharge(CostPlusLedgerEntry_P, TempCostPlusLedgerEntry2_L);
+      LinePurchNo_L := 10000;
+
+      IF DocNo_G = '' THEN BEGIN
+        PurchaseHeader_L.INIT;
+        IF Amount_G >= 0 THEN
+          PurchaseHeader_L."Document Type" := PurchaseHeader_L."Document Type"::Invoice
+        ELSE
+          PurchaseHeader_L."Document Type" := PurchaseHeader_L."Document Type"::"Credit Memo";
+
+        PurchaseHeader_L."No." := '';
+        PurchaseHeader_L.INSERT(TRUE);
+        PurchaseHeader_L.VALIDATE("Buy-from Vendor No.", VendorNo_G);
+        PurchaseHeader_L.VALIDATE("Cost Plus" , TRUE);
+        PurchaseHeader_L.VALIDATE("Posting Date", PostingDate_G);
+        PurchaseHeader_L.VALIDATE("Document Date", DocDate_G);
+        PurchaseHeader_L.VALIDATE("Posting Description", PostingDescription_G);
+        PurchaseHeader_L.MODIFY(TRUE);
+      END;
+      CMCSetup_L.GET;
+      TempCostPlusLedgerEntry2_L.RESET;
+      IF TempCostPlusLedgerEntry2_L.FINDSET THEN BEGIN
+        REPEAT
+          Item_L.GET(TempCostPlusLedgerEntry2_L."Item No.");
+
+          PurchaseLine_L.INIT;
+          //PurchaseLine_L.SetControlIntraCom(TRUE);
+          // EXISTE dans le cadre RFC ACHAT (a garder dans le cadre Cost Plus ?)
+
+          PurchaseLine_L."Document Type" := PurchaseHeader_L."Document Type";
+          PurchaseLine_L.VALIDATE("Document No.", PurchaseHeader_L."No.");
+          PurchaseLine_L.VALIDATE("Line No.", LinePurchNo_L);
+          PurchaseLine_L.INSERT(TRUE);
+
+          PurchaseLine_L.VALIDATE(Type, PurchaseLine_L.Type::"Charge (Item)");
+          CostPlusList_L.GET(TempCostPlusLedgerEntry2_L."Cost Plus Code");
+          IF CostPlusList_L."Item Charge No." = '' THEN
+            ERROR(Text60001,CostPlusList_L.Code);
+
+          PurchaseLine_L.VALIDATE("No.", CostPlusList_L."Item Charge No.");
+
+          IF (TempCostPlusLedgerEntry2_L."Variant Code" <> '') AND
+             (ItemVariant_L.GET(TempCostPlusLedgerEntry2_L."Item No.",TempCostPlusLedgerEntry2_L."Variant Code"))
+          THEN
+            PurchaseLine_L.VALIDATE(Description,COPYSTR(STRSUBSTNO(TempCostPlusLedgerEntry2_L."Cost Plus Code" + ' - ' +
+              ItemVariant_L.Description),1,MAXSTRLEN(PurchaseLine_L.Description)))
+          ELSE
+            PurchaseLine_L.VALIDATE(Description,COPYSTR(STRSUBSTNO(TempCostPlusLedgerEntry2_L."Cost Plus Code" + ' - ' +
+              Item_L.Description),1,MAXSTRLEN(PurchaseLine_L.Description)));
+
+          PurchaseLine_L.VALIDATE("Location Code",TempCostPlusLedgerEntry2_L."Location Code");
+
+          PurchaseLine_L.VALIDATE(Quantity, TempCostPlusLedgerEntry2_L."Invoiced Quantity");
+
+          VATRateChangeConversion_L.GetOldVat(TempCostPlusLedgerEntry2_L."Posting Date",
+            PurchaseLine_L."Gen. Prod. Posting Group",Item_L."VAT Prod. Posting Group",Item_L."No.");
+
+          //voir TVA une fois la g'n'ration fonctionnelle
+          IF ApplyItemVAT_G THEN
+            PurchaseLine_L.VALIDATE("VAT Prod. Posting Group",Item_L."VAT Prod. Posting Group")
+          ELSE
+            PurchaseLine_L.VALIDATE("VAT Prod. Posting Group",GroupeComptaTvaArticle_G);
+
+          IF PurchaseLine_L.Quantity <> 0 THEN
+            PurchaseLine_L.VALIDATE("Direct Unit Cost", TempCostPlusLedgerEntry2_L."Cost Plus Unit Am. to Invoice"
+              / PurchaseLine_L.Quantity);
+
+          PurchaseLine_L.MODIFY(TRUE);
+          PurchaseLine_L.CreateDim(27,Item_L."No.",DATABASE::Job,PurchaseLine_L."Job No.",DATABASE::"Responsibility Center",
+            PurchaseLine_L."Responsibility Center",DATABASE::"Work Center",PurchaseLine_L."Work Center No.");
+
+
+          // ------------------------------------------------------------------------
+          // Copie Axes Analytiques Article
+          // ------------------------------------------------------------------------
+          cduCMCDimensions_G.DimPurchFromItem(DocDimTemp_L, PurchaseLine_L, Item_L."No.");
+          cduDimMgt_G.TransferTempToDimToDocDim(DocDimTemp_L);
+          // ------------------------------------------------------------------------
+
+          //on cr'e notre analytique si n'cessaire
+          {IF AxeGenAvoir_G <> '' THEN BEGIN
+            IF DimValueAxeGenAvoir_G = '' THEN
+              ERROR(Text60000,AxeGenAvoir_G);
+            //On cr'e notre ligne analytique
+            DocumentDimension_G."Table ID" := 39;
+            DocumentDimension_G."Document Type" := DocumentDimension_G."Document Type"::"Credit Memo";
+            DocumentDimension_G."Document No." := PurchaseLine_L."Document No.";
+            DocumentDimension_G."Line No." := PurchaseLine_L."Line No.";
+            DocumentDimension_G.Type := 0;
+            DocumentDimension_G."Dimension Code" := AxeGenAvoir_G;
+            DocumentDimension_G."Dimension Value Code" := DimValueAxeGenAvoir_G;
+            IF NOT DocumentDimension_G.INSERT(TRUE) THEN
+              DocumentDimension_G.MODIFY(TRUE);
+
+          END;
+          }
+          PurchaseLine_L.VALIDATE("Analytical Quantity",PurchaseLine_L.Quantity);
+
+          LinePurchNo_L := LinePurchNo_L + 10000;
+
+          TempCostPlusLedgerEntry_L.SETCURRENTKEY("Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group","Cost Plus Code",
+            "Rupture Prix Unit Fac");
+
+          TempCostPlusLedgerEntry_L.SETRANGE("Item No.", TempCostPlusLedgerEntry2_L."Item No.");
+          TempCostPlusLedgerEntry_L.SETRANGE("VAT Bus. Posting Group", TempCostPlusLedgerEntry2_L."VAT Bus. Posting Group");
+          TempCostPlusLedgerEntry_L.SETRANGE("VAT Prod. Posting Group", TempCostPlusLedgerEntry2_L."VAT Prod. Posting Group");
+          TempCostPlusLedgerEntry_L.SETRANGE("Cost Plus Code", TempCostPlusLedgerEntry2_L."Cost Plus Code");
+          TempCostPlusLedgerEntry_L.SETRANGE("Rupture Prix Unit Fac", TempCostPlusLedgerEntry2_L."Rupture Prix Unit Fac");
+          TempCostPlusLedgerEntry_L.FINDSET;
+
+
+          REPEAT
+
+            ItemLedgerEntry_L.GET(TempCostPlusLedgerEntry_L."Item Ledger Entry No.");
+
+            PurchItemChargeAssignment_L.RESET;
+            PurchItemChargeAssignment_L.SETRANGE("Document Type", PurchaseLine_L."Document Type");
+            PurchItemChargeAssignment_L.SETRANGE("Document No.", PurchaseLine_L."Document No.");
+            PurchItemChargeAssignment_L.SETRANGE("Document Line No.", PurchaseLine_L."Line No.");
+            PurchItemChargeAssignment_L.SETRANGE("Unit Cost", TempCostPlusLedgerEntry_L."Rupture Prix Unit Fac");
+
+            LineNo_L := 10000;
+            IF PurchItemChargeAssignment_L.FINDLAST THEN
+              LineNo_L := PurchItemChargeAssignment_L."Line No." + 10000;
+
+            PurchItemChargeAssignment_L.INIT;
+            PurchItemChargeAssignment_L."Document Type" := PurchaseLine_L."Document Type";
+            PurchItemChargeAssignment_L."Document No." := PurchaseLine_L."Document No.";
+            PurchItemChargeAssignment_L."Document Line No." := PurchaseLine_L."Line No.";
+            PurchItemChargeAssignment_L."Line No." := LineNo_L;
+
+            PurchItemChargeAssignment_L."Applies-to Doc. Type" := GetDocType(ItemLedgerEntry_L."Document Type");
+            PurchItemChargeAssignment_L."Applies-to Doc. No." := ItemLedgerEntry_L."Document No.";
+            PurchItemChargeAssignment_L."Applies-to Doc. Line No." := ItemLedgerEntry_L."Document Line No.";
+
+            PurchItemChargeAssignment_L.VALIDATE("Item Charge No.", CostPlusList_L."Item Charge No.");
+            PurchItemChargeAssignment_L.VALIDATE("Item No.", ItemLedgerEntry_L."Item No.");
+            PurchItemChargeAssignment_L.VALIDATE(Description, ItemLedgerEntry_L.Description);
+
+            PurchItemChargeAssignment_L.VALIDATE("Unit Cost", TempCostPlusLedgerEntry_L."Cost Plus Unit Am. to Invoice");
+
+            PurchItemChargeAssignment_L."Cost Plus Ledger Entry No." := TempCostPlusLedgerEntry_L."Entry No.";
+            PurchItemChargeAssignment_L.INSERT(TRUE);
+            //TEST
+            //MESSAGE('Insertion frais annexe sur doc type %1, N› Doc %2, N› ligne Doc %3',
+              //STRSUBSTNO('%1',PurchaseLine_L."Document Type"),
+             // PurchaseLine_L."Document No.",PurchaseLine_L."Line No.");
+            //TEST
+            PurchItemChargeAssignment_L.VALIDATE("Qty. to Assign",
+              PurchItemChargeAssignment_L."Qty. to Assign" + TempCostPlusLedgerEntry_L."Valued Quantity");
+
+            PurchItemChargeAssignment_L."Amount to Assign" :=
+              PurchItemChargeAssignment_L."Qty. to Assign" * TempCostPlusLedgerEntry_L."Cost Plus Unit Am. to Invoice";
+
+            PurchItemChargeAssignment_L.MODIFY(TRUE);
+
+            // -----------------------------------------------------------------------
+            IF CostPlusLedgerEntry_L.GET(TempCostPlusLedgerEntry_L."Entry No.") THEN BEGIN
+              CostPlusLedgerEntry_L."Cost Plus Unit Am. to Invoice" := 0;
+              // --> 20170512-WI00-ADV01.01.00-25595-CJY01
+              CostPlusLedgerEntry_L."Rupture Prix Unit Fac" := 0;
+              // <-- 20170512-WI00-ADV01.01.00-25595-CJY01
+              CostPlusLedgerEntry_L.MODIFY(TRUE);
+            END;
+
+            // -----------------------------------------------------------------------
+          UNTIL TempCostPlusLedgerEntry_L.NEXT =0;
+        UNTIL TempCostPlusLedgerEntry2_L.NEXT=0;
+
+      END;
+    END;
+
+    PROCEDURE SetFinalDocType@1000000000(FinalDocType_P@1000000000 : 'Facture,Avoir');
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // D'termine quel type de document doit ^tre g'n'r'
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Entr'es : FinalDocType_P : type de document g'n'r' (facture ou avoir)
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // --> 20200414-WI00-ADV01.01.00-3446-CJY01
+      FinalDocType_G := FinalDocType_P;
+      // <-- 20200414-WI00-ADV01.01.00-3446-CJY01
+    END;
+
+    PROCEDURE SetCampain@1000000003(CampainNo_P@1000000000 : Code[10]);
+    BEGIN
+      // --> 20200603-WI00-ADV01.01.00-3446-CJY01
+      CampainNo_G := CampainNo_P;
+      // <-- 20200603-WI00-ADV01.01.00-3446-CJY01
+    END;
+
+    PROCEDURE InitTempVendor@1000000004(VAR CostPlusLedgerEntry_P@1000000000 : Record 60127);
+    BEGIN
+      // --> 20200623-WI00-ADV01.01.00-3446-CJY01
+      TempCostPlusLedgerEntryVend_G.RESET;
+      TempCostPlusLedgerEntryVend_G.DELETEALL;
+      IF CostPlusLedgerEntry_P.FINDSET THEN REPEAT
+        TempCostPlusLedgerEntryVend_G.TRANSFERFIELDS(CostPlusLedgerEntry_P);
+        TempCostPlusLedgerEntryVend_G.INSERT;
+      UNTIL CostPlusLedgerEntry_P.NEXT = 0;
+      // <-- 20200623-WI00-ADV01.01.00-3446-CJY01
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20200116-WI00-ADV01.01.00-3446-CJY01 : CREATE Object
+      20200414-WI00-ADV01.01.00-3446-CJY01 : MODCODE (Correction)
+      20200423-WI00-ADV01.01.00-3446-CJY01 : MODCODE (modification description ligne doc final g'n'r'e)
+      20200603-WI00-ADV01.01.00-3446-CJY01 : ADDFUNC (Ajout fonction : SetCampain)
+      20200618-WI00-ADV01.01.00-3446-CJY01 : MODCODE (changement designation g'n'rtion doc final flux cost plus)
+      20200623-WI00-ADV01.01.00-3446-CJY01 : MODCODE (changement controle vendeur par d'faut)
+      20200623-WI00-ADV01.01.00-3446-CJY01 : ADDFUNC (InitTempVendor)
+      20200623-WI00-ADV01.01.00-3446-CJY01 : Nettoyage
+      20200623-WI00-ADV01.01.00-3446-CJY01 : ADDCODE (Getion du code produit lors de la g'n'ration du doc final)
+      20200625-WI00-ADV01.01.00-3446-SCR01 : ADDCODE (Si pas d'axe analityque sur le frais annexe, prendre celui de l'article)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

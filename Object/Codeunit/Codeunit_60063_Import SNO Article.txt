@@ -1,0 +1,751 @@
+OBJECT Codeunit 60063 Import SNO Article
+{
+  OBJECT-PROPERTIES
+  {
+    Date=14/05/19;
+    Heure=00:00:00;
+    Liste versions=SP3355,SP3409;
+  }
+  PROPERTIES
+  {
+    TableNo=8061230;
+    OnRun=VAR
+            MsgErr_L@1000000007 : Text[250];
+            FileName_L@1000000008 : Text[250];
+            FilePath_L@1000000009 : Text[250];
+          BEGIN
+
+            CodeUnit_G := Processing;
+            CduMoteurInterface_G.GetParameter(CodeUnit_G, ConnectorName_G, ImpExpFolder_G, LogFolder_G, ExtensionFile_G, PrefixFile_G);
+            CduToolsFile_G.LogInit(LogFolder_G,'SNO');
+            CduToolsFile_G.LogInitCodeUnit(CodeUnit_G);
+            IF ("File in use" <> '') THEN BEGIN
+              CduToolsFile_G.LogInitFileExecute("File in use");
+              "File in use" := UPPERCASE("File in use");
+              IF NOT EXISTS("File in use") THEN
+                CduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text60001, "File in use"), 1, MAXSTRLEN(MsgErr_L)))
+              ELSE BEGIN
+                CduToolsFile_G.SplitFilename ("File in use",FilePath_L,FileName_L);
+                IF NOT FormatFileTest(Rec,FileName_L) THEN
+                  CduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text60005, "File in use"), 1, MAXSTRLEN(MsgErr_L)))
+                ELSE
+                  IF NOT FileImport_G.OPEN("File in use") THEN BEGIN
+                    CduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text60002, "File in use"),1, MAXSTRLEN(MsgErr_L)));
+                    CLEARLASTERROR;
+                  END
+                  ELSE BEGIN
+                    FileImport_G.CREATEINSTREAM(FileInStream_G);
+                    SeqBool_G := TRUE;
+                    TROUV_G := TRUE;
+                    Ligne_G := 0;
+                    Seq_G:=0;
+                    EnteteExist_G := FALSE;
+                    Stop_G := FALSE;
+                    WHILE NOT (FileInStream_G.EOS) AND TROUV_G DO BEGIN
+                      Ligne_G := Ligne_G+1;
+                      NbCarLu_G := FileInStream_G.READTEXT(TexteLu_G);
+                      Pos_G := 1;
+                      FileContentControl(Rec);
+                    END;
+                    IF TROUV_G AND EnteteExist_G THEN BEGIN
+                      FileImport_G.CLOSE();
+                      IF FileImport_G.OPEN("File in use") THEN BEGIN
+                        FileImport_G.CREATEINSTREAM(FileInStream_G);
+                        Ligne_G := 0;
+                        SNOArticlesTemp_G.DELETEALL;
+                        WHILE NOT (FileInStream_G.EOS)  DO BEGIN
+                          Ligne_G := Ligne_G+1;
+                          NbCarLu_G := FileInStream_G.READTEXT(TexteLu_G);
+                          Pos_G := 1;
+                          NumSeqEnr_G :=ExtractTextCsv(TexteLu_G, Pos_G,';',10,Max_G);
+                          IF (NumSeqEnr_G = '') OR (Max_G)  THEN
+                            CduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text60011, Ligne_G),1, MAXSTRLEN(MsgErr_L)));
+                          Type_G:= ExtractTextCsv(TexteLu_G, Pos_G,';', 12,Max_G);
+                          IF (Type_G = '') OR (Max_G) THEN
+                            CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text60010, Ligne_G),1, MAXSTRLEN(MsgErr_L)));
+                          StartLineControl;
+                          CommentLineControl;
+                          HeaderLineControl;
+                          DetailsLineControl;
+                          EndLineControl;
+                        END;
+                        InsertSnoItem;
+                        FileImport_G.CLOSE();
+                      END;
+                    END;
+                  END;
+              END;
+              CLEAR(MsgErr_L);
+              FileLogName_G := CduToolsFile_G.LogName;
+              CduToolsFile_G.LogClose();
+            END;
+            ErrorMgt(Rec);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      "<-- 3LI GLOBALS -->"@1000000010 : Integer;
+      CodeUnit_G@1000000009 : Integer;
+      CduMoteurInterface_G@1000000008 : Codeunit 8061230;
+      CduToolsFile_G@1000000007 : Codeunit 8053405;
+      ConnectorName_G@1000000006 : Code[20];
+      ImpExpFolder_G@1000000005 : Text[256];
+      LogFolder_G@1000000004 : Text[256];
+      ExtensionFile_G@1000000003 : Text[10];
+      PrefixFile_G@1000000002 : Text[30];
+      FileImport_G@1000000001 : File;
+      FileInStream_G@1000000000 : InStream;
+      Text60001@1000000016 : TextConst 'ENU=Error file %1 doesn''t exist.;FRA=Erreur fichier "%1" inexistant.';
+      Text60002@1000000015 : TextConst 'ENU=Error open file %1 : %2;FRA=Erreur ouverture fichier %1.';
+      Text60003@1000000012 : TextConst 'ENU=Error backup copy.;FRA=Erreur copie de sauvegarde.';
+      Text60004@1000000011 : TextConst 'ENU=Error field %1 : Record %2;FRA="Erreur zone ""%1""=""%2"" : Enregistrement ""%3-%4""."';
+      Text60005@1000000018 : TextConst 'FRA=Nom fichier incorrect';
+      Text60006@1000000019 : TextConst 'FRA=Le fichier ne contient pas de ligne  de debut ou le numero de sequence de la ligne de debut est different de 1';
+      Text60007@1000000020 : TextConst 'FRA=Le fichier ne contient pas de ligne de commentaire';
+      Text60008@1000000021 : TextConst 'FRA=Le fichier ne contient pas de ligne ENT';
+      Text60009@1000000023 : TextConst 'FRA=Le fichier ne contient pas de ligne fin';
+      TROUV_G@1000000024 : Boolean;
+      Stop_G@1000000025 : Boolean;
+      Ligne_G@1000000027 : Integer;
+      EnteteExist_G@1000000026 : Boolean;
+      Type_G@1000000028 : Code[12];
+      CoresNumArticleENT_G@1000000076 : Code[20];
+      NumSeqEnr_G@1000000029 : Code[10];
+      CodeEAN13ENT_G@1000000031 : Code[20];
+      LibCourtENT_G@1000000032 : Code[150];
+      LibLongENT_G@1000000033 : Code[150];
+      NatureProdENT_G@1000000034 : Code[8];
+      StatutProdENT_G@1000000035 : Code[3];
+      CodeEspeceENT_G@1000000036 : Code[50];
+      CodeVarieteENT_G@1000000037 : Code[50];
+      LibVarieteENT_G@1000000038 : Code[50];
+      CodeGenerationENT_G@1000000039 : Code[8];
+      CodeTraitementENT_G@1000000040 : Code[8];
+      LibTraitementENT_G@1000000041 : Code[150];
+      CodeConditENT_G@1000000042 : Code[8];
+      LibConditENT_G@1000000043 : Code[150];
+      TypeConditENT_G@1000000044 : Code[1];
+      UnitConditENT_G@1000000045 : Code[2];
+      ContenConditENT_G@1000000046 : Code[16];
+      LibEspeceENT_G@1000000047 : Code[50];
+      CodeProduitENT_G@1000000030 : Code[30];
+      Text60010@1000000049 : TextConst 'FRA=Type de la ligne  %1 incorrect';
+      Text60011@1000000048 : TextConst 'FRA=S'quencement incorrect ligne %1';
+      Text60012@1000000050 : TextConst 'FRA=Format de l''horodatage de la igne %1 est incorrect';
+      CodeProdDET_G@1000000077 : Code[30];
+      CodeCaracDET_G@1000000078 : Code[150];
+      ValCaracDET_G@1000000079 : Code[150];
+      NivCaracDET_G@1000000080 : Code[10];
+      Max_G@1000000051 : Boolean;
+      InfoSociete_G@1000000052 : Record 79;
+      SNOArticlesTemp_G@1000000053 : TEMPORARY Record 60100;
+      DateDEB_G@1000000054 : DateTime;
+      EmetteurDEB_G@1000000055 : Code[20];
+      DestinataireDEB_G@1000000056 : Code[20];
+      CodeProduitCom_G@1000000057 : Code[30];
+      CodeEANProdCom_G@1000000058 : Code[30];
+      LibCourtCom_G@1000000059 : Text[30];
+      LibLongCom_G@1000000060 : Text[30];
+      NatProdCom_G@1000000061 : Code[30];
+      StatProdCom_G@1000000062 : Code[30];
+      CodeEspCom_G@1000000063 : Code[30];
+      LibEspeceCom_G@1000000064 : Code[30];
+      CodeVarCom_G@1000000065 : Code[30];
+      LibVarCom_G@1000000066 : Text[30];
+      CodeGenrCom_G@1000000067 : Code[30];
+      CodeTraitCom_G@1000000068 : Code[30];
+      LibTraitCom_G@1000000069 : Text[30];
+      CodeCondCom_G@1000000070 : Code[30];
+      LibCondCom_G@1000000071 : Text[30];
+      TypeCondCom_G@1000000072 : Code[30];
+      UnitCondCom_G@1000000073 : Code[30];
+      ContCondCom_G@1000000074 : Code[30];
+      CntrlENT_G@1000000075 : Boolean;
+      CodeProduit_G@1000000017 : Code[30];
+      Seq_G@1000000022 : Integer;
+      SeqBool_G@1000000081 : Boolean;
+      Text60013@1000000082 : TextConst 'FRA=Nombre de lignes dans le fichier incoh'rent';
+      DateFin_G@1000000083 : DateTime;
+      NbrLigneFin_G@1000000084 : Integer;
+      Text60014@1000000085 : TextConst 'FRA=Date de la ligne %1 ne doit pas etre null';
+      Text60015@1000000086 : TextConst 'FRA=Erreur Format fichier ligne %1';
+      DestinataireFin_G@1000000087 : Code[20];
+      EmetteurFIN_G@1000000088 : Code[20];
+      Text60016@1000000089 : TextConst 'FRA=Erreur formatage de donn'es destinataire incorrect Ligne %1';
+      ContenanceNumer_G@1000000090 : Decimal;
+      nbr@1000000091 : Integer;
+      NBR1@1000000092 : Integer;
+      TexteLu_G@60000 : Text[1024];
+      Pos_G@60001 : Integer;
+      NbCarLu_G@60002 : Integer;
+      FileLogName_G@60003 : Text[250];
+
+    PROCEDURE InsertENT@1000000001(VAR RecSNOArticles_P@1000000004 : Record 60100);
+    VAR
+      RecSNOArticles_L@1000000000 : Record 60100;
+      FormatFieldsManagement@60000 : Codeunit 8060985;
+    BEGIN
+      IF RecSNOArticles_L.GET(CodeProduitENT_G) THEN BEGIN
+        RecSNOArticles_P."Correspondance num'ro article" := RecSNOArticles_L."Correspondance num'ro article";
+        RecSNOArticles_P."Correspondance Code Variante" := RecSNOArticles_L."Correspondance Code Variante";
+      END;
+      RecSNOArticles_P."Code produit" := CodeProduitENT_G;
+      RecSNOArticles_P."Code EAN13 produit" := CodeEAN13ENT_G;
+      RecSNOArticles_P."Libell' court produit":= FormatFieldsManagement.Ansi2Ascii(LibCourtENT_G);
+      RecSNOArticles_P."Libell' long produit" := FormatFieldsManagement.Ansi2Ascii(LibLongENT_G);
+      RecSNOArticles_P."Nature produit" := NatureProdENT_G;
+      RecSNOArticles_P."Statut produit" := StatutProdENT_G;
+      RecSNOArticles_P."Code espSce" := CodeEspeceENT_G;
+      RecSNOArticles_P."Libell' espSce" := FormatFieldsManagement.Ansi2Ascii(LibEspeceENT_G);
+      RecSNOArticles_P."Code vari't'" := CodeVarieteENT_G;
+      RecSNOArticles_P."Libell' vari't'" := FormatFieldsManagement.Ansi2Ascii(LibVarieteENT_G);
+      RecSNOArticles_P."Code G'n'ration" := CodeGenerationENT_G;
+      RecSNOArticles_P."Code traitement" :=CodeTraitementENT_G ;
+      RecSNOArticles_P."Libell' traitemennt" := FormatFieldsManagement.Ansi2Ascii(LibTraitementENT_G);
+      RecSNOArticles_P."Code Conditionnement" := CodeConditENT_G;
+      RecSNOArticles_P."Libell' Conditionnement" := FormatFieldsManagement.Ansi2Ascii(LibConditENT_G);
+      RecSNOArticles_P."Type Conditionnement" :=TypeConditENT_G;
+      RecSNOArticles_P."Unit' Conditionnement" := UnitConditENT_G;
+      RecSNOArticles_P."Contenance Conditionnement" := ContenConditENT_G;
+    END;
+
+    PROCEDURE FormatFileTest@1000000003(VAR RecInterfaceEnginesetup_P@1000000003 : Record 8061230;FileName_P@1000000000 : Text[205]) : Boolean;
+    VAR
+      FileName_L@1000000001 : Text[250];
+      Prefix_L@1000000002 : Text[30];
+      Annee_L@1000000004 : Integer;
+      Mois_L@1000000005 : Integer;
+      Jour_L@1000000006 : Integer;
+      Heure_L@1000000007 : Integer;
+      Minute_L@1000000008 : Integer;
+      Sec_L@1000000009 : Integer;
+      DateTime_L@1000000010 : Date;
+      cpt_L@1000000013 : Integer;
+      MsgErr_L@1000000014 : Text[250];
+    BEGIN
+      FileName_L := FileName_P;
+      Prefix_L := COPYSTR(FileName_L,1,STRLEN(RecInterfaceEnginesetup_P."File Prefix"));
+      cpt_L := STRLEN(Prefix_L)+1;
+      IF UPPERCASE(Prefix_L) <> UPPERCASE (RecInterfaceEnginesetup_P."File Prefix") THEN
+        EXIT (FALSE);
+      IF NOT EVALUATE(Jour_L, COPYSTR(FileName_L,cpt_L,2)) THEN
+        EXIT (FALSE);
+      IF NOT EVALUATE(Mois_L,COPYSTR(FileName_L,cpt_L+3,2)) THEN
+        EXIT(FALSE);
+      IF NOT EVALUATE(Annee_L,COPYSTR(FileName_L,cpt_L+6,4)) THEN
+        EXIT(FALSE);
+      IF NOT EVALUATE(Heure_L, COPYSTR(FileName_L,cpt_L+11,2)) THEN
+        EXIT (FALSE);
+      IF NOT EVALUATE(Minute_L, COPYSTR(FileName_L,cpt_L+14,2)) THEN
+        EXIT (FALSE);
+      IF NOT EVALUATE(Sec_L,COPYSTR(FileName_L,cpt_L+17,2)) THEN
+        EXIT (FALSE);
+      // --> 20190514-Wi00-ADV01.01.00-42431-MRU01
+      //IF (Heure_L > 12)OR (Minute_L > 60) OR (Sec_L > 60) OR (COPYSTR(FileName_L,cpt_L+2,1) <> '_')
+      IF (Heure_L > 24)OR (Minute_L > 60) OR (Sec_L > 60) OR (COPYSTR(FileName_L,cpt_L+2,1) <> '_')
+      // <-- 20190514-Wi00-ADV01.01.00-42431-MRU01
+                       OR (COPYSTR(FileName_L,cpt_L+5,1) <> '_') OR (COPYSTR(FileName_L,cpt_L+10,1)<> '_')
+                       OR (COPYSTR(FileName_L,cpt_L+13,1)<> '_') OR (COPYSTR(FileName_L,cpt_L+16,1) <> '_')
+                       OR (COPYSTR(FileName_L,cpt_L+19,1) <> '.')
+                       OR ((UPPERCASE(COPYSTR(FileName_L,cpt_L+20)) <> UPPERCASE(RecInterfaceEnginesetup_P."File extension"))
+                       OR ((UPPERCASE(Prefix_L)) <> UPPERCASE(RecInterfaceEnginesetup_P."File Prefix")))
+                       OR (NOT EVALUATE(DateTime_L,FORMAT(DMY2DATE(Jour_L,Mois_L,Annee_L))))THEN
+        EXIT (FALSE)
+      ELSE
+        EXIT (TRUE);
+    END;
+
+    PROCEDURE ExtractTextCsv@1000000008(Texte_P@1000000000 : Text[1024];VAR Position_P@1000000001 : Integer;Separateur_P@1000000002 : Text[1];LongueurMax_P@1000000005 : Integer;VAR Max_P@1000000006 : Boolean) Result_L : Text[1024];
+    VAR
+      PositionSep_L@1000000004 : Integer;
+    BEGIN
+      Max_G := FALSE;
+      Result_L := COPYSTR (Texte_P, Position_P);
+      PositionSep_L := STRPOS(Result_L, Separateur_P);
+      IF PositionSep_L <> 0 THEN BEGIN
+        IF PositionSep_L > LongueurMax_P+1 THEN BEGIN
+          Max_G := TRUE;
+          Result_L := COPYSTR(Result_L, 1, LongueurMax_P);
+        END
+        ELSE BEGIN
+          Result_L := COPYSTR(Result_L, 1, PositionSep_L - 1);
+        END;
+        Position_P += PositionSep_L;
+      END
+      ELSE BEGIN
+        IF STRLEN(Result_L) >LongueurMax_P THEN BEGIN
+           Max_G := TRUE;
+           Position_P := STRLEN(Texte_P) + 1;
+        END;
+      END;
+    END;
+
+    PROCEDURE FileSave@1000000000(FileName_P@1000000002 : Text[256];AddDirectorySav_P@1000000001 : Text[30];AddHorodate_P@1000000000 : Boolean) Result_L : Boolean;
+    VAR
+      int_Temp_L@1000000006 : Integer;
+      FileNameCopie_L@1000000005 : Text[256];
+      FileNameCopieTemp_L@1000000004 : Text[256];
+      cduExtComDlgMgt_L@1000000003 : Codeunit 8060994;
+    BEGIN
+      IF AddDirectorySav_P <> '' THEN BEGIN
+        FileNameCopieTemp_L := cduExtComDlgMgt_L.ExtractDirectory(FileName_P);
+        FileNameCopieTemp_L := FileNameCopieTemp_L + AddDirectorySav_P + '\' + COPYSTR(FileName_P, STRLEN(FileNameCopieTemp_L)+1);
+        FileNameCopie_L := FileNameCopieTemp_L;
+        IF AddHorodate_P THEN BEGIN
+          int_Temp_L := 0;
+          REPEAT
+            int_Temp_L += 1;
+            FileNameCopie_L := COPYSTR(FileNameCopieTemp_L,1,(STRLEN(FileNameCopieTemp_L)-4))+ '_' +
+            FORMAT(CURRENTDATETIME, 0,'<Year4>_<Month,2>_<Day,2>_<Hours24,2>_<Minutes,2>_<Seconds,2>') + '.csv';
+          UNTIL NOT EXISTS(FileNameCopie_L);
+        END;
+        IF RENAME(FileName_P, FileNameCopie_L) THEN BEGIN
+          Result_L := TRUE;
+        END
+        ELSE BEGIN
+          Result_L := FALSE;
+        END;
+      END
+      ELSE BEGIN
+        Result_L := FALSE;
+      END;
+    END;
+
+    PROCEDURE StartLineControl@60000();
+    VAR
+      MsgErr_L@60000 : Text[250];
+    BEGIN
+      IF Type_G = 'DEBUT' THEN BEGIN
+        IF NumSeqEnr_G <> '1' THEN
+          CduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text60011, Ligne_G),1, MAXSTRLEN(MsgErr_L)));
+        IF NOT EVALUATE (DateDEB_G,ExtractTextCsv(TexteLu_G, Pos_G,';', 20,Max_G)) OR Max_G THEN
+          CduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text60012, Ligne_G),1, MAXSTRLEN(MsgErr_L)))
+        ELSE
+          IF DateDEB_G = 0DT THEN
+            CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text60014, Ligne_G),1, MAXSTRLEN(MsgErr_L)));
+        EmetteurDEB_G :=FORMAT(ExtractTextCsv(TexteLu_G, Pos_G,';', 20,Max_G));
+        DestinataireDEB_G :=FORMAT(ExtractTextCsv(TexteLu_G, Pos_G,';', 20,Max_G));
+        IF DestinataireDEB_G = '' THEN
+          CduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text60016, Ligne_G),1, MAXSTRLEN(MsgErr_L)))
+        ELSE
+          IF DestinataireDEB_G <> '' THEN BEGIN
+            InfoSociete_G.GET;
+            IF DestinataireDEB_G <> InfoSociete_G."GLN Code" THEN
+              CduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO( 'Ligne '+ FORMAT(Ligne_G) + ' ' +
+                                                                                        'Destinataire incorrect'),1, MAXSTRLEN(MsgErr_L)
+      ))
+
+          END;
+      END;
+    END;
+
+    PROCEDURE CommentLineControl@60001();
+    VAR
+      MsgErr_L@60000 : Text[250];
+    BEGIN
+      IF Type_G = 'COM' THEN BEGIN
+        IF NumSeqEnr_G <> '2' THEN
+          CduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text60011, Ligne_G),1, MAXSTRLEN(MsgErr_L)));
+        CodeProduitCom_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 30,Max_G);
+        IF (CodeProduitCom_G = '') OR (Max_G)  THEN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne ' + FORMAT(Ligne_G) +' '+
+                                                    'format Champ "Code produit" incorrect' ),1, MAXSTRLEN(MsgErr_L)));
+
+        CodeEANProdCom_G:= ExtractTextCsv(TexteLu_G, Pos_G,';', 30,Max_G);
+        IF (CodeEANProdCom_G = '') OR (Max_G) THEN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne '+ FORMAT(Ligne_G) + ' ' +
+                                                    'format champ "Code EAN produit" incorrect'),1, MAXSTRLEN(MsgErr_L)));
+
+         LibCourtCom_G:= ExtractTextCsv(TexteLu_G, Pos_G,';', 30,Max_G);
+         IF (LibCourtCom_G = '') OR (Max_G) THEN
+           CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne '+FORMAT(Ligne_G) +' ' +
+                                                    'format champ "Libel' court produit" incorrect'),1, MAXSTRLEN(MsgErr_L)));
+
+         LibLongCom_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 30,Max_G);
+         IF (LibLongCom_G = '') OR (Max_G) THEN
+           CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne '+FORMAT(Ligne_G) + ' ' +
+                                                    'format champ "Libell' long produit" incorrect'),1, MAXSTRLEN(MsgErr_L)));
+
+         NatProdCom_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 30,Max_G);
+         IF (NatProdCom_G = '') OR (Max_G) THEN
+           CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne ' + FORMAT(Ligne_G) + ' '+
+                                                    'format champ "Nature produit" incorrect'),1, MAXSTRLEN(MsgErr_L)));
+
+         StatProdCom_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 30,Max_G);
+         IF (StatProdCom_G = '') OR (Max_G) THEN
+           CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne '+ FORMAT(Ligne_G) + ' ' +
+                                                    'format champ "Statut produit" incorrect'),1, MAXSTRLEN(MsgErr_L)));
+
+         CodeEspCom_G :=ExtractTextCsv(TexteLu_G, Pos_G,';', 30,Max_G);
+         IF (CodeEspCom_G = '') OR (Max_G) THEN
+           CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne '+ FORMAT(Ligne_G) + ' '+
+                                                    'format champ "Code espSce" incorrect'),1, MAXSTRLEN(MsgErr_L)));
+
+         LibEspeceCom_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 30,Max_G);
+         IF (LibEspeceCom_G = '') OR (Max_G) THEN
+           CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne '+ FORMAT(Ligne_G) + ' '+
+                                                    'format champ "Libell' espSce" incorrect'),1, MAXSTRLEN(MsgErr_L)));
+
+         CodeVarCom_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 30,Max_G);
+         IF (CodeVarCom_G = '') OR (Max_G) THEN
+           CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne ' + FORMAT(Ligne_G) +' ' +
+                                                    'format champ "Code vari't'" incorrect'),1, MAXSTRLEN(MsgErr_L)));
+
+         LibVarCom_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 30,Max_G);
+         IF (LibVarCom_G = '') OR (Max_G) THEN
+           CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne ' +FORMAT(Ligne_G) + ' ' +
+                                                    'format champ "libell' vari't'" incorrect'),1, MAXSTRLEN(MsgErr_L)));
+
+          CodeGenrCom_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 30,Max_G);
+          IF (CodeGenrCom_G = '') OR  (Max_G)  THEN
+            CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne ' +FORMAT(Ligne_G) + ' ' +
+                                                    'format champ "code G'n'ration" incorrect'),1, MAXSTRLEN(MsgErr_L)));
+
+          CodeTraitCom_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 30,Max_G);
+          IF (CodeTraitCom_G = '') OR (Max_G) THEN
+            CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne ' +FORMAT(Ligne_G) + ' ' +
+                                                    'format champ "Code traitement" incorrect' ),1, MAXSTRLEN(MsgErr_L)));
+
+          LibTraitCom_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 30,Max_G);
+          IF (LibTraitCom_G = '') OR (Max_G) THEN
+            CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne '+ FORMAT(Ligne_G) + ' '+
+                                                    'format champ "Libell' traitement" incorrect'),1, MAXSTRLEN(MsgErr_L)));
+
+          CodeCondCom_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 30,Max_G);
+          IF (CodeCondCom_G = '') OR (Max_G) THEN
+            CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne ' + FORMAT(Ligne_G) + ' ' +
+                                                    'format champ "Code conditionnement" incorrect'),1, MAXSTRLEN(MsgErr_L)));
+
+          LibCondCom_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 30,Max_G);
+          IF (LibCondCom_G = '') OR (Max_G) THEN
+            CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne '+ FORMAT(Ligne_G) + ' ' +
+                                                    'format champ "Libell' conditionnement" incorrect' ),1, MAXSTRLEN(MsgErr_L)));
+
+          TypeCondCom_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 30,Max_G);
+          IF (TypeCondCom_G = '') OR (Max_G) THEN
+            CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne ' + FORMAT(Ligne_G) + ' ' +
+                                                    'format champ "Type Conditionnement" incorrect'),1, MAXSTRLEN(MsgErr_L)));
+
+          UnitCondCom_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 30,Max_G);
+          IF (UnitCondCom_G = '') OR (Max_G) THEN
+            CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne '+FORMAT(Ligne_G) + ' '+
+                                                    'format champ "Unit' Conditionnement" incorrect'),1, MAXSTRLEN(MsgErr_L)));
+
+          ContCondCom_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 30,Max_G);
+          IF (ContCondCom_G = '') OR (Max_G) THEN
+            CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne '+ FORMAT(Ligne_G) + ' ' +
+                                                    'format champ "Contenance Conditionnement" incorrecte'),1, MAXSTRLEN(MsgErr_L)));
+      END;
+    END;
+
+    PROCEDURE HeaderLineControl@60002();
+    VAR
+      MsgErr_L@60000 : Text[250];
+    BEGIN
+      CntrlENT_G := TRUE;
+      IF Type_G= 'ENT' THEN BEGIN
+        IF (NumSeqEnr_G < '3' ) AND (STRLEN(NumSeqEnr_G)=1) THEN BEGIN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne '+ FORMAT(Ligne_G) +' '+
+                                                                       'S'quencement incorrect'),1, MAXSTRLEN(MsgErr_L)));
+          CntrlENT_G := FALSE;
+        END;
+        CodeProduitENT_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 30,Max_G);
+        IF (CodeProduitENT_G = '') OR (Max_G) THEN BEGIN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne '+ FORMAT(Ligne_G) + ' '+
+                                                              'Code produit incorrect'),1, MAXSTRLEN(MsgErr_L)));
+          CntrlENT_G := FALSE;
+        END;
+        CodeEAN13ENT_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 20,Max_G);
+        LibCourtENT_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 150,Max_G);
+        IF (LibCourtENT_G = '') OR (Max_G) THEN BEGIN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' + FORMAT(Ligne_G) + ' '
+                                                              +'Libell' court produit court incorrect'),1, MAXSTRLEN(MsgErr_L)));
+          CntrlENT_G := FALSE;
+        END;
+        LibLongENT_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 150,Max_G);
+        IF (LibLongENT_G = '') OR (Max_G) THEN BEGIN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' + FORMAT(Ligne_G) + ' '
+                                                              +'Libell' Long produit court incorrect'),1, MAXSTRLEN(MsgErr_L)));
+          CntrlENT_G := FALSE;
+        END;
+        NatureProdENT_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 8,Max_G);
+        IF (NatureProdENT_G = '') OR (Max_G) OR
+        ((UPPERCASE(NatureProdENT_G)<>'S') AND (UPPERCASE(NatureProdENT_G)<>'C'))  THEN BEGIN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' + FORMAT(Ligne_G) + ' '
+                                                              +'Nature produit incorrect'),1, MAXSTRLEN(MsgErr_L)));
+          CntrlENT_G := FALSE;
+        END;
+        StatutProdENT_G:= ExtractTextCsv(TexteLu_G, Pos_G,';', 3,Max_G);
+        IF (StatutProdENT_G = '') OR (Max_G) OR
+        ((UPPERCASE (StatutProdENT_G) <> 'OUI') AND (UPPERCASE (StatutProdENT_G)<>'NON'))  THEN BEGIN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' + FORMAT(Ligne_G) + ' '
+                                                              +'Statut produit incorrect'),1, MAXSTRLEN(MsgErr_L)));
+          CntrlENT_G := FALSE
+        END;
+        CodeEspeceENT_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 10,Max_G);
+        IF (CodeEspeceENT_G = '') OR (Max_G) THEN BEGIN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' + FORMAT(Ligne_G) + ' '
+                                                                                +'Code espSce incorrect'),1, MAXSTRLEN(MsgErr_L)));
+          CntrlENT_G := FALSE;
+        END;
+        LibEspeceENT_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 50,Max_G);
+        IF (LibEspeceENT_G = '') OR (Max_G) THEN BEGIN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' +FORMAT(Ligne_G) + ' '
+                                                                               +'Libell' EspSce incorrect'),1, MAXSTRLEN(MsgErr_L)));
+          CntrlENT_G := FALSE;
+        END;
+        CodeVarieteENT_G :=ExtractTextCsv(TexteLu_G, Pos_G,';', 50,Max_G);
+        IF (CodeVarieteENT_G = '') OR (Max_G) THEN BEGIN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' + FORMAT(Ligne_G) + ' '
+                                                                                +'Code Vari't' incorrect'),1, MAXSTRLEN(MsgErr_L)));
+          CntrlENT_G := FALSE;
+        END;
+        LibVarieteENT_G :=ExtractTextCsv(TexteLu_G, Pos_G,';', 50,Max_G);
+        IF (LibVarieteENT_G = '') OR (Max_G) THEN BEGIN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' + FORMAT(Ligne_G) + ' '
+                                                                                +'Libell' vari't' incorrect'),1, MAXSTRLEN(MsgErr_L)));
+          CntrlENT_G := FALSE;
+        END;
+        CodeGenerationENT_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 8,Max_G);
+        IF (CodeGenerationENT_G = '') OR (Max_G) THEN BEGIN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' + FORMAT(Ligne_G) + ' '
+                                                                                +'Code G'n'ration incorrect'),1, MAXSTRLEN(MsgErr_L)));
+          CntrlENT_G := FALSE;
+        END;
+        CodeTraitementENT_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 8,Max_G);
+        IF (CodeTraitementENT_G = '') OR (Max_G) THEN BEGIN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' + FORMAT(Ligne_G) + ' '
+                                                                                +'Code traitement incorrect'),1, MAXSTRLEN(MsgErr_L)));
+          CntrlENT_G := FALSE;
+        END;
+        LibTraitementENT_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 150,Max_G);
+        IF (LibTraitementENT_G = '') OR (Max_G) THEN BEGIN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' + FORMAT(Ligne_G) + ' '
+                                                                                +'Libell' traitement incorrect'),1, MAXSTRLEN(MsgErr_L))
+      );
+          CntrlENT_G := FALSE;
+         END;
+         CodeConditENT_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 8,Max_G);
+         IF (CodeConditENT_G = '') OR (Max_G) THEN BEGIN
+           CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' + FORMAT(Ligne_G) + ' '
+                                                                             +'Code conditionnement incorrect'),1, MAXSTRLEN(MsgErr_L)))
+      ;
+           CntrlENT_G := FALSE;
+         END;
+         LibConditENT_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 150,Max_G);
+         IF (LibConditENT_G = '') OR (Max_G) THEN BEGIN
+           CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' + FORMAT(Ligne_G) + ' '
+                                                                           +'Libell' conditionnement incorrect'),1, MAXSTRLEN(MsgErr_L))
+      );
+           CntrlENT_G := FALSE;
+         END;
+         TypeConditENT_G :=ExtractTextCsv(TexteLu_G, Pos_G,';', 1,Max_G);
+         IF (TypeConditENT_G = '') OR (Max_G) OR
+         ((UPPERCASE(TypeConditENT_G) <> 'D') AND  (UPPERCASE(TypeConditENT_G)<> 'P')) THEN BEGIN
+           CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' + FORMAT(Ligne_G) + ' '
+                                                                              +'Type conditionnement incorrect'),1, MAXSTRLEN(MsgErr_L))
+      );
+           CntrlENT_G := FALSE;
+         END;
+         UnitConditENT_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 2,Max_G);
+         IF ((UnitConditENT_G = '') AND (TypeConditENT_G = 'P')) OR Max_G THEN BEGIN
+           CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' + FORMAT(Ligne_G) + ' '
+                                                                            +'Unit' conditionnement incorrecte'),1, MAXSTRLEN(MsgErr_L))
+      );
+           CntrlENT_G := FALSE;
+         END;
+         // --> 20190313-Wi00-ADV01.01.00-3409-MRU01
+         //ContenConditENT_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 16,Max_G);
+         ContenConditENT_G := CONVERTSTR(ExtractTextCsv(TexteLu_G, Pos_G,';', 16,Max_G), '.', ',');
+         // <-- 20190313-Wi00-ADV01.01.00-3409-MRU01
+         IF (ContenConditENT_G = '') OR (Max_G) OR (NOT EVALUATE(ContenanceNumer_G,ContenConditENT_G)) THEN BEGIN
+           CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' + FORMAT(Ligne_G) + ' '
+                                                                       +'Contenance conditionnement incorrecte'),1, MAXSTRLEN(MsgErr_L))
+      );
+           CntrlENT_G := FALSE;
+         END;
+         IF CntrlENT_G  THEN BEGIN
+           IF NOT SNOArticlesTemp_G.GET(CodeProduitENT_G) THEN BEGIN
+             SNOArticlesTemp_G.INIT;
+             InsertENT(SNOArticlesTemp_G);
+             SNOArticlesTemp_G.INSERT;
+           END ELSE
+             CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' + FORMAT(Ligne_G) + ' '
+                                                                                    +'Article existe d'ja'),1, MAXSTRLEN(MsgErr_L)));
+         END;
+         CodeProduit_G := CodeProduitENT_G;
+      END;
+    END;
+
+    PROCEDURE FileContentControl@60003(VAR RecCMBInterfaceEnginesetup_P@60004 : Record 8061230);
+    VAR
+      MsgErr_L@60000 : Text[250];
+    BEGIN
+      WITH RecCMBInterfaceEnginesetup_P DO BEGIN
+        IF STRPOS(TexteLu_G,';') = 0 THEN
+          CduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text60015, Ligne_G),1, MAXSTRLEN(MsgErr_L)))
+        ELSE
+          NumSeqEnr_G :=ExtractTextCsv(TexteLu_G,Pos_G ,';',10,Max_G);
+        IF NOT EVALUATE(Seq_G,NumSeqEnr_G) THEN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('erreur format numero de s'quence', Ligne_G),1, MAXSTRLEN(MsgErr_L)));
+        Type_G :=  ExtractTextCsv(TexteLu_G, Pos_G,';', 12,Max_G);
+        IF NOT Stop_G THEN BEGIN
+          IF Seq_G <> Ligne_G THEN BEGIN
+            TROUV_G := FALSE;
+            SeqBool_G := FALSE;
+          END ELSE
+            IF Ligne_G = 1  THEN BEGIN
+              IF Type_G <> 'DEBUT' THEN
+                TROUV_G := FALSE;
+            END ELSE
+              IF Ligne_G=2 THEN BEGIN
+                IF Type_G<>'COM' THEN
+                  TROUV_G := FALSE;
+              END
+              ELSE BEGIN
+                IF Type_G = 'ENT' THEN
+                  EnteteExist_G := TRUE
+                ELSE
+                  IF Type_G='FIN' THEN
+                    Stop_G := TRUE;
+              END
+        END ELSE
+          TROUV_G := FALSE;
+        IF NOT TROUV_G AND NOT SeqBool_G THEN
+          CduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text60011, Ligne_G),1, MAXSTRLEN(MsgErr_L)));
+        IF (Ligne_G = 1) AND (NOT TROUV_G) THEN
+          CduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text60006,"File in use"),1, MAXSTRLEN(MsgErr_L)));
+        IF (Ligne_G = 2) AND (NOT TROUV_G) THEN
+          CduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text60007, "File in use"),1, MAXSTRLEN(MsgErr_L)));
+        IF  Stop_G AND NOT EnteteExist_G  THEN
+          CduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text60008, "File in use"),1, MAXSTRLEN(MsgErr_L)));
+        IF (Ligne_G > 3) AND NOT Stop_G AND NOT TROUV_G THEN
+          CduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text60009, "File in use"),1, MAXSTRLEN(MsgErr_L)));
+      END;
+    END;
+
+    PROCEDURE DetailsLineControl@60004();
+    VAR
+      MsgErr_L@60000 : Text[250];
+    BEGIN
+      IF Type_G= 'DET' THEN BEGIN
+        IF (NumSeqEnr_G < '4') AND (STRLEN(NumSeqEnr_G)=1) THEN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne '+ FORMAT(Ligne_G) +' '+
+                                                                                    'S'quencement incorrect'),1, MAXSTRLEN(MsgErr_L)));
+
+        CodeProdDET_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 30,Max_G);
+        IF (CodeProdDET_G = '') OR (Max_G) THEN BEGIN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' + FORMAT(Ligne_G) + ' '
+                                                                                +'Code produit incorrect'),1, MAXSTRLEN(MsgErr_L)));
+        END ELSE
+          IF CodeProdDET_G <> CodeProduit_G THEN BEGIN
+            CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' + FORMAT(Ligne_G) + ' '
+                                                                            +'non rattach' a une ligne ent^te'),1, MAXSTRLEN(MsgErr_L)))
+      ;
+            IF SNOArticlesTemp_G.GET(CodeProduit_G) THEN
+              SNOArticlesTemp_G.DELETE;
+          END;
+        CodeCaracDET_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 150,Max_G);
+        IF (CodeCaracDET_G = '')  OR (Max_G) THEN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' + FORMAT(Ligne_G) + ' '
+                                                                                +'Code CARAC incorrect'),1, MAXSTRLEN(MsgErr_L)));
+        ValCaracDET_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 150,Max_G);
+        IF (ValCaracDET_G = '') OR (Max_G) THEN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' + FORMAT(Ligne_G) + ' '
+                                                                                +'Valeur CARAC incorrect'),1, MAXSTRLEN(MsgErr_L)));
+        NivCaracDET_G := ExtractTextCsv(TexteLu_G, Pos_G,';', 10,Max_G);
+        IF (NivCaracDET_G = '') OR (Max_G) THEN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('Ligne' + FORMAT(Ligne_G) + ' '
+                                                                                +'Niveau CARAC incorrect'),1, MAXSTRLEN(MsgErr_L)));
+      END;
+    END;
+
+    PROCEDURE EndLineControl@60007();
+    VAR
+      MsgErr_L@60002 : Text[250];
+    BEGIN
+      IF Type_G = 'FIN' THEN BEGIN
+        IF NOT EVALUATE (DateFin_G,ExtractTextCsv(TexteLu_G, Pos_G,';', 20,Max_G)) OR Max_G THEN
+          CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text60012, Ligne_G),1, MAXSTRLEN(MsgErr_L)))
+        ELSE
+          IF DateFin_G = 0DT THEN
+            CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text60014, Ligne_G),1, MAXSTRLEN(MsgErr_L)));
+          EmetteurFIN_G :=FORMAT(ExtractTextCsv(TexteLu_G, Pos_G,';', 20,Max_G));
+          DestinataireFin_G :=FORMAT(ExtractTextCsv(TexteLu_G, Pos_G,';', 20,Max_G));
+          IF DestinataireFin_G = '' THEN
+            CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text60016 , Ligne_G),1, MAXSTRLEN(MsgErr_L)))
+          ELSE
+            IF DestinataireFin_G <> '' THEN BEGIN
+              InfoSociete_G.GET;
+              IF DestinataireFin_G <> InfoSociete_G."GLN Code" THEN
+                CduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO('Ligne '+ FORMAT(Ligne_G) + ' ' +
+                                                                                      'Destinataire incorrect'),1, MAXSTRLEN(MsgErr_L)))
+      ;
+            END;
+          IF NOT EVALUATE(NbrLigneFin_G ,ExtractTextCsv(TexteLu_G, Pos_G,';', 12,Max_G))THEN
+            CduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO('erreur nombre de lignes trait'es', Ligne_G),1, MAXSTRLEN(MsgErr_L)))
+          ELSE
+            IF NbrLigneFin_G <> Ligne_G THEN
+              CduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text60013, Ligne_G),1, MAXSTRLEN(MsgErr_L)));
+      END;
+    END;
+
+    PROCEDURE ErrorMgt@60009(VAR CMBInterfaceEnginesetup_P@60002 : Record 8061230);
+    VAR
+      MsgErr_L@60000 : Text[250];
+      FileLogName_L@60001 : Text[250];
+    BEGIN
+      WITH CMBInterfaceEnginesetup_P DO BEGIN
+        IF CduToolsFile_G.LogErreurType() = 'E' THEN BEGIN
+          MsgErr_L := 'ERREUR ' + FileLogName_G;
+          ERROR(MsgErr_L);
+        END
+        ELSE BEGIN
+          IF NOT CduToolsFile_G.FileRenameSav ("File in use", 'Sav', TRUE) THEN BEGIN
+            CduToolsFile_G.LogWriteInfo(STRSUBSTNO(Text60003,"File in use"));
+            FileLogName_G := CduToolsFile_G.LogName;
+            CduToolsFile_G.LogClose();
+          END;
+          IF CduToolsFile_G.LogErreurType() = 'I'  THEN BEGIN
+            MsgErr_L := Text60004;
+            CduMoteurInterface_G.InsertLog(CodeUnit_G, FileLogName_G);
+          END ELSE BEGIN
+            CduMoteurInterface_G.InsertOk(CodeUnit_G);
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE InsertSnoItem@60011();
+    VAR
+      SNOArticles_L@60000 : Record 60100;
+    BEGIN
+      SNOArticlesTemp_G.RESET;
+      IF SNOArticlesTemp_G.FINDFIRST THEN BEGIN
+        REPEAT
+          IF NOT SNOArticles_L.GET(SNOArticlesTemp_G."Code produit") THEN BEGIN
+            SNOArticles_L := SNOArticlesTemp_G;
+            SNOArticles_L.INSERT;
+          END
+          ELSE BEGIN
+            SNOArticles_L := SNOArticlesTemp_G;
+            SNOArticles_L.MODIFY;
+          END;
+        UNTIL SNOArticlesTemp_G.NEXT =0;
+      END;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20180809-Wi00-ADV01.01.00-3355-MBE01 : NEWOBJ
+      20190313-Wi00-ADV01.01.00-3409-MRU01 : Conversion du . en , pour le champ Contenance Conditionnement
+      20190514-Wi00-ADV01.01.00-42431-MRU01 : Modification du test du nom de fichier (heure sous format 24h au lieu de 12)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

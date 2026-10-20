@@ -1,0 +1,621 @@
+OBJECT Codeunit 60076 Exelience Create&Valid Shpt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=11/06/19;
+    Heure=00:00:00;
+    Liste versions=SP3375;
+  }
+  PROPERTIES
+  {
+    TableNo=60078;
+    Permissions=TableData 110=rm;
+    OnRun=BEGIN
+            //Cr'ation et Validation de la Commande de Vente
+            CreateSalesOrder(Rec);
+
+            //Mise . jour du Statut pour le BL correctement trait'
+            ExelienceImport_G.UpdateStatus(Rec);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      ExelienceImport_G@1000000003 : Codeunit 60069;
+      TxtPartnerName@60000 : TextConst 'FRA=Exelience';
+      Text8053000@60001 : TextConst 'ENU=Units Setup is not defined for %1;FRA=Vous devez renseigner l''unit' %1 dans l''article %2';
+
+    PROCEDURE CreateSalesOrder@60002(ExelienceHeader_P@60000 : Record 60078);
+    VAR
+      SalesHeader_L@60001 : Record 36;
+      SalesSetup_L@60002 : Record 311;
+      NoSeriesMgt_L@60003 : Codeunit 396;
+      Contact_L@60004 : Record 5050;
+      Vendor_L@60005 : Record 23;
+      ShipmentDate_L@60006 : Date;
+      ExelienceLine_L@60007 : Record 60103;
+      DateText_L@60008 : Text[8];
+      ReleaseSalesDoc_L@60009 : Codeunit 414;
+      SalesPost_L@60010 : Codeunit 80;
+      SeedsSetup_L@60011 : Record 60106;
+      ShipToAddress_L@60012 : Record 222;
+      SalesShipmentHeader_L@60013 : Record 110;
+      Customer_L@60014 : Record 18;
+    BEGIN
+      WITH SalesHeader_L DO BEGIN
+        LOCKTABLE;
+        INIT;
+
+        SalesSetup_L.GET;
+        "No." := NoSeriesMgt_L.GetNextNo(SalesSetup_L."Order Nos.", 0D, TRUE);
+        "Document Type" := "Document Type"::Order;
+
+        INSERT(TRUE);
+
+        //R'cup'ration du num'ro de client via le SIRET pr'sent dans la ligne d'ent^te Exelience
+        Contact_L.RESET;
+        Contact_L.SETRANGE("Contact Type", Contact_L."Contact Type"::Farm);
+        Contact_L.SETRANGE("Registration No.", ExelienceHeader_P."Delivered To");
+        IF Contact_L.FINDFIRST THEN REPEAT
+          IF Vendor_L.GET(Contact_L."Vendor No.") THEN BEGIN
+            IF Vendor_L.Multiplier THEN BEGIN
+              VALIDATE("Sell-to Customer No.", Contact_L."Customer No.");
+              VALIDATE("Sell-to Contact", Contact_L."No.");
+            END;
+          END;
+        UNTIL Contact_L.NEXT = 0;
+
+        //Dates : R'cup'ration de la date d'exp'dition pr'sent dans la ligne d'ent^te Exelience
+        DateText_L := ExelienceHeader_P."Sales Shipment Date";
+        DateText_L := COPYSTR(DateText_L,7,2) + COPYSTR(DateText_L,5,2) + COPYSTR(DateText_L,1,4);
+        EVALUATE(ShipmentDate_L, DateText_L);
+        VALIDATE("Order Date", ShipmentDate_L);
+        VALIDATE("Posting Date", ShipmentDate_L);
+        VALIDATE("Document Date", ShipmentDate_L);
+        VALIDATE("Requested Delivery Date", ShipmentDate_L);
+        VALIDATE("Latest Req. Deliv. Date", ShipmentDate_L);
+        "Created Date" := ShipmentDate_L;
+        "Created Time" := 0T;
+
+        IF COMPANYNAME = 'TERNOVEO' THEN BEGIN
+          VALIDATE("Doc. Category Code", 'Commande');
+          VALIDATE("Grouping Code", 'APPROS');
+        END ELSE
+          VALIDATE("Doc. Category Code", UPPERCASE(TxtPartnerName));
+
+        "Created By" := TxtPartnerName;
+        "Document Source" := TxtPartnerName;
+        //VALIDATE("Assigned User ID", TxtPartnerName);
+        "Assigned User ID" := TxtPartnerName;
+        VALIDATE("Prod. Activity Code", 'PV');
+        VALIDATE("Sales Network Code", 'APPRO');
+        VALIDATE("External Reference No.", ExelienceHeader_P."Sales Shipment No.");
+        "External Document No." := ExelienceHeader_P."Sales Shipment No.";
+
+        //R'cup'ration du num'ro de client via le SIRET pr'sent dans la ligne d'ent^te Exelience
+        //Si pas de num'ro de SIRET, on ne fait rien (reprise automatique de l'information via le Sell-to Customer No.)
+        IF ExelienceHeader_P."Delivered To" <> '' THEN BEGIN
+          Contact_L.RESET;
+          Contact_L.SETRANGE("Contact Type", Contact_L."Contact Type"::Farm);
+          Contact_L.SETRANGE("Registration No.", ExelienceHeader_P."Delivered To");
+          IF Contact_L.FINDFIRST THEN REPEAT
+            IF Vendor_L.GET(Contact_L."Vendor No.") THEN BEGIN
+              IF Vendor_L.Multiplier THEN BEGIN
+                VALIDATE("Bill-to Customer No.", Contact_L."Customer No.");
+              END;
+            END;
+          UNTIL Contact_L.NEXT = 0;
+        END;
+
+        "Shipping Advice" := "Shipping Advice"::Complete;
+
+        IF "Ship-to Code" = '' THEN BEGIN
+          ShipToAddress_L.SETRANGE("Customer No.", "Sell-to Customer No.");
+          IF ShipToAddress_L.FINDFIRST THEN
+            VALIDATE("Ship-to Code", ShipToAddress_L.Code);
+        END;
+
+        VALIDATE("Shipment Method Code", 'LIV');
+        "Shipping Agent Code" := TxtPartnerName;
+
+        //Reprise du Code Collectif pr'sent dans le client donneur d'ordre
+        Customer_L.GET(Contact_L."Customer No.");
+        "Group Account Code" := Customer_L."Group Account Code";
+
+        MODIFY;
+
+        //Cr'ation des lignes de la commande de vente
+        ExelienceLine_L.RESET;
+        ExelienceLine_L.SETRANGE("Sequence Flow No.", ExelienceHeader_P."Sequence Flow No.");
+        ExelienceLine_L.SETRANGE("Sequence Header No.", ExelienceHeader_P."Sequence No.");
+        IF ExelienceLine_L.FINDFIRST THEN REPEAT
+          CreateSalesOrderLine(SalesHeader_L, ExelienceLine_L);
+        UNTIL ExelienceLine_L.NEXT = 0;
+
+        //Lancement de la commande de vente
+        //Evite le COMMIT
+        "Released Once" := TRUE;
+        MODIFY;
+
+        ReleaseSalesDoc_L.PerformManualRelease(SalesHeader_L);
+
+        //Mise . jour de la date de commande aprSs le lancement
+        VALIDATE("Order Date", ShipmentDate_L);
+        MODIFY;
+
+        //Cr'ation de la Commande d'Achat via la livraison directe
+        CreatePurchOrder(SalesHeader_L."No.", SalesHeader_L."External Reference No.");
+
+        //Validation de la Commande de Vente pour g'n'rer l'Exp'dition Vente
+        SalesHeader_L.Ship := TRUE;
+        SalesHeader_L.Invoice := FALSE;
+        //On valide toute la commande (les lignes de CVO ne peuvent pas faire partie de la livraison directe)
+        //SalesHeader_L."Post Drop Shipment Only" := TRUE;
+        SalesPost_L.RUN(SalesHeader_L);
+
+        //Mise . jour des quantit's sur les lignes de CVO achat
+        UpdatePurchLineCVOQuantity(SalesHeader_L."No.");
+
+        //Mise . jour de l'Exp'dition Vente pour TERNOVEO : Champ "Assigned User ID"
+        IF COMPANYNAME = 'TERNOVEO' THEN BEGIN
+          SalesShipmentHeader_L.SETRANGE("Order No.", SalesHeader_L."No.");
+          IF SalesShipmentHeader_L.FINDFIRST THEN BEGIN
+            SalesShipmentHeader_L."Assigned User ID" := UPPERCASE(TxtPartnerName);
+            SalesShipmentHeader_L.MODIFY(FALSE);
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE CreateSalesOrderLine@60013(SalesHeader_P@60002 : Record 36;ExelienceLine_P@60001 : Record 60103);
+    VAR
+      SalesLine_L@60000 : Record 37;
+      ItemSNO_L@60003 : Record 60100;
+      ExelienceLineDetail_L@60004 : Record 60107;
+      Item_L@60005 : Record 27;
+      SalesSetup_L@60006 : Record 311;
+    BEGIN
+      WITH SalesLine_L DO BEGIN
+        LOCKTABLE;
+        INIT;
+
+        "Document Type" := SalesHeader_P."Document Type";
+        "Document No." := SalesHeader_P."No.";
+        "Line No." := GetNextLineNo(SalesHeader_P);
+        "Sell-to Customer No." := SalesLine_L."Sell-to Customer No.";
+        VALIDATE(Type, Type::Item);
+
+        ItemSNO_L.GET(ExelienceLine_P."Exelience Product Code");
+        VALIDATE("No.", ItemSNO_L."Correspondance num'ro article");
+
+        // Pour la validation du Code Variante, exclusion du cas o- $ est pr'sent comme valeur (cf export comm achat Exelience)
+        IF ItemSNO_L."Correspondance Code Variante" <> '$' THEN
+          VALIDATE("Variant Code", ItemSNO_L."Correspondance Code Variante");
+
+        EVALUATE(Quantity, ExelienceLine_P."Delivered Quantity");
+        VALIDATE(Quantity);
+
+        IF COMPANYNAME <> 'TERNOVEO' THEN
+          VALIDATE("Due Pivot Date Gap", 0);
+
+        VALIDATE("Purchasing Code", 'LD');
+
+        VALIDATE("Qty. to Ship", Quantity);
+        VALIDATE("Qty. to Invoice", Quantity);
+
+        "Actual Shipping Agent Code" := UPPERCASE(TxtPartnerName);
+
+        //VALIDATE("Location Code", SalesHeader_P."Location Code");
+        "Payment Terms Code" := SalesHeader_P."Payment Terms Code";
+
+        SalesSetup_L.GET;
+        "Location Code" := SalesSetup_L."Drop Shipment Location Code";
+
+        INSERT(TRUE);
+
+        //Cr'ation des lignes de traÎabilit' si l'article possSde un code de traÎabilit'
+        Item_L.GET(ItemSNO_L."Correspondance num'ro article");
+        IF Item_L."Item Tracking Code" <> '' THEN BEGIN
+          ExelienceLineDetail_L.SETRANGE("Sequence Flow No.", ExelienceLine_P."Sequence Flow No.");
+          ExelienceLineDetail_L.SETRANGE("Sequence Header No.", ExelienceLine_P."Sequence Header No.");
+          ExelienceLineDetail_L.SETRANGE("Sequence Line No.", ExelienceLine_P."Sequence No.");
+          IF ExelienceLineDetail_L.FINDFIRST THEN REPEAT
+            CreateTrackingSpecification(SalesLine_L, ExelienceLineDetail_L);
+          UNTIL ExelienceLineDetail_L.NEXT = 0;
+        END;
+      END;
+
+      //Mise . jour des quantit's . exp'dier et facturer pour les lignes g'n'r'es automatiquement (ex:CVO)
+      CLEAR(SalesLine_L);
+      SalesLine_L.SETRANGE("Document Type", SalesHeader_P."Document Type");
+      SalesLine_L.SETRANGE("Document No.", SalesHeader_P."No.");
+      SalesLine_L.SETFILTER("Qty. to Ship", '=%1', 0);
+      IF SalesLine_L.FINDFIRST THEN REPEAT
+        SalesLine_L.VALIDATE("Qty. to Ship", SalesLine_L.Quantity);
+        SalesLine_L.VALIDATE("Qty. to Invoice", SalesLine_L.Quantity);
+        SalesLine_L.MODIFY(FALSE);
+      UNTIL SalesLine_L.NEXT = 0;
+    END;
+
+    PROCEDURE CreatePurchOrder@60000(SalesOrderNo_P@60000 : Code[20];BLNo_P@60004 : Code[20]);
+    VAR
+      PurchDropShpt_L@60001 : Codeunit 76;
+      SalesLine_L@60002 : Record 37;
+      PurchHeader_L@60003 : Record 38;
+      PurchLine_L@60005 : Record 39;
+      ReleasePurchDoc_L@60006 : Codeunit 415;
+      CMCCampaign_L@60007 : Record 8052991;
+    BEGIN
+      //Cr'ation de la commande d'achat via la fonction de g'n'ration standard (adapt'e pour notre cas)
+      PurchDropShpt_L.HideValidationDialog;
+      PurchDropShpt_L.CreateDropShipPurchOrder(SalesOrderNo_P);
+
+      //Modification de la commande cr''e
+      //R'cup'ration du N› via la premiSre ligne de la commande de vente
+      SalesLine_L.RESET;
+      SalesLine_L.SETRANGE("Document Type", SalesLine_L."Document Type"::Order);
+      SalesLine_L.SETRANGE("Document No.", SalesOrderNo_P);
+      SalesLine_L.SETRANGE(Type, SalesLine_L.Type::Item);
+      SalesLine_L.FINDFIRST;
+
+      PurchHeader_L.GET(PurchHeader_L."Document Type"::Order, SalesLine_L."Purchase Order No.");
+      PurchHeader_L.SetHideValidationDialog(TRUE);
+      WITH PurchHeader_L DO BEGIN
+        VALIDATE("Posting Date", SalesLine_L."Requested Delivery Date");
+        VALIDATE("Order Date", "Posting Date");
+        VALIDATE("Document Date", "Posting Date");
+        VALIDATE("Requested Receipt Date", "Posting Date");
+        "Created Date" := "Posting Date";
+
+        "Vendor Order No." := SalesLine_L."Document No.";
+        "Vendor Shipment No." := BLNo_P;
+
+        "Created By" := UPPERCASE(TxtPartnerName);
+
+        IF COMPANYNAME = 'TERNOVEO' THEN BEGIN
+          //VALIDATE("Assigned User ID", TxtPartnerName);
+          "Assigned User ID" := TxtPartnerName;
+          VALIDATE("Shipment Method Code", 'DDP');
+          "Doc. Category Code" := '';
+          VALIDATE("Grouping Code", 'APPROS');
+        END ELSE BEGIN
+          VALIDATE("Shipment Method Code", 'LIV');
+        END;
+
+        // --> 20190611-WI00-ADV01.01.00-3375-MRU01
+        {BEFORE
+        //R'cup'ration de la campagne . partir de la date du BL
+        CMCCampaign_L.SETFILTER("Starting Date", '<=%1', "Posting Date");
+        CMCCampaign_L.SETFILTER("Ending Date", '>=%1', "Posting Date");
+        CMCCampaign_L.FINDFIRST;
+        VALIDATE("CMC Campaign No.", CMCCampaign_L."No.");
+        AFTER}
+        VALIDATE("CMC Campaign No.", SalesLine_L."CMC Campaign No.");
+        // <-- 20190611-WI00-ADV01.01.00-3375-MRU01
+
+        //Evite le COMMIT et l'envoi de la Commande EXELIENCE
+        "Released Once" := TRUE;
+        MODIFY;
+
+        //Modification des lignes
+        PurchLine_L.RESET;
+        PurchLine_L.SETRANGE("Document Type", "Document Type");
+        PurchLine_L.SETRANGE("Document No.", "No.");
+        PurchLine_L.SETRANGE(Type, PurchLine_L.Type::Item);
+        IF PurchLine_L.FINDFIRST THEN REPEAT
+          PurchLine_L."Actual Shipping Agent Code" := UPPERCASE(TxtPartnerName);
+          PurchLine_L.MODIFY;
+
+          // --> 20190520-WI00-ADV01.01.00-3375-MRU01
+          //Gestion des lignes de CVO
+          GenerateTaxLine(PurchLine_L);
+          // <-- 20190520-WI00-ADV01.01.00-3375-MRU01
+        UNTIL PurchLine_L.NEXT = 0;
+
+        //Lancement de la commande d'achat
+        ReleasePurchDoc_L.PerformManualRelease(PurchHeader_L);
+      END;
+    END;
+
+    PROCEDURE CreateTrackingSpecification@60001(SalesLine_P@60000 : Record 37;ExelienceLineDetail_P@60004 : Record 60107);
+    VAR
+      TrackingSpecification_L@60003 : Record 336;
+      DateText_L@60005 : Text[8];
+      NextEntryNo_L@60006 : Integer;
+    BEGIN
+      TrackingSpecification_L.RESET;
+      TrackingSpecification_L.FINDLAST;
+      NextEntryNo_L := TrackingSpecification_L."Entry No." + 1;
+
+      WITH TrackingSpecification_L DO BEGIN
+        RESET;
+        INIT;
+
+        "Entry No." := NextEntryNo_L;
+        "Source ID" := SalesLine_P."Document No.";
+        "Source Ref. No." := SalesLine_P."Line No.";
+        "Source Type" := 37;
+        "Source Subtype" := 1;
+        "Item No." := SalesLine_P."No.";
+        "Variant Code" := SalesLine_P."Variant Code";
+        "Location Code" := SalesLine_P."Location Code";
+
+        VALIDATE("Lot No.", ExelienceLineDetail_P."Batch No.");
+        EVALUATE("Quantity (Base)", ExelienceLineDetail_P."Shipped Quantity");
+        VALIDATE("Quantity (Base)");
+
+        DateText_L := ExelienceLineDetail_P."Expiration Date";
+        DateText_L := COPYSTR(DateText_L,7,2) + COPYSTR(DateText_L,5,2) + COPYSTR(DateText_L,1,4);
+        EVALUATE("Expiration Date", DateText_L);
+        VALIDATE("Expiration Date");
+
+        DateText_L := ExelienceLineDetail_P."Production Date";
+        DateText_L := COPYSTR(DateText_L,7,2) + COPYSTR(DateText_L,5,2) + COPYSTR(DateText_L,1,4);
+        EVALUATE("Manufacturing Date", DateText_L);
+        VALIDATE("Manufacturing Date");
+
+        Positive := TRUE;
+
+        INSERT(TRUE);
+      END;
+    END;
+
+    PROCEDURE GetNextLineNo@60003(SalesHeader_P@60000 : Record 36) : Integer;
+    VAR
+      SalesLine_L@60001 : Record 37;
+    BEGIN
+      SalesLine_L.SETRANGE("Document Type", SalesHeader_P."Document Type");
+      SalesLine_L.SETRANGE("Document No.", SalesHeader_P."No.");
+      IF SalesLine_L.FINDLAST THEN
+        EXIT(SalesLine_L."Line No." + 10000)
+      ELSE
+        EXIT(10000);
+    END;
+
+    PROCEDURE GenerateTaxLine@8053039(VAR PurchaseLine_P@8053005 : Record 39);
+    VAR
+      CMCSetup_L@50000 : Record 8052982;
+      Vendor_L@8053004 : Record 23;
+      Item_L@50001 : Record 27;
+      CMCActiveSubstCattemp_P@50002 : TEMPORARY Record 8053024;
+      ItemUnitMeasure_L@50007 : Record 5404;
+      PurchaseLine_L@8053000 : Record 39;
+      PurchaseHeader_L@8053007 : Record 38;
+      CollectionTax_L@8053011 : Record 8053007;
+      CollectedTax_L@8053010 : Record 8053006;
+      UnitsMeasureCMC_L@8053009 : Record 8053025;
+      UnitsMeasureCMC2_L@8053008 : Record 8053025;
+      Coeff_L@8053003 : Decimal;
+      ItemOfUnit_L@8053002 : Record 5404;
+      ItemOfUnit2_L@8053001 : Record 5404;
+      TaxUnitPrice_L@8053012 : Decimal;
+      recTax_L@8053006 : Record 8053523;
+      CanCVO_L@8053013 : Boolean;
+      RecSalesInvoiceHeader_L@60001 : Record 112;
+    BEGIN
+      // --> 20190520-WI00-ADV01.01.00-3375-MRU01
+      // -----------------------------------------------------------------------------------
+      // Dans cette fonction, on g'nSre les lignes de CVO
+      // -----------------------------------------------------------------------------------
+      WITH PurchaseLine_P DO BEGIN
+        IF "Document Type" = "Document Type"::Order THEN BEGIN
+          IF NOT Vendor_L.GET("Buy-from Vendor No.") THEN
+            EXIT;
+          IF Type = Type::Item THEN BEGIN
+            IF Item_L.GET("No.") THEN BEGIN
+              CMCSetup_L.GET;
+              PurchaseHeader_L.GET("Document Type", "Document No.");
+              // -----------------------------------------------------------------------------------
+              // G'n'ration de la ligne CVO
+              // -----------------------------------------------------------------------------------
+              IF Item_L."CVO Credit" THEN BEGIN
+                CollectionTax_L.RESET;
+                CollectionTax_L.SETRANGE(Fees, CollectionTax_L.Fees::CVO);
+                IF CollectionTax_L.FINDFIRST THEN
+                  IF recTax_L.GET(CollectionTax_L.Code, PurchaseLine_P."VAT Bus. Posting Group") THEN BEGIN
+                IF CollectionTax_L.GET(CMCSetup_L."CVO Credit Tax Code") THEN BEGIN
+                  TaxUnitPrice_L := CalcCVO(PurchaseLine_P, "CMC Campaign No.", CMCSetup_L."CVO Credit Tax Code", Item_L) ;
+                  PurchaseLine_L.RESET;
+                  PurchaseLine_L.SETRANGE("Document Type", "Document Type");
+                  PurchaseLine_L.SETRANGE("Document No.", "Document No.");
+                  PurchaseLine_L.SETRANGE("CVO Item Attached Line", "Line No.");
+                  IF TaxUnitPrice_L <> 0 THEN BEGIN
+                    IF NOT PurchaseLine_L.FINDFIRST THEN BEGIN
+                      InitTaxLine(PurchaseLine_P,PurchaseLine_L,TaxUnitPrice_L,CollectionTax_L."G/L Account","Line No.",'');
+                      PurchaseLine_L.VALIDATE(Description,CollectionTax_L.Description);
+                      PurchaseLine_L.VALIDATE("CVO Item Attached Line", "Line No.");
+                      PurchaseLine_L.INSERT;
+                    END;
+                    PurchaseLine_L.VALIDATE("Prepayment VAT Identifier", PurchaseLine_L."Prepayment VAT Identifier");
+                    ModifyTaxLine(PurchaseLine_P,PurchaseLine_L,TaxUnitPrice_L);
+                  END ELSE
+                    IF PurchaseLine_L.FINDFIRST THEN BEGIN
+                      IF (PurchaseLine_L."Qty. to Receive" <> PurchaseLine_P."Qty. to Receive") OR
+                        (PurchaseLine_L."Qty. to Invoice" <> PurchaseLine_P."Qty. to Invoice")
+                      THEN BEGIN
+                        PurchaseLine_L.DELETE(TRUE);
+                      END;
+                    END;
+                END;
+                  END;
+              END;
+            END;
+          END;
+        END;
+      END;
+      // --> 20190520-WI00-ADV01.01.00-3375-MRU01
+    END;
+
+    PROCEDURE InitTaxLine@8053037(PurchaseLine_P@60000 : Record 39;VAR PurchaseLine_L@8053001 : Record 39;VAR TaxUnitprice_L@8053000 : Decimal;VAR Account_L@8053002 : Code[20];VAR line_l@8053003 : Integer;VATProdPostingGroup_L@8053004 : Code[20]);
+    BEGIN
+      // --> 20190520-WI00-ADV01.01.00-3375-MRU01
+      // Init de la ligne de taxe
+      PurchaseLine_L.INIT;
+      PurchaseLine_L.VALIDATE("Document Type", PurchaseLine_P."Document Type");
+      PurchaseLine_L.VALIDATE("Document No.", PurchaseLine_P."Document No.");
+      PurchaseLine_L.VALIDATE("Line No.",f_NouveauNo(PurchaseLine_P, line_l));
+      PurchaseLine_L.VALIDATE(Type,PurchaseLine_L.Type::"G/L Account");
+      PurchaseLine_L.VALIDATE("No.",Account_L);
+      PurchaseLine_L.VALIDATE("Unit of Measure Code", PurchaseLine_P."Unit of Measure Code");
+      PurchaseLine_L.VALIDATE("Direct Unit Cost", TaxUnitprice_L);
+      PurchaseLine_L."CMC Campaign No." := PurchaseLine_P."CMC Campaign No.";
+
+      IF VATProdPostingGroup_L <> '' THEN
+        PurchaseLine_L.VALIDATE("VAT Prod. Posting Group",VATProdPostingGroup_L);
+      // <-- 20190520-WI00-ADV01.01.00-3375-MRU01
+    END;
+
+    PROCEDURE ModifyTaxLine@8053036(PurchaseLine_P@60000 : Record 39;VAR PurchaseLine_L@8053000 : Record 39;VAR TaxUnitprice_L@8053001 : Decimal);
+    VAR
+      SalesLine_L@60001 : Record 37;
+      SalesHeaderNo_L@60002 : Code[20];
+    BEGIN
+      // --> 20190520-WI00-ADV01.01.00-3375-MRU01
+      // Modification de la ligne de taxe
+      PurchaseLine_L.VALIDATE(Quantity, PurchaseLine_P.Quantity);
+      PurchaseLine_L.VALIDATE("Direct Unit Cost",TaxUnitprice_L);
+
+      IF PurchaseLine_L."Quantity Received" = 0 THEN
+        PurchaseLine_L.VALIDATE("Unit of Measure Code", PurchaseLine_P."Unit of Measure Code");
+      PurchaseLine_L.VALIDATE("Qty. to Receive", PurchaseLine_P."Qty. to Receive");
+      PurchaseLine_L.VALIDATE("Location Code", PurchaseLine_P."Location Code");
+      PurchaseLine_L.VALIDATE("Outstanding Quantity", PurchaseLine_P."Outstanding Quantity");
+      PurchaseLine_L.VALIDATE("Return Qty. Shipped Not Invd.", PurchaseLine_P."Return Qty. Shipped Not Invd.");
+      PurchaseLine_L.VALIDATE("Qty. to Invoice", PurchaseLine_P."Qty. to Invoice");
+      PurchaseLine_L.VALIDATE("Qty. to Invoice (Base)", PurchaseLine_P."Qty. to Invoice (Base)");
+      PurchaseLine_L.VALIDATE("Location Code", PurchaseLine_P."Location Code");
+      PurchaseLine_L.VALIDATE("Activity Code", PurchaseLine_P."Activity Code");
+      PurchaseLine_L.VALIDATE("Family Code", PurchaseLine_P."Family Code");
+      PurchaseLine_L.VALIDATE("Sub-Family Code", PurchaseLine_P."Sub-Family Code");
+      PurchaseLine_L.VALIDATE("Species Code", PurchaseLine_P."Species Code");
+      PurchaseLine_L."CMC Campaign No." := PurchaseLine_P."CMC Campaign No.";
+      {
+      PurchaseLine_L.VALIDATE("Qty. to Receive", PurchaseLine_P.Quantity);
+      PurchaseLine_L.VALIDATE("Qty. to Invoice", PurchaseLine_P.Quantity);
+      }
+      //Cr'ation du lien entre la ligne de CVO achat et la ligne de CVO vente
+      {
+      SalesLine_L.SETRANGE("Document Type", SalesLine_L."Document Type"::Order);
+      SalesLine_L.SETRANGE("Purchase Order No.", PurchaseLine_P."Document No.");
+      SalesLine_L.FINDFIRST;
+      SalesHeaderNo_L := SalesLine_L."Document No.";
+
+      SalesLine_L.RESET;
+      SalesLine_L.SETRANGE("Document Type", SalesLine_L."Document Type"::Order);
+      SalesLine_L.SETRANGE("Document No.", SalesHeaderNo_L);
+      SalesLine_L.SETRANGE("Purchase Order No.", '');
+      SalesLine_L.FINDFIRST;
+
+      SalesLine_L."Purchase Order No." := PurchaseLine_L."Document No.";
+      SalesLine_L."Purch. Order Line No." := PurchaseLine_L."Line No.";
+      SalesLine_L.MODIFY;
+
+      PurchaseLine_L."Sales Order No." := SalesLine_L."Document No.";
+      PurchaseLine_L."Sales Order Line No." := SalesLine_L."Line No.";
+      }
+      PurchaseLine_L.MODIFY;
+      // <-- 20190520-WI00-ADV01.01.00-3375-MRU01
+    END;
+
+    PROCEDURE CalcCVO@8053035(PurchaseLine_P@60000 : Record 39;campaign_P@8053008 : Code[20];"CVO Credit Tax Code_P"@8053000 : Code[20];Rec_item_p@8053009 : Record 27) UnitPriceCVO_L : Decimal;
+    VAR
+      CollectionTax_L@8053007 : Record 8053007;
+      CollectedTax_L@8053006 : Record 8053006;
+      UnitsMeasureCMC_L@8053005 : Record 8053025;
+      UnitsMeasureCMC2_L@8053004 : Record 8053025;
+      ItemOfUnit_L@8053002 : Record 5404;
+      ItemOfUnit2_L@8053001 : Record 5404;
+      coeff_l@8053003 : Decimal;
+    BEGIN
+      // --> 20190520-WI00-ADV01.01.00-3375-MRU01
+
+      // Recherche du taux de CVO
+      CollectedTax_L.SETRANGE("Campain No.",campaign_P);
+      CollectedTax_L.SETRANGE("Species code", '');
+      CollectedTax_L.SETFILTER("Starting date", '<=%1', WORKDATE);
+      CollectedTax_L.SETRANGE("Tax Code","CVO Credit Tax Code_P");
+      IF CollectedTax_L.FINDLAST THEN BEGIN
+        UnitsMeasureCMC2_L.RESET;
+        UnitsMeasureCMC2_L.SETRANGE(Code, CollectedTax_L."Unit Code");
+        UnitsMeasureCMC2_L.FINDFIRST;
+
+        UnitsMeasureCMC_L.RESET;
+        UnitsMeasureCMC_L.SETRANGE(Code, PurchaseLine_P."Unit of Measure Code");
+        IF UnitsMeasureCMC_L.FINDFIRST THEN
+          coeff_l := UnitsMeasureCMC_L."Qty. per Unit of Measure" / UnitsMeasureCMC2_L."Qty. per Unit of Measure"
+        ELSE BEGIN
+          ItemOfUnit_L.RESET;
+          ItemOfUnit_L.SETRANGE("Item No.",Rec_item_p."No.");
+          ItemOfUnit_L.SETRANGE(Code,CollectedTax_L."Unit Code");
+          IF NOT ItemOfUnit_L.FINDFIRST THEN
+            ERROR(Text8053000,CollectedTax_L."Unit Code", PurchaseLine_P."No.")
+          ELSE BEGIN
+            ItemOfUnit2_L.RESET;
+            ItemOfUnit2_L.SETRANGE("Item No.", PurchaseLine_P."No.");
+            ItemOfUnit2_L.SETRANGE(Code, PurchaseLine_P."Unit of Measure Code");
+            ItemOfUnit2_L.FINDFIRST;
+            coeff_l := ItemOfUnit2_L."Qty. per Unit of Measure" / ItemOfUnit_L."Qty. per Unit of Measure";
+          END;
+        END;
+      END;
+      UnitPriceCVO_L := -ABS(ROUND(CollectedTax_L."Unit Tax Amount" * coeff_l,0.00001,'='));
+      // <-- 20190520-WI00-ADV01.01.00-3375-MRU01
+    END;
+
+    PROCEDURE f_NouveauNo@8053034(PurchaseLine_P@60000 : Record 39;line_p@8053002 : Integer) NewLineNo_L : Integer;
+    VAR
+      PurchaseLine_L@8053000 : Record 39;
+    BEGIN
+      // --> 20190520-WI00-ADV01.01.00-3375-MRU01
+      // D'termination du no. de ligne
+      PurchaseLine_L.SETRANGE("Document Type",PurchaseLine_P."Document Type");
+      PurchaseLine_L.SETRANGE("Document No.",PurchaseLine_P."Document No.");
+      PurchaseLine_L.SETFILTER("Line No.",'>%1',line_p);
+      IF PurchaseLine_L.FINDFIRST THEN
+        NewLineNo_L := ROUND((PurchaseLine_L."Line No." + line_p) / 2, 1)
+      ELSE
+        NewLineNo_L := line_p + 10000;
+      // <-- 20190520-WI00-ADV01.01.00-3375-MRU01
+    END;
+
+    PROCEDURE UpdatePurchLineCVOQuantity@60004(SalesOrderNo_P@60000 : Code[20]);
+    VAR
+      SalesLine_L@60001 : Record 37;
+      PurchaseLine_L@60002 : Record 39;
+    BEGIN
+      SalesLine_L.RESET;
+      SalesLine_L.SETRANGE("Document Type", SalesLine_L."Document Type"::Order);
+      SalesLine_L.SETRANGE("Document No.", SalesOrderNo_P);
+      SalesLine_L.SETRANGE(Type, SalesLine_L.Type::Item);
+      SalesLine_L.FINDFIRST;
+
+      PurchaseLine_L.SETRANGE("Document Type", PurchaseLine_L."Document Type"::Order);
+      PurchaseLine_L.SETRANGE("Document No.", SalesLine_L."Purchase Order No.");
+      PurchaseLine_L.SETRANGE(Type, PurchaseLine_L.Type::"G/L Account");
+      IF PurchaseLine_L.FIND('-') THEN REPEAT
+        PurchaseLine_L."Qty. to Invoice" := PurchaseLine_L.Quantity;
+        PurchaseLine_L."Qty. to Receive" := 0;
+        PurchaseLine_L."Qty. Rcd. Not Invoiced" := PurchaseLine_L.Quantity;
+        PurchaseLine_L."Quantity Received" := PurchaseLine_L.Quantity;
+        PurchaseLine_L."Quantity Received" := PurchaseLine_L.Quantity;
+        PurchaseLine_L."Qty. to Invoice (Base)" := PurchaseLine_L.Quantity;
+        PurchaseLine_L."Qty. to Receive (Base)" := 0;
+        PurchaseLine_L."Qty. Rcd. Not Invoiced (Base)" := PurchaseLine_L.Quantity;
+        PurchaseLine_L."Qty. Received (Base)" := PurchaseLine_L.Quantity;
+        PurchaseLine_L.MODIFY;
+      UNTIL PurchaseLine_L.NEXT = 0;
+    END;
+
+    BEGIN
+    {
+      //--> 3LI BEGIN
+      20190403-WI00-ADV01.01.00-3375-MRU01 : CREATE Object
+      20190520-WI00-ADV01.01.00-3375-MRU01 : ADDCODE (Gestion de la CVO Achat)
+      20190611-WI00-ADV01.01.00-3375-MRU01 : MODCODE (Achat : r'cup'ration de la campagne d'finie dans les lignes de la commande de vente)
+      //<-- 3LI END
+    }
+    END.
+  }
+}
+

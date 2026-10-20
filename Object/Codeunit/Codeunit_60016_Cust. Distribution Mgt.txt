@@ -1,0 +1,533 @@
+OBJECT Codeunit 60016 Cust. Distribution Mgt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=24/04/26;
+    Heure=11:35:04;
+    Modifi'=Oui;
+    Liste versions=TER01.01.00;
+  }
+  PROPERTIES
+  {
+    TableNo=36;
+    Permissions=TableData 32=rm,
+                TableData 110=rm,
+                TableData 111=rm,
+                TableData 5802=rm;
+    OnRun=VAR
+            SalesShptLine_L@1000000005 : Record 111;
+            SalesLine_L@1000000003 : Record 37;
+            SalesPost_L@1000000006 : Codeunit 80;
+            SalesInvNo_L@1000000007 : Code[20];
+            CopyDocMgt_L@1000000008 : Codeunit 6620;
+            SalesDocType@1000000009 : 'Quote,Blanket Order,Order,Invoice,Return Order,Credit Memo,Posted Shipment,Posted Invoice,Posted Return Receipt,Posted Credit Memo';
+            CMCSetup_L@1000000010 : Record 8052982;
+            CrMemoNo_L@60000 : Code[20];
+            NextTransEntryNo_L@1000000002 : Integer;
+            i_L@1000000000 : Integer;
+            RepSalesInvBatch_L@1000000001 : Report 8053133;
+            RecSalesHeader_L@1000000004 : Record 36;
+          BEGIN
+            // Checking and Preparing Datas
+            SalesLine_L.RESET;
+            SalesLine_L.SETRANGE("Document Type", "Document Type");
+            SalesLine_L.SETRANGE("Document No.", "No.");
+            SalesLine_L.SETFILTER("Qty. Shipped Not Invoiced",'>0');
+            IF SalesLine_L.ISEMPTY THEN
+              ERROR(Text1000000008);
+
+            // Resetting Temporary Table
+            TmpDisTransBuffer_G.RESET;
+            TmpDisTransBuffer_G.DELETEALL;
+
+            // Going through Sales Shipment Lines
+            SalesShptLine_L.RESET;
+            SalesShptLine_L.SETCURRENTKEY("Order No.");
+            SalesShptLine_L.SETRANGE("Order No.","No.");
+            IF SalesShptLine_L.FINDSET THEN
+
+              REPEAT
+
+                IF (SalesShptLine_L.Type = SalesShptLine_L.Type::Item) AND
+                   (SalesShptLine_L."Qty. Shipped Not Invoiced" <> 0) THEN BEGIN
+
+                  // Checking that quantity has not been changed
+
+                  CustDocDistEntry_G.RESET;
+                  CustDocDistEntry_G.SETCURRENTKEY("Document Type","Document No.","Document Line No.");
+                  CustDocDistEntry_G.SETRANGE("Document Type",CustDocDistEntry_G."Document Type"::Shipment);
+                  CustDocDistEntry_G.SETRANGE("Document No.",SalesShptLine_L."Document No.");
+                  CustDocDistEntry_G.SETRANGE("Document Line No.",SalesShptLine_L."Line No.");
+                  CustDocDistEntry_G.CALCSUMS("Distribution Qty.");
+
+                  IF CustDocDistEntry_G."Distribution Qty." <> SalesShptLine_L."Qty. Shipped Not Invoiced" THEN
+                    ERROR(Text1000000007);
+
+                  // Storing of data for further processing
+
+                  IF CustDocDistEntry_G.FINDSET THEN
+                    REPEAT
+                      // --> 20150819-APP21-TER01.01.00-2140-FBE01
+                      IF CustDocDistEntry_G."Distribution Qty." <> 0 THEN BEGIN
+                      // <-- 20150819-APP21-TER01.01.00-2140-FBE01
+                        TmpDisTransBuffer_G.INIT;
+                        TmpDisTransBuffer_G."Customer No." := CustDocDistEntry_G."Distributed Customer No.";
+                        TmpDisTransBuffer_G."Sales Shipment No." := SalesShptLine_L."Document No.";
+                        IF TmpDisTransBuffer_G.INSERT THEN;
+                      // --> 20150819-APP21-TER01.01.00-2140-FBE01
+                      END;
+                      // <-- 20150819-APP21-TER01.01.00-2140-FBE01
+                    UNTIL CustDocDistEntry_G.NEXT = 0;
+
+                END;
+
+              UNTIL SalesShptLine_L.NEXT = 0;
+
+            // Processing First Transaction Step : Invoice from Order
+
+            // > Switching customer in order
+
+            CMCSetup_L.GET;
+            CMCSetup_L.TESTFIELD("Inv. Cust. Distribution No.");
+            ChangeOrderBilltoCust(Rec,CMCSetup_L."Inv. Cust. Distribution No.");
+
+            // --> 20151124-APP21-TER01.01.00-2415-FBE01
+            {
+            // > Invoicing order from order
+
+            SalesLine_L.SETRANGE("Qty. Shipped Not Invoiced");
+            SalesLine_L.FINDSET;
+            REPEAT
+              IF SalesLine_L."Qty. Shipped Not Invoiced" > 0 THEN
+                SalesLine_L.VALIDATE("Qty. to Invoice",SalesLine_L."Qty. Shipped Not Invoiced")
+              ELSE
+                SalesLine_L.VALIDATE("Qty. to Invoice",0);
+              SalesLine_L.MODIFY;
+            UNTIL SalesLine_L.NEXT = 0;
+
+            Invoice := TRUE;
+
+            VALIDATE("Posting Date",PostingDate_G);
+
+            CLEAR(SalesPost_L);
+            SalesPost_L.RUN(Rec);
+            SalesInvNo_L := SalesPost_L.GetPostedDocNo;
+            }
+            // Run report to generate invoice
+            CLEAR(RepSalesInvBatch_L);
+            RepSalesInvBatch_L.USEREQUESTFORM(FALSE);
+            RepSalesInvBatch_L.SetInvoiceDistributeShip(1,"No.",CMCSetup_L."Inv. Cust. Distribution No.",PostingDate_G,"Due Date") ;
+            RepSalesInvBatch_L.RUNMODAL;
+            RepSalesInvBatch_L.ReturnLastSalesHeader(RecSalesHeader_L);
+            // --> 20151210-APP21-TER01.01.00-2415-FBE01
+            IF RecSalesHeader_L."No." = '' THEN
+              ERROR(Text60001,"No.");
+            // <-- 20151210-APP21-TER01.01.00-2415-FBE01
+            SalesPost_L.RUN(RecSalesHeader_L);
+            SalesInvNo_L := SalesPost_L.GetPostedDocNo;
+            // <-- 20151124-APP21-TER01.01.00-2415-FBE01
+
+            // Filling Transaction Table
+
+            // > Initializing the transaction table
+            DistTransEntry_G.RESET;
+            IF DistTransEntry_G.FINDLAST THEN
+              NextTransEntryNo_L := DistTransEntry_G."Transaction Entry No." + 1
+            ELSE
+              NextTransEntryNo_L := 1;
+
+            // > Filling table
+            i_L := 2;
+            InsertDistTransEntry(NextTransEntryNo_L,1,0,CMCSetup_L."Inv. Cust. Distribution No.",0,"No.",2,SalesInvNo_L,1,PostingDate_G,TRUE);
+            InsertDistTransEntry(NextTransEntryNo_L,2,1,CMCSetup_L."Inv. Cust. Distribution No.",2,SalesInvNo_L,3,'',0,PostingDate_G,FALSE);
+            IF TmpDisTransBuffer_G.FINDSET THEN
+              REPEAT
+                i_L := i_L + 1;
+                InsertDistTransEntry(NextTransEntryNo_L,i_L,2,TmpDisTransBuffer_G."Customer No.",1,
+                                     TmpDisTransBuffer_G."Sales Shipment No.",2,'',0,PostingDate_G,FALSE);
+              UNTIL TmpDisTransBuffer_G.NEXT = 0;
+
+            COMMIT;
+
+            // Processing Remaining Dist. Transaction Steps
+            ProcessDistTransaction(NextTransEntryNo_L);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      NewCust_G@1000000001 : Record 18;
+      UndoPostingMgt_G@1000000000 : Codeunit 5817;
+      TempItemLedgEntry_G@1000000002 : TEMPORARY Record 32;
+      CustDocDistEntry_G@1000000003 : Record 60005;
+      Text1000000007@1000000007 : TextConst 'FRA=Les donn'es ont 't' modifi'es depuis la r'partition de la commande. Veuillez recommencer.';
+      Text1000000008@1000000008 : TextConst 'FRA=La commande ne contient pas de lignes exp'di'es non factur'es.';
+      Text1000000009@1000000009 : TextConst 'FRA=La commande a 't' partiellement factur'e.';
+      ReleaseSalesDoc_G@1000000004 : Codeunit 414;
+      SalesPost_G@1000000010 : Codeunit 80;
+      Text60000@60000 : TextConst 'FRA=N› exp'dition %1 : du %2 Site %3';
+      PostingDate_G@60001 : Date;
+      DistTransEntry_G@1000000011 : Record 60057;
+      TmpDisTransBuffer_G@1000000005 : TEMPORARY Record 60058;
+      Text60001@1000000012 : TextConst 'ENU=Order %1 can not be invoiced.;FRA=La commande %1 ne peut pas ^tre factur'e.';
+      Text1000000006@1000000006 : TextConst 'FRA=La transaction de refacturation %1 comporte une erreur. Le problSme doit ^tre corrig' et le processus doit ^tre relanc'.';
+
+    PROCEDURE ChangeOrderBilltoCust@1000000000(VAR SalesHeader_P@1000000000 : Record 36;NewBillToCustNo_P@1000000003 : Code[20]);
+    VAR
+      SalesLine_L@1000000002 : Record 37;
+      Cust_L@1000000001 : Record 18;
+      SalesShptHeader_L@1000000004 : Record 110;
+      Item_L@1000000005 : Record 27;
+      VatSetup_L@1000000006 : Record 325;
+      Account_L@1000000007 : Record 15;
+      SalesLineAttached_L@1000000008 : Record 37;
+      ItemCharge_L@1000000009 : Record 5800;
+      Resource_L@1000000010 : Record 156;
+    BEGIN
+      WITH SalesHeader_P DO BEGIN
+
+        TESTFIELD("Document Type",SalesHeader_P."Document Type"::Order);
+        NewCust_G.GET(NewBillToCustNo_P);
+
+        // Mise . jour de l'en-t^te
+        "Bill-to Customer No.":=NewCust_G."No.";
+        "Bill-to Customer Template Code" := '';
+        "Bill-to Name" := NewCust_G.Name;
+        "Bill-to Name 2" := NewCust_G."Name 2";
+        "Bill-to Address" := NewCust_G.Address;
+        "Bill-to Address 2" := NewCust_G."Address 2";
+        "Bill-to City" := NewCust_G.City;
+        "Bill-to Post Code" := NewCust_G."Post Code";
+        "Bill-to County" := NewCust_G.County;
+        "Bill-to Country/Region Code" := NewCust_G."Country/Region Code";
+        // --> 20260204-WI00-ADV01.01.00-42986-CJY01
+        "Gen. Bus. Posting Group" := NewCust_G."Gen. Bus. Posting Group";
+        "VAT Bus. Posting Group" := NewCust_G."VAT Bus. Posting Group";
+        "Tax Area Code" := NewCust_G."Tax Area Code";
+        "Tax Liable" := NewCust_G."Tax Liable";
+        "VAT Registration No." := NewCust_G."VAT Registration No.";
+        // <-- 20260204-WI00-ADV01.01.00-42986-CJY01
+        MODIFY;
+
+        // Mise . jour des lignes
+        SalesLine_L.RESET;
+        SalesLine_L.SETRANGE("Document Type","Document Type");
+        SalesLine_L.SETRANGE("Document No.","No.");
+        IF SalesLine_L.FINDSET THEN
+          REPEAT
+            SalesLine_L."Bill-to Customer No." := NewBillToCustNo_P;
+            // --> 20260204-WI00-ADV01.01.00-42986-CJY01
+            //cas g'n'ral pour tout type de ligne hors "texte"
+            IF SalesLine_L.Type <> SalesLine_L.Type::" " THEN BEGIN
+              SalesLine_L."Gen. Bus. Posting Group" := "Gen. Bus. Posting Group";
+              SalesLine_L."VAT Bus. Posting Group" := "VAT Bus. Posting Group";
+            END;
+
+            IF SalesLine_L.Type = SalesLine_L.Type::Item THEN BEGIN
+              Item_L.GET(SalesLine_L."No.");
+              SalesLine_L."Gen. Prod. Posting Group" := Item_L."Gen. Prod. Posting Group";
+              SalesLine_L."VAT Prod. Posting Group" := Item_L."VAT Prod. Posting Group";
+              SalesLine_L."Tax Group Code" := Item_L."Tax Group Code";
+
+              IF VatSetup_L.GET("VAT Bus. Posting Group","Gen. Bus. Posting Group") THEN
+                SalesLine_L."VAT %" := VatSetup_L."VAT %"
+              ELSE
+                SalesLine_L."VAT %" := 0;
+
+              SalesLine_L.VALIDATE(Amount);
+              SalesLine_L.UpdateAmounts;
+            END;
+            IF SalesLine_L.Type = SalesLine_L.Type::"G/L Account" THEN BEGIN
+              IF SalesLine_L."RPD Item Attached Line" <>  0 THEN BEGIN
+                //Gestion pariculiSre RPD
+                //attentino le param'ytrage doit ^tre adapt' dans l''cran "taxes collecte"
+                SalesLineAttached_L.GET(SalesLine_L."Document Type",SalesLine_L."Document No.",SalesLine_L."RPD Item Attached Line");
+                IF SalesLineAttached_L.Type = SalesLineAttached_L.Type::Item THEN BEGIN
+                  Item_L.GET(SalesLineAttached_L."No.");
+                  SalesLine_L."Gen. Prod. Posting Group" := Item_L."Gen. Prod. Posting Group";
+                  SalesLine_L."VAT Prod. Posting Group" := Item_L."VAT Prod. Posting Group";
+                  SalesLine_L."Tax Group Code" := Item_L."Tax Group Code";
+                  IF VatSetup_L.GET(SalesLine_L."VAT Bus. Posting Group",SalesLine_L."Gen. Bus. Posting Group") THEN
+                    SalesLine_L."VAT %" := VatSetup_L."VAT %"
+                  ELSE
+                    SalesLine_L."VAT %" := 0;
+                END;
+              END
+
+              ELSE BEGIN
+                //cas des lignes comptes comptables "normales"
+                Account_L.GET(SalesLine_L."No.");
+                SalesLine_L."Gen. Prod. Posting Group" := Account_L."Gen. Prod. Posting Group";
+                SalesLine_L."VAT Prod. Posting Group" := Account_L."VAT Prod. Posting Group";
+                SalesLine_L."Tax Group Code" := Account_L."Tax Group Code";
+
+              END;
+              SalesLine_L.VALIDATE(Amount);
+              SalesLine_L.UpdateAmounts;
+            END;
+            //derniers cas de figures restants
+            CASE SalesLine_L.Type OF
+                 SalesLine_L.Type::"Charge (Item)":
+                     BEGIN
+                      IF ItemCharge_L.GET(SalesLine_L."No.") THEN BEGIN
+                        SalesLine_L."Gen. Prod. Posting Group" := ItemCharge_L."Gen. Prod. Posting Group";
+                        SalesLine_L."VAT Prod. Posting Group" := ItemCharge_L."VAT Prod. Posting Group";
+                        SalesLine_L."Tax Group Code" := ItemCharge_L."Tax Group Code";
+                        SalesLine_L.VALIDATE(Amount);
+                        SalesLine_L.UpdateAmounts;
+
+                      END;
+                     END;
+                 SalesLine_L.Type::Resource:
+                     BEGIN
+                      IF Resource_L.GET(SalesLine_L."No.") THEN BEGIN
+                        SalesLine_L."Gen. Prod. Posting Group" := Resource_L."Gen. Prod. Posting Group";
+                        SalesLine_L."VAT Prod. Posting Group" := Resource_L."VAT Prod. Posting Group";
+                        SalesLine_L."Tax Group Code" := Resource_L."Tax Group Code";
+                        SalesLine_L.VALIDATE(Amount);
+                        SalesLine_L.UpdateAmounts;
+
+                      END;
+
+                     END;
+
+            END;
+
+
+            // <-- 20260204-WI00-ADV01.01.00-42986-CJY01
+            SalesLine_L.MODIFY;
+          UNTIL SalesLine_L.NEXT = 0;
+
+        // Mise . jour des exp'ditions enregistr'es
+        SalesShptHeader_L.RESET;
+        SalesShptHeader_L.SETRANGE("Order No.",SalesHeader_P."No.");
+        IF SalesShptHeader_L.FINDSET THEN
+          REPEAT
+            UpdateSalesShipment(SalesShptHeader_L);
+          UNTIL SalesShptHeader_L.NEXT = 0;
+
+      END;
+    END;
+
+    PROCEDURE UpdateSalesShipment@1000000001(VAR SalesShptHeader_P@1000000000 : Record 110);
+    VAR
+      SalesShptLine_L@1000000001 : Record 111;
+      SalesLine_L@1000000002 : Record 37;
+    BEGIN
+      WITH SalesShptHeader_P DO BEGIN
+
+        "Bill-to Customer No." := NewCust_G."No.";
+        "Bill-to Name" := NewCust_G.Name;
+        "Bill-to Name 2" := NewCust_G."Name 2";
+        "Bill-to Address" := NewCust_G.Address;
+        "Bill-to Address 2" := NewCust_G."Address 2";
+        "Bill-to City" := NewCust_G.City;
+        "Bill-to Post Code" := NewCust_G."Post Code";
+        "Bill-to County" := NewCust_G.County;
+        "Bill-to Country/Region Code" := NewCust_G."Country/Region Code";
+        // --> 20260204-WI00-ADV01.01.00-42986-CJY01
+        "Gen. Bus. Posting Group" := NewCust_G."Gen. Bus. Posting Group";
+        "VAT Bus. Posting Group" := NewCust_G."VAT Bus. Posting Group";
+        "Tax Area Code" := NewCust_G."Tax Area Code";
+        "Tax Liable" := NewCust_G."Tax Liable";
+        "VAT Registration No." := NewCust_G."VAT Registration No.";
+        // <-- 20260204-WI00-ADV01.01.00-42986-CJY01
+        MODIFY;
+
+        SalesShptLine_L.RESET;
+        SalesShptLine_L.SETRANGE("Document No.","No.");
+        IF SalesShptLine_L.FINDSET THEN
+          REPEAT
+
+            SalesShptLine_L."Bill-to Customer No." := NewCust_G."No.";
+             // --> 20260204-WI00-ADV01.01.00-42986-CJY01
+             //IF (SalesShptLine_L.Type = SalesShptLine_L.Type::Item) OR
+              //(SalesShptLine_L.Type = SalesShptLine_L.Type::"G/L Account") THEN BEGIN
+              SalesLine_L.GET(SalesLine_L."Document Type"::Order,SalesShptHeader_P."Order No.",SalesShptLine_L."Order Line No.");
+              SalesShptLine_L."Gen. Bus. Posting Group" := SalesLine_L."Gen. Bus. Posting Group";
+              SalesShptLine_L."VAT Bus. Posting Group" := SalesLine_L."VAT Bus. Posting Group";
+              SalesShptLine_L."Gen. Prod. Posting Group" := SalesLine_L."Gen. Prod. Posting Group";
+              SalesShptLine_L."VAT Prod. Posting Group" := SalesLine_L."VAT Prod. Posting Group";
+              SalesShptLine_L."Tax Group Code" := SalesLine_L."Tax Group Code";
+             //END;
+             // <-- 20260204-WI00-ADV01.01.00-42986-CJY01
+
+
+            SalesShptLine_L.MODIFY;
+
+            IF SalesShptLine_L.Type = SalesShptLine_L.Type::Item THEN BEGIN
+
+              UndoPostingMgt_G.CollectItemLedgEntries(TempItemLedgEntry_G,DATABASE::"Sales Shipment Line",
+                SalesShptLine_L."Document No.",SalesShptLine_L."Line No.",SalesShptLine_L."Quantity (Base)",
+                SalesShptLine_L."Item Shpt. Entry No.");
+
+              UpdateItemLedgerEntry(TempItemLedgEntry_G);
+
+            END;
+
+          UNTIL SalesShptLine_L.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE UpdateItemLedgerEntry@1000000003(VAR TmpItemLedgerEntry_P@1000000001 : Record 32);
+    VAR
+      ItemLedgerEntry_L@1000000000 : Record 32;
+      ValueEntry_L@1000000002 : Record 5802;
+      SalesShptLine_L@1000000003 : Record 111;
+    BEGIN
+      IF TmpItemLedgerEntry_P.FINDSET THEN
+        REPEAT
+
+          IF ItemLedgerEntry_L.GET(TmpItemLedgerEntry_P."Entry No.") THEN BEGIN
+
+            ItemLedgerEntry_L."Source No." := NewCust_G."No.";
+
+            ItemLedgerEntry_L.MODIFY;
+
+            ValueEntry_L.RESET;
+            ValueEntry_L.SETCURRENTKEY("Item Ledger Entry No.");
+            ValueEntry_L.SETRANGE("Item Ledger Entry No.",ItemLedgerEntry_L."Entry No.");
+            IF ValueEntry_L.FINDSET THEN
+              REPEAT
+
+                ValueEntry_L."Source No." := NewCust_G."No.";
+                // --> 20260204-WI00-ADV01.01.00-42986-CJY01
+                ValueEntry_L."Gen. Bus. Posting Group" := NewCust_G."Gen. Bus. Posting Group";
+                ValueEntry_L."VAT Bus. Posting Group" := NewCust_G."VAT Bus. Posting Group";
+                //on remonte . la ligne bl pour r'cup'rer les infos
+                IF ValueEntry_L."Document Type" = ValueEntry_L."Document Type"::"Sales Shipment" THEN
+                  IF SalesShptLine_L.GET(ValueEntry_L."Document No.",ValueEntry_L."Document Line No.") THEN BEGIN
+                    ValueEntry_L."VAT Prod. Posting Group" := SalesShptLine_L."VAT Prod. Posting Group";
+                    ValueEntry_L."Gen. Prod. Posting Group" := SalesShptLine_L."Gen. Prod. Posting Group";
+
+                  END;
+                //VAT Prod. Posting Group
+                //Gen. Prod. Posting Group
+                // <-- 20260204-WI00-ADV01.01.00-42986-CJY01
+
+                ValueEntry_L.MODIFY;
+
+              UNTIL ValueEntry_L.NEXT = 0;
+
+          END;
+
+        UNTIL TmpItemLedgerEntry_P.NEXT = 0;
+    END;
+
+    PROCEDURE NewLineNo@8053062(RecSalesHead_P@60000 : Record 36;LineNo_P@8053000 : Integer) NewLineNo_L : Integer;
+    VAR
+      RecSalesLine_L@8053002 : Record 37;
+    BEGIN
+      // --> 20150430-APP21-TER01.01.00-293-BSI01
+      CLEAR(RecSalesLine_L);
+      RecSalesLine_L.SETRANGE("Document Type",RecSalesHead_P."Document Type");
+      RecSalesLine_L.SETRANGE("Document No.",RecSalesHead_P."No.");
+      RecSalesLine_L.SETFILTER("Line No.",'<%1',LineNo_P);
+      IF RecSalesLine_L.FINDFIRST THEN
+        NewLineNo_L := ROUND((RecSalesLine_L."Line No." + LineNo_P) / 2, 1)
+      ELSE
+        NewLineNo_L := ROUND((LineNo_P/2),1);
+      // <-- 20150430-APP21-TER01.01.00-293-BSI01
+    END;
+
+    PROCEDURE SetPostingDate@60001(PostingDate_P@60000 : Date);
+    BEGIN
+      // --> 20150430-APP21-TER01.01.00-366-BSI01
+      PostingDate_G := PostingDate_P;
+      // <-- 20150430-APP21-TER01.01.00-366-BSI01
+    END;
+
+    PROCEDURE InsertDistTransEntry@1000000006(TransEntryNo_P@1000000000 : Integer;EntryNo_P@1000000001 : Integer;Type_P@1000000002 : Integer;CustNo_P@1000000003 : Code[20];SourceDocType_P@1000000004 : Integer;SourceDocNo_P@1000000007 : Code[20];DestDocType_P@1000000005 : Integer;DestDocNo_P@1000000006 : Code[20];Status_P@1000000008 : Integer;PostingDate_P@1000000009 : Date;SetDateTime_P@1000000010 : Boolean);
+    BEGIN
+      WITH DistTransEntry_G DO BEGIN
+        INIT;
+        "Transaction Entry No." := TransEntryNo_P;
+        "Entry No." := EntryNo_P;
+        Type := Type_P;
+        "Customer No." := CustNo_P;
+        "Source Doc. Type" := SourceDocType_P;
+        "Source Doc. No." := SourceDocNo_P;
+        "Dest. Doc. Type" := DestDocType_P;
+        "Dest. Doc. No." := DestDocNo_P;
+        Status := Status_P;
+        "Posting Date" := PostingDate_P;
+        IF SetDateTime_P THEN
+          "Last Processing" := CURRENTDATETIME;
+        INSERT;
+      END;
+    END;
+
+    PROCEDURE ProcessDistTransaction@1000000008(DistTransNo_P@1000000000 : Integer);
+    VAR
+      DistTransEntry_L@1000000001 : Record 60057;
+      ProcessDistTransEntry_L@1000000002 : Codeunit 60017;
+      StopProcessing_L@1000000003 : Boolean;
+      ErrorTransNo_L@1000000004 : Integer;
+    BEGIN
+      StopProcessing_L := FALSE;
+
+      DistTransEntry_L.RESET;
+      DistTransEntry_L.SETRANGE("Transaction Entry No.",DistTransNo_P);
+      IF DistTransEntry_L.FINDSET THEN BEGIN
+        REPEAT
+          IF (DistTransEntry_L.Status <> DistTransEntry_L.Status::OK) AND
+             (StopProcessing_L = FALSE) THEN BEGIN
+
+            COMMIT;
+
+            CLEAR(ProcessDistTransEntry_L);
+
+            IF ProcessDistTransEntry_L.RUN(DistTransEntry_L) THEN BEGIN
+              DistTransEntry_L."Dest. Doc. No." := ProcessDistTransEntry_L.GetPostedDocNo;
+              DistTransEntry_L.Status := DistTransEntry_L.Status::OK;
+              DistTransEntry_L."Error Message" := '';
+            END ELSE BEGIN
+              DistTransEntry_L."Dest. Doc. No." := '';
+              DistTransEntry_L.Status := DistTransEntry_L.Status::KO;
+              DistTransEntry_L."Error Message" := ProcessDistTransEntry_L.GetLastPostError;
+              IF DistTransEntry_L."Error Message" = '' THEN
+                DistTransEntry_L."Error Message" := COPYSTR(GETLASTERRORTEXT,1,250);
+              StopProcessing_L := TRUE;
+              ErrorTransNo_L := DistTransEntry_L."Transaction Entry No.";
+            END;
+
+            DistTransEntry_L."Last Processing" := CURRENTDATETIME;
+            DistTransEntry_L.MODIFY;
+
+            COMMIT;
+
+          END;
+        UNTIL DistTransEntry_L.NEXT = 0;
+
+        IF StopProcessing_L THEN
+          MESSAGE(Text1000000006,ErrorTransNo_L);
+
+      END;
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+      20141219-APP21-TER01.01.00-FEC01 : NEWOBJECT
+      20141231-APP21-TER01.01.00-SDE01 : ADDCODE (Code client factur')
+      20150130-APP21-TER01.01.00-152-SDE01 : ADDCODE (SP152)
+      20150203-APP21-TER01.01.00-152-SDE01 : ADDCODE (SP152)
+      20150305-APP21-TER01.01.00-282-FHS01 : ADDCODE (Ajoute un filtre sur
+      20150320-APP21-TER01.01.00-291-FBE01 : Correction lettrage facture r'partition
+      20150428-APP21-TER01.01.00-315-BSI01 : ADDCODE (Rendre la r'partition possible en presence de retour)
+      20150430-APP21-TER01.01.00-293-BSI01 : ADDCODE (Inserer une ligne de commentaire)
+      20150430-APP21-TER01.01.00-366-BSI01 : ADDFUNC(SetPostingDate), ADDCODE (Gestion de la date compta)
+      20150519-APP21-TER01.01.00-315-BSI01 : Mise en commentaire
+      20150622-APP21-TER01.01.00-462-FEC01 : MODOBJ (Refonte complSte du traitement).
+      20150819-APP21-TER01.01.00-2140-FBE01 : pas de g'n'ration de ligne de r'partition si 'Qt'. r'partition' = 0
+      20151124-APP21-TER01.01.00-2415-FBE01 : Modification g'n'ration de la facture initiale, appel Report "CMC Sales Inv. Batch Appro"
+      20151210-APP21-TER01.01.00-2415-FBE01 : Gestion de la non cr'ation de facture par le traitement
+      20260204-WI00-ADV01.01.00-42986-CJY01 : Changement tva et groupe compta march' repartition sur exp' cadre d'mat Ariane
+
+      // --> 3LI END
+    }
+    END.
+  }
+}
+

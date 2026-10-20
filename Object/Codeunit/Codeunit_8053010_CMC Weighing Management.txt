@@ -1,0 +1,2440 @@
+OBJECT Codeunit 8053010 CMC Weighing Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=28/05/21;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 7301=rm;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      WeighBridge_G@8053001 : Automation "{DFFA9753-98F3-4EE4-96DC-3590EAE03476} 1.0:{3245722E-C881-4B3F-8067-260B49724455}:'Navision Weighbridge'.WeighbridgeAutomation" WITHEVENTS;
+      CompanyInfo_G@8053000 : Record 79;
+      Text8053000@8053003 : TextConst 'ENU=Vous devez faire la pes'e 1 avant la pes'e 2.;FRA=Vous devez faire la pes'e 1 avant la pes'e 2.';
+      RecWeighBridge_G@8053005 : Record 8053061;
+      Text8053001@8053002 : TextConst 'ENU=Il n''y a pas de pont informatis' dans le magasin %1.;FRA=Il n''y a pas de pont informatis' dans le magasin %1.';
+      RecSalesHeader_G@8053004 : Record 36;
+      RecPurchHeader_G@8053006 : Record 38;
+      Text8053002@8053007 : TextConst 'ENU=La %1 a 't' valid'e. Souhaitez-vous continuer ?;FRA=La %1 a 't' valid'e. Souhaitez-vous continuer ?';
+      Text8053003@8053008 : TextConst 'ENU=Il y a un seul pont informatis' dans le magasin %1.;FRA=Il y a un seul pont informatis' dans le magasin %1.';
+      RecTransHeader_G@8053009 : Record 5740;
+      Text8053006@8053010 : TextConst 'FRA=Simulation,Normal';
+      Selection_G@8053015 : Integer;
+      cduAdvancedSetupMgt_G@8053014 : Codeunit 8061290;
+      Text8053007@8053017 : TextConst 'ENU=%1 is not editable because weighing was done by the weighbridge;FRA=%1 n''est pas modifiable car la pes'e a 't' effectu'e par le pont-bascule.';
+      Text8053008@8053016 : TextConst 'ENU=%1 is not editable if fields Weighing 1 No. or Weighing 2 No. are inserted;FRA=%1 n''est pas modifiable si N› DSD pes'e 1 ou N› DSD pes'e 2 sont renseign's.';
+      Text8053009@8053018 : TextConst 'ENU=%1 is not editable if fields Weighing 1 and Weighing 2 are inserted;FRA=%1 n''est pas modifiable si pes'e 1 ou pes'e 2 sont renseign's.';
+      Text8053010@8053019 : TextConst 'ENU=%1 is not editable because field Weighing 2 No. is inserted;FRA=%1 n''est pas modifiable car N› DSD pes'e 2 est renseign'.';
+      Text8053011@8053021 : TextConst 'ENU=Weight 1 is not filled, do you want to leave the page with document %1 ?;FRA=La pes'e 1 n''est pas renseign'e, souhaitez-vous sortir du document %1 ?';
+      Text8053012@8053020 : TextConst 'ENU=You must fill Weight 1 before leaving this page.;FRA=Vous devez saisir la pes'e 1.';
+      Text8053013@8053011 : TextConst 'ENU=The weighing was split on %1 lines.;FRA=La pes'e %1 a 't' 'clat'e sur %2 lignes.';
+      Text8053014@8053012 : TextConst 'ENU=The split of the weighing %1 was canceled.;FRA=L'''clatement de la pes'e %1 a 't' annul'.';
+      Text8053015@8053022 : TextConst 'ENU=The weighing %1 from line %2 was partially posted. Do you want to delete the line %3 ?;FRA=La pes'e %1 de la ligne %2 a 't' valid'e partiellement. Voulez-vous supprimer la ligne %3 ?';
+      Text8053016@8053023 : TextConst 'ENU=The update has been interrupted to respect the warning.;FRA=La mise . jour a 't' interrompue pour respecter l''alerte.';
+      Text8053017@1000000000 : TextConst 'FRA=Le %1 doit ^tre diff'rent du %2.';
+      Text60000@1000000002 : TextConst 'FRA=Veuillez param'trer un num'ro de report archive pes'e valid'e dans les paramStres stock.';
+
+    PROCEDURE WeighingFromCollectReceipt@8053000(VAR RecCollectionReceipt_P@8053000 : Record 8052993;WeighingNo_P@8053001 : Integer;CallWeighBridge_P@8053006 : Boolean) WeighingEntryNo_L : Integer;
+    VAR
+      RecWeighingWeighbridge_L@8053002 : Record 8053094;
+      RecVendor_L@8053003 : Record 23;
+      cduWeighingInterface_L@8053004 : Codeunit 8053011;
+      RecItem_L@8053005 : Record 27;
+      RecLocation_L@8053007 : Record 14;
+      RecMCLocation_L@8053008 : Record 8053083;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Lancement pes'e . partir des c'r'ales (Bon de r'ception, Bon de r'ception tranfert et bon de r'prise)
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecCollectionReceipt_P : Record R'ception collecte
+      //   - WeighingNo_P : N› de p's'e
+      //   - CallWeighBridge_P : TRUE si appel de l'interface Pont bascule
+      // Sorties:
+      //   - WeighingEntryNo_L : N› s'quence pes'e
+      //----------------------------------------------------------------------------------------------------------
+      WITH RecCollectionReceipt_P DO BEGIN
+        //Recherche Pont bascule associ' au magasin de la r'ception collecte
+        IF CallWeighBridge_P THEN
+          TestWeighBridgeExist("Location Code");
+        IF ("Receipt Type" = "Receipt Type"::Transfert) THEN BEGIN
+          IF ("Transfer-from Code" <> '') THEN BEGIN
+            IF "Send IC Document" THEN BEGIN
+              RecMCLocation_L.GET("Transfer-from Code");
+              RecLocation_L.TRANSFERFIELDS(RecMCLocation_L);
+            END ELSE
+              RecLocation_L.GET("Transfer-from Code");
+          END;
+        END ELSE
+          RecVendor_L.GET("Vendor No.");
+        RecItem_L.GET("Item No.");
+        GetQuantityPerUnit(RecItem_L."Purch. Unit of Measure");
+        CASE WeighingNo_P OF
+          WeighingNo_P:: "1" : // Traitement pes'e 1
+          BEGIN
+            //Test si pes'e 1 d'j. r'alis'e
+            IF "Weighing 1 No." <> '' THEN
+              IF NOT CONFIRM(Text8053002,FALSE,RecWeighingWeighbridge_L.FIELDCAPTION("Weighing 1")) THEN
+                EXIT("Weighing No.");
+            //Cr'ation de l'enregistrement pes'e si aucune pes'e li'e
+            IF "Weighing No." = 0 THEN BEGIN
+              CreateWeighingRec(RecWeighingWeighbridge_L);
+              WeighingEntryNo_L := RecWeighingWeighbridge_L."Entry No.";
+              //MAJ de l'enregistrement pes'e
+              RecWeighingWeighbridge_L."Location Code" := "Location Code";
+              RecWeighingWeighbridge_L."Truck Registration" := "Trailers Registration";
+              RecWeighingWeighbridge_L."Driver Name" := "Driver Name";
+              IF RecCollectionReceipt_P."Receipt Type" = RecCollectionReceipt_P."Receipt Type"::Transfert THEN BEGIN
+                RecWeighingWeighbridge_L."Source No." := RecLocation_L.Code;
+                RecWeighingWeighbridge_L.Name := RecLocation_L.Name;
+                RecWeighingWeighbridge_L."Name 2" := RecLocation_L."Name 2";
+                RecWeighingWeighbridge_L.Address:=RecLocation_L.Address;
+                RecWeighingWeighbridge_L."Address 2" := RecLocation_L."Address 2";
+                RecWeighingWeighbridge_L.City := RecLocation_L.City;
+                RecWeighingWeighbridge_L."Post Code" := RecLocation_L."Post Code";
+                RecWeighingWeighbridge_L.County := RecLocation_L.County;
+                RecWeighingWeighbridge_L."Country/Region Code" := RecLocation_L."Country/Region Code";
+              END ELSE BEGIN
+                RecWeighingWeighbridge_L."Source No." := RecVendor_L."No.";
+                RecWeighingWeighbridge_L.Name := RecVendor_L.Name;
+                RecWeighingWeighbridge_L."Name 2" := RecVendor_L."Name 2";
+                RecWeighingWeighbridge_L.Address:=RecVendor_L.Address;
+                RecWeighingWeighbridge_L."Address 2" := RecVendor_L."Address 2";
+                RecWeighingWeighbridge_L.City := RecVendor_L.City;
+                RecWeighingWeighbridge_L."Post Code" := RecVendor_L."Post Code";
+                RecWeighingWeighbridge_L.County := RecVendor_L.County;
+                RecWeighingWeighbridge_L."Country/Region Code" := RecVendor_L."Country/Region Code";
+              END;
+              RecWeighingWeighbridge_L."Weighing 1" := "Weighing 1";
+              RecWeighingWeighbridge_L."Weighing 2" := "Weighing 2";
+              RecWeighingWeighbridge_L."Weight 1 Manual Update" := FALSE;
+              RecWeighingWeighbridge_L."Weight 1 Manual Entry" := FALSE;
+              RecWeighingWeighbridge_L."Weight 2 Manual Update" := FALSE;
+              RecWeighingWeighbridge_L."Weight 2 Manual Entry" := FALSE;
+              RecWeighingWeighbridge_L."Unit of Measure Code" := RecItem_L."Purch. Unit of Measure";
+              RecWeighingWeighbridge_L."Source Document Type" := "Receipt Type";
+              RecWeighingWeighbridge_L."Source Document No." := "No.";
+              RecWeighingWeighbridge_L.VALIDATE("Item No.","Item No.");
+              RecWeighingWeighbridge_L.MODIFY;
+              IF NOT CallWeighBridge_P THEN
+                EXIT(WeighingEntryNo_L);
+              COMMIT; //UnLock record pes'e avant lancement interface
+            END ELSE BEGIN
+              RecWeighingWeighbridge_L.GET("Weighing No.");
+              WeighingEntryNo_L := RecWeighingWeighbridge_L."Entry No.";
+              RecWeighingWeighbridge_L."Weighing 1" := "Weighing 1";
+              RecWeighingWeighbridge_L."Weighing 2" := "Weighing 2";
+              RecWeighingWeighbridge_L."Weight 1 Manual Update" := FALSE;
+              RecWeighingWeighbridge_L."Weight 1 Manual Entry" := FALSE;
+              RecWeighingWeighbridge_L."Weight 2 Manual Update" := FALSE;
+              RecWeighingWeighbridge_L."Weight 2 Manual Entry" := FALSE;
+            END;
+            //Lancement de l'interface Pont bascule
+            CLEAR(cduWeighingInterface_L);
+            cduWeighingInterface_L.InitCodeunit(1,RecWeighBridge_G.Code,RecWeighBridge_G.Name);
+            IF cduAdvancedSetupMgt_G.GetAdvancedParameterValueBool('ACTIVE SIMUL.BASCULE') THEN BEGIN
+              Selection_G := STRMENU(Text8053006);
+              IF Selection_G = 1 THEN
+                cduWeighingInterface_L.Simulate(RecWeighingWeighbridge_L)
+              ELSE
+                IF NOT cduWeighingInterface_L.RUN(RecWeighingWeighbridge_L) THEN
+                  cduWeighingInterface_L.ClearWeighBridge;
+            END ELSE BEGIN
+              IF NOT cduWeighingInterface_L.RUN(RecWeighingWeighbridge_L) THEN
+                cduWeighingInterface_L.ClearWeighBridge;
+            END;
+
+            CheckWeighingUpdFromInterface(TRUE,FALSE,"Weighing 1 No.",RecWeighingWeighbridge_L."Weight 1 Manual Entry",
+              RecWeighingWeighbridge_L."Weight 1 Manual Update","Weighing 2 No.",RecWeighingWeighbridge_L."Weight 2 Manual Entry",
+              RecWeighingWeighbridge_L."Weight 2 Manual Update",FIELDCAPTION("Weighing 1"));
+            //MAJ de la pes'e 1 de la r'ception Collecte si elle est diff'rente de celle renvoy'e par l'interface Pont bascule
+            IF ("Weighing 1" <> RecWeighingWeighbridge_L."Weighing 1") THEN BEGIN
+              SuspendUpdateWeighingData(TRUE);
+              "Weighing 2" := 0;
+              VALIDATE("Weighing 1",RecWeighingWeighbridge_L."Weighing 1");
+              "Weighing 1 No." := RecWeighingWeighbridge_L."Weighing 1 No.";
+              RecWeighingWeighbridge_L."Weighing 2" := 0;
+              "Weighing 2 No." := '';
+              RecWeighingWeighbridge_L."Weighing 2 No." := '';
+              "Manual Weighing No." := '';
+              RecWeighingWeighbridge_L."Manual Weighing No." := '';
+              RecWeighingWeighbridge_L.MODIFY;
+              "Trailers Registration" := RecWeighingWeighbridge_L."Truck Registration";
+              "Driver Name" := RecWeighingWeighbridge_L."Driver Name";
+              "Notebook Weighing No." := RecWeighingWeighbridge_L."Notebook Weighing No.";
+            END;
+          END;
+          WeighingNo_P:: "2" : // Traitement Pes'e 2
+          BEGIN
+            //Test si pes'e 2 d'j. r'alis'e
+            IF "Weighing 2 No." <> '' THEN
+              IF NOT CONFIRM(Text8053002,FALSE,RecWeighingWeighbridge_L.FIELDCAPTION("Weighing 2")) THEN
+                EXIT("Weighing No.");
+            IF "Weighing No." = 0 THEN
+              ERROR(Text8053000);
+            RecWeighingWeighbridge_L.GET("Weighing No.");
+            //Lancement de l'interface Pont bascule
+            CLEAR(cduWeighingInterface_L);
+            cduWeighingInterface_L.InitCodeunit(2,RecWeighBridge_G.Code,RecWeighBridge_G.Name);
+            IF cduAdvancedSetupMgt_G.GetAdvancedParameterValueBool('ACTIVE SIMUL.BASCULE') THEN BEGIN
+              Selection_G := STRMENU(Text8053006);
+              IF Selection_G = 1 THEN
+                cduWeighingInterface_L.Simulate(RecWeighingWeighbridge_L)
+              ELSE
+                IF NOT cduWeighingInterface_L.RUN(RecWeighingWeighbridge_L) THEN
+                  cduWeighingInterface_L.ClearWeighBridge;
+            END ELSE BEGIN
+              IF NOT cduWeighingInterface_L.RUN(RecWeighingWeighbridge_L) THEN
+                cduWeighingInterface_L.ClearWeighBridge;
+            END;
+            CheckWeighingUpdFromInterface(FALSE,TRUE,"Weighing 1 No.",RecWeighingWeighbridge_L."Weight 1 Manual Entry",
+              RecWeighingWeighbridge_L."Weight 1 Manual Update","Weighing 2 No.",RecWeighingWeighbridge_L."Weight 2 Manual Entry",
+              RecWeighingWeighbridge_L."Weight 2 Manual Update",FIELDCAPTION("Weighing 2"));
+            //MAJ de la pes'e 2 de la r'ception Collecte si elle est diff'rente de celle renvoy'e par l'interface Pont bascule
+            IF ("Weighing 2" <> RecWeighingWeighbridge_L."Weighing 2") THEN BEGIN
+              SuspendUpdateWeighingData(TRUE);
+              VALIDATE("Weighing 2",RecWeighingWeighbridge_L."Weighing 2");
+              "Weighing 2 No." := RecWeighingWeighbridge_L."Weighing 2 No.";
+              // --> 20150610-LOG10-CMC02.02.00-3007-BSI01
+              IF ("Weighing 2 No." = "Weighing 1 No.") AND ("Weighing 1 No." <> '') THEN
+                ERROR(Text8053017,FIELDCAPTION("Weighing 2 No."),FIELDCAPTION("Weighing 1 No."));
+              // <-- 20150610-LOG10-CMC02.02.00-3007-BSI01
+              RecWeighingWeighbridge_L."Net Weight" := "Net Weight";
+              RecWeighingWeighbridge_L.MODIFY;
+              "Trailers Registration" := RecWeighingWeighbridge_L."Truck Registration";
+              "Driver Name" := RecWeighingWeighbridge_L."Driver Name";
+              "Notebook Weighing No." := RecWeighingWeighbridge_L."Notebook Weighing No.";
+            END;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE WeighingFromDelivery@8053002(VAR RecCollectionDelivry_P@8053000 : Record 8053013;WeighingNo_P@8053001 : Integer;CallWeighBridge_P@8053005 : Boolean) WeighingEntryNo_L : Integer;
+    VAR
+      RecWeighingWeighbridge_L@8053002 : Record 8053094;
+      cduWeighingInterface_L@8053003 : Codeunit 8053011;
+      RecItem_L@8053004 : Record 27;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Lancement pes'e . partir des c'r'ales (Bon de livraison, Bon de livraison tranfert)
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecCollectionDelivery_P : Record Livraison collecte
+      //   - WeighingNo_P : N› de p's'e
+      //   - CallWeighBridge_P : TRUE si appel de l'interface Pont bascule
+      // Sorties:
+      //   - WeighingEntryNo_L : N› s'quence pes'e
+      //----------------------------------------------------------------------------------------------------------
+      WITH RecCollectionDelivry_P DO BEGIN
+        TESTFIELD(Status,Status :: Open);
+        //Recherche Pont bascule associ' au magasin de la livraison collecte
+        IF CallWeighBridge_P THEN
+          TestWeighBridgeExist("Location Code");
+        RecItem_L.GET("Item No.");
+        GetQuantityPerUnit(RecItem_L."Sales Unit of Measure");
+        CASE WeighingNo_P OF
+          WeighingNo_P:: "1" : // Traitement pes'e 1
+          BEGIN
+            //Test si pes'e 1 d'j. r'alis'e
+            IF "Weighing 1 No." <> '' THEN
+              IF NOT CONFIRM(Text8053002,FALSE,RecWeighingWeighbridge_L.FIELDCAPTION("Weighing 1")) THEN
+                EXIT("Weighing No.");
+            //Cr'ation de l'enregistrement pes'e si aucune pes'e li'e
+            IF "Weighing No." = 0 THEN BEGIN
+              CreateWeighingRec(RecWeighingWeighbridge_L);
+              WeighingEntryNo_L := RecWeighingWeighbridge_L."Entry No.";
+              //MAJ de l'enregistrement pes'e
+              RecWeighingWeighbridge_L."Location Code" := "Location Code";
+              RecWeighingWeighbridge_L."Truck Registration" := "Trailers Registration No.";
+              RecWeighingWeighbridge_L."Driver Name" := "Trucker Name";
+              IF "Delivery Type" = "Delivery Type"::Transfert THEN
+                RecWeighingWeighbridge_L."Source No." := "Transfer-to Code"
+              ELSE
+                RecWeighingWeighbridge_L."Source No." := "Customer No.";
+              RecWeighingWeighbridge_L.Name := "Ship-to Name";
+              RecWeighingWeighbridge_L."Name 2" := "Ship-to Name 2";
+              RecWeighingWeighbridge_L.Address := "Ship-to Address";
+              RecWeighingWeighbridge_L."Address 2" := "Ship-to Address 2";
+              RecWeighingWeighbridge_L.City := "Ship-to City";
+              RecWeighingWeighbridge_L."Post Code" := "Ship-to Post Code";
+              RecWeighingWeighbridge_L.County := "Ship-to County";
+              RecWeighingWeighbridge_L."Country/Region Code" := "Ship-to Country/Region Code";
+              RecWeighingWeighbridge_L."Weighing 1" := "Weighing 1";
+              RecWeighingWeighbridge_L."Weighing 2" := "Weighing 2";
+              RecWeighingWeighbridge_L."Weight 1 Manual Update" := FALSE;
+              RecWeighingWeighbridge_L."Weight 1 Manual Entry" := FALSE;
+              RecWeighingWeighbridge_L."Weight 2 Manual Update" := FALSE;
+              RecWeighingWeighbridge_L."Weight 2 Manual Entry" := FALSE;
+              RecWeighingWeighbridge_L."Unit of Measure Code" := RecItem_L."Sales Unit of Measure";
+              RecWeighingWeighbridge_L."Source Document Type" := "Delivery Type" + 3;
+              RecWeighingWeighbridge_L."Source Document No." := "No.";
+              RecWeighingWeighbridge_L.VALIDATE("Item No.","Item No.");
+              RecWeighingWeighbridge_L.MODIFY;
+              IF NOT CallWeighBridge_P THEN
+                EXIT(WeighingEntryNo_L);
+              COMMIT; //UnLock record pes'e avant lancement interface
+            END ELSE BEGIN
+              RecWeighingWeighbridge_L.GET("Weighing No.");
+              WeighingEntryNo_L := RecWeighingWeighbridge_L."Entry No.";
+              RecWeighingWeighbridge_L."Weighing 1" := "Weighing 1";
+              RecWeighingWeighbridge_L."Weighing 2" := "Weighing 2";
+              RecWeighingWeighbridge_L."Weight 1 Manual Update" := FALSE;
+              RecWeighingWeighbridge_L."Weight 1 Manual Entry" := FALSE;
+              RecWeighingWeighbridge_L."Weight 2 Manual Update" := FALSE;
+              RecWeighingWeighbridge_L."Weight 2 Manual Entry" := FALSE;
+            END;
+            //Lancement de l'interface Pont bascule
+            CLEAR(cduWeighingInterface_L);
+            cduWeighingInterface_L.InitCodeunit(1,RecWeighBridge_G.Code,RecWeighBridge_G.Name);
+            IF cduAdvancedSetupMgt_G.GetAdvancedParameterValueBool('ACTIVE SIMUL.BASCULE') THEN BEGIN
+              Selection_G := STRMENU(Text8053006);
+              IF Selection_G = 1 THEN
+                cduWeighingInterface_L.Simulate(RecWeighingWeighbridge_L)
+              ELSE
+                IF NOT cduWeighingInterface_L.RUN(RecWeighingWeighbridge_L) THEN
+                  cduWeighingInterface_L.ClearWeighBridge;
+            END ELSE BEGIN
+              IF NOT cduWeighingInterface_L.RUN(RecWeighingWeighbridge_L) THEN
+                cduWeighingInterface_L.ClearWeighBridge;
+            END;
+            CheckWeighingUpdFromInterface(TRUE,FALSE,"Weighing 1 No.",RecWeighingWeighbridge_L."Weight 1 Manual Entry",
+              RecWeighingWeighbridge_L."Weight 1 Manual Update","Weighing 2 No.",RecWeighingWeighbridge_L."Weight 2 Manual Entry",
+              RecWeighingWeighbridge_L."Weight 2 Manual Update",FIELDCAPTION("Weighing 1"));
+            //MAJ de la pes'e 1 de la livraison Collecte si elle est diff'rente de celle renvoy'e par l'interface Pont bascule
+            IF ("Weighing 1" <> RecWeighingWeighbridge_L."Weighing 1") THEN BEGIN
+              SuspendUpdateWeighingData(TRUE);
+              "Weighing 2" := 0;
+              VALIDATE("Weighing 1",RecWeighingWeighbridge_L."Weighing 1");
+              "Weighing 1 No." := RecWeighingWeighbridge_L."Weighing 1 No.";
+              RecWeighingWeighbridge_L."Weighing 2" := 0;
+              "Weighing 2 No." := '';
+              RecWeighingWeighbridge_L."Weighing 2 No." := '';
+              "Manual Weighing No." := '';
+              RecWeighingWeighbridge_L."Manual Weighing No." := '';
+              RecWeighingWeighbridge_L.MODIFY;
+              "Trailers Registration No." := RecWeighingWeighbridge_L."Truck Registration";
+              "Trucker Name" := RecWeighingWeighbridge_L."Driver Name";
+              "Notebook Weighing No." := RecWeighingWeighbridge_L."Notebook Weighing No.";
+            END;
+          END;
+          WeighingNo_P:: "2" : // Traitement Pes'e 2
+          BEGIN
+            //Test si pes'e 2 d'j. r'alis'e
+            IF "Weighing 2 No." <> '' THEN
+              IF NOT CONFIRM(Text8053002,FALSE,RecWeighingWeighbridge_L.FIELDCAPTION("Weighing 2")) THEN
+                EXIT("Weighing No.");
+            IF "Weighing No." = 0 THEN
+              ERROR(Text8053000);
+            RecWeighingWeighbridge_L.GET("Weighing No.");
+            //Lancement de l'interface Pont bascule
+            CLEAR(cduWeighingInterface_L);
+            cduWeighingInterface_L.InitCodeunit(2,RecWeighBridge_G.Code,RecWeighBridge_G.Name);
+            IF cduAdvancedSetupMgt_G.GetAdvancedParameterValueBool('ACTIVE SIMUL.BASCULE') THEN BEGIN
+              Selection_G := STRMENU(Text8053006);
+              IF Selection_G = 1 THEN
+                cduWeighingInterface_L.Simulate(RecWeighingWeighbridge_L)
+              ELSE
+                IF NOT cduWeighingInterface_L.RUN(RecWeighingWeighbridge_L) THEN
+                  cduWeighingInterface_L.ClearWeighBridge;
+            END ELSE BEGIN
+              IF NOT cduWeighingInterface_L.RUN(RecWeighingWeighbridge_L) THEN
+                cduWeighingInterface_L.ClearWeighBridge;
+            END;
+            CheckWeighingUpdFromInterface(FALSE,TRUE,"Weighing 1 No.",RecWeighingWeighbridge_L."Weight 1 Manual Entry",
+              RecWeighingWeighbridge_L."Weight 1 Manual Update","Weighing 2 No.",RecWeighingWeighbridge_L."Weight 2 Manual Entry",
+              RecWeighingWeighbridge_L."Weight 2 Manual Update",FIELDCAPTION("Weighing 2"));
+            //MAJ de la pes'e 2 de la livraison Collecte si elle est diff'rente de celle renvoy'e par l'interface Pont bascule
+            IF ("Weighing 2" <> RecWeighingWeighbridge_L."Weighing 2") THEN BEGIN
+              SuspendUpdateWeighingData(TRUE);
+              VALIDATE("Weighing 2",RecWeighingWeighbridge_L."Weighing 2");
+              "Weighing 2 No." := RecWeighingWeighbridge_L."Weighing 2 No.";
+              // --> 20150610-LOG10-CMC02.02.00-3007-BSI01
+              IF ("Weighing 2 No." = "Weighing 1 No.") AND ("Weighing 1 No." <> '') THEN
+                ERROR(Text8053017,FIELDCAPTION("Weighing 2 No."),FIELDCAPTION("Weighing 1 No."));
+              // <-- 20150610-LOG10-CMC02.02.00-3007-BSI01
+              RecWeighingWeighbridge_L."Net Weight" := "Net Weight";
+              RecWeighingWeighbridge_L.MODIFY;
+              "Trailers Registration No." := RecWeighingWeighbridge_L."Truck Registration";
+              "Trucker Name" := RecWeighingWeighbridge_L."Driver Name";
+              "Notebook Weighing No." :=RecWeighingWeighbridge_L."Notebook Weighing No.";
+            END;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE WeighingFromWhseReceiptLine@8053005(VAR RecWhseReceiptLine_P@8053000 : Record 7317;WeighingNo_P@8053001 : Integer;CallWeighBridge_P@8053005 : Boolean) WeighingEntryNo_L : Integer;
+    VAR
+      RecWeighingWeighbridge_L@8053002 : Record 8053094;
+      RecVendor_L@8053003 : Record 23;
+      RecCust_L@8053006 : Record 18;
+      RecLocation_L@8053007 : Record 14;
+      cduWeighingInterface_L@8053004 : Codeunit 8053011;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Lancement pes'e . partir des r'ceptions entrep"t
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecWhseReceiptLine_P : Record Ligne r'ception entrep"t
+      //   - WeighingNo_P : N› de p's'e
+      //   - CallWeighBridge_P : TRUE si appel de l'interface Pont bascule
+      // Sorties:
+      //   - WeighingEntryNo_L : N› s'quence pes'e
+      //----------------------------------------------------------------------------------------------------------
+      WITH RecWhseReceiptLine_P DO BEGIN
+        TESTFIELD("Weighing Source Line No.",0);
+        TESTFIELD("Posted Weighing",FALSE);
+        //Recherche Pont bascule associ' au magasin de la r'ception entrep"t
+        IF CallWeighBridge_P THEN
+          TestWeighBridgeExist("Location Code");
+        GetWMSSourceDoc("Source Type","Source Subtype","Source No.");
+        CASE "Source Type" OF
+          DATABASE::"Sales Line" :
+            RecCust_L.GET(RecSalesHeader_G."Sell-to Customer No.");
+          DATABASE::"Purchase Line" :
+            RecVendor_L.GET(RecPurchHeader_G."Buy-from Vendor No.");
+          DATABASE::"Transfer Line" :
+            RecLocation_L.GET(RecTransHeader_G."Transfer-from Code");
+        END;
+        GetQuantityPerUnit("Unit of Measure Code");
+        CASE WeighingNo_P OF
+          WeighingNo_P:: "1" : // Traitement pes'e 1
+          BEGIN
+            //Test si pes'e 1 d'j. r'alis'e
+            IF "Weighing 1 No." <> '' THEN
+              IF NOT CONFIRM(Text8053002,FALSE,RecWeighingWeighbridge_L.FIELDCAPTION("Weighing 1")) THEN
+                EXIT("Weighing No.");
+            //Cr'ation de l'enregistrement pes'e si aucune pes'e li'e
+            IF "Weighing No." = 0 THEN BEGIN
+              CreateWeighingRec(RecWeighingWeighbridge_L);
+              WeighingEntryNo_L := RecWeighingWeighbridge_L."Entry No.";
+              //MAJ de l'enregistrement pes'e
+              RecWeighingWeighbridge_L."Location Code" := "Location Code";
+              RecWeighingWeighbridge_L."Truck Registration" := "Truck Registration";
+              RecWeighingWeighbridge_L."Driver Name" := "Driver Name";
+              CASE "Source Type" OF
+                DATABASE::"Purchase Line" :
+                BEGIN
+                  RecWeighingWeighbridge_L."Source No." := RecVendor_L."No.";
+                  RecWeighingWeighbridge_L.Name := RecVendor_L.Name;
+                  RecWeighingWeighbridge_L."Name 2" := RecVendor_L."Name 2";
+                  RecWeighingWeighbridge_L.Address:=RecVendor_L.Address;
+                  RecWeighingWeighbridge_L."Address 2" := RecVendor_L."Address 2";
+                  RecWeighingWeighbridge_L.City := RecVendor_L.City;
+                  RecWeighingWeighbridge_L."Post Code" := RecVendor_L."Post Code";
+                  RecWeighingWeighbridge_L.County := RecVendor_L.County;
+                  RecWeighingWeighbridge_L."Country/Region Code" := RecVendor_L."Country/Region Code";
+                END;
+                DATABASE::"Sales Line" :
+                BEGIN
+                  RecWeighingWeighbridge_L."Source No." := RecCust_L."No.";
+                  RecWeighingWeighbridge_L.Name := RecCust_L.Name;
+                  RecWeighingWeighbridge_L."Name 2" := RecCust_L."Name 2";
+                  RecWeighingWeighbridge_L.Address:=RecCust_L.Address;
+                  RecWeighingWeighbridge_L."Address 2" := RecCust_L."Address 2";
+                  RecWeighingWeighbridge_L.City := RecCust_L.City;
+                  RecWeighingWeighbridge_L."Post Code" := RecCust_L."Post Code";
+                  RecWeighingWeighbridge_L.County := RecCust_L.County;
+                  RecWeighingWeighbridge_L."Country/Region Code" := RecCust_L."Country/Region Code";
+                END;
+                DATABASE::"Transfer Line" :
+                BEGIN
+                  RecWeighingWeighbridge_L."Source No." := RecLocation_L.Code;
+                  RecWeighingWeighbridge_L.Name := RecLocation_L.Name;
+                  RecWeighingWeighbridge_L."Name 2" := RecLocation_L."Name 2";
+                  RecWeighingWeighbridge_L.Address:=RecLocation_L.Address;
+                  RecWeighingWeighbridge_L."Address 2" := RecLocation_L."Address 2";
+                  RecWeighingWeighbridge_L.City := RecLocation_L.City;
+                  RecWeighingWeighbridge_L."Post Code" := RecLocation_L."Post Code";
+                  RecWeighingWeighbridge_L.County := RecLocation_L.County;
+                  RecWeighingWeighbridge_L."Country/Region Code" := RecLocation_L."Country/Region Code";
+                END;
+              END;
+              RecWeighingWeighbridge_L."Weighing 1" := "Weighing 1";
+              RecWeighingWeighbridge_L."Weighing 2" := "Weighing 2";
+              RecWeighingWeighbridge_L."Weight 1 Manual Update" := FALSE;
+              RecWeighingWeighbridge_L."Weight 1 Manual Entry" := FALSE;
+              RecWeighingWeighbridge_L."Weight 2 Manual Update" := FALSE;
+              RecWeighingWeighbridge_L."Weight 2 Manual Entry" := FALSE;
+              RecWeighingWeighbridge_L."Unit of Measure Code" := "Unit of Measure Code";
+              RecWeighingWeighbridge_L."Source Document Type" := RecWeighingWeighbridge_L."Source Document Type"::"Warehouse Receipt";
+              RecWeighingWeighbridge_L."Source Document No." := "No.";
+              RecWeighingWeighbridge_L.VALIDATE("Item No.","Item No.");
+              RecWeighingWeighbridge_L.MODIFY;
+              IF NOT CallWeighBridge_P THEN
+                EXIT(WeighingEntryNo_L);
+              COMMIT; //UnLock record pes'e avant lancement interface
+            END ELSE BEGIN
+              RecWeighingWeighbridge_L.GET("Weighing No.");
+              WeighingEntryNo_L := RecWeighingWeighbridge_L."Entry No.";
+              RecWeighingWeighbridge_L."Weighing 1" := "Weighing 1";
+              RecWeighingWeighbridge_L."Weighing 2" := "Weighing 2";
+              RecWeighingWeighbridge_L."Weight 1 Manual Update" := FALSE;
+              RecWeighingWeighbridge_L."Weight 1 Manual Entry" := FALSE;
+              RecWeighingWeighbridge_L."Weight 2 Manual Update" := FALSE;
+              RecWeighingWeighbridge_L."Weight 2 Manual Entry" := FALSE;
+            END;
+            //Lancement de l'interface Pont bascule
+            CLEAR(cduWeighingInterface_L);
+            cduWeighingInterface_L.InitCodeunit(1,RecWeighBridge_G.Code,RecWeighBridge_G.Name);
+            IF cduAdvancedSetupMgt_G.GetAdvancedParameterValueBool('ACTIVE SIMUL.BASCULE') THEN BEGIN
+              Selection_G := STRMENU(Text8053006);
+              IF Selection_G = 1 THEN
+                cduWeighingInterface_L.Simulate(RecWeighingWeighbridge_L)
+              ELSE
+                IF NOT cduWeighingInterface_L.RUN(RecWeighingWeighbridge_L) THEN
+                  cduWeighingInterface_L.ClearWeighBridge;
+            END ELSE BEGIN
+              IF NOT cduWeighingInterface_L.RUN(RecWeighingWeighbridge_L) THEN
+                cduWeighingInterface_L.ClearWeighBridge;
+            END;
+            CheckWeighingUpdFromInterface(TRUE,FALSE,"Weighing 1 No.",RecWeighingWeighbridge_L."Weight 1 Manual Entry",
+              RecWeighingWeighbridge_L."Weight 1 Manual Update","Weighing 2 No.",RecWeighingWeighbridge_L."Weight 2 Manual Entry",
+              RecWeighingWeighbridge_L."Weight 2 Manual Update",FIELDCAPTION("Weighing 1"));
+            //MAJ de la pes'e 1 de la r'ception entrep"t si elle est diff'rente de celle renvoy'e par l'interface Pont bascule
+            IF ("Weighing 1" <> RecWeighingWeighbridge_L."Weighing 1") THEN BEGIN
+              SuspendUpdateWeighingData(TRUE);
+              "Weighing 2" := 0;
+              VALIDATE("Weighing 1",RecWeighingWeighbridge_L."Weighing 1");
+              "Weighing 1 No." := RecWeighingWeighbridge_L."Weighing 1 No.";
+              RecWeighingWeighbridge_L."Weighing 2" := 0;
+              "Weighing 2 No." := '';
+              RecWeighingWeighbridge_L."Weighing 2 No." := '';
+              "Manual Weighing No." := '';
+              RecWeighingWeighbridge_L."Manual Weighing No." := '';
+              RecWeighingWeighbridge_L.MODIFY;
+              "Truck Registration" := RecWeighingWeighbridge_L."Truck Registration";
+              "Driver Name" := RecWeighingWeighbridge_L."Driver Name";
+              "Notebook Weighing No." := RecWeighingWeighbridge_L."Notebook Weighing No.";
+            END;
+          END;
+          WeighingNo_P:: "2" : // Traitement Pes'e 2
+          BEGIN
+            //Test si pes'e 2 d'j. r'alis'e
+            IF "Weighing 2 No." <> '' THEN
+              IF NOT CONFIRM(Text8053002,FALSE,RecWeighingWeighbridge_L.FIELDCAPTION("Weighing 2")) THEN
+                EXIT("Weighing No.");
+            IF "Weighing No." = 0 THEN
+              ERROR(Text8053000);
+            RecWeighingWeighbridge_L.GET("Weighing No.");
+            //Lancement de l'interface Pont bascule
+            CLEAR(cduWeighingInterface_L);
+            cduWeighingInterface_L.InitCodeunit(2,RecWeighBridge_G.Code,RecWeighBridge_G.Name);
+            IF cduAdvancedSetupMgt_G.GetAdvancedParameterValueBool('ACTIVE SIMUL.BASCULE') THEN BEGIN
+              Selection_G := STRMENU(Text8053006);
+              IF Selection_G = 1 THEN
+                cduWeighingInterface_L.Simulate(RecWeighingWeighbridge_L)
+              ELSE
+                IF NOT cduWeighingInterface_L.RUN(RecWeighingWeighbridge_L) THEN
+                  cduWeighingInterface_L.ClearWeighBridge;
+            END ELSE BEGIN
+              IF NOT cduWeighingInterface_L.RUN(RecWeighingWeighbridge_L) THEN
+                cduWeighingInterface_L.ClearWeighBridge;
+            END;
+            CheckWeighingUpdFromInterface(FALSE,TRUE,"Weighing 1 No.",RecWeighingWeighbridge_L."Weight 1 Manual Entry",
+              RecWeighingWeighbridge_L."Weight 1 Manual Update","Weighing 2 No.",RecWeighingWeighbridge_L."Weight 2 Manual Entry",
+              RecWeighingWeighbridge_L."Weight 2 Manual Update",FIELDCAPTION("Weighing 2"));
+            //MAJ de la pes'e 2 de la r'ception entrep"t si elle est diff'rente de celle renvoy'e par l'interface Pont bascule
+            IF ("Weighing 2" <> RecWeighingWeighbridge_L."Weighing 2") THEN BEGIN
+              SuspendUpdateWeighingData(TRUE);
+              VALIDATE("Weighing 2",RecWeighingWeighbridge_L."Weighing 2");
+              "Weighing 2 No." := RecWeighingWeighbridge_L."Weighing 2 No.";
+              // --> 20150610-LOG10-CMC02.02.00-3007-BSI01
+              IF ("Weighing 2 No." = "Weighing 1 No.") AND ("Weighing 1 No." <> '') THEN
+                ERROR(Text8053017,FIELDCAPTION("Weighing 2 No."),FIELDCAPTION("Weighing 1 No."));
+              // <-- 20150610-LOG10-CMC02.02.00-3007-BSI01
+              RecWeighingWeighbridge_L."Net Weight" := RecWeighingWeighbridge_L."Weighing 1" - RecWeighingWeighbridge_L."Weighing 2";
+              RecWeighingWeighbridge_L.MODIFY;
+              "Truck Registration" := RecWeighingWeighbridge_L."Truck Registration";
+              "Driver Name" := RecWeighingWeighbridge_L."Driver Name";
+              "Notebook Weighing No." := RecWeighingWeighbridge_L."Notebook Weighing No.";
+            END;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE WeighingFromWhseShptLine@8053009(VAR RecWhseShptLine_P@8053000 : Record 7321;WeighingNo_P@8053001 : Integer;CallWeighBridge_P@8053005 : Boolean) WeighingEntryNo_L : Integer;
+    VAR
+      RecWeighingWeighbridge_L@8053002 : Record 8053094;
+      RecVendor_L@8053006 : Record 23;
+      RecCust_L@8053003 : Record 18;
+      RecLocation_L@8053007 : Record 14;
+      cduWeighingInterface_L@8053004 : Codeunit 8053011;
+      WhseShptHeader_L@8053008 : Record 7320;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Lancement pes'e . partir des exp'ditions entrep"t
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecWhseShptLine_P : Record Ligne exp'dition entrep"t
+      //   - WeighingNo_P : N› de p's'e
+      //   - CallWeighBridge_P : TRUE si appel de l'interface Pont bascule
+      // Sorties:
+      //   - WeighingEntryNo_L : N› s'quence pes'e
+      //----------------------------------------------------------------------------------------------------------
+      WITH RecWhseShptLine_P DO BEGIN
+        TESTFIELD("Weighing Source Line No.",0);
+        TESTFIELD("Posted Weighing",FALSE);
+        WhseShptHeader_L.GET(RecWhseShptLine_P."No.");
+        //Recherche Pont bascule associ' au magasin de l'exp'dition entrep"t
+        IF CallWeighBridge_P THEN
+          TestWeighBridgeExist(WhseShptHeader_L."Location Code");
+        GetWMSSourceDoc("Source Type","Source Subtype","Source No.");
+        CASE "Source Type" OF
+          DATABASE::"Sales Line" :
+            RecCust_L.GET(RecSalesHeader_G."Sell-to Customer No.");
+          DATABASE::"Purchase Line" :
+            RecVendor_L.GET(RecPurchHeader_G."Buy-from Vendor No.");
+          DATABASE::"Transfer Line" :
+            RecLocation_L.GET(RecTransHeader_G."Transfer-to Code");
+        END;
+        GetQuantityPerUnit("Unit of Measure Code");
+        CASE WeighingNo_P OF
+          WeighingNo_P::"1" : // Traitement pes'e 1
+          BEGIN
+            //Test si pes'e 1 d'j. r'alis'e
+            IF "Weighing 1 No." <> '' THEN
+              IF NOT CONFIRM(Text8053002,FALSE,RecWeighingWeighbridge_L.FIELDCAPTION("Weighing 1")) THEN
+                EXIT("Weighing No.");
+            //Cr'ation de l'enregistrement pes'e si aucune pes'e li'e
+            IF "Weighing No." = 0 THEN BEGIN
+              CreateWeighingRec(RecWeighingWeighbridge_L);
+              WeighingEntryNo_L := RecWeighingWeighbridge_L."Entry No.";
+              //MAJ de l'enregistrement pes'e
+              RecWeighingWeighbridge_L."Location Code" := WhseShptHeader_L."Location Code";
+              RecWeighingWeighbridge_L."Truck Registration" := "Truck Registration";
+              RecWeighingWeighbridge_L."Driver Name" := "Driver Name";
+              CASE "Source Type" OF
+                DATABASE::"Purchase Line" :
+                BEGIN
+                  RecWeighingWeighbridge_L."Source No." := RecVendor_L."No.";
+                  RecWeighingWeighbridge_L.Name := RecVendor_L.Name;
+                  RecWeighingWeighbridge_L."Name 2" := RecVendor_L."Name 2";
+                  RecWeighingWeighbridge_L.Address:=RecVendor_L.Address;
+                  RecWeighingWeighbridge_L."Address 2" := RecVendor_L."Address 2";
+                  RecWeighingWeighbridge_L.City := RecVendor_L.City;
+                  RecWeighingWeighbridge_L."Post Code" := RecVendor_L."Post Code";
+                  RecWeighingWeighbridge_L.County := RecVendor_L.County;
+                  RecWeighingWeighbridge_L."Country/Region Code" := RecVendor_L."Country/Region Code";
+                END;
+                DATABASE::"Sales Line" :
+                BEGIN
+                  RecWeighingWeighbridge_L."Source No." := RecCust_L."No.";
+                  RecWeighingWeighbridge_L.Name := RecCust_L.Name;
+                  RecWeighingWeighbridge_L."Name 2" := RecCust_L."Name 2";
+                  RecWeighingWeighbridge_L.Address:=RecCust_L.Address;
+                  RecWeighingWeighbridge_L."Address 2" := RecCust_L."Address 2";
+                  RecWeighingWeighbridge_L.City := RecCust_L.City;
+                  RecWeighingWeighbridge_L."Post Code" := RecCust_L."Post Code";
+                  RecWeighingWeighbridge_L.County := RecCust_L.County;
+                  RecWeighingWeighbridge_L."Country/Region Code" := RecCust_L."Country/Region Code";
+                END;
+                DATABASE::"Transfer Line" :
+                BEGIN
+                  RecWeighingWeighbridge_L."Source No." := RecLocation_L.Code;
+                  RecWeighingWeighbridge_L.Name := RecLocation_L.Name;
+                  RecWeighingWeighbridge_L."Name 2" := RecLocation_L."Name 2";
+                  RecWeighingWeighbridge_L.Address:=RecLocation_L.Address;
+                  RecWeighingWeighbridge_L."Address 2" := RecLocation_L."Address 2";
+                  RecWeighingWeighbridge_L.City := RecLocation_L.City;
+                  RecWeighingWeighbridge_L."Post Code" := RecLocation_L."Post Code";
+                  RecWeighingWeighbridge_L.County := RecLocation_L.County;
+                  RecWeighingWeighbridge_L."Country/Region Code" := RecLocation_L."Country/Region Code";
+                END;
+              END;
+              RecWeighingWeighbridge_L."Weighing 1" := "Weighing 1";
+              RecWeighingWeighbridge_L."Weighing 2" := "Weighing 2";
+              RecWeighingWeighbridge_L."Weight 1 Manual Update" := FALSE;
+              RecWeighingWeighbridge_L."Weight 1 Manual Entry" := FALSE;
+              RecWeighingWeighbridge_L."Weight 2 Manual Update" := FALSE;
+              RecWeighingWeighbridge_L."Weight 2 Manual Entry" := FALSE;
+              RecWeighingWeighbridge_L."Unit of Measure Code" := "Unit of Measure Code";
+              RecWeighingWeighbridge_L."Source Document Type" :=
+                RecWeighingWeighbridge_L."Source Document Type"::"Warehouse Shipment";
+              RecWeighingWeighbridge_L."Source Document No." := "No.";
+              RecWeighingWeighbridge_L.VALIDATE("Item No.","Item No.");
+              RecWeighingWeighbridge_L.MODIFY;
+              IF NOT CallWeighBridge_P THEN
+                EXIT(WeighingEntryNo_L);
+              COMMIT; //UnLock record pes'e avant lancement interface
+            END ELSE BEGIN
+              RecWeighingWeighbridge_L.GET("Weighing No.");
+              WeighingEntryNo_L := RecWeighingWeighbridge_L."Entry No.";
+              RecWeighingWeighbridge_L."Weighing 1" := "Weighing 1";
+              RecWeighingWeighbridge_L."Weighing 2" := "Weighing 2";
+              RecWeighingWeighbridge_L."Weight 1 Manual Update" := FALSE;
+              RecWeighingWeighbridge_L."Weight 1 Manual Entry" := FALSE;
+              RecWeighingWeighbridge_L."Weight 2 Manual Update" := FALSE;
+              RecWeighingWeighbridge_L."Weight 2 Manual Entry" := FALSE;
+            END;
+            //Lancement de l'interface Pont bascule
+            CLEAR(cduWeighingInterface_L);
+            cduWeighingInterface_L.InitCodeunit(1,RecWeighBridge_G.Code,RecWeighBridge_G.Name);
+            IF cduAdvancedSetupMgt_G.GetAdvancedParameterValueBool('ACTIVE SIMUL.BASCULE') THEN BEGIN
+              Selection_G := STRMENU(Text8053006);
+              IF Selection_G = 1 THEN
+                cduWeighingInterface_L.Simulate(RecWeighingWeighbridge_L)
+              ELSE
+                IF NOT cduWeighingInterface_L.RUN(RecWeighingWeighbridge_L) THEN
+                  cduWeighingInterface_L.ClearWeighBridge;
+            END ELSE BEGIN
+              IF NOT cduWeighingInterface_L.RUN(RecWeighingWeighbridge_L) THEN
+                cduWeighingInterface_L.ClearWeighBridge;
+            END;
+            CheckWeighingUpdFromInterface(TRUE,FALSE,"Weighing 1 No.",RecWeighingWeighbridge_L."Weight 1 Manual Entry",
+              RecWeighingWeighbridge_L."Weight 1 Manual Update","Weighing 2 No.",RecWeighingWeighbridge_L."Weight 2 Manual Entry",
+              RecWeighingWeighbridge_L."Weight 2 Manual Update",FIELDCAPTION("Weighing 1"));
+            //MAJ de la pes'e 1 de l'exp'dition entrep"t si elle est diff'rente de celle renvoy'e par l'interface Pont bascule
+            IF ("Weighing 1" <> RecWeighingWeighbridge_L."Weighing 1") THEN BEGIN
+              SuspendUpdateWeighingData(TRUE);
+              "Weighing 2" := 0;
+              VALIDATE("Weighing 1",RecWeighingWeighbridge_L."Weighing 1");
+              "Weighing 1 No." := RecWeighingWeighbridge_L."Weighing 1 No.";
+              RecWeighingWeighbridge_L."Weighing 2" := 0;
+              "Weighing 2 No." := '';
+              RecWeighingWeighbridge_L."Weighing 2 No." := '';
+              "Manual Weighing No." := '';
+              RecWeighingWeighbridge_L."Manual Weighing No." := '';
+              RecWeighingWeighbridge_L.MODIFY;
+              "Truck Registration" := RecWeighingWeighbridge_L."Truck Registration";
+              "Driver Name" := RecWeighingWeighbridge_L."Driver Name";
+              "Notebook Weighing No." := RecWeighingWeighbridge_L."Notebook Weighing No.";
+            END;
+          END;
+          WeighingNo_P:: "2" : // Traitement Pes'e 2
+          BEGIN
+            //Test si pes'e 2 d'j. r'alis'e
+            IF "Weighing 2 No." <> '' THEN
+              IF NOT CONFIRM(Text8053002,FALSE,RecWeighingWeighbridge_L.FIELDCAPTION("Weighing 2")) THEN
+                EXIT("Weighing No.");
+            IF "Weighing No." = 0 THEN
+              ERROR(Text8053000);
+            RecWeighingWeighbridge_L.GET("Weighing No.");
+            //Lancement de l'interface Pont bascule
+            CLEAR(cduWeighingInterface_L);
+            cduWeighingInterface_L.InitCodeunit(2,RecWeighBridge_G.Code,RecWeighBridge_G.Name);
+            IF cduAdvancedSetupMgt_G.GetAdvancedParameterValueBool('ACTIVE SIMUL.BASCULE') THEN BEGIN
+              Selection_G := STRMENU(Text8053006);
+              IF Selection_G = 1 THEN
+                cduWeighingInterface_L.Simulate(RecWeighingWeighbridge_L)
+              ELSE
+                IF NOT cduWeighingInterface_L.RUN(RecWeighingWeighbridge_L) THEN
+                  cduWeighingInterface_L.ClearWeighBridge;
+            END ELSE BEGIN
+              IF NOT cduWeighingInterface_L.RUN(RecWeighingWeighbridge_L) THEN
+                cduWeighingInterface_L.ClearWeighBridge;
+            END;
+            CheckWeighingUpdFromInterface(FALSE,TRUE,"Weighing 1 No.",RecWeighingWeighbridge_L."Weight 1 Manual Entry",
+              RecWeighingWeighbridge_L."Weight 1 Manual Update","Weighing 2 No.",RecWeighingWeighbridge_L."Weight 2 Manual Entry",
+              RecWeighingWeighbridge_L."Weight 2 Manual Update",FIELDCAPTION("Weighing 2"));
+            //MAJ de la pes'e 2 de l'exp'dition entrep"t si elle est diff'rente de celle renvoy'e par l'interface Pont bascule
+            IF ("Weighing 2" <> RecWeighingWeighbridge_L."Weighing 2") THEN BEGIN
+              SuspendUpdateWeighingData(TRUE);
+              VALIDATE("Weighing 2",RecWeighingWeighbridge_L."Weighing 2");
+              "Weighing 2 No." := RecWeighingWeighbridge_L."Weighing 2 No.";
+              // --> 20150610-LOG10-CMC02.02.00-3007-BSI01
+              IF ("Weighing 2 No." = "Weighing 1 No.") AND ("Weighing 1 No." <> '') THEN
+                ERROR(Text8053017,FIELDCAPTION("Weighing 2 No."),FIELDCAPTION("Weighing 1 No."));
+              // <-- 20150610-LOG10-CMC02.02.00-3007-BSI01
+              RecWeighingWeighbridge_L."Net Weight" := RecWeighingWeighbridge_L."Weighing 2" - RecWeighingWeighbridge_L."Weighing 1";
+              RecWeighingWeighbridge_L.MODIFY;
+              "Truck Registration" := RecWeighingWeighbridge_L."Truck Registration";
+              "Driver Name" := RecWeighingWeighbridge_L."Driver Name";
+              "Notebook Weighing No." := RecWeighingWeighbridge_L."Notebook Weighing No.";
+            END;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE CreateWeighingRec@8053001(VAR RecWeighingWeighbridge_P@8053001 : Record 8053094);
+    VAR
+      RecWeighingWeighbridge_L@8053000 : Record 8053094;
+      LastEntryNo_L@8053002 : Integer;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Cr'ation enregistrement pes'e
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecWeighingWeighbridge_P : Record Pes'e
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      RecWeighingWeighbridge_L.LOCKTABLE;
+      IF RecWeighingWeighbridge_L.FINDLAST THEN
+        LastEntryNo_L := RecWeighingWeighbridge_L."Entry No." + 1
+      ELSE
+        LastEntryNo_L := 1;
+      RecWeighingWeighbridge_P.INIT;
+      RecWeighingWeighbridge_P."Entry No." := LastEntryNo_L;
+      RecWeighingWeighbridge_P.INSERT(TRUE);
+    END;
+
+    PROCEDURE DeleteWeighingRec@8053013(WeighingEntryNo_P@8053001 : Integer);
+    VAR
+      RecWeighingWeighbridge_L@8053000 : Record 8053094;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Suppression de l'enregistrement pes'e
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - WeighingEntryNo_P : N› s'quence pes'e
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      IF RecWeighingWeighbridge_L.GET(WeighingEntryNo_P) THEN
+        RecWeighingWeighbridge_L.DELETE;
+    END;
+
+    PROCEDURE PostWeighingRec@8053003(WeighingEntryNo_P@8053000 : Integer;PostSourceNo_P@8053004 : Code[20]) PostWeighingEntryNo_P : Integer;
+    VAR
+      RecWeighingWeighbridge_L@8053002 : Record 8053094;
+      RecPostWeighingWeighbridge_L@8053001 : Record 8053095;
+      LastEntryNo_L@8053003 : Integer;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // TransfSre l'enregistrement pes'e vers la table de validation
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - WeighingEntryNo_P : N› s'quence pes'e
+      //   - PostSourceNo_P : N› document valid'
+      // Sorties:
+      //   - PostWeighingEntryNo_P ; N› de s'quence pes'e valid'e
+      //----------------------------------------------------------------------------------------------------------
+      IF RecWeighingWeighbridge_L.GET(WeighingEntryNo_P) THEN BEGIN
+        RecPostWeighingWeighbridge_L.LOCKTABLE;
+        IF RecPostWeighingWeighbridge_L.FINDLAST THEN
+          LastEntryNo_L := RecPostWeighingWeighbridge_L."Entry No." + 1
+        ELSE
+          LastEntryNo_L := 1;
+        RecPostWeighingWeighbridge_L.INIT;
+        RecPostWeighingWeighbridge_L.TRANSFERFIELDS(RecWeighingWeighbridge_L);
+        RecPostWeighingWeighbridge_L."Entry No." := LastEntryNo_L;
+        RecPostWeighingWeighbridge_L."Source Document No." := PostSourceNo_P;
+        RecPostWeighingWeighbridge_L.INSERT;
+        DeleteWeighingRec(WeighingEntryNo_P);
+        EXIT(RecPostWeighingWeighbridge_L."Entry No.");
+      END ELSE
+        EXIT(0);
+    END;
+
+    PROCEDURE UpdateWeighingDataFromReceipt@8053008(VAR RecCollectionReceipt_P@8053000 : Record 8052993;ChangedFieldName_P@8053001 : Text[100];IsManualEntry_P@8053003 : Boolean);
+    VAR
+      RecWeighingWeighbridge_L@8053002 : Record 8053094;
+      RecVendor_L@8053004 : Record 23;
+      RecLocation_L@8053006 : Record 14;
+      RecMCLocation_L@8053005 : Record 8053083;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // MAJ de l'ennregistrement pes'e . partir d'une modification manuelle sur la r'ception collecte
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecCollectionReceipt_P : Record R'ception collecte
+      //   - ChangedFieldName_P : Caption du champ modifi'
+      //   - IsManualEntry_P : TRUE s'il sagit d'une saisie, FALSE s'il s'agit d'une modification
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      // --> 20150921-LOG10-ADV01.01.00-2131-DRN01
+      {BEFORE
+      IF ( (RecCollectionReceipt_P."Vendor No." = '') AND (RecCollectionReceipt_P."Receipt Type" <>
+        RecCollectionReceipt_P."Receipt Type"::Transfert)) OR (RecCollectionReceipt_P."Item No." = '')
+      THEN
+      AFTER}
+      IF RecCollectionReceipt_P."Item No." = '' THEN
+      // <-- 20150921-LOG10-ADV01.01.00-2131-DRN01
+        EXIT;
+      IF NOT RecWeighingWeighbridge_L.GET(RecCollectionReceipt_P."Weighing No.") THEN BEGIN
+        IF ChangedFieldName_P IN [RecCollectionReceipt_P.FIELDCAPTION(RecCollectionReceipt_P."Trailers Registration"),
+          RecCollectionReceipt_P.FIELDCAPTION(RecCollectionReceipt_P."Driver Name")]
+        THEN
+          EXIT;
+        RecWeighingWeighbridge_L.GET(WeighingFromCollectReceipt(RecCollectionReceipt_P,1,FALSE));
+        RecCollectionReceipt_P."Weighing No." := RecWeighingWeighbridge_L."Entry No.";
+        RecCollectionReceipt_P.MODIFY;
+      END;
+      CASE ChangedFieldName_P OF
+        RecCollectionReceipt_P.FIELDCAPTION(RecCollectionReceipt_P."Weighing 1") :
+        BEGIN
+          RecWeighingWeighbridge_L."Weighing 1" := RecCollectionReceipt_P."Weighing 1";
+          IF IsManualEntry_P THEN
+            RecWeighingWeighbridge_L."Weight 1 Manual Entry" := TRUE
+          ELSE
+            RecWeighingWeighbridge_L."Weight 1 Manual Update" := TRUE;
+          RecWeighingWeighbridge_L."Net Weight" := RecWeighingWeighbridge_L."Weighing 1" - RecWeighingWeighbridge_L."Weighing 2";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecCollectionReceipt_P.FIELDCAPTION(RecCollectionReceipt_P."Weighing 2") :
+        BEGIN
+          RecWeighingWeighbridge_L."Weighing 2" := RecCollectionReceipt_P."Weighing 2";
+          IF IsManualEntry_P THEN
+            RecWeighingWeighbridge_L."Weight 2 Manual Entry" := TRUE
+          ELSE
+            RecWeighingWeighbridge_L."Weight 2 Manual Update" := TRUE;
+          RecWeighingWeighbridge_L."Net Weight" := RecWeighingWeighbridge_L."Weighing 1" - RecWeighingWeighbridge_L."Weighing 2";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecCollectionReceipt_P.FIELDCAPTION(RecCollectionReceipt_P."Location Code") :
+        BEGIN
+          RecWeighingWeighbridge_L."Location Code" := RecCollectionReceipt_P."Location Code";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecCollectionReceipt_P.FIELDCAPTION("Transfer-from Code") :
+        BEGIN
+          IF (RecCollectionReceipt_P."Transfer-from Code" <> '') THEN
+            IF RecCollectionReceipt_P."Send IC Document" THEN BEGIN
+              RecMCLocation_L.GET(RecCollectionReceipt_P."Transfer-from Code");
+              RecLocation_L.TRANSFERFIELDS(RecMCLocation_L);
+            END ELSE
+              RecLocation_L.GET(RecCollectionReceipt_P."Transfer-from Code");
+          RecWeighingWeighbridge_L."Source No." := RecLocation_L.Code;
+          RecWeighingWeighbridge_L.Name := RecLocation_L.Name;
+          RecWeighingWeighbridge_L."Name 2" := RecLocation_L."Name 2";
+          RecWeighingWeighbridge_L.Address:=RecLocation_L.Address;
+          RecWeighingWeighbridge_L."Address 2" := RecLocation_L."Address 2";
+          RecWeighingWeighbridge_L.City := RecLocation_L.City;
+          RecWeighingWeighbridge_L."Post Code" := RecLocation_L."Post Code";
+          RecWeighingWeighbridge_L.County := RecLocation_L.County;
+          RecWeighingWeighbridge_L."Country/Region Code" := RecLocation_L."Country/Region Code";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecCollectionReceipt_P.FIELDCAPTION(RecCollectionReceipt_P."Trailers Registration") :
+        BEGIN
+          RecWeighingWeighbridge_L."Truck Registration" := RecCollectionReceipt_P."Trailers Registration";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecCollectionReceipt_P.FIELDCAPTION(RecCollectionReceipt_P."Driver Name") :
+        BEGIN
+          RecWeighingWeighbridge_L."Driver Name" := RecCollectionReceipt_P."Driver Name";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecCollectionReceipt_P.FIELDCAPTION(RecCollectionReceipt_P."Item No.") :
+        BEGIN
+          RecWeighingWeighbridge_L.VALIDATE("Item No.",RecCollectionReceipt_P."Item No.");
+          RecWeighingWeighbridge_L."Net Weight" := RecCollectionReceipt_P."Net Weight";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecCollectionReceipt_P.FIELDCAPTION(RecCollectionReceipt_P."Vendor No.") :
+        BEGIN
+          // --> 20150921-LOG10-ADV01.01.00-2131-DRN01
+          {BEFORE
+          RecVendor_L.GET(RecCollectionReceipt_P."Vendor No.")
+          AFTER}
+          IF RecVendor_L.GET(RecCollectionReceipt_P."Vendor No.") THEN BEGIN
+          // <-- 20150921-LOG10-ADV01.01.00-2131-DRN01
+          RecWeighingWeighbridge_L."Source No." := RecVendor_L."No.";
+          RecWeighingWeighbridge_L.Name := RecVendor_L.Name;
+          RecWeighingWeighbridge_L."Name 2" := RecVendor_L."Name 2";
+          RecWeighingWeighbridge_L.Address:=RecVendor_L.Address;
+          RecWeighingWeighbridge_L."Address 2" := RecVendor_L."Address 2";
+          RecWeighingWeighbridge_L.City := RecVendor_L.City;
+          RecWeighingWeighbridge_L."Post Code" := RecVendor_L."Post Code";
+          RecWeighingWeighbridge_L.County := RecVendor_L.County;
+          RecWeighingWeighbridge_L."Country/Region Code" := RecVendor_L."Country/Region Code";
+          RecWeighingWeighbridge_L.MODIFY;
+          // --> 20150921-LOG10-ADV01.01.00-2131-DRN01
+          END ELSE BEGIN
+            RecWeighingWeighbridge_L."Source No." := '';
+            RecWeighingWeighbridge_L.Name := '';
+            RecWeighingWeighbridge_L."Name 2" := '';
+            RecWeighingWeighbridge_L.Address := '';
+            RecWeighingWeighbridge_L."Address 2" := '';
+            RecWeighingWeighbridge_L.City := '';
+            RecWeighingWeighbridge_L."Post Code" := '';
+            RecWeighingWeighbridge_L.County := '';
+            RecWeighingWeighbridge_L."Country/Region Code" := '';
+            RecWeighingWeighbridge_L.MODIFY;
+          END;
+          // <-- 20150921-LOG10-ADV01.01.00-2131-DRN01
+        END;
+        RecCollectionReceipt_P.FIELDCAPTION(RecCollectionReceipt_P."Net Weight") :
+        BEGIN
+          RecWeighingWeighbridge_L."Net Weight" := RecCollectionReceipt_P."Net Weight";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecCollectionReceipt_P.FIELDCAPTION(RecCollectionReceipt_P."Manual Weighing No.") :
+        BEGIN
+          RecWeighingWeighbridge_L.VALIDATE("Manual Weighing No.",RecCollectionReceipt_P."Manual Weighing No.");
+          RecWeighingWeighbridge_L.MODIFY(FALSE);
+        END;
+
+        RecCollectionReceipt_P.FIELDCAPTION(RecCollectionReceipt_P."Notebook Weighing No.") :
+        BEGIN
+          RecWeighingWeighbridge_L."Notebook Weighing No." := RecCollectionReceipt_P."Notebook Weighing No.";
+          RecWeighingWeighbridge_L.MODIFY(FALSE);
+        END;
+      END;
+    END;
+
+    PROCEDURE UpdWeighingDataFromPostReceipt@1000000001(VAR RecPostedReceipts_P@8053000 : Record 8052995;ChangedFieldName_P@8053001 : Text[100];IsManualEntry_P@8053003 : Boolean);
+    VAR
+      RecPostWeighingWeighbridge_L@8053002 : Record 8053095;
+      RecVendor_L@1000000000 : Record 23;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // MAJ de l'ennregistrement pes'e . partir d'une modification manuelle sur la r'ception collecte valid'e
+      // Appel dans T8052995
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecPostedReceipts_P : Record R'ception collecte valid'e
+      //   - ChangedFieldName_P : Caption du champ modifi'
+      //   - IsManualEntry_P : TRUE s'il sagit d'une saisie, FALSE s'il s'agit d'une modification
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      // --> 20150709-LOG10-ADV01.01.00-1908-DRN01
+      IF (RecPostedReceipts_P."Receipt Type" = RecPostedReceipts_P."Receipt Type"::Transfert) OR
+         (NOT RecPostWeighingWeighbridge_L.GET(RecPostedReceipts_P."Weighing No."))
+      THEN
+        EXIT;
+
+      CASE ChangedFieldName_P OF
+        RecPostedReceipts_P.FIELDCAPTION(RecPostedReceipts_P."Weighing 1") :
+        BEGIN
+          RecPostWeighingWeighbridge_L."Weighing 1" := RecPostedReceipts_P."Weighing 1";
+          IF IsManualEntry_P THEN
+            RecPostWeighingWeighbridge_L."Weight 1 Manual Entry" := TRUE
+          ELSE
+            RecPostWeighingWeighbridge_L."Weight 1 Manual Update" := TRUE;
+          RecPostWeighingWeighbridge_L."Net Weight" := RecPostWeighingWeighbridge_L."Weighing 1" -
+            RecPostWeighingWeighbridge_L."Weighing 2";
+          RecPostWeighingWeighbridge_L.MODIFY;
+        END;
+        RecPostedReceipts_P.FIELDCAPTION(RecPostedReceipts_P."Weighing 2") :
+        BEGIN
+          RecPostWeighingWeighbridge_L."Weighing 2" := RecPostedReceipts_P."Weighing 2";
+          IF IsManualEntry_P THEN
+            RecPostWeighingWeighbridge_L."Weight 2 Manual Entry" := TRUE
+          ELSE
+            RecPostWeighingWeighbridge_L."Weight 2 Manual Update" := TRUE;
+          RecPostWeighingWeighbridge_L."Net Weight" := RecPostWeighingWeighbridge_L."Weighing 1" -
+            RecPostWeighingWeighbridge_L."Weighing 2";
+          RecPostWeighingWeighbridge_L.MODIFY;
+        END;
+        RecPostedReceipts_P.FIELDCAPTION(RecPostedReceipts_P."Net Weight") :
+        BEGIN
+          RecPostWeighingWeighbridge_L."Net Weight" := RecPostedReceipts_P."Net Weight";
+          RecPostWeighingWeighbridge_L.MODIFY;
+        END;
+        // --> 20151124-LOG10-ADV01.01.00-2537-DRN01
+        RecPostedReceipts_P.FIELDCAPTION(RecPostedReceipts_P."Vendor No.") :
+        BEGIN
+          IF RecVendor_L.GET(RecPostedReceipts_P."Vendor No.") THEN BEGIN
+            RecPostWeighingWeighbridge_L."Source No." := RecVendor_L."No.";
+            RecPostWeighingWeighbridge_L.Name := RecVendor_L.Name;
+            RecPostWeighingWeighbridge_L."Name 2" := RecVendor_L."Name 2";
+            RecPostWeighingWeighbridge_L.Address:=RecVendor_L.Address;
+            RecPostWeighingWeighbridge_L."Address 2" := RecVendor_L."Address 2";
+            RecPostWeighingWeighbridge_L.City := RecVendor_L.City;
+            RecPostWeighingWeighbridge_L."Post Code" := RecVendor_L."Post Code";
+            RecPostWeighingWeighbridge_L.County := RecVendor_L.County;
+            RecPostWeighingWeighbridge_L."Country/Region Code" := RecVendor_L."Country/Region Code";
+            RecPostWeighingWeighbridge_L.MODIFY;
+          END;
+        END;
+        // <-- 20151124-LOG10-ADV01.01.00-2537-DRN01
+      END;
+      // <-- 20150709-LOG10-ADV01.01.00-1908-DRN01
+    END;
+
+    PROCEDURE UpdWeighingDataFromWhseReceipt@8053016(VAR RecWhseReceiptLine_P@8053002 : Record 7317;ChangedFieldName_P@8053001 : Text[100];IsManualEntry_P@8053000 : Boolean);
+    VAR
+      RecWeighingWeighbridge_L@8053003 : Record 8053094;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // MAJ de l'ennregistremebt pes'e . partir d'une modification manuelle sur la r'ception entrep"t
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecWhseReceiptLine_P : Record Ligne r'ception entrep"t
+      //   - ChangedFieldName_P : Caption du champ modifi'
+      //   - IsManualEntry_P : TRUE s'il sagit d'une saisie, FALSE s'il s'agit d'une modification
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      RecWhseReceiptLine_P.TESTFIELD("Weighing Source Line No.",0);
+      RecWhseReceiptLine_P.TESTFIELD("Posted Weighing",FALSE);
+
+      IF NOT RecWeighingWeighbridge_L.GET(RecWhseReceiptLine_P."Weighing No.") THEN BEGIN
+        IF ChangedFieldName_P IN [RecWhseReceiptLine_P.FIELDCAPTION(RecWhseReceiptLine_P."Truck Registration"),
+          RecWhseReceiptLine_P.FIELDCAPTION(RecWhseReceiptLine_P."Driver Name")]
+        THEN
+          EXIT;
+        RecWeighingWeighbridge_L.GET(WeighingFromWhseReceiptLine(RecWhseReceiptLine_P,1,FALSE));
+        RecWhseReceiptLine_P."Weighing No." := RecWeighingWeighbridge_L."Entry No.";
+        RecWhseReceiptLine_P.MODIFY;
+      END;
+      CASE ChangedFieldName_P OF
+        RecWhseReceiptLine_P.FIELDCAPTION(RecWhseReceiptLine_P."Weighing 1") :
+        BEGIN
+          RecWeighingWeighbridge_L."Weighing 1" := RecWhseReceiptLine_P."Weighing 1";
+          IF IsManualEntry_P THEN
+            RecWeighingWeighbridge_L."Weight 1 Manual Entry" := TRUE
+          ELSE
+            RecWeighingWeighbridge_L."Weight 1 Manual Update" := TRUE;
+          RecWeighingWeighbridge_L."Net Weight" := RecWeighingWeighbridge_L."Weighing 1" - RecWeighingWeighbridge_L."Weighing 2";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecWhseReceiptLine_P.FIELDCAPTION(RecWhseReceiptLine_P."Weighing 2") :
+        BEGIN
+          RecWeighingWeighbridge_L."Weighing 2" := RecWhseReceiptLine_P."Weighing 2";
+          IF IsManualEntry_P THEN
+            RecWeighingWeighbridge_L."Weight 2 Manual Entry" := TRUE
+          ELSE
+            RecWeighingWeighbridge_L."Weight 2 Manual Update" := TRUE;
+          RecWeighingWeighbridge_L."Net Weight" := RecWeighingWeighbridge_L."Weighing 1" - RecWeighingWeighbridge_L."Weighing 2";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecWhseReceiptLine_P.FIELDCAPTION(RecWhseReceiptLine_P."Location Code") :
+        BEGIN
+          RecWeighingWeighbridge_L."Location Code" := RecWhseReceiptLine_P."Location Code";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecWhseReceiptLine_P.FIELDCAPTION(RecWhseReceiptLine_P."Truck Registration") :
+        BEGIN
+          RecWeighingWeighbridge_L."Truck Registration" := RecWhseReceiptLine_P."Truck Registration";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecWhseReceiptLine_P.FIELDCAPTION(RecWhseReceiptLine_P."Driver Name") :
+        BEGIN
+          RecWeighingWeighbridge_L."Driver Name" := RecWhseReceiptLine_P."Driver Name";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecWhseReceiptLine_P.FIELDCAPTION(RecWhseReceiptLine_P."Manual Weighing No.") :
+        BEGIN
+          RecWeighingWeighbridge_L.VALIDATE("Manual Weighing No.",RecWhseReceiptLine_P."Manual Weighing No.");
+          RecWeighingWeighbridge_L.MODIFY(FALSE);
+        END;
+        RecWhseReceiptLine_P.FIELDCAPTION(RecWhseReceiptLine_P."Notebook Weighing No.") :
+        BEGIN
+          RecWeighingWeighbridge_L."Notebook Weighing No." := RecWhseReceiptLine_P."Notebook Weighing No.";
+          RecWeighingWeighbridge_L.MODIFY(FALSE);
+        END;
+      END;
+    END;
+
+    PROCEDURE UpdateWeighingDataFromDelivery@8053011(VAR RecDelivery_P@8053000 : Record 8053013;ChangedFieldName_P@8053001 : Text[100];IsManualEntry_P@8053003 : Boolean);
+    VAR
+      RecWeighingWeighbridge_L@1000000001 : Record 8053094;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // MAJ de l'ennregistrement pes'e . partir d'une modification manuelle sur la livraison collecte
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecDelivery_P : Record Livraison collecte
+      //   - ChangedFieldName_P : Caption du champ modifi'
+      //   - IsManualEntry_P : TRUE s'il sagit d'une saisie, FALSE s'il s'agit d'une modification
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      IF (RecDelivery_P."Item No." = '') OR RecDelivery_P."Ownership Transfer" THEN
+        EXIT;
+
+      IF NOT RecWeighingWeighbridge_L.GET(RecDelivery_P."Weighing No.") THEN BEGIN
+        IF ChangedFieldName_P IN [RecDelivery_P.FIELDCAPTION(RecDelivery_P."Trailers Registration No."),
+          RecDelivery_P.FIELDCAPTION(RecDelivery_P."Trucker Name")]
+        THEN
+          EXIT;
+        RecWeighingWeighbridge_L.GET(WeighingFromDelivery(RecDelivery_P,1,FALSE));
+        RecDelivery_P."Weighing No." := RecWeighingWeighbridge_L."Entry No.";
+        RecDelivery_P.MODIFY;
+      END;
+      CASE ChangedFieldName_P OF
+        RecDelivery_P.FIELDCAPTION(RecDelivery_P."Weighing 1") :
+        BEGIN
+          RecWeighingWeighbridge_L."Weighing 1" := RecDelivery_P."Weighing 1";
+          IF IsManualEntry_P THEN
+            RecWeighingWeighbridge_L."Weight 1 Manual Entry" := TRUE
+          ELSE
+            RecWeighingWeighbridge_L."Weight 1 Manual Update" := TRUE;
+          RecWeighingWeighbridge_L."Net Weight" := RecWeighingWeighbridge_L."Weighing 2" - RecWeighingWeighbridge_L."Weighing 1";
+          // --> 20150623-CER21-CMC02.02.00-2938-BSI01
+          RecWeighingWeighbridge_L.Name := RecDelivery_P."Ship-to Name";
+          RecWeighingWeighbridge_L."Name 2" := RecDelivery_P."Ship-to Name 2";
+          RecWeighingWeighbridge_L.Address := RecDelivery_P."Ship-to Address";
+          RecWeighingWeighbridge_L."Address 2" := RecDelivery_P."Ship-to Address 2";
+          RecWeighingWeighbridge_L.City := RecDelivery_P."Ship-to City";
+          RecWeighingWeighbridge_L."Post Code" := RecDelivery_P."Ship-to Post Code";
+          RecWeighingWeighbridge_L.County := RecDelivery_P."Ship-to County";
+          RecWeighingWeighbridge_L."Country/Region Code" := RecDelivery_P."Ship-to Country/Region Code";
+          // <-- 20150623-CER21-CMC02.02.00-2938-BSI01
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecDelivery_P.FIELDCAPTION(RecDelivery_P."Weighing 2") :
+        BEGIN
+          RecWeighingWeighbridge_L."Weighing 2" := RecDelivery_P."Weighing 2";
+          IF IsManualEntry_P THEN
+            RecWeighingWeighbridge_L."Weight 2 Manual Entry" := TRUE
+          ELSE
+            RecWeighingWeighbridge_L."Weight 2 Manual Update" := TRUE;
+          RecWeighingWeighbridge_L."Net Weight" := RecWeighingWeighbridge_L."Weighing 2" - RecWeighingWeighbridge_L."Weighing 1";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecDelivery_P.FIELDCAPTION(RecDelivery_P."Location Code") :
+        BEGIN
+          RecWeighingWeighbridge_L."Location Code" := RecDelivery_P."Location Code";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecDelivery_P.FIELDCAPTION("Transfer-to Code") :
+        BEGIN
+          RecWeighingWeighbridge_L."Source No." := RecDelivery_P."Transfer-to Code";
+          RecWeighingWeighbridge_L.Name := RecDelivery_P."Ship-to Name";
+          RecWeighingWeighbridge_L."Name 2" := RecDelivery_P."Ship-to Name 2";
+          RecWeighingWeighbridge_L.Address := RecDelivery_P."Ship-to Address";
+          RecWeighingWeighbridge_L."Address 2" := RecDelivery_P."Ship-to Address 2";
+          RecWeighingWeighbridge_L.City := RecDelivery_P."Ship-to City";
+          RecWeighingWeighbridge_L."Post Code" := RecDelivery_P."Ship-to Post Code";
+          RecWeighingWeighbridge_L.County := RecDelivery_P."Ship-to County";
+          RecWeighingWeighbridge_L."Country/Region Code" := RecDelivery_P."Ship-to Country/Region Code";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecDelivery_P.FIELDCAPTION(RecDelivery_P."Trailers Registration No.") :
+        BEGIN
+          RecWeighingWeighbridge_L."Truck Registration" := RecDelivery_P."Trailers Registration No.";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecDelivery_P.FIELDCAPTION(RecDelivery_P."Trucker Name") :
+        BEGIN
+          RecWeighingWeighbridge_L."Driver Name" := RecDelivery_P."Trucker Name";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecDelivery_P.FIELDCAPTION(RecDelivery_P."Item No.") :
+        BEGIN
+          RecWeighingWeighbridge_L.VALIDATE("Item No.",RecDelivery_P."Item No.");
+          RecWeighingWeighbridge_L."Net Weight" := RecDelivery_P."Net Weight";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecDelivery_P.FIELDCAPTION(RecDelivery_P."Contract No.") :
+        BEGIN
+          RecWeighingWeighbridge_L.Name := RecDelivery_P."Ship-to Name";
+          RecWeighingWeighbridge_L."Name 2" := RecDelivery_P."Ship-to Name 2";
+          RecWeighingWeighbridge_L.Address := RecDelivery_P."Ship-to Address";
+          RecWeighingWeighbridge_L."Address 2" := RecDelivery_P."Ship-to Address 2";
+          RecWeighingWeighbridge_L.City := RecDelivery_P."Ship-to City";
+          RecWeighingWeighbridge_L."Post Code" := RecDelivery_P."Ship-to Post Code";
+          RecWeighingWeighbridge_L.County := RecDelivery_P."Ship-to County";
+          RecWeighingWeighbridge_L."Country/Region Code" := RecDelivery_P."Ship-to Country/Region Code";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecDelivery_P.FIELDCAPTION(RecDelivery_P."Net Weight") :
+        BEGIN
+          RecWeighingWeighbridge_L."Net Weight" := RecDelivery_P."Net Weight";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecDelivery_P.FIELDCAPTION(RecDelivery_P."Manual Weighing No.") :
+        BEGIN
+          RecWeighingWeighbridge_L.VALIDATE("Manual Weighing No.",RecDelivery_P."Manual Weighing No.");
+          RecWeighingWeighbridge_L.MODIFY(FALSE);
+        END;
+        RecDelivery_P.FIELDCAPTION(RecDelivery_P."Notebook Weighing No.") :
+        BEGIN
+          RecWeighingWeighbridge_L."Notebook Weighing No." := RecDelivery_P."Notebook Weighing No.";
+          RecWeighingWeighbridge_L.MODIFY(FALSE);
+        END;
+        // --> 20150921-LOG10-ADV01.01.00-2131-DRN01
+        RecDelivery_P.FIELDCAPTION(RecDelivery_P."Ship-to Name") :
+        BEGIN
+          RecWeighingWeighbridge_L.Name := RecDelivery_P."Ship-to Name";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecDelivery_P.FIELDCAPTION(RecDelivery_P."Ship-to Name 2") :
+        BEGIN
+          RecWeighingWeighbridge_L."Name 2" := RecDelivery_P."Ship-to Name 2";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecDelivery_P.FIELDCAPTION(RecDelivery_P."Ship-to Address") :
+        BEGIN
+          RecWeighingWeighbridge_L.Address := RecDelivery_P."Ship-to Address";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecDelivery_P.FIELDCAPTION(RecDelivery_P."Ship-to Address 2") :
+        BEGIN
+          RecWeighingWeighbridge_L."Address 2" := RecDelivery_P."Ship-to Address 2";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecDelivery_P.FIELDCAPTION(RecDelivery_P."Ship-to City") :
+        BEGIN
+          RecWeighingWeighbridge_L.City := RecDelivery_P."Ship-to City";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecDelivery_P.FIELDCAPTION(RecDelivery_P."Ship-to Post Code") :
+        BEGIN
+          RecWeighingWeighbridge_L."Post Code" := RecDelivery_P."Ship-to Post Code";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecDelivery_P.FIELDCAPTION(RecDelivery_P."Ship-to County") :
+        BEGIN
+          RecWeighingWeighbridge_L.County := RecDelivery_P."Ship-to County";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecDelivery_P.FIELDCAPTION(RecDelivery_P."Ship-to Country/Region Code") :
+        BEGIN
+          RecWeighingWeighbridge_L."Country/Region Code" := RecDelivery_P."Ship-to Country/Region Code";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        // <-- 20150921-LOG10-ADV01.01.00-2131-DRN01
+      END;
+    END;
+
+    PROCEDURE UpdWeighingDataFromPostDeliv@1000000002(VAR RecPostedDelivery_P@8053000 : Record 8053014;ChangedFieldName_P@8053001 : Text[100];IsManualEntry_P@8053003 : Boolean);
+    VAR
+      RecPostWeighingWeighbridge_L@1000000000 : Record 8053095;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // MAJ de l'ennregistrement pes'e . partir d'une modification manuelle sur la livraison collecte valid'e
+      // Appel dans T8053014
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecDelivery_P : Record Livraison collecte valid'e
+      //   - ChangedFieldName_P : Caption du champ modifi'
+      //   - IsManualEntry_P : TRUE s'il sagit d'une saisie, FALSE s'il s'agit d'une modification
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      // --> 20150709-LOG10-ADV01.01.00-1908-DRN01
+      IF (RecPostedDelivery_P."Delivery Type" = RecPostedDelivery_P."Delivery Type"::Transfert) OR
+         (NOT RecPostWeighingWeighbridge_L.GET(RecPostedDelivery_P."Weighing No."))
+      THEN
+        EXIT;
+
+      CASE ChangedFieldName_P OF
+        RecPostedDelivery_P.FIELDCAPTION(RecPostedDelivery_P."Weighing 1") :
+        BEGIN
+          RecPostWeighingWeighbridge_L."Weighing 1" := RecPostedDelivery_P."Weighing 1";
+          IF IsManualEntry_P THEN
+            RecPostWeighingWeighbridge_L."Weight 1 Manual Entry" := TRUE
+          ELSE
+            RecPostWeighingWeighbridge_L."Weight 1 Manual Update" := TRUE;
+          RecPostWeighingWeighbridge_L."Net Weight" := RecPostWeighingWeighbridge_L."Weighing 2" -
+            RecPostWeighingWeighbridge_L."Weighing 1";
+          RecPostWeighingWeighbridge_L.MODIFY;
+        END;
+        RecPostedDelivery_P.FIELDCAPTION(RecPostedDelivery_P."Weighing 2") :
+        BEGIN
+          RecPostWeighingWeighbridge_L."Weighing 2" := RecPostedDelivery_P."Weighing 2";
+          IF IsManualEntry_P THEN
+            RecPostWeighingWeighbridge_L."Weight 2 Manual Entry" := TRUE
+          ELSE
+            RecPostWeighingWeighbridge_L."Weight 2 Manual Update" := TRUE;
+          RecPostWeighingWeighbridge_L."Net Weight" := RecPostWeighingWeighbridge_L."Weighing 2" -
+            RecPostWeighingWeighbridge_L."Weighing 1";
+          RecPostWeighingWeighbridge_L.MODIFY;
+        END;
+        RecPostedDelivery_P.FIELDCAPTION(RecPostedDelivery_P."Net Weight") :
+        BEGIN
+          RecPostWeighingWeighbridge_L."Net Weight" := RecPostedDelivery_P."Net Weight";
+          RecPostWeighingWeighbridge_L.MODIFY;
+        END;
+      END;
+      // <-- 20150709-LOG10-ADV01.01.00-1908-DRN01
+    END;
+
+    PROCEDURE UpdWeighingDataFromWhseShpt@8053014(VAR RecWhseShptLine_P@8053002 : Record 7321;ChangedFieldName_P@8053001 : Text[100];IsManualEntry_P@8053000 : Boolean);
+    VAR
+      RecWeighingWeighbridge_L@8053003 : Record 8053094;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // MAJ de l'ennregistremebt pes'e . partir d'une modification manuelle sur l'exp'dition entrep"t
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecWhseShptLine_P : Record Ligne exp'dition entrep"t
+      //   - ChangedFieldName_P : Caption du champ modifi'
+      //   - IsManualEntry_P : TRUE s'il sagit d'une saisie, FALSE s'il s'agit d'une modification
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      RecWhseShptLine_P.TESTFIELD("Weighing Source Line No.",0);
+      RecWhseShptLine_P.TESTFIELD("Posted Weighing",FALSE);
+
+      IF NOT RecWeighingWeighbridge_L.GET(RecWhseShptLine_P."Weighing No.") THEN BEGIN
+        IF ChangedFieldName_P IN [RecWhseShptLine_P.FIELDCAPTION(RecWhseShptLine_P."Truck Registration"),
+          RecWhseShptLine_P.FIELDCAPTION(RecWhseShptLine_P."Driver Name")]
+        THEN
+          EXIT;
+        RecWeighingWeighbridge_L.GET(WeighingFromWhseShptLine(RecWhseShptLine_P,1,FALSE));
+        RecWhseShptLine_P."Weighing No." := RecWeighingWeighbridge_L."Entry No.";
+        RecWhseShptLine_P.MODIFY;
+      END;
+      CASE ChangedFieldName_P OF
+        RecWhseShptLine_P.FIELDCAPTION(RecWhseShptLine_P."Weighing 1") :
+        BEGIN
+          RecWeighingWeighbridge_L."Weighing 1" := RecWhseShptLine_P."Weighing 1";
+          IF IsManualEntry_P THEN
+            RecWeighingWeighbridge_L."Weight 1 Manual Entry" := TRUE
+          ELSE
+            RecWeighingWeighbridge_L."Weight 1 Manual Update" := TRUE;
+          RecWeighingWeighbridge_L."Net Weight" := RecWeighingWeighbridge_L."Weighing 2" - RecWeighingWeighbridge_L."Weighing 1";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecWhseShptLine_P.FIELDCAPTION(RecWhseShptLine_P."Weighing 2") :
+        BEGIN
+          RecWeighingWeighbridge_L."Weighing 2" := RecWhseShptLine_P."Weighing 2";
+          IF IsManualEntry_P THEN
+            RecWeighingWeighbridge_L."Weight 2 Manual Entry" := TRUE
+          ELSE
+            RecWeighingWeighbridge_L."Weight 2 Manual Update" := TRUE;
+          RecWeighingWeighbridge_L."Net Weight" := RecWeighingWeighbridge_L."Weighing 2" - RecWeighingWeighbridge_L."Weighing 1";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecWhseShptLine_P.FIELDCAPTION(RecWhseShptLine_P."Location Code") :
+        BEGIN
+          RecWeighingWeighbridge_L."Location Code" := RecWhseShptLine_P."Location Code";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecWhseShptLine_P.FIELDCAPTION(RecWhseShptLine_P."Truck Registration") :
+        BEGIN
+          RecWeighingWeighbridge_L."Truck Registration" := RecWhseShptLine_P."Truck Registration";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecWhseShptLine_P.FIELDCAPTION(RecWhseShptLine_P."Driver Name") :
+        BEGIN
+          RecWeighingWeighbridge_L."Driver Name" := RecWhseShptLine_P."Driver Name";
+          RecWeighingWeighbridge_L.MODIFY;
+        END;
+        RecWhseShptLine_P.FIELDCAPTION(RecWhseShptLine_P."Manual Weighing No.") :
+        BEGIN
+          RecWeighingWeighbridge_L.VALIDATE("Manual Weighing No.",RecWhseShptLine_P."Manual Weighing No.");
+          RecWeighingWeighbridge_L.MODIFY(FALSE);
+        END;
+
+        RecWhseShptLine_P.FIELDCAPTION(RecWhseShptLine_P."Notebook Weighing No.") :
+        BEGIN
+          RecWeighingWeighbridge_L."Notebook Weighing No." := RecWhseShptLine_P."Notebook Weighing No.";
+          RecWeighingWeighbridge_L.MODIFY(FALSE);
+        END;
+      END;
+    END;
+
+    PROCEDURE TestWeighBridgeExist@8053006(RecLocationCode_P@8053000 : Code[10]);
+    VAR
+      RecWhseEmployee_L@8053002 : Record 7301;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Recherche d'un pont bascule associ' . un magasin
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecLocationCode_P : Record Magasin
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      RecWeighBridge_G.RESET;
+      RecWeighBridge_G.SETCURRENTKEY("Location Code","Computer Link");
+      RecWeighBridge_G.SETRANGE("Location Code",RecLocationCode_P);
+      RecWeighBridge_G.SETRANGE("Computer Link",TRUE);
+      IF NOT RecWeighBridge_G.FINDFIRST THEN
+        ERROR(Text8053001,RecLocationCode_P);
+      RecWhseEmployee_L.GET(USERID,RecLocationCode_P);
+      IF RecWhseEmployee_L."Default Weighbridge" <> '' THEN
+        RecWeighBridge_G.GET(RecWhseEmployee_L."Default Weighbridge");
+    END;
+
+    PROCEDURE SetDefaultWeighBridgeID@1000000000(LocationCode_P@8053000 : Code[10]);
+    VAR
+      RecWhseEmployee_L@8053002 : Record 7301;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Affecte par d'faut le Pont bascule associ' . un magasin
+      // Le pont bascule est affect' en SingleInstance
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecLocationCode_P : Record Magasin
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      RecWeighBridge_G.RESET;
+      RecWeighBridge_G.SETCURRENTKEY("Location Code","Computer Link");
+      RecWeighBridge_G.SETRANGE("Location Code",LocationCode_P);
+      RecWeighBridge_G.SETRANGE("Computer Link",TRUE);
+      IF RecWeighBridge_G.ISEMPTY THEN
+        ERROR(Text8053001,LocationCode_P);
+      IF RecWeighBridge_G.COUNT = 1 THEN
+        MESSAGE(Text8053003,LocationCode_P)
+      ELSE
+        IF PAGE.RUNMODAL(0,RecWeighBridge_G) = ACTION::LookupOK THEN BEGIN
+          RecWhseEmployee_L.GET(USERID,LocationCode_P);
+          RecWhseEmployee_L."Default Weighbridge" := RecWeighBridge_G.Code;
+          RecWhseEmployee_L.MODIFY;
+        END;
+    END;
+
+    PROCEDURE GetWMSSourceDoc@8053007(SourceType_P@8053002 : Integer;SourceSubType_P@8053001 : Option;SourceNo_P@8053000 : Code[20]);
+    BEGIN
+      //-------------------------------------------------------------------------------------------------------------------
+      // Recherche du document source WMS
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - SourceType_P
+      //   - SourceSubType_P
+      //   - SourceNo_P
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      CASE SourceType_P OF
+        DATABASE::"Sales Line":
+          RecSalesHeader_G.GET(SourceSubType_P,SourceNo_P);
+        DATABASE::"Purchase Line":
+          RecPurchHeader_G.GET(SourceSubType_P,SourceNo_P);
+        DATABASE::"Transfer Line":
+          RecTransHeader_G.GET(SourceNo_P);
+      END;
+    END;
+
+    PROCEDURE InitSalesDocumentLines@8053010(VAR RecSalesLine_P@8053000 : Record 37;RecWhseShptLine_P@8053001 : Record 7321);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Copie les informations de pes'e de la ligne exp'dition entrep"t vers la ligne document vente source
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecSalesLine_P : Record ligne vente
+      //   - RecWhseShptLine_P : Record ligne exp'dition entrep"t
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      WITH RecWhseShptLine_P DO BEGIN
+        RecSalesLine_P."Weighing No." := "Weighing No.";
+        RecSalesLine_P."Weighing 1" := "Weighing 1";
+        RecSalesLine_P."Weighing 1 No." := "Weighing 1 No.";
+        RecSalesLine_P."Weighing 2" := "Weighing 2";
+        RecSalesLine_P."Weighing 2 No." := "Weighing 2 No.";
+        RecSalesLine_P."Truck Registration" := "Truck Registration";
+        RecSalesLine_P."Driver Name" := "Driver Name";
+      END;
+    END;
+
+    PROCEDURE InitPurchDocumentLines@8053012(VAR RecPurchLine_P@8053000 : Record 39;RecWhseReceiptLine_P@8053001 : Record 7317);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Copie les informations de pes'e de la ligne r'ception entrep"t vers la ligne de document achat source
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecPurchLine_P : Record ligne achat
+      //   - RecWhseReceiptLine_P : Record ligne r'ception entrep"t
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      WITH RecWhseReceiptLine_P DO BEGIN
+        RecPurchLine_P."Weighing No." := "Weighing No.";
+        RecPurchLine_P."Weighing 1" := "Weighing 1";
+        RecPurchLine_P."Weighing 1 No." := "Weighing 1 No.";
+        RecPurchLine_P."Weighing 2" := "Weighing 2";
+        RecPurchLine_P."Weighing 2 No." := "Weighing 2 No.";
+        RecPurchLine_P."Truck Registration" := "Truck Registration";
+        RecPurchLine_P."Driver Name" := "Driver Name";
+      END;
+    END;
+
+    PROCEDURE InitReturnSalesDocumentLines@8053017(VAR RecSalesLine_P@8053000 : Record 37;RecWhseReceiptLine_P@8053002 : Record 7317);
+    BEGIN
+      //-------------------------------------------------------------------------------------------------------------
+      // Copie les informations de pes'e de la ligne r'ception entrep"t vers la ligne de document vente retour source
+      //
+      //-------------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecSalesLine_P : Record ligne vente
+      //   - RecWhseReceiptLine_P : Record ligne r'ception entrep"t
+      // Sorties:
+      //   -
+      //-------------------------------------------------------------------------------------------------------------
+      WITH RecWhseReceiptLine_P DO BEGIN
+        RecSalesLine_P."Weighing No." := "Weighing No.";
+        RecSalesLine_P."Weighing 1" := "Weighing 1";
+        RecSalesLine_P."Weighing 1 No." := "Weighing 1 No.";
+        RecSalesLine_P."Weighing 2" := "Weighing 2";
+        RecSalesLine_P."Weighing 2 No." := "Weighing 2 No.";
+        RecSalesLine_P."Truck Registration" := "Truck Registration";
+        RecSalesLine_P."Driver Name" := "Driver Name";
+      END;
+    END;
+
+    PROCEDURE InitReturnPurchDocumentLines@8053015(VAR RecPurchLine_P@8053000 : Record 39;RecWhseShptLine_P@8053002 : Record 7321);
+    BEGIN
+      //--------------------------------------------------------------------------------------------------------------
+      // Copie les informations de pes'e de la ligne exp'dition entrep"t vers la ligne de document achat retour source
+      //
+      //--------------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecPurchLine_P : Record ligne achat
+      //   - RecWhseShptLine_P : Record ligne exp'dition entrep"t
+      // Sorties:
+      //   -
+      //--------------------------------------------------------------------------------------------------------------
+      WITH RecWhseShptLine_P DO BEGIN
+        RecPurchLine_P."Weighing No." := "Weighing No.";
+        RecPurchLine_P."Weighing 1" := "Weighing 1";
+        RecPurchLine_P."Weighing 1 No." := "Weighing 1 No.";
+        RecPurchLine_P."Weighing 2" := "Weighing 2";
+        RecPurchLine_P."Weighing 2 No." := "Weighing 2 No.";
+        RecPurchLine_P."Truck Registration" := "Truck Registration";
+        RecPurchLine_P."Driver Name" := "Driver Name";
+      END;
+    END;
+
+    PROCEDURE InitWeighingDataToSalesLine@8053020(VAR RecSalesLine_P@8053000 : Record 37);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Initialise les informations de pes'e de la ligne vente
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecSalesLine_P : Record ligne vente
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      WITH RecSalesLine_P DO BEGIN
+        DeleteWeighingRec("Weighing No.");
+        "Weighing No." := 0;
+        "Weighing 1" := 0;
+        "Weighing 1 No." := '';
+        "Weighing 2" := 0;
+        "Weighing 2 No." := '';
+        "Truck Registration" := '';
+        "Driver Name" := '';
+      END;
+    END;
+
+    PROCEDURE InitWeighingDataToPurchLine@8053004(VAR RecPurchLine_P@8053000 : Record 39);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Initialise les informations de pes'e de la ligne achat
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecPurchLine_P : Record ligne achat
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      WITH RecPurchLine_P DO BEGIN
+        DeleteWeighingRec("Weighing No.");
+        "Weighing No." := 0;
+        "Weighing 1" := 0;
+        "Weighing 1 No." := '';
+        "Weighing 2" := 0;
+        "Weighing 2 No." := '';
+        "Truck Registration" := '';
+        "Driver Name" := '';
+      END;
+    END;
+
+    PROCEDURE InitWeighingDataToWhseRcptLine@8053018(VAR RecWhseReceiptLine_P@8053000 : Record 7317);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Initialise les informations de pes'e de la ligne r'ception entrep"t
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecWhseReceiptLine_P : Record ligne r'ception entrep"t
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      WITH RecWhseReceiptLine_P DO BEGIN
+        DeleteWeighingRec("Weighing No.");
+        "Weighing No." := 0;
+        "Weighing 1" := 0;
+        "Weighing 1 No." := '';
+        "Weighing 2" := 0;
+        "Weighing 2 No." := '';
+        "Truck Registration" := '';
+        "Driver Name" := '';
+        "Weighing Source Line No." := 0;
+        "Posted Weighing" := FALSE;
+      END;
+    END;
+
+    PROCEDURE InitWeighingDataToWhseShptLine@8053019(VAR RecWhseShptLine_P@8053000 : Record 7321);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Initialise les informations de pes'e de la ligne exp'dition entrep"t
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecWhseShptLine_P : Record ligne exp'dition entrep"t
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      WITH RecWhseShptLine_P DO BEGIN
+        DeleteWeighingRec("Weighing No.");
+        "Weighing No." := 0;
+        "Weighing 1" := 0;
+        "Weighing 1 No." := '';
+        "Weighing 2" := 0;
+        "Weighing 2 No." := '';
+        "Truck Registration" := '';
+        "Driver Name" := '';
+        "Weighing Source Line No." := 0;
+        "Posted Weighing" := FALSE;
+      END;
+    END;
+
+    PROCEDURE GetQuantityPerUnit@8053021(UOMCode_P@8053002 : Code[10]) : Decimal;
+    VAR
+      RecCMCSetup_L@8053000 : Record 8052982;
+      RecCMCUOM_L@8053001 : Record 8053025;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Retourne la quantit' par unit' d'une unit' de mesure poids
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - UOMCode_P : Code unit' de mesure
+      // Sorties:
+      //   - Quantit' par unit'
+      //----------------------------------------------------------------------------------------------------------
+      RecCMCUOM_L.GET(RecCMCUOM_L.Type::Weight,UOMCode_P);
+      RecCMCUOM_L.TESTFIELD("Qty. per Unit of Measure");
+      EXIT(RecCMCUOM_L."Qty. per Unit of Measure");
+    END;
+
+    PROCEDURE ConvertWeight@8053025(UOMCode_P@8053000 : Code[10];Weight_P@8053001 : Decimal) : Decimal;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Convertit un poids dans une autre unit' de mesure poids
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - UOMCode_P : Code unit' de mesure
+      //   - weight_P : Poids . convertir
+      // Sorties:
+      //   - Poids converti
+      //----------------------------------------------------------------------------------------------------------
+      EXIT(Weight_P * GetQuantityPerUnit(UOMCode_P));
+    END;
+
+    PROCEDURE GetUOMCaptionFromReceipt@8053022(ItemNo_P@8053000 : Code[20];FieldCaption_P@8053002 : Text[100]) : Text[30];
+    VAR
+      RecItem_L@8053001 : Record 27;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Retourne le caption Pes'e en fonction de l'unit' de mesure de la r'ception collecte
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - ItemNo_P : N› article
+      //   - FieldCaption_P : Caption du champ
+      // Sorties:
+      //   - Caption
+      //----------------------------------------------------------------------------------------------------------
+      IF RecItem_L.GET(ItemNo_P) THEN
+        IF RecItem_L."Purch. Unit of Measure" <> '' THEN
+          EXIT(FieldCaption_P + ' (' + RecItem_L."Purch. Unit of Measure" +')');
+      EXIT(FieldCaption_P);
+    END;
+
+    PROCEDURE GetUOMCaptionFromWhseReceipt@8053026(RecWhseReceiptLine_P@8053000 : Record 7317;FieldCaption_P@8053002 : Text[100]) : Text[30];
+    VAR
+      RecItem_L@8053001 : Record 27;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Retourne le caption Pes'e en fonction de l'unit' de mesure de la Ligne r'ception entrep"t
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecWhseReceiptLine_P : Record Ligne r'ception entrep"t
+      //   - FieldCaption_P : Caption du champ
+      // Sorties:
+      //   - Caption
+      //----------------------------------------------------------------------------------------------------------
+      IF RecWhseReceiptLine_P."Unit of Measure Code" <> '' THEN
+        EXIT(FieldCaption_P + ' (' + RecWhseReceiptLine_P."Unit of Measure Code" +')')
+      ELSE
+        EXIT(FieldCaption_P);
+    END;
+
+    PROCEDURE GetUOMCaptionFromDelivery@8053027(ItemNo_P@8053000 : Code[20];FieldCaption_P@8053002 : Text[100]) : Text[30];
+    VAR
+      RecItem_L@8053001 : Record 27;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Retourne le caption Pes'e en fonction de l'unit' de mesure de la Livraison collecte
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - ItemNo_P : N› article
+      //   - FieldCaption_P : Caption du champ
+      // Sorties:
+      //   - Caption
+      //----------------------------------------------------------------------------------------------------------
+      IF RecItem_L.GET(ItemNo_P) THEN
+        IF RecItem_L."Sales Unit of Measure" <> '' THEN
+          EXIT(FieldCaption_P + ' (' + RecItem_L."Sales Unit of Measure" +')');
+      EXIT(FieldCaption_P);
+    END;
+
+    PROCEDURE GetUOMCaptionFromWhseShpt@8053028(RecWhseShptLine_P@8053000 : Record 7321;FieldCaption_P@8053002 : Text[100]) : Text[30];
+    VAR
+      RecItem_L@8053001 : Record 27;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Retourne le caption Pes'e en fonction de l'unit' de mesure de la Ligne exp'dition entrep"t
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecWhseShptLine_P : Record Ligne exp'dition entrep"t
+      //   - FieldCaption_P : Caption du champ
+      // Sorties:
+      //   - Caption
+      //----------------------------------------------------------------------------------------------------------
+      IF RecWhseShptLine_P."Unit of Measure Code" <> '' THEN
+        EXIT(FieldCaption_P + ' (' + RecWhseShptLine_P."Unit of Measure Code" +')')
+      ELSE
+        EXIT(FieldCaption_P);
+    END;
+
+    PROCEDURE PrintWeighingTicket@8053023(SourceDocType_P@8053000 : 'Collect Receipt,Collect Transfer Receipt,Collect Resumption Receipt,Collect Delivery,Collect Transfer Delivery,Collect Resumption Delivery,Warehouse Receipt,Warehouse Shipment';SourceDocNo_P@8053002 : Code[20]);
+    VAR
+      RecPostWeighingWeighbridge_L@8053001 : Record 8053095;
+      RecReportSelection_L@8053003 : Record 77;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Edite le ticket de pes'e . partir de la validation du document source
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - SourceDocType_P : Type document source valid'
+      //   - SourceDocNo_P : N› document source valid'
+      // Sorties:
+      //----------------------------------------------------------------------------------------------------------
+      RecPostWeighingWeighbridge_L.SETCURRENTKEY("Source Document Type","Source Document No.");
+      RecPostWeighingWeighbridge_L.SETRANGE("Source Document Type",SourceDocType_P);
+      RecPostWeighingWeighbridge_L.SETRANGE("Source Document No.",SourceDocNo_P);
+      IF RecPostWeighingWeighbridge_L.FINDFIRST THEN BEGIN
+        RecReportSelection_L.SETRANGE(Usage, RecReportSelection_L.Usage::WeighTicket);
+        RecReportSelection_L.SETFILTER("Report ID",'<>0');
+        RecReportSelection_L.FINDSET;
+        REPEAT
+          REPORT.RUNMODAL(RecReportSelection_L."Report ID",FALSE,FALSE,RecPostWeighingWeighbridge_L);
+        UNTIL RecReportSelection_L.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE PrintWeighingTicket2@8053024(SourceDocType_P@8053000 : 'Collect Receipt,Collect Transfer Receipt,Collect Resumption Receipt,Collect Delivery,Collect Transfer Delivery,Collect Resumption Delivery,Warehouse Receipt,Warehouse Shipment';SourceDocNo_P@8053002 : Code[20]);
+    VAR
+      RecPostWeighingWeighbridge_L@8053001 : Record 8053095;
+      RecReportSelection_L@8053003 : Record 77;
+      ArchPostWeighWeighbridge_L@1000000000 : Record 60135;
+      InventorySetup_L@1000000001 : Record 313;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Edite le ticket de pes'e . partir du document valid'
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - SourceDocType_P : Type document source valid'
+      //   - SourceDocNo_P : N› document source valid'
+      // Sorties:
+      //----------------------------------------------------------------------------------------------------------
+      RecPostWeighingWeighbridge_L.SETCURRENTKEY("Source Document Type","Source Document No.");
+      RecPostWeighingWeighbridge_L.SETRANGE("Source Document Type",SourceDocType_P);
+      RecPostWeighingWeighbridge_L.SETRANGE("Source Document No.",SourceDocNo_P);
+      IF RecPostWeighingWeighbridge_L.FINDFIRST THEN BEGIN
+        RecReportSelection_L.SETRANGE(Usage, RecReportSelection_L.Usage::WeighTicket);
+        RecReportSelection_L.SETFILTER("Report ID",'<>0');
+        RecReportSelection_L.FINDSET;
+        REPEAT
+          REPORT.RUNMODAL(RecReportSelection_L."Report ID",TRUE,FALSE,RecPostWeighingWeighbridge_L);
+        UNTIL RecReportSelection_L.NEXT = 0;
+      // --> 20210528-WI00-ADV01.01.00-3555-CJY01
+      {BEFORE
+      END;
+      AFTER}
+      END
+      ELSE BEGIN
+        //si la pes'e n'a pas 't' trouv'e on regarde dans les archives
+        ArchPostWeighWeighbridge_L.SETCURRENTKEY("Source Document Type","Source Document No.");
+        ArchPostWeighWeighbridge_L.SETRANGE("Source Document Type",SourceDocType_P);
+        ArchPostWeighWeighbridge_L.SETRANGE("Source Document No.", SourceDocNo_P);
+
+        IF ArchPostWeighWeighbridge_L.FINDFIRST THEN BEGIN
+          InventorySetup_L.GET;
+          IF InventorySetup_L."No. archived Weighting report" <> 0 THEN BEGIN
+            REPORT.RUNMODAL(InventorySetup_L."No. archived Weighting report",TRUE,FALSE,ArchPostWeighWeighbridge_L);
+          END
+          ELSE BEGIN
+            ERROR(Text60000);
+      END;
+      END;
+      END;
+      // <-- 20210528-WI00-ADV01.01.00-3555-CJY01
+    END;
+
+    PROCEDURE PrintWeighingTicket3@8053029(WeighingEntryNo_P@1000000000 : Integer;ShowRequestPage_P@8053000 : Boolean);
+    VAR
+      RecPostWeighingWeighbridge_L@8053001 : Record 8053095;
+      RecReportSelection_L@8053003 : Record 77;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Edite le ticket de pes'e . partir de la pes'e valid'e
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - WeighingEntryNo_P : N› s'quence pes'e valid'e
+      //   - ShowRequestPage_P : Affichage ou non du RequestPage
+      // Sorties:
+      //----------------------------------------------------------------------------------------------------------
+      RecPostWeighingWeighbridge_L.GET(WeighingEntryNo_P);
+      RecPostWeighingWeighbridge_L.SETRECFILTER;
+      RecReportSelection_L.SETRANGE(Usage, RecReportSelection_L.Usage::WeighTicket);
+      RecReportSelection_L.SETFILTER("Report ID",'<>0');
+      RecReportSelection_L.FINDSET;
+      REPEAT
+        IF NOT ShowRequestPage_P THEN
+          REPORT.RUNMODAL(RecReportSelection_L."Report ID",FALSE,FALSE,RecPostWeighingWeighbridge_L)
+        ELSE
+          REPORT.RUNMODAL(RecReportSelection_L."Report ID",TRUE,FALSE,RecPostWeighingWeighbridge_L);
+      UNTIL RecReportSelection_L.NEXT = 0;
+    END;
+
+    PROCEDURE CheckWeighingUpdate@8053030(CallFromWeighing1_P@8053002 : Boolean;CallFromWeighing2_P@8053003 : Boolean;CallFromQty_P@8053004 : Boolean;CallFromManualWeighingNo@8053009 : Boolean;Weighing1@8053001 : Decimal;Weighing1No_P@8053006 : Text[30];Weighing2@8053005 : Decimal;Weighing2No_P@8053007 : Text[30];FieldCaption_P@8053008 : Text[250]);
+    VAR
+      RecCMCSetup_L@8053000 : Record 8052982;
+    BEGIN
+      //--------------------------------------------------------------------------------------------------------
+      // V'rifie les modifications de pes'e manuelles
+      // Appel dans T7317, T7321, T8052993, T8052995, T8053013, T8053014
+      // Entr'es:
+      //   - CallFromWeighing1_P : Appel' par la modification de la pes'e 1
+      //   - CallFromWeighing2_P : Appel' par la modification de la pes'e 2
+      //   - CallFromQty_P : Appel' par la modification de la quantit'
+      //   - CallFromManualWeighingNo : Appel' par la modification du N› ticket bascule
+      //   - Weighing1 : Pes'e 1
+      //   - Weighing1No_P : N› DSD 1
+      //   - Weighing2 : Pes'e 2
+      //   - Weighing2No_P N› DSD 2
+      //   - FieldCaption_P : FieldCaption du champ modifi'
+      // Sorties :
+      //   - erreur si la modification n'est pas autoris'e
+      //--------------------------------------------------------------------------------------------------------
+      RecCMCSetup_L.GET;
+      CASE TRUE OF
+        CallFromWeighing1_P :
+        BEGIN
+          //Contr"le Pes'e 1 conditionn' par le paramStre Bloquer modification pes'e
+          IF ((Weighing1No_P <> '') OR (Weighing2No_P <> '')) AND RecCMCSetup_L."Block Weighing Modification" THEN
+            ERROR(Text8053007,FieldCaption_P);
+        END;
+        CallFromWeighing2_P :
+        BEGIN
+          //Contr"le Pes'e 2 conditionn' par le paramStre Bloquer modification pes'e
+          IF ((Weighing1No_P <> '') OR (Weighing2No_P <> '')) AND RecCMCSetup_L."Block Weighing Modification" THEN
+            ERROR(Text8053007,FieldCaption_P);
+        END;
+        CallFromQty_P :
+        BEGIN
+          IF (Weighing1No_P <> '') OR (Weighing2No_P <> '') AND RecCMCSetup_L."Block Weighing Modification" THEN
+            ERROR(Text8053008,FieldCaption_P);
+          //Contr"le de coh'rence entre les pes'es et la quantit'
+          IF (Weighing1 <> 0) OR (Weighing2 <> 0) THEN
+            ERROR(Text8053009,FieldCaption_P);
+        END;
+        CallFromManualWeighingNo :
+        BEGIN
+          //Contr"le N› ticket bascule conditionn' par le paramStre Bloquer modification pes'e
+          IF (Weighing2No_P <> '') AND RecCMCSetup_L."Block Weighing Modification" THEN
+            ERROR(Text8053010,FieldCaption_P);
+        END;
+      END;
+    END;
+
+    PROCEDURE CheckWeighingUpdFromInterface@8053045(CallFromWeighing1_P@8053006 : Boolean;CallFromWeighing2_P@8053005 : Boolean;Weighing1No_P@8053003 : Text[30];Weight1ManualEntry_P@8053008 : Boolean;Weight1ManualUpdate_P@8053009 : Boolean;Weighing2No_P@8053001 : Text[30];Weight2ManualEntry_P@8053011 : Boolean;Weight2ManualUpdate_P@8053010 : Boolean;FieldCaption_P@8053007 : Text[250]);
+    VAR
+      RecCMCSetup_L@8053000 : Record 8052982;
+    BEGIN
+      // V'rifie les modifications de pes'e manuelles depuis l'interface
+      // Entr'es:
+      //   - CallFromWeighing1_P : Appel' par la modification de la pes'e 1
+      //   - CallFromWeighing2_P : Appel' par la modification de la pes'e 2
+      //   - Weighing1No_P : N› DSD 1
+      //   - Weight1ManualEntry_P : TRUE si c'est une saisie manuelle de la pes'e 1
+      //   - Weight1ManualUpdate_P : TRUE si c'est une modification manuelle de la pes'e 1
+      //   - Weighing2No_P N› DSD 2
+      //   - Weight2ManualEntry_P : TRUE si c'est une saisie manuelle de la pes'e 2
+      //   - Weight2ManualUpdate_P : TRUE si c'est une modification manuelle de la pes'e 2
+      //   - FieldCaption_P : FieldCaption du champ modifi'
+      // Sorties :
+      //   - erreur si la modification n'est pas autoris'e
+      //--------------------------------------------------------------------------------------------------------
+      RecCMCSetup_L.GET;
+      CASE TRUE OF
+        CallFromWeighing1_P :
+        BEGIN
+          //Contr"le Pes'e 1 conditionn' par le paramStre Bloquer modification pes'e
+          IF ((Weighing1No_P <> '') OR (Weighing2No_P <> '')) AND ((Weight1ManualEntry_P) OR
+            (Weight1ManualUpdate_P)) AND RecCMCSetup_L."Block Weighing Modification"
+          THEN
+           ERROR(Text8053007,FieldCaption_P);
+        END;
+        CallFromWeighing2_P :
+        BEGIN
+          //Contr"le Pes'e 2 conditionn' par le paramStre Bloquer modification pes'e
+          IF ((Weighing1No_P <> '') OR (Weighing2No_P <> '')) AND ((Weight2ManualEntry_P) OR
+            (Weight2ManualUpdate_P)) AND RecCMCSetup_L."Block Weighing Modification"
+          THEN
+           ERROR(Text8053007,FieldCaption_P);
+        END;
+      END;
+    END;
+
+    PROCEDURE CheckWeighing1@8053032(Weighing1_P@8053002 : Decimal;DocNo_P@8053003 : Code[20];ErrorMessage_P@8053001 : Boolean;Type_P@8053004 : 'Input,Output') : Boolean;
+    VAR
+      cduAdvancedSetupManagement_L@8053000 : Codeunit 8061290;
+      ShowMessage_L@8053005 : Boolean;
+    BEGIN
+      //--------------------------------------------------------------------------------------------------------
+      // V'rifie si la pes'e 1 a 't' saisie avant de sortir d'un document c'r'ale
+      // Appel dans P8052996, P8053020, P8053077, P8053079, P8053111, P8053627, P8053631
+      // Entr'es:
+      //   - Weighing1_P : Pes'e 1
+      //   - DocNo_P : N› document
+      //   - ErrorMessage_P : Erreur ou alerte
+      //   - Type_P : Input pour les r'ceptions et les reprises, Output pour les livraisons
+      // Sorties :
+      //   - erreur ou alerte si la pes'e n'est pas renseign'e
+      //--------------------------------------------------------------------------------------------------------
+      IF (Weighing1_P = 0) THEN BEGIN
+        IF Type_P = Type_P::Input THEN
+          ShowMessage_L := cduAdvancedSetupManagement_L.GetAdvancedParameterValueBool('CER-RCPT-PESEE1ALERT')
+        ELSE
+          ShowMessage_L := cduAdvancedSetupManagement_L.GetAdvancedParameterValueBool('CER-LIVR-PESEE1ALERT');
+        IF ShowMessage_L THEN
+          IF NOT CONFIRM(Text8053011, FALSE, DocNo_P) THEN BEGIN
+            IF ErrorMessage_P THEN
+              ERROR(Text8053012)
+            ELSE
+              MESSAGE(Text8053012);
+            EXIT(FALSE);
+          END;
+      END;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE SplitWeighingFromWhseShptLine@8053031(RecWhseShptLine_P@8053000 : Record 7321;Undo_P@8053006 : Boolean);
+    VAR
+      RecWeighingWeighbridge_L@8053001 : Record 8053094;
+      RecWhseShptLine_L@8053002 : Record 7321;
+      RecWhseShptLine2_L@8053004 : Record 7321;
+      QtyToSplit_L@8053003 : Decimal;
+      CounterSplit_L@8053005 : Integer;
+      FoundSplit_L@8053007 : Boolean;
+    BEGIN
+      //--------------------------------------------------------------------------------------------------------
+      // Eclate une pes'e sur n lignes d'exp'dition entrep"t
+      // Appel dans P7336
+      // Entr'es:
+      //   - RecWhseShptLine_P : Record Ligne exp'dition entrep"t
+      //   - Undo_P : TRUE si annulation de l''clatement
+      // Sorties :
+      //   -
+      //--------------------------------------------------------------------------------------------------------
+      WITH RecWhseShptLine_P DO BEGIN
+        LOCKTABLE;
+        TESTFIELD("Weighing No.");
+        TESTFIELD("Posted Weighing",FALSE);
+        IF Undo_P THEN BEGIN
+          //En cas d'annulation, on se repositionne sur la ligne . l'origine de l''clatement
+          IF "Weighing Source Line No." <> 0 THEN
+            GET("No.","Weighing Source Line No.");
+        END ELSE
+          TESTFIELD("Weighing Source Line No.",0);
+
+        //Recherche des lignes qui ont d'j. fait l'objet d'un 'clatement de la pes'e
+        RecWhseShptLine_L.SETRANGE("No.","No.");
+        RecWhseShptLine_L.SETFILTER("Line No.",'<>%1',"Line No.");
+        RecWhseShptLine_L.SETRANGE("Item No.","Item No.");
+        RecWhseShptLine_L.SETRANGE("Variant Code","Variant Code");
+        RecWhseShptLine_L.SETRANGE("Weighing No.","Weighing No.");
+        IF RecWhseShptLine_L.FINDSET THEN BEGIN
+          REPEAT
+            RecWhseShptLine2_L.GET(RecWhseShptLine_L."No.",RecWhseShptLine_L."Line No.");
+            RecWhseShptLine2_L.VALIDATE("Qty. to Ship",0);
+            RecWhseShptLine2_L."Weighing No." := 0;
+            RecWhseShptLine2_L."Weighing Source Line No." := 0;
+            RecWhseShptLine2_L.MODIFY;
+          UNTIL RecWhseShptLine_L.NEXT = 0;
+          FoundSplit_L := TRUE;
+        END;
+
+        //Eclatement de la pes'e
+        //Recherche de la pes'e et du poids net . ventiler
+        RecWeighingWeighbridge_L.GET("Weighing No.");
+        IF NOT Undo_P THEN BEGIN
+          IF RecWeighingWeighbridge_L."Net Weight" > Quantity THEN BEGIN
+            VALIDATE("Qty. to Ship",Quantity);
+            MODIFY;
+            QtyToSplit_L := RecWeighingWeighbridge_L."Net Weight" - Quantity;
+            RecWhseShptLine_L.SETRANGE("No.","No.");
+            RecWhseShptLine_L.SETFILTER("Line No.",'<>%1',"Line No.");
+            RecWhseShptLine_L.SETRANGE("Item No.","Item No.");
+            RecWhseShptLine_L.SETRANGE("Variant Code","Variant Code");
+            RecWhseShptLine_L.SETRANGE("Weighing No.",0);
+            IF RecWhseShptLine_L.FINDSET THEN BEGIN
+              REPEAT
+                IF QtyToSplit_L > RecWhseShptLine_L.Quantity THEN BEGIN
+                  RecWhseShptLine_L.VALIDATE("Qty. to Ship",RecWhseShptLine_L.Quantity);
+                  QtyToSplit_L -= RecWhseShptLine_L.Quantity;
+                END ELSE BEGIN
+                  RecWhseShptLine_L.VALIDATE("Qty. to Ship",QtyToSplit_L);
+                  QtyToSplit_L := 0;
+                END;
+                RecWhseShptLine_L."Weighing No." := "Weighing No.";
+                RecWhseShptLine_L."Weighing Source Line No." := "Line No.";
+                RecWhseShptLine_L.MODIFY;
+                CounterSplit_L += 1;
+              UNTIL (RecWhseShptLine_L.NEXT = 0) OR (QtyToSplit_L = 0);
+              IF QtyToSplit_L > 0 THEN BEGIN
+                RecWhseShptLine_L.NEXT(-1);
+                RecWhseShptLine_L.VALIDATE("Qty. to Ship",RecWhseShptLine_L.Quantity + QtyToSplit_L);
+                RecWhseShptLine_L.MODIFY;
+              END;
+              MESSAGE(Text8053013,"Weighing No.",CounterSplit_L + 1);
+            END;
+          END;
+        END ELSE BEGIN
+          IF FoundSplit_L THEN BEGIN
+            VALIDATE("Qty. to Ship",RecWeighingWeighbridge_L."Net Weight");
+            MODIFY;
+            MESSAGE(Text8053014,"Weighing No.");
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE CopyPostWeighNoToWhseShptLine@8053052(RecWhseShptLine_P@8053000 : Record 7321;OldWeighingEntryNo_P@8053002 : Integer);
+    VAR
+      RecWhseShptLine_L@8053001 : Record 7321;
+      RecWhseShptLine2_L@8053003 : Record 7321;
+    BEGIN
+      //--------------------------------------------------------------------------------------------------------
+      // Recopie le N› de pes'e valid'e vers les lignes d'exp'dition entrep"t li'es . l''clatement d'une pes'e
+      // Appel dans C80, C90
+      // Entr'es:
+      //   - RecWhseShptLine_P : Record Ligne exp'dition entrep"t
+      //   - OldWeighingEntryNo_P : N› s'quence pes'e valid'e
+      // Sorties :
+      //   -
+      //--------------------------------------------------------------------------------------------------------
+      WITH RecWhseShptLine_P DO BEGIN
+        RecWhseShptLine_L.SETRANGE("No.","No.");
+        RecWhseShptLine_L.SETFILTER("Line No.",'<>%1',"Line No.");
+        RecWhseShptLine_L.SETRANGE("Weighing No.",OldWeighingEntryNo_P);
+        IF RecWhseShptLine_L.FINDSET THEN BEGIN
+          REPEAT
+            RecWhseShptLine2_L.GET(RecWhseShptLine_L."No.",RecWhseShptLine_L."Line No.");
+            RecWhseShptLine2_L."Weighing No." := "Weighing No.";
+            RecWhseShptLine2_L."Posted Weighing" := TRUE;
+            RecWhseShptLine2_L.MODIFY;
+          UNTIL RecWhseShptLine_L.NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE SplitWeighingFromWhseRcptLine@8053035(VAR RecWhseRcptLine_P@8053000 : Record 7317;Undo_P@8053006 : Boolean);
+    VAR
+      RecWeighingWeighbridge_L@8053001 : Record 8053094;
+      RecWhseRcptLine_L@8053002 : Record 7317;
+      RecWhseRcptLine2_L@8053004 : Record 7317;
+      QtyToSplit_L@8053003 : Decimal;
+      CounterSplit_L@8053005 : Integer;
+      FoundSplit_L@8053007 : Boolean;
+    BEGIN
+      //--------------------------------------------------------------------------------------------------------
+      // Eclate une pes'e sur n lignes de r'cpetion entrep"t
+      // Appel dans P7336
+      // Entr'es:
+      //   - RecWhseRcptLine_P : Record Ligne r'ception entrep"t
+      //   - Undo_P : TRUE si annulation de l''clatement
+      // Sorties :
+      //   -
+      //--------------------------------------------------------------------------------------------------------
+      WITH RecWhseRcptLine_P DO BEGIN
+        LOCKTABLE;
+        TESTFIELD("Weighing No.");
+        TESTFIELD("Posted Weighing",FALSE);
+        IF Undo_P THEN BEGIN
+          //En cas d'annulation, on se repositionne sur la ligne . l'origine de l''clatement
+          IF "Weighing Source Line No." <> 0 THEN
+            GET("No.","Weighing Source Line No.");
+        END ELSE
+          TESTFIELD("Weighing Source Line No.",0);
+
+        //Recherche des lignes qui ont d'j. fait l'objet d'un 'clatement de la pes'e
+        RecWhseRcptLine_L.SETRANGE("No.","No.");
+        RecWhseRcptLine_L.SETFILTER("Line No.",'<>%1',"Line No.");
+        RecWhseRcptLine_L.SETRANGE("Item No.","Item No.");
+        RecWhseRcptLine_L.SETRANGE("Variant Code","Variant Code");
+        RecWhseRcptLine_L.SETRANGE("Weighing No.","Weighing No.");
+        IF RecWhseRcptLine_L.FINDSET THEN BEGIN
+          REPEAT
+            RecWhseRcptLine2_L.GET(RecWhseRcptLine_L."No.",RecWhseRcptLine_L."Line No.");
+            RecWhseRcptLine2_L.VALIDATE("Qty. to Receive",0);
+            RecWhseRcptLine2_L."Weighing No." := 0;
+            RecWhseRcptLine2_L."Weighing Source Line No." := 0;
+            RecWhseRcptLine2_L.MODIFY;
+          UNTIL RecWhseRcptLine_L.NEXT = 0;
+          FoundSplit_L := TRUE;
+        END;
+
+        //Eclatement de la pes'e
+        //Recherche de la pes'e et du poids net . ventiler
+        RecWeighingWeighbridge_L.GET("Weighing No.");
+        IF NOT Undo_P THEN BEGIN
+          IF RecWeighingWeighbridge_L."Net Weight" > Quantity THEN BEGIN
+            VALIDATE("Qty. to Receive",Quantity);
+            MODIFY;
+            QtyToSplit_L := RecWeighingWeighbridge_L."Net Weight" - Quantity;
+            RecWhseRcptLine_L.SETRANGE("No.","No.");
+            RecWhseRcptLine_L.SETFILTER("Line No.",'<>%1',"Line No.");
+            RecWhseRcptLine_L.SETRANGE("Item No.","Item No.");
+            RecWhseRcptLine_L.SETRANGE("Variant Code","Variant Code");
+            RecWhseRcptLine_L.SETRANGE("Weighing No.",0);
+            IF RecWhseRcptLine_L.FINDSET THEN BEGIN
+              REPEAT
+                IF QtyToSplit_L > RecWhseRcptLine_L.Quantity THEN BEGIN
+                  RecWhseRcptLine_L.VALIDATE("Qty. to Receive",RecWhseRcptLine_L.Quantity);
+                  QtyToSplit_L -= RecWhseRcptLine_L.Quantity;
+                END ELSE BEGIN
+                  RecWhseRcptLine_L.VALIDATE("Qty. to Receive",QtyToSplit_L);
+                  QtyToSplit_L := 0;
+                END;
+                RecWhseRcptLine_L."Weighing No." := "Weighing No.";
+                RecWhseRcptLine_L."Weighing Source Line No." := "Line No.";
+                RecWhseRcptLine_L.MODIFY;
+                CounterSplit_L += 1;
+              UNTIL (RecWhseRcptLine_L.NEXT = 0) OR (QtyToSplit_L = 0);
+              IF QtyToSplit_L > 0 THEN BEGIN
+                RecWhseRcptLine_L.NEXT(-1);
+                RecWhseRcptLine_L.VALIDATE("Qty. to Receive",RecWhseRcptLine_L.Quantity + QtyToSplit_L);
+                RecWhseRcptLine_L.MODIFY;
+              END;
+              MESSAGE(Text8053013,"Weighing No.",CounterSplit_L + 1);
+            END;
+          END;
+        END ELSE BEGIN
+          IF FoundSplit_L THEN BEGIN
+            VALIDATE("Qty. to Receive",RecWeighingWeighbridge_L."Net Weight");
+            MODIFY;
+            MESSAGE(Text8053014,"Weighing No.");
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE CopyPostWeighNoToWhseRcptLine@8053033(RecWhseRcptLine_P@8053000 : Record 7317;OldWeighingEntryNo_P@8053002 : Integer);
+    VAR
+      RecWhseRcptLine_L@8053001 : Record 7317;
+      RecWhseRcptLine2_L@8053003 : Record 7317;
+    BEGIN
+      //--------------------------------------------------------------------------------------------------------
+      // Recopie le N› de pes'e valid'e vers les lignes de r'ception entrep"t li'es . l''clatement d'une pes'e
+      // Appel dans C80, C90
+      // Entr'es:
+      //   - RecWhseRcptLine_P : Record Ligne r'ception entrep"t
+      //   - OldWeighingEntryNo_P : N› s'quence pes'e valid'e
+      // Sorties :
+      //   -
+      //--------------------------------------------------------------------------------------------------------
+      WITH RecWhseRcptLine_P DO BEGIN
+        RecWhseRcptLine_L.SETRANGE("No.","No.");
+        RecWhseRcptLine_L.SETFILTER("Line No.",'<>%1',"Line No.");
+        RecWhseRcptLine_L.SETRANGE("Weighing No.",OldWeighingEntryNo_P);
+        IF RecWhseRcptLine_L.FINDSET THEN BEGIN
+          REPEAT
+            RecWhseRcptLine2_L.GET(RecWhseRcptLine_L."No.",RecWhseRcptLine_L."Line No.");
+            RecWhseRcptLine2_L."Weighing No." := "Weighing No.";
+            RecWhseRcptLine2_L."Posted Weighing" := TRUE;
+            RecWhseRcptLine2_L.MODIFY;
+          UNTIL RecWhseRcptLine_L.NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE TestDeletePostWeighFromWhseLin@8053036(WeighingEntryNo_P@8053000 : Integer;LineNo_P@8053001 : Integer);
+    BEGIN
+      //--------------------------------------------------------------------------------------------------------
+      // V'rifie si la ligne d'exp'dition/r'ception entrep"t en cours de suppression est li'e . une pes'e
+      // valid'e partiellemnt
+      // Appel dans T7320, T7321
+      // Entr'es:
+      //   - WeighingNo_P : N› s'quence pes'e valid'e
+      //   - LineNo_P : N› de ligne supprim'e
+      // Sorties :
+      //   -
+      //--------------------------------------------------------------------------------------------------------
+      IF GUIALLOWED THEN
+        IF NOT CONFIRM(Text8053015,FALSE,WeighingEntryNo_P,LineNo_P,LineNo_P) THEN
+          ERROR(Text8053016);
+    END;
+
+    PROCEDURE ArchiveWeighingRec@8053034(WeighingEntryNo_P@8053000 : Integer);
+    VAR
+      RecWeighingWeighbridge_L@8053003 : Record 8053094;
+      RecPostWeighingWeighbridge_L@8053002 : Record 8053095;
+      RecCMCSetup@8053004 : Record 8052982;
+      LastEntryNo_L@8053001 : Integer;
+    BEGIN
+      //--------------------------------------------------------------------------------------------------------
+      // Archive la pes'e en cas de suppression manuelle du document appro ou c'r'ale
+      // Appel dans T7316, T7317, T7321, T8052993, T8053013
+      // Entr'es:
+      //   - WeighingEntryNo_P : N› s'quence pes'e
+      // Sorties :
+      //   -
+      //--------------------------------------------------------------------------------------------------------
+      RecCMCSetup.GET;
+      IF RecCMCSetup."Archive Deleted Weighings" THEN BEGIN
+        IF RecWeighingWeighbridge_L.GET(WeighingEntryNo_P) THEN BEGIN
+          //Archivage si N› DSD Pes'e 1 est renseign'
+          IF RecWeighingWeighbridge_L."Weighing 1 No." <> '' THEN BEGIN
+            RecPostWeighingWeighbridge_L.LOCKTABLE;
+            IF RecPostWeighingWeighbridge_L.FINDLAST THEN
+              LastEntryNo_L := RecPostWeighingWeighbridge_L."Entry No." + 1
+            ELSE
+              LastEntryNo_L := 1;
+            RecPostWeighingWeighbridge_L.INIT;
+            RecPostWeighingWeighbridge_L.TRANSFERFIELDS(RecWeighingWeighbridge_L);
+            RecPostWeighingWeighbridge_L."Entry No." := LastEntryNo_L;
+            RecPostWeighingWeighbridge_L.Status := RecPostWeighingWeighbridge_L.Status::Deleted;
+            RecPostWeighingWeighbridge_L."Date Deleted" := CURRENTDATETIME;
+            RecPostWeighingWeighbridge_L."Deleted By" := USERID;
+            RecPostWeighingWeighbridge_L.INSERT;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE PrintArchivedWeighingTicket@1000000004(ArchivedWeighingEntryNo_P@1000000001 : Integer;ShowRequestPage_P@1000000000 : Boolean);
+    VAR
+      InventorySetup_L@1000000002 : Record 313;
+      ArchPostWeighingWeighbridge_L@1000000004 : Record 60135;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Edite le ticket de pes'e . partir de la pes'e valid'e archiv'e
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - ArchivedWeighingEntryNo_P : N› s'quence pes'e valid'e archiv'e
+      //   - ShowRequestPage_P : Affichage ou non du RequestPage
+      // Sorties:
+      //----------------------------------------------------------------------------------------------------------
+
+      // --> 20210528-WI00-ADV01.01.00-3555-CJY01
+      InventorySetup_L.GET;
+
+      ArchPostWeighingWeighbridge_L.GET(ArchivedWeighingEntryNo_P);
+      ArchPostWeighingWeighbridge_L.SETRECFILTER;
+      IF InventorySetup_L."No. archived Weighting report" <> 0 THEN BEGIN
+        IF NOT ShowRequestPage_P THEN
+          REPORT.RUNMODAL(InventorySetup_L."No. archived Weighting report",FALSE,FALSE,ArchPostWeighingWeighbridge_L)
+        ELSE
+          REPORT.RUNMODAL(InventorySetup_L."No. archived Weighting report",TRUE,FALSE,ArchPostWeighingWeighbridge_L);
+      END
+      ELSE BEGIN
+        ERROR(Text60000);
+      END;
+
+      // <-- 20210528-WI00-ADV01.01.00-3555-CJY01
+    END;
+
+    EVENT WeighBridge_G@8053001::ErrorRaised@1610743809(errorNo@8053001 : Text[1024];errorDescription@8053000 : Text[1024]);
+    BEGIN
+    END;
+
+    EVENT WeighBridge_G@8053001::PrintRaised@1610743810();
+    BEGIN
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20111224-Int01-CMC02.01.00-DRN01 : NEWOBJ
+      20120322-Int01-CMC02.01.00-SD01 : ADDCODE (beug)
+      20120510-Int01-CMC02.01.00-DRN01 : ADDCODE (Correction S'lection du pont bascule par d'faut)
+      20120613-Int01-CMC02.01.00-SD01 : ADDCODE (Correction)
+      20130307-Int01-CMC02.02.00-FBE : Add option Weighing Ticket (Ticket pes'e)
+      20130625-Int01-CMC02.02.00-FBE : Correction Bug pas de pes'e sur reception transfert
+      20130621-Log10-CMC02.02.00-BSI01 : ADDCODE (Update field "Manual Weighing No.")
+      20130627-Log10-CMC02.02.00-BSI01 : DELFIELDS (Weight 1 Manual Update,Weight 1 Manual Entry,Weight 2 Manual Update,
+                                         Weight 2 Manual Entry from tables 8052993,8053013,7317,7321 )
+      20130717-Log10-CMC02.02.00-BSI01 : Block "Weighing 1" and "Weighing 2"  fields for manual updates through weighbridge interface
+      20130717-App27-CMC02.02.00-DRN01 : Ne pas cr'er d'enregistrement pes'e . la saisie de l'immatriculation et du chauffeur pour les
+                                         documents entrep"t (exp'dition et r'ception)
+                                         On applique la m^me logique sur les documents c'r'ale
+      20130724-Log10-CMC02.02.00-DRN01 : Correction bug -> le blocage de la modification de la pes'e doit prendre en compte le paramStre
+                                         Bloquer modification pes'e
+      20130724-Log10-CMC02.02.00-DRN02 : Gestion simulation de la pes'e pour les tests
+      20130725-Log10-CMC02.02.00-BSI01 : - ADDFUNC (BlockWeighingUpdateForCereals)
+                                         - ADDFUNC (BlockWeighUpdForWhseRcpt/Shpt)
+      20131029-Wi00-CMC02.02.00-1008-BSA01 : Mettre . jour la table "Pes'e pont bascule valid'e" en cas de changement du champ
+                                             ("Transfer-to code");
+      20131129-Cer18/001-CMC02.02.00-BSA01 : Si le transfert est ind'pendant le test se fait sur le "Indep. Transfer Transit Code"
+      20140119-GEN15/001-CMC02.02.00-DRN01 : Gestion des transferts collecte IC
+                                             MAJ infos pes'e si le silo de destination/provenance correspond . celui du partenaire IC
+                                             (Magasin MS)
+                                             Annulation code 20131129-Cer18/001-CMC02.02.00-BSA01
+      20140207-LOG10-CMC02.02.00-DRN01 : Refactoring
+                                         Ajout fonction CheckWeighingUpdate pour g'rer les modifications sur les pes'es
+                                         Ajout fonction CheckWeighing1
+                                         MAJ fonctions WeighingFromCollectReceipt, WeighingFromDelivery, WeighingFromWhseReceiptLine,
+                                         WeighingFromWhseShptLine -> RAZ DSD 2 et N› ticket bascule si pes'e 1 est refaite
+      20140207-LOG10-CMC02.02.00-1541-DRN01 : Contr"le N› ticket bascule si N› DSD 2 renseign'
+      20140210-LOG10-CMC02.02.00-DRN01 : MAJ fonctions GetUOMCaptionFromReceipt et GetUOMCaptionFromDelivery
+                                         -> gestion CaptionClass pes'es dans documents valid's
+      20140211-LOG10-CMC02.02.00-DRN01 : Ajout fonction PrintWeighingTicket3 -> 'dition tickert de pes'e . partir de la pes'e valid'e
+      20140218-GEN15/001-CMC02.02.00-DRN01 : MAJ fonction UpdateWeighingDataFromDelivery -> ne pas cr'er de pes'e pour les transferts de
+                                             propri't'
+      20140227-LOG10-CMC02.02.00-DRN01 : Modification des rSgles de modification des pes'es 1 et 2 -> Si la pes'e est r'alis'e par le
+                                         pont-bascule, il n'est plus possible de modifier manuellement pes'e 1 et pes'e 2
+      20140303-LOG10-CMC02.02.00-1764-PPE01 : MODFUNCT (manage Notebook Weighing No.):
+                                                   - UpdateWeighingDataFromReceipt
+                                                   - UpdWeighingDataFromWhseReceipt
+                                                   - UpdateWeighingDataFromDelivery
+                                                   - UpdWeighingDataFromWhseShpt
+      20140310-LOG10-CMC02.02.00-1818-FEC01 : MODCODE.
+      20140402-LOG10-CMC02.02.00-1923-DRN01 : Ajout fonctions SplitWeighingFromWhseShptLine, SplitWeighingFromWhseRcptLine
+                                              CopyPostWeighNoToWhseShptLine, CopyPostWeighNoToWhseRcptLine, TestDeletePostWeighFromWhseLin
+                                              MAJ fonctions WeighingFromWhseReceiptLine, WeighingFromWhseShptLine,
+                                              UpdWeighingDataFromWhseReceipt, UpdWeighingDataFromWhseShpt, InitWeighingDataToWhseRcptLine
+                                              InitWeighingDataToWhseShptLine, PrintWeighingTicket3
+      20140519-LOG10-CMC02.02.00-DRN01 : En cas d'annulation de l''clatement d'une pes'e, remettre les quantit's . exp'dier/recevoir . 0
+                                         Permettre l'annulation de l''clatement d'une pes'e m^me si l'utilisateur n'est pas sur la ligne
+                                         . l'origine de l''clatement
+      20140528-WI00-CMC02.02.00-2166-FEC01 : MODOBJ(Add Permission).
+      20140617-LOG10-CMC02.02.00-2253-DRN01 : Ajout fonction d'archivage des pes'es supprim'es
+      20140612-LOG10-CMC02.02.00-2218-BSI01 : ADDCODE (Gestion du N› cahier pes'e)
+      20141002-LOG10-CMC02.02.00-DRN01 : Correction MAJ poids net . la validation de la pes'e 2 pour les exp'ditions et r'ceptions
+                                         entrep"t
+      20150610-LOG10-CMC02.02.00-3007-BSI01 : ADDCODE (Bloquer la validation de la pes'e si le DSD2 est identique au DSD1)
+      20150623-CER21-CMC02.02.00-2938-BSI01 : ADDCODE (Alimentation de diff'rents dans la table des pes'es)
+      20150709-LOG10-ADV01.01.00-1908-DRN01 : ADDFUNCT (ajout de 2 functions pour la mise . jour des poids sur la table des
+                                                        pes'es valid'es)
+      20150921-LOG10-ADV01.01.00-2131-DRN01 : ADDCODE (UpdateWeighingDataFromReceipt, UpdateWeighingDataFromDelivery : Correction bug
+                                                       synchronisation table des pes'es)
+      20151124-LOG10-ADV01.01.00-2537-DRN01 : ADDCODE (UpdWeighingDataFromPostReceipt : Correction bug synchronisation table des pes'es)
+      20210528-WI00-ADV01.01.00-3555-CJY01 : MODFUNCT (PrintWeighingTicket2 : prise en compte pes'e archiv'es)
+      20210528-WI00-ADV01.01.00-3555-CJY01 : ADDFUNCT (PrintArchivedWeighingTicket : impression des pes'es archiv'es)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,353 @@
+OBJECT Report 60262 Desaffect. Reaffect.Contrat
+{
+  OBJECT-PROPERTIES
+  {
+    Date=13/10/26;
+    Heure=00:00:00;
+    Liste versions=SP43981;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Contract Unassign / Reassign;
+               FRA=Traitement de d'saffectation r'affectation contrat];
+    ProcessingOnly=Oui;
+    OnInitReport=BEGIN
+                   G_ContractTypeFrom := 'DDV TRE';
+                   G_ContractTypeTo := 'DDV DEF';
+                   CLEAR(ReceiptLinesList_G);
+                   TempReceiptsAlreadyAdded_G.RESET();
+                   TempReceiptsAlreadyAdded_G.DELETEALL;
+                 END;
+
+    OnPreReport=BEGIN
+                  IF G_ContractTypeFrom = '' THEN
+                    ERROR(Text60000);
+                  IF G_ContractTypeTo = '' THEN
+                    ERROR(Text60001);
+                  IF G_ContractTypeFrom = G_ContractTypeTo THEN
+                    ERROR(Text60002);
+                END;
+
+    OnPostReport=BEGIN
+                   IF G_NbModified > 0 THEN
+                     MESSAGE(Text60003Bis, G_NbModified,ReceiptLinesList_G)
+                   ELSE
+                     MESSAGE(Text60004);
+                 END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table8052983;
+        DataItemTableView=SORTING(No.)
+                          WHERE(Type=CONST(Contract));
+        OnPreDataItem=BEGIN
+                        SETRANGE("Contract Type",G_ContractTypeTo);
+                        SETRANGE(Status,Status::Locked);
+
+                        DlgWin_G.OPEN(
+                          Text60005 + '\' +
+                          'N› contrat : #1################\' +
+                          '@2@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@');
+                        TotalIter_G := COUNT;
+                        Iter_G := 0;
+                      END;
+
+        OnAfterGetRecord=VAR
+                           StatusMgtcdu_L@60000 : Codeunit 8052985;
+                           WasLocked_L@60001 : Boolean;
+                         BEGIN
+                           Iter_G := Iter_G + 1;
+                           DlgWin_G.UPDATE(1, "CMC Collection Contract"."No.");
+                           IF TotalIter_G > 0 THEN
+                             DlgWin_G.UPDATE(2, ROUND(Iter_G / TotalIter_G * 10000, 1));
+
+                           CALCFIELDS("Quantity Received");
+                           IF "Quantity Received" <> 0 THEN
+                             CurrReport.SKIP;
+                         END;
+
+        OnPostDataItem=BEGIN
+                         DlgWin_G.CLOSE;
+                       END;
+
+        ReqFilterFields=Campaign No.,Species Code,Item No.,Vendor No.,No.,Sign-Off Date;
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=1;
+        DataItemTable=Table8053104;
+        DataItemTableView=SORTING(Contract No.)
+                          WHERE(Receipt Type=CONST(Receipt));
+        OnPreDataItem=BEGIN
+                        TempCollectionContract_G.RESET();
+                        TempCollectionContract_G.DELETEALL;
+                        TempLinesToProcess_G.RESET;
+                        TempLinesToProcess_G.DELETEALL;
+
+                        SETRANGE(Invoiced,FALSE);
+                        SETRANGE("Canceled Line",FALSE);
+                        SETRANGE("Cancellation line",FALSE);
+                        SETFILTER("Contract No.",
+                          COPYSTR("CMC Collection Contract"."No.",1,
+                            STRLEN(DELCHR("CMC Collection Contract"."No.",'>',' ')) - 1) + '*');
+                      END;
+
+        OnAfterGetRecord=VAR
+                           RecContract_L@60000 : Record 8052983;
+                           RecPostedReceipts_L@60001 : Record 8052995;
+                           RecPrestaLine_L@1000000000 : Record 8052997;
+                           RecPostedReceiptsLine_L@1000000001 : Record 8053104;
+                         BEGIN
+                           // V'rification que le bon de r'ception est verrouill' (Lanc')
+                           IF NOT RecPostedReceipts_L.GET("Receipt Type","No.") THEN
+                             CurrReport.SKIP;
+
+                           // --> 20261013-WI00-ADV01.01.00-43981-SAN0
+                           // IF RecPostedReceipts_L."On Behalf Of" THEN
+                           //  CurrReport.SKIP;
+                           // <-- 20261013-WI00-ADV01.01.00-43981-SAN0
+
+                           IF RecPostedReceipts_L.Status <> RecPostedReceipts_L.Status::Released THEN
+                             CurrReport.SKIP;
+
+                           IF RecPostedReceipts_L.Canceled  THEN
+                             CurrReport.SKIP;
+
+                           CLEAR(RecPrestaLine_L);
+                           RecPrestaLine_L.SETRANGE("Receipt Type","Receipt Type");
+                           RecPrestaLine_L.SETRANGE("Posted Receipt No.","No.");
+                           RecPrestaLine_L.SETRANGE("Line Type",RecPrestaLine_L."Line Type" :: "traceabitiliy complement");
+                           RecPrestaLine_L.SETRANGE(Invoiced,FALSE);
+                           RecPrestaLine_L.SETFILTER("Purch. Document No",'<>%1','');
+                           IF NOT RecPrestaLine_L.ISEMPTY THEN
+                              CurrReport.SKIP;
+
+                           CLEAR(RecPostedReceiptsLine_L);
+                           RecPostedReceiptsLine_L.SETRANGE("Receipt Type","Receipt Type");
+                           RecPostedReceiptsLine_L.SETRANGE("No.","No.");
+                           RecPostedReceiptsLine_L.SETRANGE("Line No.","Line No.");
+                           RecPostedReceiptsLine_L.SETFILTER("Prepay CreditMemo No.",'<>%1','');
+                           IF NOT RecPostedReceiptsLine_L.ISEMPTY THEN
+                             IF RecPostedReceiptsLine_L.FINDFIRST THEN
+                                CurrReport.SKIP;
+
+                           RecPostedReceiptsLine_L.SETRANGE("Prepay CreditMemo No.");
+                           RecPostedReceiptsLine_L.SETFILTER("Prepay Invoice No.",'<>%1','');
+                           IF NOT RecPostedReceiptsLine_L.ISEMPTY THEN
+                             IF RecPostedReceiptsLine_L.FINDFIRST THEN
+                                CurrReport.SKIP;
+
+                           // V'rification de la racine (tous les caractSres sauf le dernier)
+                           IF "Contract No." <>
+                               COPYSTR("CMC Collection Contract"."No.",1,
+                                STRLEN(DELCHR("CMC Collection Contract"."No.",'>',' ')) - 1) THEN
+                             CurrReport.SKIP;
+
+                           // V'rification du type de contrat = Type de contrat . d'saffecter
+                           IF NOT RecContract_L.GET("Contract No.") THEN
+                             CurrReport.SKIP;
+
+                           IF RecContract_L."Contract Type" <> G_ContractTypeFrom THEN
+                             CurrReport.SKIP;
+
+                           // Stockage des lignes . traiter dans une table temporaire
+                           // V'rification qu'on ne traite pas un bon d'j. ajout'
+                           IF NOT TempReceiptsAlreadyAdded_G.GET("Receipt Type","No.") THEN BEGIN
+                             TempLinesToProcess_G.INIT;
+                             TempLinesToProcess_G := "CMC Posted Receipts Line";
+                             // Stockage du nouveau contrat cible dans un champ temporaire
+                             TempLinesToProcess_G."Pre Contract No." := "CMC Collection Contract"."No.";
+                             TempLinesToProcess_G.INSERT;
+
+                             // Marquer ce bon comme d'j. ajout'
+                             TempReceiptsAlreadyAdded_G.INIT;
+                             TempReceiptsAlreadyAdded_G."Receipt Type" := "Receipt Type";
+                             TempReceiptsAlreadyAdded_G."No." := "No.";
+                             TempReceiptsAlreadyAdded_G.INSERT;
+                           END;
+                         END;
+
+        OnPostDataItem=VAR
+                         ErrorText_L@60005 : Text[1024];
+                         LineProcessed_L@60006 : Boolean;
+                         TempLineToProcess_L@60007 : Record 8053104;
+                         RecContract_L@1000000000 : Record 8052983;
+                       BEGIN
+                         TempLinesToProcess_G.RESET;
+                         // Traitement des lignes stock'es (hors de la transaction d'it'ration)
+                         IF TempLinesToProcess_G.FINDSET THEN
+                           REPEAT
+                             CLEARLASTERROR;
+                             // Copie dans une variable locale pour passer au Codeunit
+                             TempLineToProcess_L := TempLinesToProcess_G;
+                             COMMIT;
+                             // Appel du Codeunit avec gestion d'erreur
+                             LineProcessed_L := CODEUNIT.RUN(60148, TempLineToProcess_L);
+
+                             IF LineProcessed_L THEN BEGIN
+                               // Ajout . la liste des bons trait's
+                               IF ReceiptLinesList_G = '' THEN
+                                 // 20260916-WI00-ADV01.01.00-43981-SAN01
+                                 ReceiptLinesList_G := COPYSTR(TempLinesToProcess_G."No.",1,MAXSTRLEN(ReceiptLinesList_G))
+                               ELSE
+                                 IF STRPOS(ReceiptLinesList_G, TempLinesToProcess_G."No.") = 0 THEN
+                                   IF STRLEN(ReceiptLinesList_G + '|'  + TempLinesToProcess_G."No.") < 254 THEN     // 20260916-WI00-ADV01.01.00-43981-SAN0
+                                      ReceiptLinesList_G  += '|'  +  TempLinesToProcess_G."No.";
+
+                               G_NbModified := G_NbModified + 1;
+                               IF NOT TempCollectionContract_G.GET(TempLinesToProcess_G."Contract No.") THEN BEGIN
+                                  TempCollectionContract_G.INIT();
+                                  TempCollectionContract_G."No." := TempLinesToProcess_G."Contract No.";
+                                  TempCollectionContract_G.INSERT;
+                               END;
+                               // Enregistrement du succSs dans le log
+                               RecBatchLog_G.CreateLog(
+                                 RecBatchLog_G."Source Type"::Vendor,
+                                 TempLinesToProcess_G."Vendor No.",
+                                 'Traitement r'ussi - Bon: ' + TempLinesToProcess_G."No." + ' Ligne: ' + FORMAT(TempLinesToProcess_G."Line No.") +
+                                 ' Contrat: ' + TempLinesToProcess_G."Contract No.",
+                                 RecBatchLog_G."Process Type"::"Desaffect Reaffect Contrat");
+                             END ELSE BEGIN
+                               // Enregistrement de l'erreur mais continuation du traitement
+                               ErrorText_L := GETLASTERRORTEXT;
+                               IF ErrorText_L = '' THEN
+                                 ErrorText_L := 'Erreur inconnue';
+                               // Enregistrement dans le log des erreurs
+                               RecBatchLog_G.CreateLog(
+                                 RecBatchLog_G."Source Type"::Vendor,
+                                 TempLinesToProcess_G."Vendor No.",
+                                 ErrorText_L + ' - Bon: ' + TempLinesToProcess_G."No." + ' Ligne: ' + FORMAT(TempLinesToProcess_G."Line No."),
+                                 RecBatchLog_G."Process Type"::"Desaffect Reaffect Contrat");
+                               // La ligne en erreur est ignor'e et le traitement continue
+                             END;
+                           UNTIL TempLinesToProcess_G.NEXT = 0;
+                          COMMIT;
+                          TempCollectionContract_G.RESET;
+                          IF  TempCollectionContract_G.FINDSET THEN  REPEAT
+                             // le contrat . d'saffecter ( DDV TRE =type de contrat . d'saffecter) en statut "Termin'"
+                             IF RecContract_L.GET(TempCollectionContract_G."No.") THEN BEGIN
+                                RecContract_L.Status := RecContract_L.Status::Finished;
+                                RecContract_L.MODIFY;
+                             END;
+                          UNTIL TempCollectionContract_G.NEXT = 0;
+                       END;
+
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=9020;
+      Height=3410;
+    }
+    CONTROLS
+    {
+      { 1000000000;TextBox;4620 ;550  ;3300 ;440  ;InPage=-1;
+                                                   SourceExpr=G_ContractTypeFrom;
+                                                   TableRelation="CMC Purch. Contract Type"."Contract Type" }
+      { 1000000001;Label  ;0    ;550  ;4620 ;440  ;CaptionML=[ENU=Contract Type to Unassign;
+                                                              FRA=Type de contrat . d'saffecter] }
+      { 1000000002;TextBox;4620 ;1100 ;3300 ;440  ;InPage=-1;
+                                                   SourceExpr=G_ContractTypeTo;
+                                                   TableRelation="CMC Purch. Contract Type"."Contract Type" }
+      { 1000000003;Label  ;0    ;1100 ;4620 ;440  ;CaptionML=[ENU=Contract Type to Assign;
+                                                              FRA=Type de contrat . affecter] }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 60000;   ;Container ;
+                  ContainerType=ContentArea }
+
+      { 60001;1  ;Group     ;
+                  CaptionML=[ENU=Options;
+                             FRA=Options] }
+
+      { 60002;2  ;Field     ;
+                  CaptionML=[ENU=Contract Type to Unassign;
+                             FRA=Type de contrat . d'saffecter];
+                  SourceExpr=G_ContractTypeFrom;
+                  TableRelation="CMC Purch. Contract Type"."Contract Type" }
+
+      { 60003;2  ;Field     ;
+                  CaptionML=[ENU=Contract Type to Assign;
+                             FRA=Type de contrat . affecter];
+                  SourceExpr=G_ContractTypeTo;
+                  TableRelation="CMC Purch. Contract Type"."Contract Type" }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      G_ContractTypeFrom@60000 : Code[20];
+      G_ContractTypeTo@60001 : Code[20];
+      G_NbModified@60002 : Integer;
+      DlgWin_G@60003 : Dialog;
+      TotalIter_G@60004 : Integer;
+      Iter_G@60005 : Integer;
+      Text60000@60006 : TextConst 'ENU=Please specify the contract type to unassign.;FRA=Veuillez renseigner le type de contrat . d'saffecter.';
+      Text60001@60007 : TextConst 'ENU=Please specify the contract type to assign.;FRA=Veuillez renseigner le type de contrat . affecter.';
+      Text60002@60008 : TextConst 'ENU=The contract type to unassign and to assign must be different.;FRA=Le type de contrat . d'saffecter et . affecter doivent ^tre diff'rents.';
+      Text60003Bis@1000000003 : TextConst 'ENU=%1 contract(s) have been updated.;FRA=%1 bon(s) de r'ception collecte valid' (s) ont 't' mis . jour.\Liste  %2.';
+      Text60004@60010 : TextConst 'ENU=No contract found matching the criteria.;FRA=Aucun bon de r'ception collecte valid' ne correspond aux critSres.';
+      Text60005@60011 : TextConst 'ENU=Processing contracts...;FRA=Traitement des contrats en cours...';
+      ReceiptLinesList_G@1000000001 : Text[254];
+      TempLinesToProcess_G@1000000004 : TEMPORARY Record 8053104;
+      TempCollectionContract_G@1000000000 : TEMPORARY Record 8052983;
+      TempReceiptsAlreadyAdded_G@1000000002 : TEMPORARY Record 8052995;
+      RecBatchLog_G@1000000005 : Record 8053505;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20260610-WI00-ADV01.01.00-43981-SAN01 : NEWOBJECT D'saffectation / R'affectation des contrats de collecte
+      20260820-WI00-ADV01.01.00-43981-SAN01 : MODCODE Ajout suvi LOG
+      20260916-WI00-ADV01.01.00-43981-SAN01 : MODCODE (D'passement caractSres ReceiptLinesList_G)
+      20261013-WI00-ADV01.01.00-43981-SAN01 : MODOCDE (Suppression pour le compte de)
+      // <-- 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

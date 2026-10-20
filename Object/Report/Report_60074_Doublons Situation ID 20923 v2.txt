@@ -1,0 +1,221 @@
+OBJECT Report 60074 Doublons Situation ID 20923 v2
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27/03/17;
+    Heure=16:02:01;
+    Modifi'=Oui;
+    Liste versions=;
+  }
+  PROPERTIES
+  {
+    Orientation=Landscape;
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table8053088;
+        DataItemTableView=SORTING(Document Type,ECD Invoice Entry No.,Posting Date)
+                          WHERE(Document Type=FILTER(Purchase Invoice|Purchase Credit Memo),
+                                Det. ECD Amount (Receipt)=CONST(0),
+                                Discount Code=FILTER(<>''));
+        OnAfterGetRecord=BEGIN
+                           BooToSkip_G := FALSE;
+                           BooInvoiced_G := FALSE;
+
+                           {//Si facture ou avoir direct, il est normal de ne pas avoir de montant reception, donc on skip
+                           IF ItemLedgerEntry_G.GET("CMC Purch. ECD Ledger Entry"."Item Ledger Entry No.") THEN BEGIN
+                             IF (("CMC Purch. ECD Ledger Entry"."Document Type" = "CMC Purch. ECD Ledger Entry"."Document Type"::"Purchase Invoice") AND
+                                 (ItemLedgerEntry_G."Document Type" = ItemLedgerEntry_G."Document Type"::"Purchase Invoice")) THEN
+                                   BooToSkip_G := TRUE;
+                             IF (("CMC Purch. ECD Ledger Entry"."Document Type" = "CMC Purch. ECD Ledger Entry"."Document Type"::"Purchase Credit Memo") AND
+                                 (ItemLedgerEntry_G."Document Type" = ItemLedgerEntry_G."Document Type"::"Purchase Credit Memo")) THEN
+                                   BooToSkip_G := TRUE;
+
+                           END;
+                           }
+                           //MESSAGE('TEST');
+                           //De m^me, si pas de RFC reception/retour associ', normal de skipper
+                           CMCPurchECDLedgerEntry_G.RESET;
+                           CMCPurchECDLedgerEntry_G.SETRANGE("Discount Code","CMC Purch. ECD Ledger Entry"."Discount Code");
+                           CMCPurchECDLedgerEntry_G.SETRANGE("Item Ledger Entry No.","CMC Purch. ECD Ledger Entry"."Item Ledger Entry No.");
+                           IF "CMC Purch. ECD Ledger Entry"."Document Type" = "CMC Purch. ECD Ledger Entry"."Document Type"::"Purchase Invoice" THEN
+                             CMCPurchECDLedgerEntry_G.SETRANGE("Document Type",CMCPurchECDLedgerEntry_G."Document Type"::"Purchase Receipt")
+                           ELSE
+                             CMCPurchECDLedgerEntry_G.SETRANGE("Document Type",CMCPurchECDLedgerEntry_G."Document Type"::"Purchase Return Shipment");
+
+                           IF NOT CMCPurchECDLedgerEntry_G.FINDFIRST THEN BEGIN
+                             BooToSkip_G := TRUE;
+
+                           END
+                           ELSE BEGIN
+                             CMCPurchECDLedgerEntry_G.CALCFIELDS("Det. ECD Amount (Receipt)");
+                             IF CMCPurchECDLedgerEntry_G."Det. ECD Amount (Receipt)" = 0 THEN
+                               BooToSkip_G := TRUE;
+                           END;
+                           IF BooToSkip_G THEN BEGIN
+                             CurrReport.SKIP
+                           END
+                           ELSE BEGIN
+                             Cumul_G := Cumul_G + CMCPurchECDLedgerEntry_G."Det. ECD Amount (Receipt)";
+                             IF OptLancement_G = OptLancement_G::Correction THEN BEGIN
+                               //Mise . jour de l''criture d'taill'e de la facture/avoir
+                               CMCDetailedECDEntry_G.RESET;
+                               CMCDetailedECDEntry_G.SETRANGE("Sales / Purchase",CMCDetailedECDEntry_G."Sales / Purchase"::Purchase);
+                               CMCDetailedECDEntry_G.SETRANGE("ECD Entry No.","CMC Purch. ECD Ledger Entry"."Entry No.");
+                               CMCDetailedECDEntry_G.SETRANGE("Entry Type",CMCDetailedECDEntry_G."Entry Type"::"Initial Entry");
+                               IF CMCDetailedECDEntry_G.FINDFIRST THEN BEGIN
+                                 CMCDetailedECDEntry_G."Amount (Shpmt/Rcpt)" := -CMCDetailedECDEntry_G."Amount (Invoice)";
+                                 CMCDetailedECDEntry_G.MODIFY;
+                               END;
+                               //Mise . jour de l''criture RFC elle meme
+                               IF CMCPurchECDLedgerEntryCor_G.GET("CMC Purch. ECD Ledger Entry"."Entry No.") THEN BEGIN
+                                 CMCPurchECDLedgerEntryCor_G."Net Amount (Receipt)" := -((CMCPurchECDLedgerEntry_G."Net Amount (Receipt)"/
+                                                                                         CMCPurchECDLedgerEntry_G."Valued Quantity") *
+                                                                                         CMCPurchECDLedgerEntryCor_G."Valued Quantity");
+                                 CMCPurchECDLedgerEntryCor_G."Net Amount (Receipt)" := ROUND(CMCPurchECDLedgerEntryCor_G."Net Amount (Receipt)",0.01);
+
+                                 CMCPurchECDLedgerEntryCor_G."ECD Amount (Receipt)" := -((CMCPurchECDLedgerEntry_G."ECD Amount (Receipt)"/
+                                                                                         CMCPurchECDLedgerEntry_G."Valued Quantity") *
+                                                                                         CMCPurchECDLedgerEntryCor_G."Valued Quantity");
+                                 CMCPurchECDLedgerEntryCor_G."ECD Amount (Receipt)" := ROUND(CMCPurchECDLedgerEntryCor_G."ECD Amount (Receipt)",0.01);
+
+                                 CMCPurchECDLedgerEntryCor_G."ECD Unit Amount (Receipt)" := -((CMCPurchECDLedgerEntry_G."ECD Unit Amount (Receipt)"/
+                                                                                             CMCPurchECDLedgerEntry_G."Valued Quantity") *
+                                                                                             CMCPurchECDLedgerEntryCor_G."Valued Quantity");
+                                CMCPurchECDLedgerEntryCor_G."ECD Unit Amount (Receipt)" := ROUND(CMCPurchECDLedgerEntryCor_G."ECD Unit Amount (Receipt)",0.01);
+
+                                 CMCPurchECDLedgerEntryCor_G.MODIFY;
+                               END;
+
+                             END;
+                           END;
+                           {//Verification de la non facturation du document en RFC
+                           CMCPurchECDLedgerEntryInv_G.RESET;
+                           CMCPurchECDLedgerEntryInv_G.SETFILTER("Item Charge No.",'<>%1','');
+                           CMCPurchECDLedgerEntryInv_G.SETRANGE("ECD Invoice Entry No.","CMC Purch. ECD Ledger Entry"."Entry No.");
+                           IF CMCPurchECDLedgerEntryInv_G.FINDFIRST THEN
+                             BooInvoiced_G := TRUE;
+                           }
+                         END;
+
+        ReqFilterFields=Document No.;
+        CalcFields=Det. ECD Amount (Receipt),Det. ECD Amount (Invoice);
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Header;
+            PrintOnEveryPage=Oui;
+            SectionWidth=21450;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+            { 1000000001;Label  ;2400 ;0    ;1950 ;846  ;ParentControl=1000000000;
+                                                         VertAlign=Bottom;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui }
+            { 1000000003;Label  ;450  ;0    ;1800 ;846  ;ParentControl=1000000002;
+                                                         VertAlign=Bottom;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui }
+            { 1000000005;Label  ;4650 ;0    ;2100 ;846  ;ParentControl=1000000004;
+                                                         HorzAlign=Right;
+                                                         VertAlign=Bottom;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui }
+            { 1000000007;Label  ;7200 ;0    ;2850 ;846  ;ParentControl=1000000006;
+                                                         HorzAlign=Right;
+                                                         VertAlign=Bottom;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui }
+            { 1000000009;Label  ;10650;0    ;3150 ;846  ;ParentControl=1000000008;
+                                                         HorzAlign=Right;
+                                                         VertAlign=Bottom;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui }
+            { 1000000010;Label  ;14100;0    ;1950 ;846  ;CaptionML=FRA=Recep/Retour }
+            { 1000000011;Label  ;16800;0    ;1500 ;846  ;CaptionML=FRA=Montant }
+            { 1000000015;Label  ;19050;0    ;1950 ;846  ;ParentControl=1000000014;
+                                                         VertAlign=Bottom;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui }
+          }
+           }
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=21450;
+            SectionHeight=423;
+          }
+          CONTROLS
+          {
+            { 1000000000;TextBox;2400 ;0    ;1950 ;423  ;SourceExpr="Document No." }
+            { 1000000002;TextBox;450  ;0    ;1800 ;423  ;SourceExpr="Document Type" }
+            { 1000000004;TextBox;4650 ;0    ;2100 ;423  ;SourceExpr="Document Line No." }
+            { 1000000006;TextBox;7200 ;0    ;2850 ;423  ;SourceExpr="Det. ECD Amount (Receipt)" }
+            { 1000000008;TextBox;10650;0    ;3150 ;423  ;SourceExpr="Det. ECD Amount (Invoice)" }
+            { 1000000012;TextBox;14100;0    ;1800 ;423  ;SourceExpr=CMCPurchECDLedgerEntry_G."Document No." }
+            { 1000000013;TextBox;16800;0    ;1500 ;423  ;SourceExpr=CMCPurchECDLedgerEntry_G."Det. ECD Amount (Receipt)" }
+            { 1000000014;TextBox;19050;0    ;1950 ;423  ;SourceExpr="Discount Code" }
+          }
+           }
+        { PROPERTIES
+          {
+            SectionType=Footer;
+            SectionWidth=21450;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+            { 1000000016;TextBox;10650;0    ;3150 ;423  ;SourceExpr=Cumul_G }
+          }
+           }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=9020;
+      Height=3410;
+    }
+    CONTROLS
+    {
+      { 1000000000;TextBox;2640 ;1430 ;3410 ;440  ;SourceExpr=OptLancement_G }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  CODE
+  {
+    VAR
+      BooToSkip_G@1000000000 : Boolean;
+      ItemLedgerEntry_G@1000000001 : Record 32;
+      CMCPurchECDLedgerEntry_G@1000000002 : Record 8053088;
+      Cumul_G@1000000003 : Decimal;
+      OptLancement_G@1000000004 : 'Visualisation,Correction';
+      CMCPurchECDLedgerEntryInv_G@1000000005 : Record 8053088;
+      BooInvoiced_G@1000000006 : Boolean;
+      CMCPurchECDLedgerEntryCor_G@1000000007 : Record 8053088;
+      CMCDetailedECDEntry_G@1000000008 : Record 8053334;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

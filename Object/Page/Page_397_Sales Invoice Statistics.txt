@@ -1,0 +1,320 @@
+OBJECT Page 397 Sales Invoice Statistics
+{
+  OBJECT-PROPERTIES
+  {
+    Date=24/01/17;
+    Heure=00:00:00;
+    Liste versions=NAVW16.00;
+  }
+  PROPERTIES
+  {
+    Editable=Non;
+    CaptionML=[ENU=Sales Invoice Statistics;
+               FRA=Statistiques facture vente];
+    LinksAllowed=Non;
+    SourceTable=Table112;
+    PageType=ListPlus;
+    OnAfterGetRecord=VAR
+                       CostCalcMgt@1001 : Codeunit 5836;
+                       CustLedgEntry@1000 : Record 21;
+                       PostedPrepSalesDisc_L@1000000000 : Record 60082;
+                     BEGIN
+                       CLEARALL;
+
+                       IF "Currency Code" = '' THEN
+                         currency.InitRoundingPrecision
+                       ELSE
+                         currency.GET("Currency Code");
+
+                       SalesInvLine.SETRANGE("Document No.","No.");
+                       IF SalesInvLine.FIND('-') THEN
+                         REPEAT
+                           CustAmount := CustAmount + SalesInvLine.Amount;
+                           AmountInclVAT := AmountInclVAT + SalesInvLine."Amount Including VAT";
+                           IF "Prices Including VAT" THEN
+                             InvDiscAmount := InvDiscAmount + SalesInvLine."Inv. Discount Amount" / (1 + SalesInvLine."VAT %" / 100)
+                           ELSE
+                             InvDiscAmount := InvDiscAmount + SalesInvLine."Inv. Discount Amount";
+                           CostLCY := CostLCY + (SalesInvLine.Quantity * SalesInvLine."Unit Cost (LCY)");
+                           LineQty := LineQty + SalesInvLine.Quantity;
+                           TotalNetWeight := TotalNetWeight + (SalesInvLine.Quantity * SalesInvLine."Net Weight");
+                           TotalGrossWeight := TotalGrossWeight + (SalesInvLine.Quantity * SalesInvLine."Gross Weight");
+                           TotalVolume := TotalVolume + (SalesInvLine.Quantity * SalesInvLine."Unit Volume");
+                           IF SalesInvLine."Units per Parcel" > 0 THEN
+                             TotalParcels := TotalParcels + ROUND(SalesInvLine.Quantity / SalesInvLine."Units per Parcel",1,'>');
+                           IF SalesInvLine."VAT %" <> VATPercentage THEN
+                             IF VATPercentage = 0 THEN
+                               VATPercentage := SalesInvLine."VAT %"
+                             ELSE
+                               VATPercentage := -1;
+                           TotalAdjCostLCY := TotalAdjCostLCY + CostCalcMgt.CalcSalesInvLineCostLCY(SalesInvLine);
+                         UNTIL SalesInvLine.NEXT = 0;
+                       VATAmount := AmountInclVAT - CustAmount;
+                       InvDiscAmount := ROUND(InvDiscAmount,currency."Amount Rounding Precision");
+
+                       IF VATPercentage <= 0 THEN
+                         VATAmountText := Text000
+                       ELSE
+                         VATAmountText := STRSUBSTNO(Text001,VATPercentage);
+
+                       IF "Currency Code" = '' THEN
+                         AmountLCY := CustAmount
+                       ELSE
+                         AmountLCY :=
+                           CurrExchRate.ExchangeAmtFCYToLCY(
+                             WORKDATE,"Currency Code",CustAmount,"Currency Factor");
+
+                       CustLedgEntry.SETCURRENTKEY("Document No.");
+                       CustLedgEntry.SETRANGE("Document No.","No.");
+                       CustLedgEntry.SETRANGE("Document Type",CustLedgEntry."Document Type"::Invoice);
+                       CustLedgEntry.SETRANGE("Customer No.","Bill-to Customer No.");
+                       IF CustLedgEntry.FINDFIRST THEN
+                         AmountLCY := CustLedgEntry."Sales (LCY)";
+
+                       ProfitLCY := AmountLCY - CostLCY;
+                       IF AmountLCY <> 0 THEN
+                         ProfitPct := ROUND(100 * ProfitLCY / AmountLCY,0.1);
+
+                       AdjProfitLCY := AmountLCY - TotalAdjCostLCY;
+                       IF AmountLCY <> 0 THEN
+                         AdjProfitPct := ROUND(100 * AdjProfitLCY / AmountLCY,0.1);
+
+                       IF Cust.GET("Bill-to Customer No.") THEN
+                         Cust.CALCFIELDS("Balance (LCY)")
+                       ELSE
+                         CLEAR(Cust);
+
+                       CASE TRUE OF
+                         Cust."Credit Limit (LCY)" = 0:
+                           CreditLimitLCYExpendedPct := 0;
+                         Cust."Balance (LCY)" / Cust."Credit Limit (LCY)" < 0:
+                           CreditLimitLCYExpendedPct := 0;
+                         Cust."Balance (LCY)" / Cust."Credit Limit (LCY)" > 1:
+                           CreditLimitLCYExpendedPct := 10000;
+                         ELSE
+                           CreditLimitLCYExpendedPct := ROUND(Cust."Balance (LCY)" / Cust."Credit Limit (LCY)" * 10000,1);
+                       END;
+
+                       SalesInvLine.CalcVATAmountLines(Rec,TempVATAmountLine);
+                       CurrPage.Subform.FORM.SetTempVATAmountLine(TempVATAmountLine);
+                       CurrPage.Subform.FORM.InitGlobals("Currency Code",FALSE,FALSE,FALSE,FALSE,"VAT Base Discount %");
+
+                       // --> 20170124-WI00-ADV01.01.00-3187-JCD01
+                       AmountAV_APPRO_G := 0;
+                       CLEAR(PostedPrepSalesDisc_L);
+                       PostedPrepSalesDisc_L.SETCURRENTKEY("Invoice No.");
+                       PostedPrepSalesDisc_L.SETRANGE("Invoice No.","No.");
+                       IF NOT PostedPrepSalesDisc_L.ISEMPTY THEN BEGIN
+                         PostedPrepSalesDisc_L.CALCSUMS("Include VAT Apply Amount");
+                         AmountAV_APPRO_G := PostedPrepSalesDisc_L."Include VAT Apply Amount";
+                       END;
+                       // <-- 20170124-WI00-ADV01.01.00-3187-JCD01
+                     END;
+
+  }
+  CONTROLS
+  {
+    { 1900000001;0;Container;
+                ContainerType=ContentArea }
+
+    { 36  ;1   ;Group     ;
+                CaptionML=[ENU=General;
+                           FRA=G'n'ral] }
+
+    { 2   ;2   ;Field     ;
+                CaptionML=[ENU=Amount;
+                           FRA=Montant];
+                SourceExpr=CustAmount + InvDiscAmount;
+                AutoFormatType=1;
+                AutoFormatExpr="Currency Code" }
+
+    { 6   ;2   ;Field     ;
+                CaptionML=[ENU=Inv. Discount Amount;
+                           FRA=Montant remise facture];
+                SourceExpr=InvDiscAmount;
+                AutoFormatType=1;
+                AutoFormatExpr="Currency Code" }
+
+    { 12  ;2   ;Field     ;
+                CaptionML=[ENU=Total;
+                           FRA=Total];
+                SourceExpr=CustAmount;
+                AutoFormatType=1;
+                AutoFormatExpr="Currency Code" }
+
+    { 16  ;2   ;Field     ;
+                CaptionML=[ENU=VAT Amount;
+                           FRA=Montant TVA];
+                SourceExpr=VATAmount;
+                AutoFormatType=1;
+                AutoFormatExpr="Currency Code";
+                CaptionClass=FORMAT (VATAmountText) }
+
+    { 20  ;2   ;Field     ;
+                CaptionML=[ENU=Total Incl. VAT;
+                           FRA=Total TTC];
+                SourceExpr=AmountInclVAT;
+                AutoFormatType=1;
+                AutoFormatExpr="Currency Code" }
+
+    { 1000000001;2;Field  ;
+                Name=Total Avance Appro;
+                CaptionML=FRA=Total Avance Appro;
+                SourceExpr=AmountAV_APPRO_G;
+                Editable=FALSE }
+
+    { 26  ;2   ;Field     ;
+                CaptionML=[ENU=Sales (LCY);
+                           FRA=Ventes DS];
+                SourceExpr=AmountLCY;
+                AutoFormatType=1 }
+
+    { 30  ;2   ;Field     ;
+                CaptionML=[ENU=Original Profit (LCY);
+                           FRA=Marge initiale DS];
+                SourceExpr=ProfitLCY;
+                AutoFormatType=1 }
+
+    { 43  ;2   ;Field     ;
+                CaptionML=[ENU=Adjusted Profit (LCY);
+                           FRA=Marge ajust'e DS];
+                SourceExpr=AdjProfitLCY;
+                AutoFormatType=1 }
+
+    { 32  ;2   ;Field     ;
+                CaptionML=[ENU=Original Profit %;
+                           FRA=% marge initiale];
+                DecimalPlaces=1:1;
+                SourceExpr=ProfitPct }
+
+    { 41  ;2   ;Field     ;
+                CaptionML=[ENU=Adjusted Profit %;
+                           FRA=% marge ajust'e];
+                DecimalPlaces=1:1;
+                SourceExpr=AdjProfitPct }
+
+    { 3   ;2   ;Field     ;
+                CaptionML=[ENU=Quantity;
+                           FRA=Quantit'];
+                DecimalPlaces=0:5;
+                SourceExpr=LineQty }
+
+    { 13  ;2   ;Field     ;
+                CaptionML=[ENU=Parcels;
+                           FRA=Colis];
+                DecimalPlaces=0:5;
+                SourceExpr=TotalParcels }
+
+    { 7   ;2   ;Field     ;
+                CaptionML=[ENU=Net Weight;
+                           FRA=Poids net];
+                DecimalPlaces=0:5;
+                SourceExpr=TotalNetWeight }
+
+    { 10  ;2   ;Field     ;
+                CaptionML=[ENU=Gross Weight;
+                           FRA=Poids brut];
+                DecimalPlaces=0:5;
+                SourceExpr=TotalGrossWeight }
+
+    { 17  ;2   ;Field     ;
+                CaptionML=[ENU=Volume;
+                           FRA=Volume];
+                DecimalPlaces=0:5;
+                SourceExpr=TotalVolume }
+
+    { 28  ;2   ;Field     ;
+                CaptionML=[ENU=Original Cost (LCY);
+                           FRA=Co-t initial DS];
+                SourceExpr=CostLCY;
+                AutoFormatType=1 }
+
+    { 35  ;2   ;Field     ;
+                CaptionML=[ENU=Adjusted Cost (LCY);
+                           FRA=Co-t ajust' DS];
+                SourceExpr=TotalAdjCostLCY;
+                AutoFormatType=1 }
+
+    { 39  ;2   ;Field     ;
+                CaptionML=[ENU=Cost Adjmt. Amount (LCY);
+                           FRA=Montant ajust. co-t DS];
+                SourceExpr=TotalAdjCostLCY - CostLCY;
+                AutoFormatType=1;
+                OnLookup=BEGIN
+                           LookupAdjmtValueEntries;
+                         END;
+                          }
+
+    { 18  ;1   ;Part      ;
+                Name=Subform;
+                PagePartID=Page576;
+                Editable=FALSE }
+
+    { 1903289601;1;Group  ;
+                CaptionML=[ENU=Customer;
+                           FRA=Client] }
+
+    { 24  ;2   ;Field     ;
+                CaptionML=[ENU=Balance (LCY);
+                           FRA=Solde DS];
+                SourceExpr=Cust."Balance (LCY)";
+                AutoFormatType=1 }
+
+    { 21  ;2   ;Field     ;
+                CaptionML=[ENU=Credit Limit (LCY);
+                           FRA=Cr'dit autoris' DS];
+                SourceExpr=Cust."Credit Limit (LCY)";
+                AutoFormatType=1 }
+
+    { 37  ;2   ;Field     ;
+                ExtendedDatatype=Ratio;
+                CaptionML=[ENU=Expended % of Credit Limit (LCY);
+                           FRA=% cr'dit autoris' 'tendu DS];
+                ToolTipML=[ENU=Expended % of Credit Limit (LCY);
+                           FRA=% cr'dit autoris' 'tendu DS];
+                SourceExpr=CreditLimitLCYExpendedPct }
+
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=VAT Amount;FRA=Montant TVA';
+      Text001@1001 : TextConst 'ENU=%1% VAT;FRA=TVA %1%';
+      CurrExchRate@1002 : Record 330;
+      SalesInvLine@1003 : Record 113;
+      Cust@1004 : Record 18;
+      TempVATAmountLine@1005 : TEMPORARY Record 290;
+      currency@1022 : Record 4;
+      TotalAdjCostLCY@1023 : Decimal;
+      CustAmount@1006 : Decimal;
+      AmountInclVAT@1007 : Decimal;
+      InvDiscAmount@1008 : Decimal;
+      VATAmount@1009 : Decimal;
+      CostLCY@1010 : Decimal;
+      ProfitLCY@1011 : Decimal;
+      ProfitPct@1012 : Decimal;
+      AdjProfitLCY@1027 : Decimal;
+      AdjProfitPct@1026 : Decimal;
+      LineQty@1013 : Decimal;
+      TotalNetWeight@1014 : Decimal;
+      TotalGrossWeight@1015 : Decimal;
+      TotalVolume@1016 : Decimal;
+      TotalParcels@1017 : Decimal;
+      AmountLCY@1018 : Decimal;
+      CreditLimitLCYExpendedPct@1019 : Decimal;
+      VATPercentage@1020 : Decimal;
+      VATAmountText@1021 : Text[30];
+      AmountAV_APPRO_G@1000000000 : Decimal;
+
+    BEGIN
+    {
+      // --> BEGIN
+
+      20170124-WI00-ADV01.01.00-3187-JCD01 : ADDCODE (Avance appro : ajout "Total Avance Appro")
+
+      // <-- END
+    }
+    END.
+  }
+}
+

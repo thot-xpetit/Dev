@@ -1,0 +1,183 @@
+OBJECT Codeunit 50078 WS CRM Marketing List
+{
+  OBJECT-PROPERTIES
+  {
+    Date=20/05/20;
+    Heure=00:00:00;
+    Liste versions=ADV20.03.20;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Order@1000000000 : Record 8053457;
+      tErrListNoExist@1000000001 : TextConst 'ENU=The marketing list : %1 doesn''t exists;FRA=La liste marketing : %1 n''existe pas';
+      tErrContactNoExist@1000000002 : TextConst 'ENU=The contact : %1-%2 doesn''t exist.;FRA=Le contact %1-%2:n''existe pas.';
+      tErrContactNoSubscript@1000000003 : TextConst 'ENU=The contact : %1 has not subscription : %2 - 3;FRA=Le contact : %1 ne dispose de l''abonnement : %2 - %3';
+      tErrContactSubscript@1000000004 : TextConst 'ENU=Error during subscription modification : %2 - %3 for the contact : %1;FRA=Erreur lors de la modification de l''abonnement : %2-%3 pour le contact: %1';
+      tErrContactService@1000000005 : TextConst 'ENU=Error during service modification : %2 for the contact : %1;FRA=Erreur lors de la modification du service : %2 pour le contact: %1';
+      tWarmAlreadyNotActive@1000000006 : TextConst 'ENU=The marketing list is already not active : %1;FRA=La liste marketing est d'j. inactive : %1';
+      tWarmAlreadyExist@1000000007 : TextConst 'ENU=The Marketing List Already Exist : %1;FRA=La liste marketing est dej. existante : %1';
+
+    PROCEDURE ImportMarketingList@1000000001(IdList@1000000000 : Text[40];ListName@1000000001 : Text[80];MemberType@1000000002 : Integer;IdAccount@1000000003 : Text[40];AccountName@1000000004 : Text[80];AccountDelete@1000000007 : Boolean;VAR ErrorMessage@1000000005 : Text[255]) ReturnValue : Boolean;
+    VAR
+      ExtranetConn@1000000006 : Record 8053412;
+      CrmCtc@1000000008 : Record 5050;
+    BEGIN
+      ReturnValue := FALSE;
+      ErrorMessage := '';
+      // check if marketing list exists
+      ExtranetConn.SETRANGE(Actif, TRUE);
+      ExtranetConn.SETRANGE(ListMarketting, ListName);
+      IF (ExtranetConn.FINDFIRST()) THEN BEGIN
+        IF (GetContact(IdAccount, AccountName, CrmCtc)) THEN BEGIN
+
+          IF (AccountDelete) THEN BEGIN
+            ReturnValue := DeleteSubscription(ExtranetConn, CrmCtc, ErrorMessage);
+          END ELSE BEGIN
+            ReturnValue := SetSubscription(ExtranetConn, CrmCtc, ErrorMessage);
+          END;
+        END ELSE BEGIN
+          ErrorMessage := STRSUBSTNO(tErrContactNoExist, IdAccount, AccountName);
+        END;
+      END ELSE BEGIN
+        ErrorMessage := STRSUBSTNO(tErrListNoExist, ListName);
+      END;
+    END;
+
+    LOCAL PROCEDURE GetContact@1000000002(IdAccount@1000000000 : Text[40];AccountName@1000000001 : Text[80];VAR Contact@1000000002 : Record 5050) ReturnValue : Boolean;
+    VAR
+      CrmGuid@1000000003 : Record 8053601;
+    BEGIN
+      ReturnValue := FALSE;
+
+      CrmGuid.SETRANGE("Type Data", CrmGuid."Type Data"::Account);
+      CrmGuid.SETRANGE(GUID, IdAccount);
+      IF (NOT CrmGuid.FINDFIRST) THEN BEGIN
+        // Une autre chance peut-^tre relation dans table contact ? (Florent Hugues)
+        Contact.SETRANGE("Dynamics CRM Id", IdAccount);
+        IF (Contact.FINDFIRST()) THEN BEGIN
+          ReturnValue := TRUE;
+        END;
+      END ELSE BEGIN
+        Contact.SETRANGE("No.", CrmGuid."Code Nav");
+        IF (Contact.FINDFIRST()) THEN BEGIN
+          ReturnValue := TRUE;
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE GetAS400Matching@1000000005(ContactNo@1000000000 : Code[20]) ReturnValue : Text[30];
+    VAR
+      InterfaceEngine@1000000001 : Codeunit 8061230;
+    BEGIN
+      ReturnValue := InterfaceEngine.GetReferentialCorrespondance('WMS_CLI', FALSE, ContactNo, FALSE);
+    END;
+
+    LOCAL PROCEDURE DeleteSubscription@1000000007(ExtranetConn@1000000000 : Record 8053412;Ctc@1000000001 : Record 5050;VAR ErrorMessage@1000000002 : Text[255]) ReturnValue : Boolean;
+    VAR
+      AS400Id@1000000003 : Text[30];
+      ContactOption@1000000004 : Record 8053468;
+    BEGIN
+      ReturnValue := FALSE;
+      AS400Id := GetAS400Matching(Ctc."No.");
+
+      ContactOption.SETRANGE("Service Code", ExtranetConn."Service Code");
+      ContactOption.SETRANGE("Option Code", ExtranetConn."Option Code");
+      ContactOption.SETRANGE("Boolean 1", FALSE);
+      ContactOption.SETRANGE("Contact No.", Ctc."No.");
+      IF (ContactOption.FINDSET()) THEN BEGIN
+        IF (ContactOption.Active) THEN BEGIN
+          ContactOption.VALIDATE(Active, FALSE);
+          ContactOption.VALIDATE("Date 2", TODAY);
+          IF (NOT ContactOption.MODIFY()) THEN BEGIN
+            ErrorMessage := STRSUBSTNO(tErrContactSubscript,
+                                       Ctc."No.", ExtranetConn."Service Code", ExtranetConn."Option Code");
+          END ELSE BEGIN
+            //ErrorMessage := ErrorMessage + 'OK1';
+            ReturnValue := TRUE;
+          END;
+        END ELSE BEGIN
+          ErrorMessage := STRSUBSTNO(tWarmAlreadyNotActive, ContactOption.GETFILTERS());
+          ReturnValue := TRUE;
+        END;
+      END ELSE BEGIN
+        ErrorMessage := STRSUBSTNO(tErrContactNoSubscript,
+                                   Ctc."No.", ExtranetConn."Service Code", ExtranetConn."Option Code");
+      END;
+    END;
+
+    LOCAL PROCEDURE SetSubscription@1000000008(ExtranetConn@1000000002 : Record 8053412;Ctc@1000000001 : Record 5050;VAR ErrorMessage@1000000000 : Text[255]) ReturnValue : Boolean;
+    VAR
+      AS400Id@1000000003 : Text[30];
+      ContactOption@1000000004 : Record 8053468;
+      ContactServ@1000000005 : Record 8053467;
+    BEGIN
+      ReturnValue := FALSE;
+      AS400Id := GetAS400Matching(Ctc."No.");
+
+      IF NOT ContactOption.GET(Ctc."No.", ExtranetConn."Service Code", ExtranetConn."Option Code") THEN BEGIN
+        // Subscription creation
+        CLEAR(ContactOption);
+        ContactOption.INIT;
+        ContactOption.VALIDATE("Contact No.", Ctc."No.");
+        ContactOption.VALIDATE("Account Name", Ctc.Name);
+        ContactOption.VALIDATE("Service Code", ExtranetConn."Service Code");
+        ContactOption.VALIDATE("Option Code", ExtranetConn."Option Code");
+        ContactOption.VALIDATE(Active, TRUE);
+        ContactOption.VALIDATE("Date 1", TODAY);
+        ContactOption.VALIDATE("Text 2", AS400Id);
+        IF NOT ContactOption.INSERT() THEN BEGIN
+          // error insert
+          ErrorMessage := STRSUBSTNO(tErrContactSubscript,
+                                     Ctc."No.", ExtranetConn."Service Code", ExtranetConn."Option Code");
+        END ELSE BEGIN
+          // Cr'er le service sur le contact si n'existe pas
+          IF (NOT ContactServ.GET(ContactOption."Contact No.", ContactOption."Service Code")) THEN BEGIN
+            ContactServ.INIT;
+            ContactServ.VALIDATE("Contact No.", ContactOption."Contact No.");
+            ContactServ."Service Code" := ContactOption."Service Code";
+            ContactServ.Active := TRUE;
+            IF (NOT ContactServ.INSERT()) THEN BEGIN
+              //Error insert
+              ErrorMessage := STRSUBSTNO(tErrContactService,
+                                         Ctc."No.", ContactServ."Service Code");
+            END ELSE BEGIN
+              ReturnValue := TRUE;
+            END;
+          END ELSE BEGIN
+            ErrorMessage := STRSUBSTNO(tWarmAlreadyExist, ContactOption.GETFILTERS());
+            ReturnValue := TRUE;
+          END;
+        END;
+      END ELSE BEGIN
+        IF ((NOT ContactOption.Active) OR (ContactOption."Text 2" <> AS400Id)) THEN BEGIN
+          ContactOption.VALIDATE(Active, TRUE);
+          IF NOT ContactOption.Active THEN BEGIN
+            ContactOption.VALIDATE("Date 1", TODAY);
+          END;
+          ContactOption.VALIDATE("Text 2", AS400Id);
+          ContactOption.VALIDATE("Date 2", 0D);
+          IF (NOT ContactOption.MODIFY()) THEN BEGIN
+            //Error modify
+            ErrorMessage := STRSUBSTNO(tErrContactSubscript,
+                                       Ctc."No.", ExtranetConn."Service Code", ExtranetConn."Option Code");
+          END ELSE BEGIN
+            ReturnValue := TRUE;
+          END;
+        END ELSE BEGIN
+          ReturnValue := TRUE;
+        END;
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

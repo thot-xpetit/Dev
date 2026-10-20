@@ -1,0 +1,987 @@
+OBJECT Report 8061934 Process Shipm. Receipt Doc.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18/05/16;
+    Heure=00:00:00;
+    Liste versions=CMB6.00.10.01;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Generate Invoice to Issue;
+               FRA=Traiter documents];
+    ProcessingOnly=Oui;
+    OnPreReport=VAR
+                  DialogCaptions_L@8061934 : ARRAY [4] OF Text[30];
+                  MaxCaptionLength_L@8061933 : Integer;
+                  i_L@8061932 : Integer;
+                  IsSetupOK_L@1180250002 : Boolean;
+                BEGIN
+                  PosMgt_G.CheckProcessPosDate(PositionDate_G);
+
+                  GLSetup_G.GET;
+                  IF GLSetup_G."Ship./Recpt. Init. Date" <> 0D THEN
+                    IF  PositionDate_G < GLSetup_G."Ship./Recpt. Init. Date" THEN
+                      ERROR(Text8061932);
+
+                  CLEAR(DoProcessDoc_G);
+                  DoProcessDoc_G[1] := GLSetup_G."Process Sales Shipment Line";
+                  DoProcessDoc_G[2] := GLSetup_G."Process Return Receipt Line";
+                  DoProcessDoc_G[3] := GLSetup_G."Process Purch. Rcpt. Line";
+                  DoProcessDoc_G[4] := GLSetup_G."Process Return Shipment Line";
+                  DoProcessDoc_G[5] := GLSetup_G."Process Serv. Shipment Line";
+                  DoProcessDoc_G[6] := GLSetup_G."Process Sales Invoice Line";
+                  DoProcessDoc_G[7] := GLSetup_G."Process Sales Cr.Memo Line";
+                  DoProcessDoc_G[8] := GLSetup_G."Process Purch. Inv. Line";
+                  DoProcessDoc_G[9] := GLSetup_G."Process Purch. Cr. Memo Line";
+                  DoProcessDoc_G[10] := GLSetup_G."Process Service Invoice Line";
+
+                  IsSetupOK_L := FALSE;
+                  FOR i_L:=1 TO 10 DO
+                    IF IsSetupOK_L = FALSE THEN
+                      IF DoProcessDoc_G[i_L] = TRUE THEN
+                        IsSetupOK_L := TRUE;
+
+                  IF IsSetupOK_L = FALSE THEN
+                    ERROR(Text8061937);
+
+                  CLEAR(DialogCaptions_L);
+                  DialogCaptions_L[1] := Text8061935;
+                  DialogCaptions_L[2] := Text8061938;
+                  DialogCaptions_L[3] := Text8061940;
+                  DialogCaptions_L[4] := Text8061939;
+
+                  MaxCaptionLength_L := 0;
+                  FOR i_L := 1 TO ARRAYLEN(DialogCaptions_L) DO
+                    IF STRLEN(DialogCaptions_L[i_L]) > MaxCaptionLength_L THEN
+                      MaxCaptionLength_L := STRLEN(DialogCaptions_L[i_L]);
+
+                  FOR i_L := 1 TO ARRAYLEN(DialogCaptions_L) DO
+                    DialogCaptions_L[i_L] := PADSTR(DialogCaptions_L[i_L],MaxCaptionLength_L + 1,' ');
+
+                  Window_G.OPEN(DialogCaptions_L[1] + '@1@@@@@@@@@@@@@@@@@@@@@@@@@@@@\' +
+                                DialogCaptions_L[2] + '#2############################\' +
+                                DialogCaptions_L[3] + '#3############################\' +
+                                DialogCaptions_L[4] + '@4@@@@@@@@@@@@@@@@@@@@@@@@@@@@');
+
+                  SetTotalRecCount(1,10);
+                END;
+
+    OnPostReport=BEGIN
+                   Window_G.CLOSE;
+                 END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table111;
+        DataItemTableView=SORTING(Document No.,Line No.);
+        OnPreDataItem=BEGIN
+                        SetCurrentRecCount(1);
+
+                        IF NOT DoProcessDoc_G[1] THEN
+                          CurrReport.BREAK;
+
+                        Window_G.UPDATE(2,TABLECAPTION);
+                        Window_G.UPDATE(3,Text8061936);
+
+                        RESET;
+                        ShipReceiptInv_G.RESET;
+                        ShipReceiptInv_G.SETCURRENTKEY("Transaction Type","Invoice Posting Date");
+                        ShipReceiptInv_G.SETRANGE("Transaction Type",ShipReceiptInv_G."Transaction Type"::Sales);
+                        ShipReceiptInv_G.SETRANGE("Invoice Posting Date",CALCDATE('<+1D>',PositionDate_G),31129999D);
+                        IF ShipReceiptInv_G.FINDSET THEN BEGIN
+                          REPEAT
+                            "Document No." := ShipReceiptInv_G."Ship./Receipt Doc. No.";
+                            "Line No." := ShipReceiptInv_G."Ship./Receipt Line No.";
+                            MARK(TRUE);
+                          UNTIL ShipReceiptInv_G.NEXT = 0;
+                        END;
+
+                        SETFILTER("Qty. Shipped Not Invoiced",'<>0');
+                        SETRANGE("Posting Date",0D,PositionDate_G);
+                        IF FIND('-') THEN BEGIN
+                          REPEAT
+                            MARK(TRUE);
+                          UNTIL NEXT = 0;
+                        END;
+
+                        SETCURRENTKEY("Document No.","Line No.");
+                        SETRANGE("Qty. Shipped Not Invoiced");
+                        MARKEDONLY(TRUE);
+                        SETRANGE("Date Filter",0D,PositionDate_G);
+
+                        SetTotalRecCount(4,COUNT);
+                        Window_G.UPDATE(3,Text8061939);
+                      END;
+
+        OnAfterGetRecord=VAR
+                           SalesShipHeader_L@8061932 : Record 110;
+                         BEGIN
+                           SetCurrentRecCount(4);
+
+                           IF NOT CheckExistingEntry(DATABASE::"Sales Shipment Line","Document No.","Line No.") THEN
+                             CurrReport.SKIP;
+
+                           CALCFIELDS("Invoiced Qty at Date");
+
+                           SalesShipHeader_L.GET("Document No.");
+
+                           PositionAmount_G := PosMgt_G.CalcAmount(PositionDate_G,Quantity - "Invoiced Qty at Date","Unit Price","Line Discount %",
+                             SalesShipHeader_L."Currency Code");
+
+                           IF Type = Type::"G/L Account" THEN
+                             PosMgt_G.InsertDocPosEntry(DATABASE::"Sales Shipment Line","No.",
+                               PositionDate_G,PositionAmount_G,"Document No.","Line No.","Invoiced Qty at Date")
+                           ELSE BEGIN
+                             GenPostingSetup_G.GET("Gen. Bus. Posting Group","Gen. Prod. Posting Group");
+                             PosMgt_G.InsertDocPosEntry(DATABASE::"Sales Shipment Line",GenPostingSetup_G."Sales Account",
+                               PositionDate_G,PositionAmount_G,"Document No.","Line No.","Invoiced Qty at Date");
+                           END;
+                         END;
+
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemTable=Table6661;
+        DataItemTableView=SORTING(Document No.,Line No.);
+        OnPreDataItem=BEGIN
+                        SetCurrentRecCount(1);
+
+                        IF NOT DoProcessDoc_G[2] THEN
+                          CurrReport.BREAK;
+
+                        Window_G.UPDATE(2,TABLECAPTION);
+                        Window_G.UPDATE(3,Text8061936);
+
+                        RESET;
+                        ShipReceiptInv_G.RESET;
+                        ShipReceiptInv_G.SETCURRENTKEY("Transaction Type","Invoice Posting Date");
+                        ShipReceiptInv_G.SETRANGE("Transaction Type",ShipReceiptInv_G."Transaction Type"::"Sales Return");
+                        ShipReceiptInv_G.SETRANGE("Invoice Posting Date",CALCDATE('<+1D>',PositionDate_G),31129999D);
+                        IF ShipReceiptInv_G.FINDSET THEN BEGIN
+                          REPEAT
+                            "Document No." := ShipReceiptInv_G."Ship./Receipt Doc. No.";
+                            "Line No." := ShipReceiptInv_G."Ship./Receipt Line No.";
+                            MARK(TRUE);
+                          UNTIL ShipReceiptInv_G.NEXT = 0;
+                        END;
+
+                        SETFILTER("Return Qty. Rcd. Not Invd.",'<>0');
+                        SETRANGE("Posting Date",0D,PositionDate_G);
+                        IF FIND('-') THEN BEGIN
+                          REPEAT
+                            MARK(TRUE);
+                          UNTIL NEXT = 0;
+                        END;
+
+                        SETCURRENTKEY("Document No.","Line No.");
+                        SETRANGE("Return Qty. Rcd. Not Invd.");
+                        MARKEDONLY(TRUE);
+                        SETRANGE("Date Filter",0D,PositionDate_G);
+
+                        SetTotalRecCount(4,COUNT);
+                        Window_G.UPDATE(3,Text8061939);
+                      END;
+
+        OnAfterGetRecord=VAR
+                           ReturnRcptHeader_L@8061932 : Record 6660;
+                         BEGIN
+                           SetCurrentRecCount(4);
+
+                           IF NOT CheckExistingEntry(DATABASE::"Return Receipt Line","Document No.","Line No.") THEN
+                             CurrReport.SKIP;
+
+                           CALCFIELDS("Invoiced Qty at Date");
+
+                           ReturnRcptHeader_L.GET("Document No.");
+
+                           PositionAmount_G := PosMgt_G.CalcAmount(PositionDate_G,Quantity - "Invoiced Qty at Date","Unit Price","Line Discount %",
+                             ReturnRcptHeader_L."Currency Code");
+
+                           IF Type = Type::"G/L Account" THEN
+                             PosMgt_G.InsertDocPosEntry(DATABASE::"Return Receipt Line","No.",
+                               PositionDate_G,-PositionAmount_G,"Document No.","Line No.","Invoiced Qty at Date")
+                           ELSE BEGIN
+                             GenPostingSetup_G.GET("Gen. Bus. Posting Group","Gen. Prod. Posting Group");
+                             PosMgt_G.InsertDocPosEntry(DATABASE::"Return Receipt Line",GenPostingSetup_G."Sales Account",
+                               PositionDate_G,-PositionAmount_G,"Document No.","Line No.","Invoiced Qty at Date");
+                           END;
+                         END;
+
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemTable=Table121;
+        DataItemTableView=SORTING(Document No.,Line No.);
+        OnPreDataItem=BEGIN
+                        SetCurrentRecCount(1);
+
+                        IF NOT DoProcessDoc_G[3] THEN
+                          CurrReport.BREAK;
+
+                        Window_G.UPDATE(2,TABLECAPTION);
+                        Window_G.UPDATE(3,Text8061936);
+
+                        RESET;
+                        ShipReceiptInv_G.RESET;
+                        ShipReceiptInv_G.SETCURRENTKEY("Transaction Type","Invoice Posting Date");
+                        ShipReceiptInv_G.SETRANGE("Transaction Type",ShipReceiptInv_G."Transaction Type"::Purchase);
+                        ShipReceiptInv_G.SETRANGE("Invoice Posting Date",CALCDATE('<+1D>',PositionDate_G),31129999D);
+                        IF ShipReceiptInv_G.FINDSET THEN BEGIN
+                          REPEAT
+                            "Document No." := ShipReceiptInv_G."Ship./Receipt Doc. No.";
+                            "Line No." := ShipReceiptInv_G."Ship./Receipt Line No.";
+                            MARK(TRUE);
+                          UNTIL ShipReceiptInv_G.NEXT = 0;
+                        END;
+
+                        SETFILTER("Qty. Rcd. Not Invoiced",'<>0');
+                        SETRANGE("Posting Date",0D,PositionDate_G);
+                        IF FIND('-') THEN BEGIN
+                          REPEAT
+                            MARK(TRUE);
+                          UNTIL NEXT = 0;
+                        END;
+
+                        SETCURRENTKEY("Document No.","Line No.");
+                        SETRANGE("Qty. Rcd. Not Invoiced");
+                        MARKEDONLY(TRUE);
+                        SETRANGE("Date Filter",0D,PositionDate_G);
+
+                        SetTotalRecCount(4,COUNT);
+                        Window_G.UPDATE(3,Text8061939);
+                      END;
+
+        OnAfterGetRecord=VAR
+                           PurchRcptHeader_L@8061932 : Record 120;
+                         BEGIN
+                           SetCurrentRecCount(4);
+
+                           IF NOT CheckExistingEntry(DATABASE::"Purch. Rcpt. Line","Document No.","Line No.") THEN
+                             CurrReport.SKIP;
+
+                           // --> 20160518-WI00-ADV01.01.00-3014-JCD01
+                           {BEFORE
+                           // --> 201060202-WI00-TER01.01.00-2687-BSI01
+                           IF "Transport Inv. Mgt. Entry No." <> 0 THEN
+                             RecTranInvMgt_G.GET("Transport Inv. Mgt. Entry No.");
+                             IF RecTranInvMgt_G.Canceled THEN
+                               CurrReport.SKIP;
+                           // <-- 201060202-WI00-TER01.01.00-2687-BSI01
+                           AFTER}
+                           IF "Transport Inv. Mgt. Entry No." <> 0 THEN BEGIN
+                             RecTranInvMgt_G.GET("Transport Inv. Mgt. Entry No.");
+                             IF RecTranInvMgt_G.Canceled THEN
+                               CurrReport.SKIP;
+                           END;
+                           // <-- 20160518-WI00-ADV01.01.00-3014-JCD01
+
+                           CALCFIELDS("Invoiced Qty at Date");
+
+                           PurchRcptHeader_L.GET("Document No.");
+
+                           PositionAmount_G := PosMgt_G.CalcAmount(PositionDate_G,Quantity - "Invoiced Qty at Date","Direct Unit Cost","Line Discount %",
+                             PurchRcptHeader_L."Currency Code");
+
+                           IF Type = Type::"G/L Account" THEN
+                             PosMgt_G.InsertDocPosEntry(DATABASE::"Purch. Rcpt. Line","No.",
+                               PositionDate_G,-PositionAmount_G,"Document No.","Line No.","Invoiced Qty at Date")
+                           ELSE BEGIN
+                             GenPostingSetup_G.GET("Gen. Bus. Posting Group","Gen. Prod. Posting Group");
+                             PosMgt_G.InsertDocPosEntry(DATABASE::"Purch. Rcpt. Line",GenPostingSetup_G."Purch. Account",
+                               PositionDate_G,-PositionAmount_G,"Document No.","Line No.","Invoiced Qty at Date");
+                           END;
+                         END;
+
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemTable=Table6651;
+        DataItemTableView=SORTING(Document No.,Line No.);
+        OnPreDataItem=BEGIN
+                        SetCurrentRecCount(1);
+
+                        IF NOT DoProcessDoc_G[4] THEN
+                          CurrReport.BREAK;
+
+                        Window_G.UPDATE(2,TABLECAPTION);
+                        Window_G.UPDATE(3,Text8061936);
+
+                        RESET;
+                        ShipReceiptInv_G.RESET;
+                        ShipReceiptInv_G.SETCURRENTKEY("Transaction Type","Invoice Posting Date");
+                        ShipReceiptInv_G.SETRANGE("Transaction Type",ShipReceiptInv_G."Transaction Type"::"Purchase Return");
+                        ShipReceiptInv_G.SETRANGE("Invoice Posting Date",CALCDATE('<+1D>',PositionDate_G),31129999D);
+                        IF ShipReceiptInv_G.FINDSET THEN BEGIN
+                          REPEAT
+                            "Document No." := ShipReceiptInv_G."Ship./Receipt Doc. No.";
+                            "Line No." := ShipReceiptInv_G."Ship./Receipt Line No.";
+                            MARK(TRUE);
+                          UNTIL ShipReceiptInv_G.NEXT = 0;
+                        END;
+
+                        SETFILTER("Return Qty. Shipped Not Invd.",'<>0');
+                        SETRANGE("Posting Date",0D,PositionDate_G);
+                        IF FIND('-') THEN BEGIN
+                          REPEAT
+                            MARK(TRUE);
+                          UNTIL NEXT = 0;
+                        END;
+
+                        SETCURRENTKEY("Document No.","Line No.");
+                        SETRANGE("Return Qty. Shipped Not Invd.");
+                        MARKEDONLY(TRUE);
+                        SETRANGE("Date Filter",0D,PositionDate_G);
+
+                        // --> 20131104-8061050-CMB6.00.10.01-1030-BSA01
+                        // BEFORE
+                        //SetTotalRecCount(6,COUNT);
+                        // AFTER
+                        SetTotalRecCount(4,COUNT);
+                        // <-- 20131104-8061050-CMB6.00.10.01-1030-BSA01
+                        Window_G.UPDATE(3,Text8061939);
+                      END;
+
+        OnAfterGetRecord=VAR
+                           ReturnShipHeader_L@8061932 : Record 6650;
+                         BEGIN
+                           // --> 20131104-8061050-CMB6.00.10.01-1030-BSA01
+                           // BEFORE
+                           //SetCurrentRecCount(6);
+                           // AFTER
+                           SetCurrentRecCount(4);
+                           // <-- 20131104-8061050-CMB6.00.10.01-1030-BSA01
+                           IF NOT CheckExistingEntry(DATABASE::"Return Shipment Line","Document No.","Line No.") THEN
+                             CurrReport.SKIP;
+
+                           CALCFIELDS("Invoiced Qty at Date");
+
+                           ReturnShipHeader_L.GET("Document No.");
+
+                           PositionAmount_G := PosMgt_G.CalcAmount(PositionDate_G,Quantity - "Invoiced Qty at Date","Direct Unit Cost","Line Discount %",
+                             ReturnShipHeader_L."Currency Code");
+
+                           IF Type = Type::"G/L Account" THEN
+                             PosMgt_G.InsertDocPosEntry(DATABASE::"Return Shipment Line","No.",
+                               PositionDate_G,PositionAmount_G,"Document No.","Line No.","Invoiced Qty at Date")
+                           ELSE BEGIN
+                             GenPostingSetup_G.GET("Gen. Bus. Posting Group","Gen. Prod. Posting Group");
+                             PosMgt_G.InsertDocPosEntry(DATABASE::"Return Shipment Line",GenPostingSetup_G."Purch. Account",
+                               PositionDate_G,PositionAmount_G,"Document No.","Line No.","Invoiced Qty at Date");
+                           END;
+                         END;
+
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemTable=Table5991;
+        DataItemTableView=SORTING(Document No.,Line No.);
+        OnPreDataItem=BEGIN
+                        SetCurrentRecCount(1);
+
+                        IF NOT DoProcessDoc_G[5] THEN
+                          CurrReport.BREAK;
+
+                        Window_G.UPDATE(2,TABLECAPTION);
+                        Window_G.UPDATE(3,Text8061936);
+
+                        RESET;
+                        ShipReceiptInv_G.RESET;
+                        ShipReceiptInv_G.SETCURRENTKEY("Transaction Type","Invoice Posting Date");
+                        ShipReceiptInv_G.SETRANGE("Transaction Type",ShipReceiptInv_G."Transaction Type"::"Service Sales");
+                        ShipReceiptInv_G.SETRANGE("Invoice Posting Date",CALCDATE('<+1D>',PositionDate_G),31129999D);
+                        IF ShipReceiptInv_G.FINDSET THEN BEGIN
+                          REPEAT
+                            "Document No." := ShipReceiptInv_G."Ship./Receipt Doc. No.";
+                            "Line No." := ShipReceiptInv_G."Ship./Receipt Line No.";
+                            MARK(TRUE);
+                          UNTIL ShipReceiptInv_G.NEXT = 0;
+                        END;
+
+                        SETFILTER("Qty. Shipped Not Invoiced",'<>0');
+                        SETRANGE("Posting Date",0D,PositionDate_G);
+                        IF FIND('-') THEN BEGIN
+                          REPEAT
+                            MARK(TRUE);
+                          UNTIL NEXT = 0;
+                        END;
+
+                        SETCURRENTKEY("Document No.","Line No.");
+                        SETRANGE("Qty. Shipped Not Invoiced");
+                        MARKEDONLY(TRUE);
+                        SETRANGE("Date Filter",0D,PositionDate_G);
+
+                        SetTotalRecCount(4,COUNT);
+                        Window_G.UPDATE(3,Text8061939);
+                      END;
+
+        OnAfterGetRecord=VAR
+                           ServShipHeader_L@8061932 : Record 5990;
+                         BEGIN
+                           SetCurrentRecCount(4);
+
+                           IF NOT CheckExistingEntry(DATABASE::"Service Shipment Line","Document No.","Line No.") THEN
+                             CurrReport.SKIP;
+
+                           CALCFIELDS("Invoiced Qty at Date");
+
+                           ServShipHeader_L.GET("Document No.");
+
+                           PositionAmount_G := PosMgt_G.CalcAmount(PositionDate_G,Quantity - "Invoiced Qty at Date","Unit Price","Line Discount %",
+                             ServShipHeader_L."Currency Code");
+
+                           IF Type = Type::"G/L Account" THEN
+                             PosMgt_G.InsertDocPosEntry(DATABASE::"Service Shipment Line","No.",
+                               PositionDate_G,PositionAmount_G,"Document No.","Line No.","Invoiced Qty at Date")
+                           ELSE BEGIN
+                             GenPostingSetup_G.GET("Gen. Bus. Posting Group","Gen. Prod. Posting Group");
+                             PosMgt_G.InsertDocPosEntry(DATABASE::"Service Shipment Line",GenPostingSetup_G."Sales Account",
+                               PositionDate_G,PositionAmount_G,"Document No.","Line No.","Invoiced Qty at Date");
+                           END;
+                         END;
+
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemTable=Table113;
+        DataItemTableView=SORTING(Document No.,Line No.);
+        OnPreDataItem=BEGIN
+                        SetCurrentRecCount(1);
+
+                        IF NOT DoProcessDoc_G[6] THEN
+                          CurrReport.BREAK;
+
+                        Window_G.UPDATE(2,TABLECAPTION);
+                        Window_G.UPDATE(3,Text8061936);
+
+                        RESET;
+                        ShipReceiptInv_G.RESET;
+                        ShipReceiptInv_G.SETCURRENTKEY("Transaction Type","Ship./Receipt Posting Date");
+                        ShipReceiptInv_G.SETRANGE("Transaction Type",ShipReceiptInv_G."Transaction Type"::Sales);
+                        ShipReceiptInv_G.SETRANGE("Ship./Receipt Posting Date",CALCDATE('<+1D>',PositionDate_G),31129999D);
+                        IF ShipReceiptInv_G.FINDSET THEN BEGIN
+                          REPEAT
+                            "Document No." := ShipReceiptInv_G."Inv./Cr. Memo Doc. No.";
+                            "Line No." := ShipReceiptInv_G."Inv./Cr. Memo Line No.";
+                            MARK(TRUE);
+                          UNTIL ShipReceiptInv_G.NEXT = 0;
+                        END;
+
+                        SETCURRENTKEY("Document No.","Line No.");
+                        MARKEDONLY(TRUE);
+                        SETRANGE("Posting Date",0D,PositionDate_G);
+                        SETRANGE("Date Filter",0D,PositionDate_G);
+
+                        SetTotalRecCount(4,COUNT);
+                        Window_G.UPDATE(3,Text8061939);
+                      END;
+
+        OnAfterGetRecord=VAR
+                           SalesInvHeader_L@1180250002 : Record 112;
+                         BEGIN
+                           SetCurrentRecCount(4);
+
+                           IF NOT CheckExistingEntry(DATABASE::"Sales Invoice Line","Document No.","Line No.") THEN
+                             CurrReport.SKIP;
+
+                           CALCFIELDS("Shipped Qty at Date");
+
+                           SalesInvHeader_L.GET("Document No.");
+
+                           PositionAmount_G := PosMgt_G.CalcAmount(PositionDate_G,Quantity - "Shipped Qty at Date","Unit Price","Line Discount %",
+                             SalesInvHeader_L."Currency Code");
+
+                           IF Type = Type::"G/L Account" THEN
+                             PosMgt_G.InsertDocPosEntry(DATABASE::"Sales Invoice Line","No.",
+                               PositionDate_G,-PositionAmount_G,"Document No.","Line No.","Shipped Qty at Date")
+                           ELSE BEGIN
+                             GenPostingSetup_G.GET("Gen. Bus. Posting Group","Gen. Prod. Posting Group");
+                             PosMgt_G.InsertDocPosEntry(DATABASE::"Sales Invoice Line",GenPostingSetup_G."Sales Account",
+                               PositionDate_G,-PositionAmount_G,"Document No.","Line No.","Shipped Qty at Date");
+                           END;
+                         END;
+
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemTable=Table115;
+        DataItemTableView=SORTING(Document No.,Line No.);
+        OnPreDataItem=BEGIN
+                        SetCurrentRecCount(1);
+
+                        IF NOT DoProcessDoc_G[7] THEN
+                          CurrReport.BREAK;
+
+                        Window_G.UPDATE(2,TABLECAPTION);
+                        Window_G.UPDATE(3,Text8061936);
+
+                        RESET;
+                        ShipReceiptInv_G.RESET;
+                        ShipReceiptInv_G.SETCURRENTKEY("Transaction Type","Ship./Receipt Posting Date");
+                        ShipReceiptInv_G.SETRANGE("Transaction Type",ShipReceiptInv_G."Transaction Type"::"Sales Return");
+                        ShipReceiptInv_G.SETRANGE("Ship./Receipt Posting Date",CALCDATE('<+1D>',PositionDate_G),31129999D);
+                        IF ShipReceiptInv_G.FINDSET THEN BEGIN
+                          REPEAT
+                            "Document No." := ShipReceiptInv_G."Inv./Cr. Memo Doc. No.";
+                            "Line No." := ShipReceiptInv_G."Inv./Cr. Memo Line No.";
+                            MARK(TRUE);
+                          UNTIL ShipReceiptInv_G.NEXT = 0;
+                        END;
+
+                        SETCURRENTKEY("Document No.","Line No.");
+                        MARKEDONLY(TRUE);
+                        SETRANGE("Posting Date",0D,PositionDate_G);
+                        SETRANGE("Date Filter",0D,PositionDate_G);
+
+                        SetTotalRecCount(4,COUNT);
+                        Window_G.UPDATE(3,Text8061939);
+                      END;
+
+        OnAfterGetRecord=VAR
+                           SalesCrMemoHeader_L@1180250002 : Record 114;
+                         BEGIN
+                           SetCurrentRecCount(4);
+
+                           IF NOT CheckExistingEntry(DATABASE::"Sales Cr.Memo Line","Document No.","Line No.") THEN
+                             CurrReport.SKIP;
+
+                           CALCFIELDS("Received Qty at Date");
+
+                           SalesCrMemoHeader_L.GET("Document No.");
+
+                           PositionAmount_G := PosMgt_G.CalcAmount(PositionDate_G,Quantity - "Received Qty at Date","Unit Price","Line Discount %",
+                             SalesCrMemoHeader_L."Currency Code");
+
+                           IF Type = Type::"G/L Account" THEN
+                             PosMgt_G.InsertDocPosEntry(DATABASE::"Sales Cr.Memo Line","No.",
+                               PositionDate_G,PositionAmount_G,"Document No.","Line No.","Received Qty at Date")
+                           ELSE BEGIN
+                             GenPostingSetup_G.GET("Gen. Bus. Posting Group","Gen. Prod. Posting Group");
+                             PosMgt_G.InsertDocPosEntry(DATABASE::"Sales Cr.Memo Line",GenPostingSetup_G."Sales Account",
+                               PositionDate_G,PositionAmount_G,"Document No.","Line No.","Received Qty at Date");
+                           END;
+                         END;
+
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemTable=Table123;
+        DataItemTableView=SORTING(Document No.,Line No.);
+        OnPreDataItem=BEGIN
+                        SetCurrentRecCount(1);
+
+                        IF NOT DoProcessDoc_G[8] THEN
+                          CurrReport.BREAK;
+
+                        Window_G.UPDATE(2,TABLECAPTION);
+                        Window_G.UPDATE(3,Text8061936);
+
+                        RESET;
+                        ShipReceiptInv_G.RESET;
+                        ShipReceiptInv_G.SETCURRENTKEY("Transaction Type","Ship./Receipt Posting Date");
+                        ShipReceiptInv_G.SETRANGE("Transaction Type",ShipReceiptInv_G."Transaction Type"::Purchase);
+                        ShipReceiptInv_G.SETRANGE("Ship./Receipt Posting Date",CALCDATE('<+1D>',PositionDate_G),31129999D);
+                        IF ShipReceiptInv_G.FINDSET THEN BEGIN
+                          REPEAT
+                            "Document No." := ShipReceiptInv_G."Inv./Cr. Memo Doc. No.";
+                            "Line No." := ShipReceiptInv_G."Inv./Cr. Memo Line No.";
+                            MARK(TRUE);
+                          UNTIL ShipReceiptInv_G.NEXT = 0;
+                        END;
+
+                        SETCURRENTKEY("Document No.","Line No.");
+                        MARKEDONLY(TRUE);
+                        SETRANGE("Posting Date",0D,PositionDate_G);
+                        SETRANGE("Date Filter",0D,PositionDate_G);
+
+                        SetTotalRecCount(4,COUNT);
+                        Window_G.UPDATE(3,Text8061939);
+                      END;
+
+        OnAfterGetRecord=VAR
+                           PurchInvHeader_L@1180250002 : Record 122;
+                         BEGIN
+                           SetCurrentRecCount(4);
+
+                           IF NOT CheckExistingEntry(DATABASE::"Purch. Inv. Line","Document No.","Line No.") THEN
+                             CurrReport.SKIP;
+
+                           CALCFIELDS("Received Qty at Date");
+
+                           PurchInvHeader_L.GET("Document No.");
+
+                           PositionAmount_G := PosMgt_G.CalcAmount(PositionDate_G,Quantity - "Received Qty at Date","Direct Unit Cost","Line Discount %",
+                             PurchInvHeader_L."Currency Code");
+
+                           IF Type = Type::"G/L Account" THEN
+                             PosMgt_G.InsertDocPosEntry(DATABASE::"Purch. Inv. Line","No.",
+                               PositionDate_G,PositionAmount_G,"Document No.","Line No.","Received Qty at Date")
+                           ELSE BEGIN
+                             GenPostingSetup_G.GET("Gen. Bus. Posting Group","Gen. Prod. Posting Group");
+                             PosMgt_G.InsertDocPosEntry(DATABASE::"Purch. Inv. Line",GenPostingSetup_G."Purch. Account",
+                               PositionDate_G,PositionAmount_G,"Document No.","Line No.","Received Qty at Date");
+                           END;
+                         END;
+
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemTable=Table125;
+        DataItemTableView=SORTING(Document No.,Line No.);
+        OnPreDataItem=BEGIN
+                        SetCurrentRecCount(1);
+
+                        IF NOT DoProcessDoc_G[9] THEN
+                          CurrReport.BREAK;
+
+                        Window_G.UPDATE(2,TABLECAPTION);
+                        Window_G.UPDATE(3,Text8061936);
+
+                        RESET;
+                        ShipReceiptInv_G.RESET;
+                        ShipReceiptInv_G.SETCURRENTKEY("Transaction Type","Ship./Receipt Posting Date");
+                        ShipReceiptInv_G.SETRANGE("Transaction Type",ShipReceiptInv_G."Transaction Type"::"Purchase Return");
+                        ShipReceiptInv_G.SETRANGE("Ship./Receipt Posting Date",CALCDATE('<+1D>',PositionDate_G),31129999D);
+                        IF ShipReceiptInv_G.FINDSET THEN BEGIN
+                          REPEAT
+                            "Document No." := ShipReceiptInv_G."Inv./Cr. Memo Doc. No.";
+                            "Line No." := ShipReceiptInv_G."Inv./Cr. Memo Line No.";
+                            MARK(TRUE);
+                          UNTIL ShipReceiptInv_G.NEXT = 0;
+                        END;
+
+                        SETCURRENTKEY("Document No.","Line No.");
+                        MARKEDONLY(TRUE);
+                        SETRANGE("Posting Date",0D,PositionDate_G);
+                        SETRANGE("Date Filter",0D,PositionDate_G);
+
+                        SetTotalRecCount(4,COUNT);
+                        Window_G.UPDATE(3,Text8061939);
+                      END;
+
+        OnAfterGetRecord=VAR
+                           PurchCrMemoHeader_L@1180250002 : Record 124;
+                         BEGIN
+                           SetCurrentRecCount(4);
+
+                           IF NOT CheckExistingEntry(DATABASE::"Purch. Cr. Memo Line","Document No.","Line No.") THEN
+                             CurrReport.SKIP;
+
+                           CALCFIELDS("Shipped Qty at Date");
+
+                           PurchCrMemoHeader_L.GET("Document No.");
+
+                           PositionAmount_G := PosMgt_G.CalcAmount(PositionDate_G,Quantity - "Shipped Qty at Date","Direct Unit Cost","Line Discount %",
+                             PurchCrMemoHeader_L."Currency Code");
+
+                           IF Type = Type::"G/L Account" THEN
+                             PosMgt_G.InsertDocPosEntry(DATABASE::"Purch. Cr. Memo Line","No.",
+                               PositionDate_G,-PositionAmount_G,"Document No.","Line No.","Shipped Qty at Date")
+                           ELSE BEGIN
+                             GenPostingSetup_G.GET("Gen. Bus. Posting Group","Gen. Prod. Posting Group");
+                             PosMgt_G.InsertDocPosEntry(DATABASE::"Purch. Cr. Memo Line",GenPostingSetup_G."Purch. Account",
+                               PositionDate_G,-PositionAmount_G,"Document No.","Line No.","Shipped Qty at Date");
+                           END;
+                         END;
+
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemTable=Table5993;
+        DataItemTableView=SORTING(Document No.,Line No.);
+        OnPreDataItem=BEGIN
+                        SetCurrentRecCount(1);
+
+                        IF NOT DoProcessDoc_G[3] THEN
+                          CurrReport.BREAK;
+
+                        Window_G.UPDATE(2,TABLECAPTION);
+                        Window_G.UPDATE(3,Text8061936);
+
+                        RESET;
+                        ShipReceiptInv_G.RESET;
+                        ShipReceiptInv_G.SETCURRENTKEY("Transaction Type","Ship./Receipt Posting Date");
+                        ShipReceiptInv_G.SETRANGE("Transaction Type",ShipReceiptInv_G."Transaction Type"::"Service Sales");
+                        ShipReceiptInv_G.SETRANGE("Ship./Receipt Posting Date",CALCDATE('<+1D>',PositionDate_G),31129999D);
+                        IF ShipReceiptInv_G.FINDSET THEN BEGIN
+                          REPEAT
+                            "Document No." := ShipReceiptInv_G."Inv./Cr. Memo Doc. No.";
+                            "Line No." := ShipReceiptInv_G."Inv./Cr. Memo Line No.";
+                            MARK(TRUE);
+                          UNTIL ShipReceiptInv_G.NEXT = 0;
+                        END;
+
+                        SETCURRENTKEY("Document No.","Line No.");
+                        MARKEDONLY(TRUE);
+                        SETRANGE("Posting Date",0D,PositionDate_G);
+                        SETRANGE("Date Filter",0D,PositionDate_G);
+
+                        SetTotalRecCount(4,COUNT);
+                        Window_G.UPDATE(3,Text8061939);
+                      END;
+
+        OnAfterGetRecord=VAR
+                           ServInvHeader_L@1180250002 : Record 5992;
+                         BEGIN
+                           SetCurrentRecCount(4);
+
+                           IF NOT CheckExistingEntry(DATABASE::"Service Invoice Line","Document No.","Line No.") THEN
+                             CurrReport.SKIP;
+
+                           CALCFIELDS("Shipped Qty at Date");
+
+                           ServInvHeader_L.GET("Document No.");
+
+                           PositionAmount_G := PosMgt_G.CalcAmount(PositionDate_G,Quantity - "Shipped Qty at Date","Unit Price","Line Discount %",
+                             ServInvHeader_L."Currency Code");
+
+                           IF Type = Type::"G/L Account" THEN
+                             PosMgt_G.InsertDocPosEntry(DATABASE::"Service Invoice Line","No.",
+                               PositionDate_G,-PositionAmount_G,"Document No.","Line No.","Shipped Qty at Date")
+                           ELSE BEGIN
+                             GenPostingSetup_G.GET("Gen. Bus. Posting Group","Gen. Prod. Posting Group");
+                             PosMgt_G.InsertDocPosEntry(DATABASE::"Service Invoice Line",GenPostingSetup_G."Sales Account",
+                               PositionDate_G,-PositionAmount_G,"Document No.","Line No.","Shipped Qty at Date");
+                           END;
+                         END;
+
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=5280;
+      Height=660;
+    }
+    CONTROLS
+    {
+      { 8061932;Label     ;110  ;110  ;3300 ;440  ;ParentControl=8061933;
+                                                   InPage=-1 }
+      { 8061933;TextBox   ;3520 ;110  ;1700 ;440  ;Editable=Non;
+                                                   CaptionML=[ENU=Cut-Off Date;
+                                                              FRA=Date situation];
+                                                   SourceExpr=PositionDate_G }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 8061932; ;Container ;
+                  ContainerType=ContentArea }
+
+      { 8061933;1;Group     ;
+                  GroupType=Group }
+
+      { 8061934;2;Field     ;
+                  CaptionML=[ENU=Position Date;
+                             FRA=Date situation];
+                  SourceExpr=PositionDate_G;
+                  Editable=FALSE }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      PositionDate_G@8061943 : Date;
+      PosMgt_G@8061942 : Codeunit 8061932;
+      PositionAmount_G@8061941 : Decimal;
+      CurrExchRate_G@8061940 : Record 330;
+      GenPostingSetup_G@8061939 : Record 252;
+      PositionEntry_G@8061938 : Record 8061932;
+      ShipReceiptInv_G@8061937 : Record 8061934;
+      Currency_G@8061936 : Record 4;
+      TotalRecCount_G@8061935 : ARRAY [12] OF Integer;
+      CurrentRecCount_G@8061934 : ARRAY [12] OF Integer;
+      Window_G@8061933 : Dialog;
+      GLSetup_G@8061932 : Record 98;
+      Text8061932@8061948 : TextConst 'ENU=The process should be released with a date after the shipment and receipt initialization date.;FRA=Le traitement ne peut ^tre lanc' . une date ant'rieure . la date d''initialisation des exp'ditions / r'ceptions factur'es.';
+      Text8061935@8061945 : TextConst 'ENU=General Processing;FRA=Traitement g'n'ral';
+      Text8061936@8061944 : TextConst 'FRA=Pr'paration';
+      DoProcessDoc_G@1180250002 : ARRAY [12] OF Boolean;
+      Text8061937@1180250005 : TextConst 'FRA=Vous devez d'finir au moins un type de document . traiter dans les paramStres.';
+      Text8061938@1180250006 : TextConst 'FRA=Traitement en cours';
+      Text8061939@1180250007 : TextConst 'FRA=Traitement';
+      Text8061940@1180250003 : TextConst 'FRA=Phase';
+      RecTranInvMgt_G@1000000000 : Record 60017;
+
+    PROCEDURE CheckExistingEntry@8061943(TableID_P@8061934 : Integer;DocNo_P@8061933 : Code[20];DocLineNo_P@8061932 : Integer) : Boolean;
+    BEGIN
+      WITH PositionEntry_G DO BEGIN
+
+        RESET;
+        SETCURRENTKEY("Position Source","Document No.","Document Line No.","Position Date");
+
+        CASE TableID_P OF
+          DATABASE::"Sales Shipment Line":
+            SETRANGE("Position Source","Position Source"::"Sales Shipment Line");
+          DATABASE::"Return Receipt Line":
+            SETRANGE("Position Source","Position Source"::"Return Receipt Line");
+          DATABASE::"Purch. Rcpt. Line":
+            SETRANGE("Position Source","Position Source"::"Purch. Rcpt. Line");
+          DATABASE::"Return Shipment Line":
+            SETRANGE("Position Source","Position Source"::"Return Shipment Line");
+          DATABASE::"Service Shipment Line":
+            SETRANGE("Position Source","Position Source"::"Service Shipment Line");
+          DATABASE::"Sales Invoice Line":
+            SETRANGE("Position Source","Position Source"::"Sales Inv. Line");
+          DATABASE::"Sales Cr.Memo Line":
+            SETRANGE("Position Source","Position Source"::"Sales Cr. Line");
+          DATABASE::"Purch. Inv. Line":
+            SETRANGE("Position Source","Position Source"::"Purch. Inv. Line");
+          DATABASE::"Purch. Cr. Memo Line":
+            SETRANGE("Position Source","Position Source"::"Purch. Cr. Line");
+          DATABASE::"Service Invoice Line":
+            SETRANGE("Position Source","Position Source"::"Serv. Inv. Line");
+        END;
+
+        SETRANGE("Document No.",DocNo_P);
+        SETRANGE("Document Line No.",DocLineNo_P);
+        SETRANGE("Position Date",PositionDate_G);
+        EXIT(ISEMPTY);
+
+      END;
+    END;
+
+    PROCEDURE SetPositionDate@8061942(NewPositionDate_P@8061932 : Date);
+    BEGIN
+      PositionDate_G := NewPositionDate_P;
+    END;
+
+    PROCEDURE SetTotalRecCount@8061941(Position_P@8061933 : Integer;RecCount_P@8061932 : Integer);
+    BEGIN
+      CurrentRecCount_G[Position_P] := 0;
+      TotalRecCount_G[Position_P] := RecCount_P;
+    END;
+
+    PROCEDURE SetCurrentRecCount@8061940(Position_P@8061932 : Integer);
+    BEGIN
+      CurrentRecCount_G[Position_P] := CurrentRecCount_G[Position_P] + 1;
+      IF TotalRecCount_G[Position_P] <> 0 THEN
+        Window_G.UPDATE(Position_P,ROUND((CurrentRecCount_G[Position_P]/TotalRecCount_G[Position_P])*10000,1));
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20101105-8061050-CMB6.00.01-FEC01 : MODCODE(Modification de l'affichage des barres de d'filement).
+      20101105-8061050-CMB6.00.01-FEC02 : ADDCODE(MAJ nouvelle ligne).
+      20101119-8061050-CMB6.00.01-FEC01 : MODCODE(ProblSme de sens de l''criture).
+      20101119-8061050-CMB6.00.01-FEC02 : MODCODE(ProblSme de sens de l''criture).
+      20101210-8061050-CMB6.00.01-PRD01 : RENUMBERING
+      20110114-8061050-CMB6.00.01-FEC01 : MODCODE(Correction sens de l''criture).
+      20110114-8061050-CMB6.00.01-FEC02 : MODCODE(Correction sens de l''criture).
+      20110201-8061050-CMB6.00.01-FEC01 : UPDATEVL(Mise . jour Version List PCK012.03.01.00 > CMB6.00.01).
+      20110207-8061050-CMB6.00.10-FEC01 : MODCODE(Passage en fonction des tests).
+      20110207-8061050-CMB6.00.10-FEC02 : MODCTRL(La date de situation n'est plus modifiable dans le requestform/page).
+      20120125-8061050-CMB6.00.10.01-FEC01 : MODCODE(Restructuration g'n'ral du code, suppression des BEFORE/AFTER).
+      20131104-8061050-CMB6.00.10.01-1030-BSA01 : MODCODE ( changement de la position de 6 . 4)
+      201060202-WI00-TER01.01.00-2687-BSI01 : ADDCODE (Ne pas prendre en compte les bons de r'ception transport annul's)
+      20160518-WI00-ADV01.01.00-3014-JCD01 : MODCODE (Dataitem "Purch. Rcpt. Line" Bug dans la SP2687)
+      // <-- 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

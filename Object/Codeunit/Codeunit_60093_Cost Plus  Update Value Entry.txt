@@ -1,0 +1,518 @@
+OBJECT Codeunit 60093 Cost Plus  Update Value Entry
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25/06/20;
+    Heure=00:00:00;
+    Liste versions=SP3446;
+  }
+  PROPERTIES
+  {
+    TableNo=32;
+    OnRun=BEGIN
+
+
+            FctDebug;
+
+            TbItemLedgerEntry_G.GET("Entry No.");
+
+            TbGLSetup_G.GET;
+            AmtRndPrecision_G := TbGLSetup_G."Amount Rounding Precision";
+            UnitAmtRndPrecision_G := TbGLSetup_G."Unit-Amount Rounding Precision";
+
+            // Cost Plus List
+            TbCostPlusList_G.GET(CostPlusCode_G);
+            // --> 20200609-WI00-ADV01.01.00-3446-SCR01
+            IF TbCostPlusList_G."Valuation Type" = TbCostPlusList_G."Valuation Type"::Percentage THEN
+              CostPlusType_G := CostPlusType_G::Pourcentage
+            ELSE
+              CostPlusType_G := CostPlusType_G::"Montant unitaire";
+            // --< 20200609-WI00-ADV01.01.00-3446-SCR01
+
+            // Traitement par 'criture valeur
+            CLEAR(TbValueEntry_G);
+
+            TbValueEntry_G.SETRANGE("Item Ledger Entry Type",TbItemLedgerEntry_G."Entry Type");
+            TbValueEntry_G.SETRANGE("Item Ledger Entry No.",TbItemLedgerEntry_G."Entry No.");
+            TbValueEntry_G.SETRANGE("Entry Type", TbValueEntry_G."Entry Type"::"Direct Cost");
+            TbValueEntry_G.SETRANGE("Item Charge No.",'');
+            TbValueEntry_G.SETFILTER("Document Type",'<>%1',TbValueEntry_G."Document Type"::" ");
+            TbValueEntry_G.SETRANGE(Adjustment,FALSE);
+            TbValueEntry_G.SETFILTER("Cost per Unit",'>%1',0);
+            TbValueEntry_G.SETFILTER("Valued Quantity",'<>%1',0);
+            IF TbValueEntry_G.FINDSET THEN
+              REPEAT
+
+                // Quel Traitement
+                CASE UpdateType_G OF
+                  UpdateType_G::Create : CostPlusToCreate;
+                  UpdateType_G::Update : CostPlusToUpdate;
+                  UpdateType_G::Close  : CostPlusToClose;
+                  // --> 20200416-WI00-ADV01.01.00-3446-CJY01
+                  UpdateType_G::Untag  : CostPlusUntag;
+                  // <-- 20200416-WI00-ADV01.01.00-3446-CJY01
+
+                END;
+              UNTIL TbValueEntry_G.NEXT = 0;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      "*********** TABLE"@1000000008 : Integer;
+      TbGLSetup_G@1000000014 : Record 98;
+      TbItemLedgerEntry_G@1000000006 : Record 32;
+      TbValueEntry_G@1000000004 : Record 5802;
+      TbPurchCostPlusLedgerEntry_G@1000000003 : Record 60127;
+      TbCostPlusList_G@1000000002 : Record 60118;
+      TbValueEntryCostPlus_G@1000000007 : Record 60126;
+      "*********** TABLE TEMPORAIRE"@1000000013 : Integer;
+      TempPurchLine_G@1000000011 : TEMPORARY Record 39;
+      TempCostPurchLine_G@1000000012 : TEMPORARY Record 60121;
+      "*********** CU"@1000000009 : Integer;
+      CuCostPlusManagement_G@1000000005 : Codeunit 60091;
+      "*********** VAR"@1000000010 : Integer;
+      UpdateType_G@1000000000 : 'Create,Update,Close,Untag';
+      CostPlusCode_G@1000000001 : Code[20];
+      CostPlusValue_G@1000000020 : Decimal;
+      CostPlusPct_G@1000000019 : Decimal;
+      CostPlusType_G@1000000018 : ' ,Pourcentage,Montant unitaire';
+      AmtRndPrecision_G@1000000017 : Decimal;
+      UnitAmtRndPrecision_G@1000000016 : Decimal;
+      iDebug@1000000015 : Integer;
+      TxtErr001_G@1000000021 : TextConst 'FRA=Avertissement : Document %1 Ligne %2 Ecriture Cost Plus %3 La valeur d'j. factur'e %4 est sup'rieure . la nouvelle valeur Cost Plus %5 : modification impossible !';
+      ValueEntryFilters_G@1000000022 : Record 5802;
+
+    PROCEDURE CostPlusToCreate@1000000002();
+    VAR
+      PurchaseLine_L@1000000000 : TEMPORARY Record 39;
+      TempCostPurchLine_L@1000000001 : TEMPORARY Record 60121;
+    BEGIN
+      //
+      // Mise . jour des 'critures Cost Plus . partir d'un code Cost Plus
+      //
+
+      CLEAR(TbPurchCostPlusLedgerEntry_G);
+      TbPurchCostPlusLedgerEntry_G.SETRANGE("Item Ledger Entry Type",TbValueEntry_G."Item Ledger Entry Type");
+      TbPurchCostPlusLedgerEntry_G.SETRANGE("Item Ledger Entry No.",TbValueEntry_G."Item Ledger Entry No.");
+      TbPurchCostPlusLedgerEntry_G.SETRANGE("Value Entry No.",TbValueEntry_G."Entry No.");
+      TbPurchCostPlusLedgerEntry_G.SETRANGE("Cost Plus Code" ,CostPlusCode_G);
+      IF NOT TbPurchCostPlusLedgerEntry_G.FINDSET THEN BEGIN
+        // Cr'ation si r'ponds . l'algo
+        CreateCostPlus;
+      END ELSE BEGIN
+        // --> 20200527-WI00-ADV01.01.00-3446-SCR01
+        FindNewValue;
+        // --> 20200609-WI00-ADV01.01.00-3446-SCR01
+        //IF CostPlusValue_G > 0 THEN
+        // <-- 20200609-WI00-ADV01.01.00-3446-SCR01
+        CostPlusToUpdate;
+        // <-- 20200527-WI00-ADV01.01.00-3446-SCR01
+      END;
+    END;
+
+    PROCEDURE CreateCostPlus@1000000001();
+    BEGIN
+      // Cr'ation COST PLUS mode UPDATE
+      //
+
+      // Table Tempo pour cr'ation Value Entry Cost Plus
+      CLEAR(TempCostPurchLine_G);
+      IF NOT TempCostPurchLine_G.ISEMPTY THEN
+        TempCostPurchLine_G.DELETEALL;
+      CLEAR(TempPurchLine_G);
+      IF NOT TempPurchLine_G.ISEMPTY THEN
+        TempPurchLine_G.DELETEALL;
+
+      // Initialisation TmpPurchLine
+      CLEAR(TempPurchLine_G);
+      TempPurchLine_G."CMC Campaign No."     := TbItemLedgerEntry_G."Campaign No.";
+      TempPurchLine_G."Unit of Measure Code" := TbItemLedgerEntry_G."Unit of Measure Code";
+      TempPurchLine_G."Buy-from Vendor No."  := TbItemLedgerEntry_G."Buy-from Vendor No.";
+      TempPurchLine_G."Pay-to Vendor No."    := TbItemLedgerEntry_G."Pay-to Vendor No.";
+      TempPurchLine_G."No."                  := TbItemLedgerEntry_G."Item No.";
+      TempPurchLine_G."Variant Code"         := TbItemLedgerEntry_G."Variant Code";
+      TempPurchLine_G."Species Code"         := TbItemLedgerEntry_G."Species No.";
+      TempPurchLine_G."Sub-Family Code"      := TbValueEntry_G."Sub-Family Code";
+      TempPurchLine_G."Family Code"          := TbValueEntry_G."Family Code";
+      TempPurchLine_G."Activity Code"        := TbValueEntry_G."Activity Code";
+      TempPurchLine_G."Document Type"        := TbItemLedgerEntry_G."Document Type";
+      TempPurchLine_G."Document No."         := TbItemLedgerEntry_G."Document No.";
+      TempPurchLine_G."Line No."             := TbItemLedgerEntry_G."Document Line No.";
+      TempPurchLine_G.Quantity               := TbValueEntry_G."Valued Quantity";
+      TempPurchLine_G."Line Discount Amount" := 0;
+      TempPurchLine_G."Direct Unit Cost"     := TbValueEntry_G."Cost per Unit";
+      TempPurchLine_G."Order Date"           := TbItemLedgerEntry_G."Order Date";
+
+      // Table Tempo du r'sultat
+      CLEAR(TempCostPurchLine_G);
+
+      // Cr'ation dans table tempo si correspondance avec param'trage . appliquer
+      CuCostPlusManagement_G.FindCostPlusWithSetup(TempPurchLine_G,TempCostPurchLine_G,TempPurchLine_G."Order Date",CostPlusCode_G);
+
+      // Cr'ation Value Entry Cost Plus
+      IF TempCostPurchLine_G.FINDSET THEN
+        REPEAT
+          CLEAR(TbValueEntryCostPlus_G);
+          TbValueEntryCostPlus_G.INIT;
+          TbValueEntryCostPlus_G."Value Entry No."  := TbValueEntry_G."Entry No.";
+          TbValueEntryCostPlus_G."Cost Plus Code"   := CostPlusCode_G;
+          TbValueEntryCostPlus_G.Rank               := TempCostPurchLine_G.Rank;
+          TbValueEntryCostPlus_G."Base Value"       := TempCostPurchLine_G."Base Value";
+          TbValueEntryCostPlus_G."Cost Plus %"      := TempCostPurchLine_G."Cost Plus %";
+          TbValueEntryCostPlus_G."Cost Plus Amount" := TempCostPurchLine_G."Cost Plus Amount";
+          TbValueEntryCostPlus_G."Cost Plus Vendor No." := TempCostPurchLine_G."Cost Plus vendor No.";
+          TbValueEntryCostPlus_G."Final Price"      := CuCostPlusManagement_G.GetPreviousFinalPrice(TbValueEntryCostPlus_G) +
+                                                       TbValueEntryCostPlus_G."Cost Plus Amount";
+          TbValueEntryCostPlus_G.INSERT(TRUE);
+        UNTIL TempCostPurchLine_G.NEXT = 0;
+
+      // Cr'ation Purch Cost Plus Ledger Entry
+      CuCostPlusManagement_G.CreateCostPlusLedgerEntry(TbValueEntry_G,FALSE,CostPlusCode_G);
+      //fonction de refresh . ajouter sur les Cost Plus Value Entry Suivantes
+      CuCostPlusManagement_G.ManageNextCostPlusEntry(TbValueEntryCostPlus_G);
+    END;
+
+    PROCEDURE CostPlusToUpdate@1000000004();
+    VAR
+      AmountInv_L@1000000000 : Decimal;
+    BEGIN
+      // MAJ COST PLUS mode update
+      //
+
+      CLEAR(TbPurchCostPlusLedgerEntry_G);
+      TbPurchCostPlusLedgerEntry_G.SETRANGE("Item Ledger Entry Type",TbValueEntry_G."Item Ledger Entry Type");
+      TbPurchCostPlusLedgerEntry_G.SETRANGE("Item Ledger Entry No.",TbValueEntry_G."Item Ledger Entry No.");
+      TbPurchCostPlusLedgerEntry_G.SETRANGE("Value Entry No.",TbValueEntry_G."Entry No.");
+      TbPurchCostPlusLedgerEntry_G.SETRANGE("Cost Plus Code" ,CostPlusCode_G);
+      // --> 20200313-WI00-ADV01.01.00-3446-CJY01
+      TbPurchCostPlusLedgerEntry_G.SETRANGE("Cost Pl. No. final doc. purch." ,0);
+      // <-- 20200313-WI00-ADV01.01.00-3446-CJY01
+
+      //on ne doit pas traiter une 'criture sold'e volontairement
+      // --> 20200416-WI00-ADV01.01.00-3446-CJY01
+      TbPurchCostPlusLedgerEntry_G.SETRANGE(Canceled,FALSE);
+      // <-- 20200416-WI00-ADV01.01.00-3446-CJY01
+
+      IF TbPurchCostPlusLedgerEntry_G.FINDFIRST THEN BEGIN
+          // Mise . jour Value Entry Cost Plus
+          UpdateCostPlusValueEntry;
+          // V'rification que la nouvelle valeur Cost Plus n'est pas > au montant d'j. factur'
+          AmountInv_L := ABS(TbPurchCostPlusLedgerEntry_G."C. Plus Unit Amount (Invoice)")
+                          - ABS(TbPurchCostPlusLedgerEntry_G.CalcCostPlusUnitPriceOut);
+          IF TbValueEntryCostPlus_G."Cost Plus Amount" < AmountInv_L THEN
+                   ERROR(STRSUBSTNO(TxtErr001_G,TbPurchCostPlusLedgerEntry_G."Document No.",
+                              TbPurchCostPlusLedgerEntry_G."Document Line No.",
+                              TbPurchCostPlusLedgerEntry_G."Entry No.",AmountInv_L,
+                              TbValueEntryCostPlus_G."Cost Plus Amount"));
+          // Mise . jour Cost Plus Value Ledger Entry
+          UpdateCostPlusValueLedgerEntry;
+          //gestion de l''criture d'taill'es de type "mise . jour "
+          CuCostPlusManagement_G.ManageCostPlusDetailEntry(TbPurchCostPlusLedgerEntry_G,1);
+          //enfin, mise . jour 'ventuelle du prix final des "Value Entry Cost Plus" suivantes
+          CuCostPlusManagement_G.ManageNextCostPlusEntry(TbValueEntryCostPlus_G);
+      END;
+    END;
+
+    PROCEDURE UpdateCostPlusValueEntry@1000000010();
+    VAR
+      AmountInv_L@1000000000 : Decimal;
+    BEGIN
+
+      // Mise . jour Value Entry Acp
+      //
+
+      TbValueEntryCostPlus_G.GET(TbValueEntry_G."Entry No.",CostPlusCode_G);
+
+      IF CostPlusType_G = CostPlusType_G::Pourcentage THEN BEGIN
+         // Mise . jour du montant unitaire . partir du % saisi
+         TbValueEntryCostPlus_G.VALIDATE("Cost Plus %",CostPlusPct_G);
+         TbValueEntryCostPlus_G."Cost Plus Amount" := 0;
+         // --> 20200609-WI00-ADV01.01.00-3446-SCR01
+         IF CostPlusPct_G > 0 THEN
+         // <-- 20200609-WI00-ADV01.01.00-3446-SCR01
+         // --> 20200625-WI00-ADV01.01.00-3446-SCR01
+         { BEFORE
+           TbValueEntryCostPlus_G.VALIDATE("Cost Plus Amount",
+                                    ROUND(TbValueEntryCostPlus_G."Base Value" * CostPlusPct_G /100,
+                                                                              UnitAmtRndPrecision_G,'=')); 7
+           AFTER }
+           TbValueEntryCostPlus_G.VALIDATE("Cost Plus Amount",
+                                    ROUND(TbValueEntryCostPlus_G."Base Value" * CostPlusPct_G /100,0.01,'='));
+         // <-- 20200625-WI00-ADV01.01.00-3446-SCR01
+
+      END;
+
+      IF CostPlusType_G = CostPlusType_G::"Montant unitaire" THEN BEGIN
+         // Mise . jour du montant unitaire . partir de la valeur saisie
+         // --> 20200609-WI00-ADV01.01.00-3446-SCR01
+         // TbValueEntryCostPlus_G.VALIDATE("Cost Plus Amount",CostPlusValue_G);
+         // <-- 20200609-WI00-ADV01.01.00-3446-SCR01
+          TbValueEntryCostPlus_G."Cost Plus %" := 0;
+          TbValueEntryCostPlus_G.VALIDATE("Cost Plus Amount",CostPlusValue_G);
+
+      END;
+
+      TbValueEntryCostPlus_G."Final Price" := CuCostPlusManagement_G.GetPreviousFinalPrice(TbValueEntryCostPlus_G) +
+                                                  TbValueEntryCostPlus_G."Cost Plus Amount";
+
+      TbValueEntryCostPlus_G.MODIFY(TRUE);
+    END;
+
+    PROCEDURE UpdateCostPlusValueLedgerEntry@1000000006();
+    BEGIN
+
+
+      TbPurchCostPlusLedgerEntry_G."Cost Plus value" := TbValueEntryCostPlus_G."Cost Plus Amount";
+      TbPurchCostPlusLedgerEntry_G."Cost Plus %" := TbValueEntryCostPlus_G."Cost Plus %";
+
+      // --> 20200609-WI00-ADV01.01.00-3446-SCR01
+      { BEFORE
+      IF TbValueEntryCostPlus_G."Cost Plus %" <> 0 THEN
+        TbPurchCostPlusLedgerEntry_G."Valuation Type" := TbPurchCostPlusLedgerEntry_G."Valuation Type"::Percentage
+      ELSE
+        TbPurchCostPlusLedgerEntry_G."Valuation Type" := TbPurchCostPlusLedgerEntry_G."Valuation Type"::"Unit Amount";
+      AFTER }
+      IF CostPlusType_G = CostPlusType_G::Pourcentage THEN
+        TbPurchCostPlusLedgerEntry_G."Valuation Type" := TbPurchCostPlusLedgerEntry_G."Valuation Type"::Percentage
+      ELSE
+        TbPurchCostPlusLedgerEntry_G."Valuation Type" := TbPurchCostPlusLedgerEntry_G."Valuation Type"::"Unit Amount";
+      // <-- 20200609-WI00-ADV01.01.00-3446-SCR01
+
+      CASE TbPurchCostPlusLedgerEntry_G."Document Type" OF
+        // R'ceptiion, Retour
+        TbPurchCostPlusLedgerEntry_G."Document Type"::"Purchase Receipt",
+        TbPurchCostPlusLedgerEntry_G."Document Type"::"Purchase Return Shipment" : BEGIN
+
+          TbPurchCostPlusLedgerEntry_G."C. Plus Unit Amount (Receipt)" :=
+                          ROUND(TbValueEntryCostPlus_G."Cost Plus Amount",
+                          UnitAmtRndPrecision_G);
+
+          TbPurchCostPlusLedgerEntry_G."Cost Plus Amount (Receipt)" :=
+                          ROUND(TbPurchCostPlusLedgerEntry_G."C. Plus Unit Amount (Receipt)" * TbValueEntry_G."Valued Quantity",
+                          AmtRndPrecision_G);
+        END;
+        // Facture, Avoir
+        TbPurchCostPlusLedgerEntry_G."Document Type"::"Purchase Credit Memo",
+        TbPurchCostPlusLedgerEntry_G."Document Type"::"Purchase Invoice" : BEGIN
+
+          TbPurchCostPlusLedgerEntry_G."C. Plus Unit Amount (Invoice)" :=
+                          ROUND(TbValueEntryCostPlus_G."Cost Plus Amount",
+                          UnitAmtRndPrecision_G);
+
+          TbPurchCostPlusLedgerEntry_G."Cost Plus Amount (Invoice)" :=
+                          ROUND(TbPurchCostPlusLedgerEntry_G."C. Plus Unit Amount (Invoice)" * TbValueEntry_G."Valued Quantity"
+                          ,AmtRndPrecision_G);
+
+          CuCostPlusManagement_G.CalcRevPurchPlusExpToBalance(TbPurchCostPlusLedgerEntry_G, TbValueEntry_G."Invoiced Quantity");
+
+          TbPurchCostPlusLedgerEntry_G.CALCFIELDS("Invoiced Cost Plus Unit Price");
+          // --> 20200609-WI00-ADV01.01.00-3446-SCR01
+          TbPurchCostPlusLedgerEntry_G."C. Plus Unit Price Outstanding" := 0;
+          IF TbValueEntryCostPlus_G."Cost Plus Amount" > 0 THEN
+          // <-- 20200609-WI00-ADV01.01.00-3446-SCR01
+          TbPurchCostPlusLedgerEntry_G."C. Plus Unit Price Outstanding" :=
+                        ROUND(TbValueEntryCostPlus_G."Cost Plus Amount"
+                              -ABS(TbPurchCostPlusLedgerEntry_G."Invoiced Cost Plus Unit Price")
+                              ,UnitAmtRndPrecision_G);
+
+        END;
+
+      END;
+
+
+
+      TbPurchCostPlusLedgerEntry_G.MODIFY(TRUE);
+    END;
+
+    PROCEDURE CostPlusToClose@1000000003();
+    BEGIN
+      // Solde COST PLUS mode Solde
+      //
+
+      CLEAR(TbPurchCostPlusLedgerEntry_G);
+      TbPurchCostPlusLedgerEntry_G.SETRANGE("Item Ledger Entry Type",TbValueEntry_G."Item Ledger Entry Type");
+      TbPurchCostPlusLedgerEntry_G.SETRANGE("Item Ledger Entry No.",TbValueEntry_G."Item Ledger Entry No.");
+      TbPurchCostPlusLedgerEntry_G.SETRANGE("Value Entry No.",TbValueEntry_G."Entry No.");
+      TbPurchCostPlusLedgerEntry_G.SETRANGE("Cost Plus Code" ,CostPlusCode_G);
+      // --> 20200313-WI00-ADV01.01.00-3446-CJY01
+      TbPurchCostPlusLedgerEntry_G.SETRANGE("Cost Pl. No. final doc. purch." ,0);
+      // <-- 20200313-WI00-ADV01.01.00-3446-CJY01
+
+      //on ne doit pas traiter une 'criture d'j. sold'e
+      // --> 20200416-WI00-ADV01.01.00-3446-CJY01
+      TbPurchCostPlusLedgerEntry_G.SETRANGE(Canceled,FALSE);
+      // <-- 20200416-WI00-ADV01.01.00-3446-CJY01
+
+      IF TbPurchCostPlusLedgerEntry_G.FINDFIRST THEN BEGIN
+
+        CASE TbPurchCostPlusLedgerEntry_G."Document Type" OF
+          // R'ceptiion, Retour
+          TbPurchCostPlusLedgerEntry_G."Document Type"::"Purchase Receipt",
+          TbPurchCostPlusLedgerEntry_G."Document Type"::"Purchase Return Shipment" : BEGIN
+
+            TbPurchCostPlusLedgerEntry_G."C. Plus Unit Amount (Receipt)" :=  0;
+            TbPurchCostPlusLedgerEntry_G."Cost Plus Amount (Receipt)" := 0;
+            // --> 20200416-WI00-ADV01.01.00-3446-CJY01
+            TbPurchCostPlusLedgerEntry_G.Canceled := TRUE;
+            // <-- 20200416-WI00-ADV01.01.00-3446-CJY01
+
+            TbPurchCostPlusLedgerEntry_G.MODIFY(TRUE);
+
+            //gestion de l''criture d'taill'es de type "mise . jour "
+            CuCostPlusManagement_G.ManageCostPlusDetailEntry(TbPurchCostPlusLedgerEntry_G,2);
+
+          END;
+
+          // Facture, Avoir
+          TbPurchCostPlusLedgerEntry_G."Document Type"::"Purchase Credit Memo",
+          TbPurchCostPlusLedgerEntry_G."Document Type"::"Purchase Invoice" : BEGIN
+      // ABS ?
+            TbPurchCostPlusLedgerEntry_G.CALCFIELDS("Invoiced Cost Plus Unit Price");
+            TbPurchCostPlusLedgerEntry_G."C. Plus Unit Amount (Invoice)" := TbPurchCostPlusLedgerEntry_G."Invoiced Cost Plus Unit Price"
+      ;
+
+            TbPurchCostPlusLedgerEntry_G."Cost Plus Amount (Invoice)" :=
+                          ROUND(TbPurchCostPlusLedgerEntry_G."C. Plus Unit Amount (Invoice)" * TbValueEntry_G."Valued Quantity"
+                          ,AmtRndPrecision_G);
+
+            CuCostPlusManagement_G.CalcRevPurchPlusExpToBalance(TbPurchCostPlusLedgerEntry_G, TbValueEntry_G."Invoiced Quantity");
+
+
+            TbPurchCostPlusLedgerEntry_G."C. Plus Unit Price Outstanding" := 0;
+            // --> 20200416-WI00-ADV01.01.00-3446-CJY01
+            TbPurchCostPlusLedgerEntry_G.Canceled := TRUE;
+            // <-- 20200416-WI00-ADV01.01.00-3446-CJY01
+
+            TbPurchCostPlusLedgerEntry_G.MODIFY(TRUE);
+
+            //gestion de l''criture d'taill'es de type "mise . jour "
+            CuCostPlusManagement_G.ManageCostPlusDetailEntry(TbPurchCostPlusLedgerEntry_G,2);
+
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE SetVariable@1000000000(UpdateType_P@1000000006 : 'Create,Update,Close,Untag';CostPlusCode_P@1000000005 : Code[20];CostPlusValue_P@1000000004 : Decimal;CostPlusPct_P@1000000003 : Decimal;CostPlusType_P@1000000002 : ' ,Pourcentage,Montant unitaire');
+    BEGIN
+
+      UpdateType_G := UpdateType_P;
+      CostPlusCode_G := CostPlusCode_P;
+      CostPlusValue_G := CostPlusValue_P;
+      CostPlusPct_G := CostPlusPct_P;
+      CostPlusType_G := CostPlusType_P;
+    END;
+
+    PROCEDURE FctDebug@1000000007();
+    BEGIN
+
+      iDebug := 1;
+    END;
+
+    PROCEDURE CostPlusUntag@1000000005();
+    BEGIN
+      //
+      // Retrait du tag "sold'e" sur 'criture Cost Plus
+      //
+      CLEAR(TbPurchCostPlusLedgerEntry_G);
+      TbPurchCostPlusLedgerEntry_G.SETRANGE("Item Ledger Entry Type",TbValueEntry_G."Item Ledger Entry Type");
+      TbPurchCostPlusLedgerEntry_G.SETRANGE("Item Ledger Entry No.",TbValueEntry_G."Item Ledger Entry No.");
+      TbPurchCostPlusLedgerEntry_G.SETRANGE("Value Entry No.",TbValueEntry_G."Entry No.");
+      TbPurchCostPlusLedgerEntry_G.SETRANGE("Cost Plus Code" ,CostPlusCode_G);
+
+      TbPurchCostPlusLedgerEntry_G.SETRANGE("Cost Pl. No. final doc. purch.",0);
+
+      TbPurchCostPlusLedgerEntry_G.SETRANGE(Canceled,TRUE);
+
+      IF TbPurchCostPlusLedgerEntry_G.FINDFIRST THEN BEGIN
+        TbPurchCostPlusLedgerEntry_G.MODIFYALL(Canceled,FALSE);
+      END;
+    END;
+
+    PROCEDURE FindNewValue@1000000012();
+    BEGIN
+      // --> 20200527-WI00-ADV01.01.00-3446-SCR01
+      //nous somme dans le cas o- une 'criture Cost+ pr' existe, c'est pour cela qu'on un record
+      //rechercher les nouvelles valeurs du code Cost+
+
+      CLEAR(CostPlusValue_G);
+      CLEAR(CostPlusPct_G);
+      // --> 20200609-WI00-ADV01.01.00-3446-SCR01
+      //CLEAR(CostPlusType_G);
+      // <-- 20200609-WI00-ADV01.01.00-3446-SCR01
+
+      // Table Tempo pour cr'ation Value Entry Cost Plus
+      CLEAR(TempCostPurchLine_G);
+      IF NOT TempCostPurchLine_G.ISEMPTY THEN
+        TempCostPurchLine_G.DELETEALL;
+      CLEAR(TempPurchLine_G);
+      IF NOT TempPurchLine_G.ISEMPTY THEN
+        TempPurchLine_G.DELETEALL;
+
+      // Initialisation TmpPurchLine
+      CLEAR(TempPurchLine_G);
+      TempPurchLine_G."CMC Campaign No."     := TbItemLedgerEntry_G."Campaign No.";
+      TempPurchLine_G."Unit of Measure Code" := TbItemLedgerEntry_G."Unit of Measure Code";
+      TempPurchLine_G."Buy-from Vendor No."  := TbItemLedgerEntry_G."Buy-from Vendor No.";
+      TempPurchLine_G."Pay-to Vendor No."    := TbItemLedgerEntry_G."Pay-to Vendor No.";
+      TempPurchLine_G."No."                  := TbItemLedgerEntry_G."Item No.";
+      TempPurchLine_G."Variant Code"         := TbItemLedgerEntry_G."Variant Code";
+      TempPurchLine_G."Species Code"         := TbItemLedgerEntry_G."Species No.";
+      TempPurchLine_G."Sub-Family Code"      := TbValueEntry_G."Sub-Family Code";
+      TempPurchLine_G."Family Code"          := TbValueEntry_G."Family Code";
+      TempPurchLine_G."Activity Code"        := TbValueEntry_G."Activity Code";
+      TempPurchLine_G."Document Type"        := TbItemLedgerEntry_G."Document Type";
+      TempPurchLine_G."Document No."         := TbItemLedgerEntry_G."Document No.";
+      TempPurchLine_G."Line No."             := TbItemLedgerEntry_G."Document Line No.";
+      TempPurchLine_G.Quantity               := TbValueEntry_G."Valued Quantity";
+      TempPurchLine_G."Line Discount Amount" := 0;
+      TempPurchLine_G."Direct Unit Cost"     := TbValueEntry_G."Cost per Unit";
+      TempPurchLine_G."Order Date"           := TbItemLedgerEntry_G."Order Date";
+
+      // Table Tempo du r'sultat
+      CLEAR(TempCostPurchLine_G);
+
+      // Cr'ation dans table tempo si correspondance avec param'trage . appliquer
+      CuCostPlusManagement_G.FindCostPlusWithSetup(TempPurchLine_G,TempCostPurchLine_G,TempPurchLine_G."Order Date",CostPlusCode_G);
+
+      //si un param'trage est trouv', on revient avec un TempACPPurchLine_G contenant nos infos
+      // Modification Value Entry ACP existante sur la base du param'trage
+      IF TempCostPurchLine_G.FINDSET THEN
+        REPEAT
+          //le param'trage nous amSne les infos :
+          CostPlusValue_G := TempCostPurchLine_G."Cost Plus Amount";
+          CostPlusPct_G   := TempCostPurchLine_G."Cost Plus %";
+          // --> 20200609-WI00-ADV01.01.00-3446-SCR01
+          {
+          IF CostPlusPct_G <> 0 THEN
+            CostPlusType_G := CostPlusType_G::Pourcentage
+          ELSE
+            CostPlusType_G := CostPlusType_G::"Montant unitaire";
+          }
+          // <-- 20200609-WI00-ADV01.01.00-3446-SCR01
+        UNTIL TempCostPurchLine_G.NEXT = 0;
+
+      // <-- 20200527-WI00-ADV01.01.00-3446-SCR01
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20200120-WI00-ADV01.01.00-3446-SCR01
+      20200313-WI00-ADV01.01.00-3446-CJY01 : MODCODE (changement suite atelier du 10/03/20)
+      20200416-WI00-ADV01.01.00-3446-CJY01 : ADDCODE (gestion booleen "Canceled" pour ne pas faire remonter des ecr. sold'es)
+      20200416-WI00-ADV01.01.00-3446-CJY01 : MODCODE (fonction d'taguant les 'critures sold'es)
+      20200525-WI00-ADV01.01.00-3446-CJY01 : ADDCTRL (gestion passage filtres "value entry")
+      20200527-WI00-ADV01.01.00-3446-SCR01 : ADDCODE (mise . jour valeur cost plus sur ecriture existante,
+                                                       plus de message erreur si montant ACP < d'j. factur')
+      20200609-WI00-ADV01.01.00-3446-SCR01 : MODCODE (Cost Plus valeur . 0)
+      20200625-WI00-ADV01.01.00-3446-SCR01 : MODCODE (Cost Plus Unit Amount calcul sur % arrondie revue . l'identique du flux normal)
+
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,421 @@
+OBJECT Codeunit 8053065 CMC FIFOOrderShptMgt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=30/10/14;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            WhseShptHead_G.GET('EM200004591');
+            //ProcessWhseShipHead(WhseShptHead_G);
+            //CheckWhseFIFOShpt(WhseShptHead_G);
+            ProposeWhseShptItem(WhseShptHead_G);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      WhseShptHead_G@1000000002 : Record 7320;
+      Text001@1000000000 : TextConst 'FRA=Il existe au moins une exp'dition en cours pour l''''article %1 et le client %2 (%3).';
+      Text002@1000000001 : TextConst 'FRA=Veuillez renseigner des articles dans la table.';
+      Text003@1000000003 : TextConst 'FRA=Le FIFO commande n''est pas respect' pour l''article %1.';
+      Text004@1000000004 : TextConst 'FRA=Voulez-vous lancer le traitement de proposition FIFO ?';
+      Text005@1000000005 : TextConst 'FRA=Le magasin %1 n''est pas soumis au FIFO commande.';
+      Text006@1000000006 : TextConst 'FRA=Voulez-vous supprimer les articles de l''exp'dition ?';
+
+    PROCEDURE ProposeFIFOOrderShpt@1000000000(WhseShptHeader_P@1000000000 : Record 7320);
+    VAR
+      WhseShptItem_L@1000000001 : Record 8053512;
+      GetSourceBatch_L@1000000003 : Report 8053137;
+      WhseRequest_L@1000000004 : Record 5765;
+      SalesHeader_L@1000000005 : Record 36;
+      SalesLine_L@1000000006 : Record 37;
+      WhseShptLine_L@1000000002 : Record 7321;
+    BEGIN
+      // Question pr'alable
+
+      IF NOT CONFIRM(Text004,FALSE) THEN
+        EXIT;
+
+      // Suppression des lignes existantes
+
+      WhseShptLine_L.DeleteAllWhseShptLines(WhseShptHeader_P."No.");
+
+      // V'rification pr'alables
+
+      WhseShptHeader_P.TESTFIELD("Sell-to Customer No.");
+
+      IF NOT IsFIFOOrderShptLocation(WhseShptHeader_P."Location Code") THEN
+        ERROR(Text005,WhseShptHeader_P."Location Code");
+
+      WhseShptItem_L.RESET;
+      WhseShptItem_L.SETRANGE("No.",WhseShptHeader_P."No.");
+      WhseShptItem_L.SETRANGE("To Ship",TRUE);
+      IF WhseShptItem_L.ISEMPTY THEN
+        ERROR(Text002);
+
+      WhseShptItem_L.FINDSET;
+      REPEAT
+        CheckWhseShipment(WhseShptHeader_P,WhseShptItem_L);
+      UNTIL WhseShptItem_L.NEXT = 0;
+
+      // Traitement d'extraction FIFO
+
+      WhseShptItem_L.FINDSET;
+      REPEAT
+
+        GetSourceBatch_L.SetOneCreatedShptHeader(WhseShptHeader_P);
+
+        //WhseRequest.SETFILTER("Source No.","Source No. Filter");
+        //WhseRequest.SETFILTER("Shipment Method Code","Shipment Method Code Filter");
+
+        SalesHeader_L.SETFILTER("Sell-to Customer No.",WhseShptHeader_P."Sell-to Customer No.");
+        SalesLine_L.SETFILTER("No.",WhseShptItem_L."Item No.");
+        IF WhseShptItem_L."Variant Code" <> '' THEN
+          SalesLine_L.SETFILTER("Variant Code",WhseShptItem_L."Variant Code");
+
+        GetSourceBatch_L.SETTABLEVIEW(WhseRequest_L);
+        GetSourceBatch_L.SETTABLEVIEW(SalesHeader_L);
+        GetSourceBatch_L.SETTABLEVIEW(SalesLine_L);
+        GetSourceBatch_L.USEREQUESTFORM(FALSE);
+        GetSourceBatch_L.RUNMODAL;
+
+      UNTIL WhseShptItem_L.NEXT = 0;
+    END;
+
+    PROCEDURE CheckWhseShipment@1000000001(WhseShptHeader_P@1000000000 : Record 7320;WhseShipmItem_P@1000000001 : Record 8053512);
+    VAR
+      WhseShipmLine_L@1000000002 : Record 7321;
+      IsError_L@1000000003 : Boolean;
+      Location_L@1000000004 : Record 14;
+    BEGIN
+      IsError_L := FALSE;
+
+      WITH WhseShipmLine_L DO BEGIN
+
+        RESET;
+        SETFILTER("No.",'<>%1',WhseShptHeader_P."No.");
+        SETRANGE("Destination Type",WhseShipmLine_L."Destination Type"::Customer);
+        SETRANGE("Destination No.",WhseShptHeader_P."Sell-to Customer No.");
+        SETRANGE("Item No.",WhseShipmItem_P."Item No.");
+        IF FINDFIRST THEN
+          REPEAT
+            IF IsFIFOOrderShptLocation(WhseShipmLine_L."Location Code") THEN
+              IsError_L := TRUE;
+          UNTIL (NEXT = 0) OR IsError_L;
+
+        IF IsError_L THEN
+          ERROR(Text001,WhseShipmItem_P."Item No.",WhseShptHeader_P."Sell-to Customer No.",WhseShipmLine_L."No.");
+
+      END;
+    END;
+
+    PROCEDURE CheckWhseFIFOShpt@1000000005(WhseShptHeader_P@1000000001 : Record 7320);
+    VAR
+      TmpFIFOWhseShptBuffer_L@1000000000 : TEMPORARY Record 8053513;
+      WhseShptLine_L@1000000002 : Record 7321;
+      TmpItemVariant_L@1000000004 : TEMPORARY Record 5401;
+    BEGIN
+      IF NOT IsFIFOOrderShptLocation(WhseShptHeader_P."Location Code") THEN
+        EXIT;
+
+      WITH WhseShptLine_L DO BEGIN
+        RESET;
+        SETCURRENTKEY("No.","Item No.");
+        SETRANGE("No.",WhseShptHeader_P."No.");
+        IF FINDSET THEN
+          REPEAT
+            TmpItemVariant_L.INIT;
+            TmpItemVariant_L."Item No." := WhseShptLine_L."Item No.";
+            TmpItemVariant_L.Code := WhseShptLine_L."Variant Code";
+            IF TmpItemVariant_L.INSERT THEN;
+          UNTIL NEXT = 0;
+      END;
+
+      TmpItemVariant_L.RESET;
+      IF TmpItemVariant_L.FINDSET THEN
+        REPEAT
+          CheckItemFIFOShpt(WhseShptHeader_P,TmpItemVariant_L,TmpFIFOWhseShptBuffer_L,FALSE,TRUE);
+        UNTIL TmpItemVariant_L.NEXT = 0;
+    END;
+
+    PROCEDURE CheckItemFIFOShpt@1000000002(WhseShptHeader_P@1000000001 : Record 7320;ItemVariant_P@1000000000 : Record 5401;VAR FIFOWhseShptBuffer_P@1000000003 : Record 8053513;IsDetailed_P@1000000007 : Boolean;ShowError_P@1000000009 : Boolean);
+    VAR
+      SalesLine_L@1000000002 : Record 37;
+      WhseShptLine_L@1000000004 : Record 7321;
+      IsError_L@1000000005 : Boolean;
+      LastShptDateFound_L@1000000006 : Boolean;
+      OrderNo_L@1000000008 : Code[20];
+      Location_L@1000000010 : Record 14;
+    BEGIN
+      FIFOWhseShptBuffer_P.RESET;
+      FIFOWhseShptBuffer_P.DELETEALL;
+      OrderNo_L := '';
+
+      WITH SalesLine_L DO BEGIN
+        RESET;
+        SETCURRENTKEY("Document Type","Sell-to Customer No.","Document No.",Type);
+        SETRANGE("Document Type",SalesLine_L."Document Type"::Order);
+        SETRANGE("Sell-to Customer No.",WhseShptHeader_P."Sell-to Customer No.");
+        SETRANGE(Type,SalesLine_L.Type::Item);
+        SETRANGE("No.",ItemVariant_P."Item No.");
+        SETFILTER("Outstanding Quantity",'<>0');
+        IF FINDSET THEN
+          REPEAT
+            IF IsFIFOOrderShptLocation("Location Code") AND
+               IsSalesOrderReleased(SalesLine_L) THEN BEGIN
+              IF IsDetailed_P THEN
+                OrderNo_L := "Document No.";
+              IF NOT FIFOWhseShptBuffer_P.GET("Order Date",OrderNo_L) THEN BEGIN
+                FIFOWhseShptBuffer_P.INIT;
+                FIFOWhseShptBuffer_P."Order Date" := "Order Date";
+                FIFOWhseShptBuffer_P."Sales Order No." := OrderNo_L;
+                FIFOWhseShptBuffer_P.Quantity := "Outstanding Quantity";
+                FIFOWhseShptBuffer_P.INSERT;
+              END ELSE BEGIN
+                FIFOWhseShptBuffer_P.Quantity += "Outstanding Quantity";
+                FIFOWhseShptBuffer_P.MODIFY;
+              END;
+            END;
+          UNTIL NEXT = 0;
+      END;
+
+      WITH WhseShptLine_L DO BEGIN
+        RESET;
+        SETCURRENTKEY("No.","Item No.");
+        SETRANGE("No.",WhseShptHeader_P."No.");
+        SETRANGE("Item No.",ItemVariant_P."Item No.");
+        SETRANGE("Source Document","Source Document"::"Sales Order");
+        SETRANGE("Destination Type","Destination Type"::Customer);
+        SETRANGE("Destination No.",WhseShptHeader_P."Sell-to Customer No.");
+        IF FINDSET THEN
+          REPEAT
+            IF SalesLine_L.GET(SalesLine_L."Document Type"::Order,"Source No.","Source Line No.") THEN BEGIN
+              IF IsDetailed_P THEN
+                OrderNo_L := SalesLine_L."Document No.";
+              IF NOT FIFOWhseShptBuffer_P.GET(SalesLine_L."Order Date",OrderNo_L) THEN BEGIN
+                FIFOWhseShptBuffer_P.INIT;
+                FIFOWhseShptBuffer_P."Order Date" := SalesLine_L."Order Date";
+                FIFOWhseShptBuffer_P."Sales Order No." := OrderNo_L;
+                FIFOWhseShptBuffer_P."Qty to Ship" := "Qty. to Ship";
+                FIFOWhseShptBuffer_P.INSERT;
+              END ELSE BEGIN
+                FIFOWhseShptBuffer_P."Qty to Ship" += "Qty. to Ship";
+                FIFOWhseShptBuffer_P.MODIFY;
+              END;
+            END;
+          UNTIL WhseShptLine_L.NEXT = 0;
+      END;
+
+      IsError_L := FALSE;
+      LastShptDateFound_L := FALSE;
+
+      IF FIFOWhseShptBuffer_P.FINDSET THEN
+        REPEAT
+          IF (LastShptDateFound_L = FALSE) AND
+             ((FIFOWhseShptBuffer_P.Quantity <> FIFOWhseShptBuffer_P."Qty to Ship") OR (FIFOWhseShptBuffer_P."Qty to Ship" = 0)) THEN
+            LastShptDateFound_L := TRUE
+          ELSE
+            IF LastShptDateFound_L AND (FIFOWhseShptBuffer_P."Qty to Ship" <> 0) THEN
+              IsError_L := TRUE;
+        UNTIL (FIFOWhseShptBuffer_P.NEXT = 0) OR IsError_L;
+
+      IF ShowError_P THEN
+        IF IsError_L THEN
+          ERROR(Text003,ItemVariant_P."Item No.");
+    END;
+
+    PROCEDURE ShowFIFOShptDetail@1000000003(WhseShipmItem_P@1000000005 : Record 8053512);
+    VAR
+      FIFOOrderShptBufferPage_L@1000000000 : Page 8087907;
+      TmpFIFOOrderShptBuffer_L@1000000001 : TEMPORARY Record 8053513;
+      TmpItemVariant_L@1000000004 : TEMPORARY Record 5401;
+      WhseShptHeader_L@1000000002 : Record 7320;
+    BEGIN
+      WhseShptHeader_L.GET(WhseShipmItem_P."No.");
+
+      TmpFIFOOrderShptBuffer_L.RESET;
+      TmpFIFOOrderShptBuffer_L.DELETEALL;
+
+      TmpItemVariant_L.RESET;
+      TmpItemVariant_L.DELETEALL;
+
+      TmpItemVariant_L.INIT;
+      TmpItemVariant_L."Item No." := WhseShipmItem_P."Item No.";
+      TmpItemVariant_L.Code := WhseShipmItem_P."Variant Code";
+      TmpItemVariant_L.INSERT;
+
+      CheckItemFIFOShpt(WhseShptHeader_L,TmpItemVariant_L,TmpFIFOOrderShptBuffer_L,TRUE,FALSE);
+
+      PAGE.RUNMODAL(PAGE::"CMC FIFO Order Shpt Buffer",TmpFIFOOrderShptBuffer_L);
+    END;
+
+    PROCEDURE IsFIFOOrderShptLocation@1000000004(LocationCode_L@1000000000 : Code[10]) : Boolean;
+    VAR
+      Location_L@1000000001 : Record 14;
+    BEGIN
+      EXIT(Location_L.GET(LocationCode_L) AND (Location_L."Include in FIFO Order Shpt"));
+    END;
+
+    PROCEDURE CreateAdductionOrder@1000000006(WhseShptHeader_P@1000000003 : Record 7320);
+    VAR
+      SalesHeader_L@1000000000 : Record 36;
+      SalesLine_L@1000000004 : Record 37;
+      CMCSetup_L@1000000001 : Record 8052982;
+      WhseShipmItem_L@1000000002 : Record 8053512;
+      NextLineNo_L@1000000005 : Integer;
+    BEGIN
+      WhseShptHeader_P.TESTFIELD("Sell-to Customer No.");
+
+      SalesHeader_L.INIT;
+      SalesHeader_L."Document Type" := SalesHeader_L."Document Type"::Order;
+      SalesHeader_L."No." := '';
+      SalesHeader_L.INSERT(TRUE);
+
+      CMCSetup_L.GET;
+      IF CMCSetup_L."Adduction Doc. Category" <> '' THEN
+        SalesHeader_L.VALIDATE("Doc. Category Code",CMCSetup_L."Adduction Doc. Category");
+
+      SalesHeader_L.VALIDATE("Sell-to Customer No.",WhseShptHeader_P."Sell-to Customer No.");
+      SalesHeader_L.MODIFY(TRUE);
+
+      WhseShipmItem_L.RESET;
+      WhseShipmItem_L.SETRANGE("No.",WhseShptHeader_P."No.");
+      WhseShipmItem_L.SETRANGE("Create Adduction Order",TRUE);
+      IF WhseShipmItem_L.FINDSET THEN
+        REPEAT
+
+          // New line is searched everytime because of additional lines (ie tax line).
+          SalesLine_L.RESET;
+          SalesLine_L.SETRANGE("Document Type",SalesHeader_L."Document Type");
+          SalesLine_L.SETRANGE("Document No.",SalesHeader_L."No.");
+          IF SalesLine_L.FINDLAST THEN
+            NextLineNo_L := SalesLine_L."Line No." + 10000
+          ELSE
+            NextLineNo_L := 10000;
+
+          SalesLine_L.INIT;
+          SalesLine_L."Document Type" := SalesHeader_L."Document Type";
+          SalesLine_L."Document No." := SalesHeader_L."No.";
+          SalesLine_L."Line No." := NextLineNo_L;
+          SalesLine_L.VALIDATE(Type,SalesLine_L.Type::Item);
+          SalesLine_L.VALIDATE("No.",WhseShipmItem_L."Item No.");
+          SalesLine_L.INSERT(TRUE);
+
+        UNTIL WhseShipmItem_L.NEXT = 0;
+
+      COMMIT;
+
+      PAGE.RUNMODAL(PAGE::"Sales Order",SalesHeader_L);
+    END;
+
+    PROCEDURE ProposeWhseShptItem@1000000007(WhseShptHeader_P@1000000000 : Record 7320);
+    VAR
+      SalesLine_L@1000000001 : Record 37;
+      WhseShipmItem_L@1000000002 : Record 8053512;
+      NewWhseShipmItem_L@1000000003 : Record 8053512;
+      NextLineNo_L@1000000004 : Integer;
+      OutstandingQty_L@1000000005 : Decimal;
+      FilterViewMgt_L@1000000006 : Codeunit 8061330;
+      GetItemView_L@1000000007 : Report 8061330;
+      ItemView_L@1000000008 : Text[1024];
+    BEGIN
+      // V'rification pr'alables
+
+      WhseShptHeader_P.TESTFIELD("Sell-to Customer No.");
+
+      // Filtre sur les articles
+      CLEAR(GetItemView_L);
+      GetItemView_L.RUNMODAL;
+      ItemView_L := GetItemView_L.GetView;
+
+      IF ItemView_L = '' THEN
+        EXIT;
+
+      // Suppression des lignes existantes
+
+      WhseShipmItem_L.RESET;
+      WhseShipmItem_L.SETRANGE("No.",WhseShptHeader_P."No.");
+      WhseShipmItem_L.DELETEALL;
+
+      // Pr'paration
+
+      OutstandingQty_L := 0;
+      NextLineNo_L := 10000;
+
+      WhseShipmItem_L.RESET;
+      WhseShipmItem_L.SETCURRENTKEY("No.","Item No.","Variant Code");
+      WhseShipmItem_L.SETRANGE("No.",WhseShptHeader_P."No.");
+
+      // Parcours des lignes de vente
+      WITH SalesLine_L DO BEGIN
+        RESET;
+        SETCURRENTKEY("Document Type","Sell-to Customer No.","Document No.",Type);
+        SETRANGE("Document Type",SalesLine_L."Document Type"::Order);
+        SETRANGE("Sell-to Customer No.",WhseShptHeader_P."Sell-to Customer No.");
+        SETRANGE(Type,SalesLine_L.Type::Item);
+        SETFILTER("No.",'<>%1','');
+        SETFILTER("Outstanding Quantity",'<>0');
+        IF FINDSET THEN
+          REPEAT
+            IF IsFIFOOrderShptLocation("Location Code") AND
+               IsSalesOrderReleased(SalesLine_L) AND
+               FilterViewMgt_L.IsItemFilterView("No.",ItemView_L) THEN BEGIN
+
+              WhseShipmItem_L.SETRANGE("Item No.",SalesLine_L."No.");
+              WhseShipmItem_L.SETRANGE("Variant Code",SalesLine_L."Variant Code");
+              IF NOT WhseShipmItem_L.FINDFIRST THEN BEGIN
+                NewWhseShipmItem_L.INIT;
+                NewWhseShipmItem_L."No." := WhseShptHeader_P."No.";
+                NewWhseShipmItem_L."Line No." := NextLineNo_L;
+                NewWhseShipmItem_L."Item No." := "No.";
+                NewWhseShipmItem_L."Variant Code" := "Variant Code";
+                NewWhseShipmItem_L.UpdateDescription;
+                NewWhseShipmItem_L."Outstanding Quantity" := "Outstanding Quantity";
+                NewWhseShipmItem_L.INSERT;
+                NextLineNo_L += 10000;
+              END ELSE BEGIN
+                WhseShipmItem_L."Outstanding Quantity" += "Outstanding Quantity";
+                WhseShipmItem_L.MODIFY;
+              END;
+            END;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE DeleteWhseShptItem@1000000008(WhseShptHeader_P@1000000000 : Record 7320);
+    VAR
+      WhseShipmItem_L@1000000001 : Record 8053512;
+    BEGIN
+      IF NOT CONFIRM(Text006,FALSE) THEN
+        EXIT;
+
+      WhseShipmItem_L.RESET;
+      WhseShipmItem_L.SETRANGE("No.",WhseShptHeader_P."No.");
+      WhseShipmItem_L.DELETEALL;
+    END;
+
+    PROCEDURE IsSalesOrderReleased@8053000(SalesLine_P@8053000 : Record 37) : Boolean;
+    VAR
+      SalesHeader_L@8053001 : Record 36;
+    BEGIN
+      SalesHeader_L.GET(SalesLine_P."Document Type",SalesLine_P."Document No.");
+      EXIT(SalesHeader_L.Status = SalesHeader_L.Status::Released);
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+
+      20140908-LOG18/001-CMC02.02.00-FEC01 : ADDOBJ.
+
+      // <-- 3LI BEGIN
+    }
+    END.
+  }
+}
+

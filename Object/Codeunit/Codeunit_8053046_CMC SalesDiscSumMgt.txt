@@ -1,0 +1,622 @@
+OBJECT Codeunit 8053046 CMC SalesDiscSumMgt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=22/02/16;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    TableNo=36;
+    OnRun=BEGIN
+            UpdateSalesDiscSalesSummary(Rec);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text8053004@8053000 : TextConst 'FRA=r';
+      ReleaseSalesDoc_G@8053001 : Codeunit 414;
+      CallByUpdateSalesBatch_G@1000000000 : Boolean;
+
+    PROCEDURE UpdateSalesDiscSalesSummary@8053020(VAR SalesHeader_P@8053000 : Record 36);
+    VAR
+      ItemDiscountGroup_L@8053007 : Record 341;
+      SalesLine_L@8053006 : Record 37;
+      Item_L@8053005 : Record 27;
+      SalesDiscSalesSummary_L@8053004 : Record 8053241;
+      Currency_L@8053003 : Record 4;
+      CurrExchRate_L@8053002 : Record 330;
+      SalesDiscSalesSummaryDocType_L@8053001 : Integer;
+      SalesLine2_L@8053010 : Record 37;
+      SalesLine3_L@8053008 : Record 37;
+      cduSalesPriceCalcMgt_L@8053009 : Codeunit 7000;
+      cduSalesPriceDiscMgt_L@8053011 : Codeunit 8053017;
+      ItemChargePrice_L@8053012 : Boolean;
+      SalesInvLine_L@1000000000 : Record 113;
+      DoCalcGrossPrice_L@1000000001 : Boolean;
+      Update_L@8053013 : Boolean;
+      RecCust_L@1000000002 : Record 18;
+      RecCMCSetup_L@1000000003 : Record 8052982;
+    BEGIN
+      WITH SalesHeader_P DO BEGIN
+        CASE "Document Type" OF
+          "Document Type"::Order :
+            // --> 20151027-APP19-ADV01.01.00-2318-DRN01
+            //BEFORE
+            //SalesDiscSalesSummaryDocType_L := SalesDiscSalesSummary_L."Document Type"::Order;
+            //AFTER
+            BEGIN
+            SalesDiscSalesSummaryDocType_L := SalesDiscSalesSummary_L."Document Type"::Order;
+              // --> 20151104-APP19-ADV01.01.00-2437-DRN01
+              //BEFORE
+              //IF CallByUpdateSalesBatch_G THEN BEGIN
+              //AFTER
+              RecCMCSetup_L.GET;
+              IF CallByUpdateSalesBatch_G AND RecCMCSetup_L."Upd Price Grp On Order Reval" THEN BEGIN
+              // --> 20151104-APP19-ADV01.01.00-2437-DRN01
+                RecCust_L.GET("Bill-to Customer No.");
+                IF "Customer Disc. Group" <> RecCust_L."Customer Disc. Group" THEN BEGIN
+                  "Customer Disc. Group" := RecCust_L."Customer Disc. Group";
+                  MODIFY;
+                END;
+              END;
+            END;
+            // <-- 20151027-APP19-ADV01.01.00-2318-DRN01
+          "Document Type"::"Return Order" :
+            SalesDiscSalesSummaryDocType_L := SalesDiscSalesSummary_L."Document Type"::"Return Order";
+          ELSE
+            EXIT;
+        END;
+
+        DeleteSalesDiscSalesSummary(SalesHeader_P);
+
+        Currency_L.InitRoundingPrecision;
+
+        SalesLine_L.RESET;
+        SalesLine_L.SETRANGE("Document Type","Document Type");
+        SalesLine_L.SETRANGE("Document No.","No.");
+        SalesLine_L.SETFILTER(Type,'%1|%2',SalesLine_L.Type::Item,SalesLine_L.Type::"Charge (Item)");
+        SalesLine_L.SETFILTER(Quantity,'<>0');
+        IF SalesLine_L.FINDSET THEN
+          REPEAT
+            CASE TRUE OF
+              SalesLine_L."Document Type" = SalesLine_L."Document Type"::Order : BEGIN
+                SalesLine3_L := SalesLine_L;
+                DoCalcGrossPrice_L := TRUE;
+              END;
+              (SalesLine_L."Document Type" = SalesLine_L."Document Type"::"Return Order") AND
+              (SalesLine_L."Valued From Doc. Type" = SalesLine_L."Valued From Doc. Type"::Order) AND
+              (SalesLine2_L.GET(SalesLine2_L."Document Type"::Order,SalesLine_L."Valued From Doc. No.",
+               SalesLine_L."Valued From Doc. Line No.")) : BEGIN
+                SalesLine3_L := SalesLine2_L;
+                DoCalcGrossPrice_L := TRUE;
+              END;
+              (SalesLine_L."Document Type" = SalesLine_L."Document Type"::"Return Order") AND
+              (SalesLine_L."Valued From Doc. Type" = SalesLine_L."Valued From Doc. Type"::"Posted Invoice") AND
+              (SalesInvLine_L.GET(SalesLine_L."Valued From Doc. No.",SalesLine_L."Valued From Doc. Line No.")) : BEGIN
+                SalesLine3_L."Unit Price" := SalesInvLine_L."Unit Price";
+                DoCalcGrossPrice_L := FALSE;
+              END;
+              ELSE BEGIN
+                SalesLine3_L := SalesLine_L;
+                DoCalcGrossPrice_L := TRUE;
+              END;
+            END;
+
+            ItemChargePrice_L := FALSE;
+            CASE TRUE OF
+              SalesLine_L.Type = SalesLine_L.Type::Item :
+                Item_L.GET(SalesLine_L."No.");
+              //Cas du m'dicamenteux
+              (SalesLine_L.Type = SalesLine_L.Type::"Charge (Item)") AND (SalesLine_L."Item Charge Pricing Item No." <> '') :
+                BEGIN
+                  Item_L.GET(SalesLine_L."Item Charge Pricing Item No.");
+                  ItemChargePrice_L := TRUE;
+                END;
+              ELSE
+                CLEAR(Item_L);
+            END;
+
+            IF Item_L."Item Disc. Group" <> '' THEN BEGIN
+              IF DoCalcGrossPrice_L THEN BEGIN
+                IF ItemChargePrice_L THEN
+                  //Recherche du tarif brut du fraix annexe . partir de l'article m'dicament d'origine
+                  SalesLine_L.FindItemChargePriceAndDisc(SalesLine3_L,0)
+                ELSE
+                  ///Recherche du tarif brut de l'article
+                  cduSalesPriceCalcMgt_L.FindSalesLinePrice(SalesHeader_P,SalesLine3_L,0);
+                  // --> 20150222-APP19-ADV01.01.00-2712-CJY01
+                  //Si cas d'un retour direct (pas extrait) et pas de tarif, on prend le prix de la ligne de retour
+                  IF ((SalesLine_L."Document Type" = SalesLine_L."Document Type"::"Return Order") AND
+                    (SalesLine_L."Valued From Doc. No." = '') AND (SalesLine3_L."Unit Price" = 0)) THEN
+                      SalesLine3_L."Unit Price" := SalesLine_L."Unit Price";
+                  // <-- 20150222-APP19-ADV01.01.00-2712-CJY01
+              END;
+              IF ItemDiscountGroup_L.GET(Item_L."Item Disc. Group") THEN BEGIN
+                IF (ItemDiscountGroup_L."Maintain Sales Summary") AND
+                   (NOT (ItemDiscountGroup_L."Exclude Sales Blanket Order" AND
+                   (SalesLine_L."Blanket Order No." <> '')))
+                THEN BEGIN
+                  IF NOT SalesDiscSalesSummary_L.GET(SalesDiscSalesSummaryDocType_L,"No.",Item_L."Item Disc. Group",
+                    SalesLine_L."CMC Campaign No.")
+                  THEN BEGIN
+                    SalesDiscSalesSummary_L.INIT;
+                    SalesDiscSalesSummary_L."Document Type" := SalesDiscSalesSummaryDocType_L;
+                    SalesDiscSalesSummary_L."Document No." := "No.";
+                    SalesDiscSalesSummary_L."Item Disc. Group Code" := Item_L."Item Disc. Group";
+                    SalesDiscSalesSummary_L."Campaign No." := SalesLine_L."CMC Campaign No.";
+                    SalesDiscSalesSummary_L."Document Date" := "Order Date";
+                    SalesDiscSalesSummary_L."Order Date" := "Order Date";
+                    SalesDiscSalesSummary_L."Customer No." := SalesLine_L."Bill-to Customer No.";
+                    SalesDiscSalesSummary_L."Cust. Disc. Group Code" := "Customer Disc. Group";
+                    SalesDiscSalesSummary_L."Unit of Measure Code" := ItemDiscountGroup_L."Unit of Measure Code";
+                    CASE "Document Type" OF
+                      "Document Type"::Order :
+                        BEGIN
+                          IF NOT ItemDiscountGroup_L."Not Convert UoM" THEN
+                            SalesDiscSalesSummary_L.Quantity :=
+                              ROUND((SalesLine_L."Outstanding Qty. (Base)" + SalesLine_L."Qty. Shipped Not Invd. (Base)") /
+                              cduSalesPriceDiscMgt_L.ConvertUnitofMeasure(Item_L."Base Unit of Measure",
+                              ItemDiscountGroup_L."Unit of Measure Code",Item_L."No."),0.00001);
+                          IF "Currency Code" <> '' THEN
+                            SalesDiscSalesSummary_L."Gross Total Amount (LCY)" :=
+                              ROUND(CurrExchRate_L.ExchangeAmtFCYToLCY(
+                              SalesDiscSalesSummary_L."Document Date",SalesLine_L."Currency Code",
+                              (SalesLine_L."Outstanding Qty. (Base)" + SalesLine_L."Qty. Shipped Not Invd. (Base)")
+                               * SalesLine3_L."Unit Price","Currency Factor"),
+                              Currency_L."Amount Rounding Precision")
+                          ELSE
+                            SalesDiscSalesSummary_L."Gross Total Amount (LCY)" :=
+                              ROUND((SalesLine_L."Outstanding Qty. (Base)" + SalesLine_L."Qty. Shipped Not Invd. (Base)")
+                               * SalesLine3_L."Unit Price",Currency_L."Amount Rounding Precision");
+                        END;
+                      "Document Type"::"Return Order" :
+                        BEGIN
+                          IF NOT ItemDiscountGroup_L."Not Convert UoM" THEN
+                            SalesDiscSalesSummary_L.Quantity :=
+                              - ROUND((SalesLine_L."Outstanding Qty. (Base)" + SalesLine_L."Ret. Qty. Rcd. Not Invd.(Base)") /
+                                cduSalesPriceDiscMgt_L.ConvertUnitofMeasure(Item_L."Base Unit of Measure",
+                                ItemDiscountGroup_L."Unit of Measure Code",Item_L."No."),0.00001);
+                          IF "Currency Code" <> '' THEN
+                            SalesDiscSalesSummary_L."Gross Total Amount (LCY)" :=
+                              - ROUND(CurrExchRate_L.ExchangeAmtFCYToLCY(
+                                SalesDiscSalesSummary_L."Document Date",SalesLine_L."Currency Code",
+                                (SalesLine_L."Outstanding Qty. (Base)" + SalesLine_L."Ret. Qty. Rcd. Not Invd.(Base)")
+                                 * SalesLine3_L."Unit Price","Currency Factor"),
+                                Currency_L."Amount Rounding Precision")
+                          ELSE
+                            SalesDiscSalesSummary_L."Gross Total Amount (LCY)" :=
+                              - ROUND((SalesLine_L."Outstanding Qty. (Base)" + SalesLine_L."Ret. Qty. Rcd. Not Invd.(Base)")
+                               * SalesLine3_L."Unit Price",Currency_L."Amount Rounding Precision");
+                        END;
+                    END;
+                    SalesDiscSalesSummary_L.INSERT;
+                  END ELSE BEGIN
+                    // --> 20150429-APP19-CMC02.02.00-2963-FHS01
+                    Update_L := FALSE;
+                    // <-- 20150429-APP19-CMC02.02.00-2963-FHS01
+                    CASE "Document Type" OF
+                      "Document Type"::Order :
+                        BEGIN
+                          // --> 20150429-APP19-CMC02.02.00-2963-FHS01
+                          Update_L := TRUE;
+                          // <-- 20150429-APP19-CMC02.02.00-2963-FHS01
+                          IF NOT ItemDiscountGroup_L."Not Convert UoM" THEN
+                            SalesDiscSalesSummary_L.Quantity := SalesDiscSalesSummary_L.Quantity +
+                              ROUND((SalesLine_L."Outstanding Qty. (Base)" + SalesLine_L."Qty. Shipped Not Invd. (Base)") /
+                              cduSalesPriceDiscMgt_L.ConvertUnitofMeasure(
+                              Item_L."Base Unit of Measure",ItemDiscountGroup_L."Unit of Measure Code",Item_L."No."),0.00001);
+                            IF "Currency Code" <> '' THEN
+                              SalesDiscSalesSummary_L."Gross Total Amount (LCY)" :=
+                                SalesDiscSalesSummary_L."Gross Total Amount (LCY)" + ROUND(CurrExchRate_L.ExchangeAmtFCYToLCY(
+                                SalesDiscSalesSummary_L."Document Date",SalesLine_L."Currency Code",
+                                (SalesLine_L."Outstanding Qty. (Base)" + SalesLine_L."Qty. Shipped Not Invd. (Base)")
+                                 * SalesLine3_L."Unit Price","Currency Factor"),
+                                Currency_L."Amount Rounding Precision")
+                            ELSE
+                              SalesDiscSalesSummary_L."Gross Total Amount (LCY)" := SalesDiscSalesSummary_L."Gross Total Amount (LCY)"
+                                + ROUND((SalesLine_L."Outstanding Qty. (Base)" + SalesLine_L."Qty. Shipped Not Invd. (Base)")
+                                * SalesLine3_L."Unit Price",Currency_L."Amount Rounding Precision");
+                        END;
+                      "Document Type"::"Return Order" :
+                        BEGIN
+                          // --> 20150429-APP19-CMC02.02.00-2963-FHS01
+                          Update_L := TRUE;
+                          // <-- 20150429-APP19-CMC02.02.00-2963-FHS01
+                          IF NOT ItemDiscountGroup_L."Not Convert UoM" THEN
+                            SalesDiscSalesSummary_L.Quantity := SalesDiscSalesSummary_L.Quantity -
+                              ROUND((SalesLine_L."Outstanding Qty. (Base)" + SalesLine_L."Ret. Qty. Rcd. Not Invd.(Base)") /
+                              cduSalesPriceDiscMgt_L.ConvertUnitofMeasure(Item_L."Base Unit of Measure",
+                              ItemDiscountGroup_L."Unit of Measure Code",Item_L."No."),0.00001);
+                          IF "Currency Code" <> '' THEN
+                            SalesDiscSalesSummary_L."Gross Total Amount (LCY)" := SalesDiscSalesSummary_L."Gross Total Amount (LCY)" -
+                              ROUND(CurrExchRate_L.ExchangeAmtFCYToLCY(
+                              SalesDiscSalesSummary_L."Document Date",SalesLine_L."Currency Code",
+                              (SalesLine_L."Outstanding Qty. (Base)" + SalesLine_L."Ret. Qty. Rcd. Not Invd.(Base)")
+                              * SalesLine3_L."Unit Price","Currency Factor"),
+                              Currency_L."Amount Rounding Precision")
+                          ELSE
+                            SalesDiscSalesSummary_L."Gross Total Amount (LCY)" := SalesDiscSalesSummary_L."Gross Total Amount (LCY)" -
+                              ROUND((SalesLine_L."Outstanding Qty. (Base)" + SalesLine_L."Ret. Qty. Rcd. Not Invd.(Base)")
+                               * SalesLine3_L."Unit Price",Currency_L."Amount Rounding Precision");
+                        END;
+                    END;
+                    // --> 20150429-APP19-CMC02.02.00-2963-FHS01
+                    IF Update_L = TRUE THEN
+                    // <-- 20150429-APP19-CMC02.02.00-2963-FHS01
+                      SalesDiscSalesSummary_L.MODIFY;
+                  END;
+                END;
+              END;
+            END;
+          UNTIL SalesLine_L.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE DeleteSalesDiscSalesSummary@8053002(SalesHeader_P@8053000 : Record 36);
+    VAR
+      SalesDiscSalesSummaryDocType_L@8053001 : Integer;
+      SalesDiscSalesSummary_L@8053002 : Record 8053241;
+    BEGIN
+      WITH SalesHeader_P DO BEGIN
+        CASE "Document Type" OF
+          "Document Type"::Order :
+            SalesDiscSalesSummaryDocType_L := SalesDiscSalesSummary_L."Document Type"::Order;
+          "Document Type"::"Return Order" :
+            SalesDiscSalesSummaryDocType_L := SalesDiscSalesSummary_L."Document Type"::"Return Order";
+        END;
+
+        SalesDiscSalesSummary_L.RESET;
+        SalesDiscSalesSummary_L.SETRANGE("Document Type",SalesDiscSalesSummaryDocType_L);
+        SalesDiscSalesSummary_L.SETRANGE("Document No.","No.");
+        IF NOT SalesDiscSalesSummary_L.ISEMPTY THEN
+          SalesDiscSalesSummary_L.DELETEALL;
+      END;
+    END;
+
+    PROCEDURE PostSalesInvDiscSalesSummary@8053000(SalesLine_P@8053008 : Record 37;SalesInvHeader_P@8053006 : Record 112;SalesInvLine_P@8053000 : Record 113);
+    VAR
+      Currency_L@8053001 : Record 4;
+      Item_L@8053002 : Record 27;
+      ItemDiscountGroup_L@8053005 : Record 341;
+      SalesDiscSalesSummary_L@8053004 : Record 8053241;
+      CurrExchRate_L@8053003 : Record 330;
+      cduSalesPriceDiscMgt_L@8053007 : Codeunit 8053017;
+      SalesShipLine_L@8053009 : Record 111;
+      SalesLine2_L@8053010 : Record 37;
+    BEGIN
+      IF (SalesInvLine_P.Type = SalesInvLine_P.Type::Item) OR
+        ((SalesInvLine_P.Type = SalesInvLine_P.Type::"Charge (Item)") AND (SalesInvLine_P."Item Charge Pricing Item No." <> ''))
+      THEN BEGIN
+        Currency_L.InitRoundingPrecision;
+        IF SalesInvLine_P.Type = SalesInvLine_P.Type::Item THEN
+          Item_L.GET(SalesInvLine_P."No.")
+        ELSE
+          Item_L.GET(SalesInvLine_P."Item Charge Pricing Item No.");
+        IF Item_L."Item Disc. Group" <> '' THEN BEGIN
+          IF ItemDiscountGroup_L.GET(Item_L."Item Disc. Group") THEN BEGIN
+            IF (ItemDiscountGroup_L."Maintain Sales Summary") AND
+               (NOT (ItemDiscountGroup_L."Exclude Sales Blanket Order" AND
+               (SalesInvLine_P."Blanket Order No." <> '')))
+            THEN BEGIN
+              IF NOT SalesDiscSalesSummary_L.GET(SalesDiscSalesSummary_L."Document Type"::"Posted Invoice",
+                SalesInvLine_P."Document No.",Item_L."Item Disc. Group",
+                SalesInvLine_P."CMC Campaign No.")
+              THEN BEGIN
+                SalesDiscSalesSummary_L.INIT;
+                SalesDiscSalesSummary_L."Document Type" := SalesDiscSalesSummary_L."Document Type"::"Posted Invoice";
+                SalesDiscSalesSummary_L."Document No." := SalesInvLine_P."Document No.";
+                SalesDiscSalesSummary_L."Item Disc. Group Code" := Item_L."Item Disc. Group";
+                SalesDiscSalesSummary_L."Campaign No." := SalesInvLine_P."CMC Campaign No.";
+                SalesDiscSalesSummary_L."Document Date" := SalesInvHeader_P."Posting Date";
+                SalesDiscSalesSummary_L."Order Date" := GetOrderDate(SalesInvLine_P);
+                SalesDiscSalesSummary_L."Customer No." := SalesInvHeader_P."Bill-to Customer No.";
+                SalesDiscSalesSummary_L."Cust. Disc. Group Code" := SalesInvHeader_P."Customer Disc. Group";
+                SalesDiscSalesSummary_L."Unit of Measure Code" := ItemDiscountGroup_L."Unit of Measure Code";
+                IF NOT ItemDiscountGroup_L."Not Convert UoM" THEN
+                  SalesDiscSalesSummary_L.Quantity :=
+                    ROUND(SalesInvLine_P."Quantity (Base)" / cduSalesPriceDiscMgt_L.ConvertUnitofMeasure(Item_L.
+                    "Base Unit of Measure",ItemDiscountGroup_L."Unit of Measure Code",Item_L."No."),0.00001);
+                IF SalesInvHeader_P."Currency Code" <> '' THEN
+                  SalesDiscSalesSummary_L."Gross Total Amount (LCY)" :=
+                    ROUND(CurrExchRate_L.ExchangeAmtFCYToLCY(
+                    SalesDiscSalesSummary_L."Document Date",SalesInvHeader_P."Currency Code",
+                    SalesInvLine_P.Quantity * SalesInvLine_P."Unit Price",SalesInvHeader_P."Currency Factor"),
+                    Currency_L."Amount Rounding Precision")
+                ELSE
+                  SalesDiscSalesSummary_L."Gross Total Amount (LCY)" :=
+                    ROUND(SalesInvLine_P.Quantity * SalesInvLine_P."Unit Price",Currency_L."Amount Rounding Precision");
+                SalesDiscSalesSummary_L.INSERT;
+              END ELSE BEGIN
+                IF NOT ItemDiscountGroup_L."Not Convert UoM" THEN
+                  SalesDiscSalesSummary_L.Quantity := SalesDiscSalesSummary_L.Quantity +
+                    ROUND(SalesInvLine_P."Quantity (Base)" /
+                    cduSalesPriceDiscMgt_L.ConvertUnitofMeasure(Item_L."Base Unit of Measure",
+                    ItemDiscountGroup_L."Unit of Measure Code",Item_L."No."),0.00001);
+                IF SalesInvHeader_P."Currency Code" <> '' THEN
+                  SalesDiscSalesSummary_L."Gross Total Amount (LCY)" := SalesDiscSalesSummary_L."Gross Total Amount (LCY)" +
+                    ROUND(CurrExchRate_L.ExchangeAmtFCYToLCY(
+                    SalesDiscSalesSummary_L."Document Date",SalesInvHeader_P."Currency Code",
+                    SalesInvLine_P.Quantity * SalesInvLine_P."Unit Price",SalesInvHeader_P."Currency Factor"),
+                    Currency_L."Amount Rounding Precision")
+                ELSE
+                  SalesDiscSalesSummary_L."Gross Total Amount (LCY)" := SalesDiscSalesSummary_L."Gross Total Amount (LCY)" +
+                    ROUND(SalesInvLine_P.Quantity * SalesInvLine_P."Unit Price",Currency_L."Amount Rounding Precision");
+                SalesDiscSalesSummary_L.MODIFY;
+              END;
+
+              // If sales order line is partially shipped and invoiced then the corresponding line
+              // from Sales Disc. Sales Summary must be updated
+              IF SalesLine_P."Document Type" = SalesLine_P."Document Type"::Order THEN BEGIN
+                IF SalesLine_P."Qty. to Invoice" + SalesLine_P."Quantity Invoiced" <> SalesLine_P.Quantity THEN BEGIN
+                  IF SalesDiscSalesSummary_L.GET(SalesDiscSalesSummary_L."Document Type"::Order,
+                    SalesLine_P."Document No.",Item_L."Item Disc. Group",SalesLine_P."CMC Campaign No.")
+                  THEN BEGIN
+                    IF NOT ItemDiscountGroup_L."Not Convert UoM" THEN
+                      SalesDiscSalesSummary_L.Quantity := SalesDiscSalesSummary_L.Quantity -
+                        ROUND(SalesInvLine_P."Quantity (Base)" /
+                        cduSalesPriceDiscMgt_L.ConvertUnitofMeasure(Item_L."Base Unit of Measure",
+                        ItemDiscountGroup_L."Unit of Measure Code",Item_L."No."),0.00001);
+                    IF SalesDiscSalesSummary_L.Quantity < 0 THEN
+                      SalesDiscSalesSummary_L.Quantity := 0;
+                    IF SalesInvHeader_P."Currency Code" <> '' THEN
+                      SalesDiscSalesSummary_L."Gross Total Amount (LCY)" := SalesDiscSalesSummary_L."Gross Total Amount (LCY)"
+                        - ROUND(CurrExchRate_L.ExchangeAmtFCYToLCY(
+                        SalesDiscSalesSummary_L."Document Date",SalesInvHeader_P."Currency Code",
+                        SalesInvLine_P.Quantity * SalesInvLine_P."Unit Price",SalesInvHeader_P."Currency Factor"),
+                        Currency_L."Amount Rounding Precision")
+                    ELSE
+                      SalesDiscSalesSummary_L."Gross Total Amount (LCY)" := SalesDiscSalesSummary_L."Gross Total Amount (LCY)"
+                        - ROUND(SalesInvLine_P.Quantity * SalesInvLine_P."Unit Price",Currency_L."Amount Rounding Precision");
+                    SalesDiscSalesSummary_L.MODIFY;
+                  END;
+                END;
+              END;
+
+              // If the sales invoice line is get from a shipment line that come from a sales order line then
+              // the line from Sales Disc. Sales Summary corresponding to sales order line must be updated
+              IF SalesLine_P."Document Type" = SalesLine_P."Document Type"::Invoice THEN BEGIN
+                IF (SalesLine_P."Shipment No." <> '') AND (SalesLine_P."Shipment Line No." <> 0) THEN BEGIN
+                  IF SalesShipLine_L.GET(SalesLine_P."Shipment No.",SalesLine_P."Shipment Line No.") THEN BEGIN
+                    IF SalesLine2_L.GET(SalesLine2_L."Document Type"::Order,SalesShipLine_L."Order No.",
+                      SalesShipLine_L."Order Line No.")
+                    THEN BEGIN
+                      IF SalesDiscSalesSummary_L.GET(SalesDiscSalesSummary_L."Document Type"::Order,
+                        SalesLine2_L."Document No.",Item_L."Item Disc. Group",SalesLine2_L."CMC Campaign No.")
+                      THEN BEGIN
+                        IF NOT ItemDiscountGroup_L."Not Convert UoM" THEN
+                          SalesDiscSalesSummary_L.Quantity := SalesDiscSalesSummary_L.Quantity -
+                            ROUND(SalesInvLine_P."Quantity (Base)" /
+                            cduSalesPriceDiscMgt_L.ConvertUnitofMeasure(Item_L."Base Unit of Measure",
+                            ItemDiscountGroup_L."Unit of Measure Code",Item_L."No."),0.00001);
+                        IF SalesDiscSalesSummary_L.Quantity < 0 THEN
+                          SalesDiscSalesSummary_L.Quantity := 0;
+                        IF SalesInvHeader_P."Currency Code" <> '' THEN
+                          SalesDiscSalesSummary_L."Gross Total Amount (LCY)" :=
+                            SalesDiscSalesSummary_L."Gross Total Amount (LCY)" -
+                              ROUND(CurrExchRate_L.ExchangeAmtFCYToLCY(
+                              SalesDiscSalesSummary_L."Document Date",SalesInvHeader_P."Currency Code",
+                              SalesInvLine_P.Quantity * SalesInvLine_P."Unit Price",SalesInvHeader_P."Currency Factor"),
+                              Currency_L."Amount Rounding Precision")
+                        ELSE
+                          SalesDiscSalesSummary_L."Gross Total Amount (LCY)" :=
+                            SalesDiscSalesSummary_L."Gross Total Amount (LCY)" -
+                            ROUND(SalesInvLine_P.Quantity * SalesInvLine_P."Unit Price",Currency_L."Amount Rounding Precision");
+                        SalesDiscSalesSummary_L.MODIFY;
+                      END;
+                    END;
+                  END;
+                END;
+              END;
+            END;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE PostSalesCrMemoDiscSalesSum@8053001(SalesLine_P@1000000000 : Record 37;SalesCrMemoHeader_P@8053006 : Record 114;SalesCrMemoLine_P@8053000 : Record 115);
+    VAR
+      Currency_L@8053005 : Record 4;
+      Item_L@8053004 : Record 27;
+      ItemDiscountGroup_L@8053003 : Record 341;
+      SalesDiscSalesSummary_L@8053002 : Record 8053241;
+      CurrExchRate_L@8053001 : Record 330;
+      cduSalesPriceDiscMgt_L@8053007 : Codeunit 8053017;
+      ReturnRcptLine_L@1000000001 : Record 6661;
+      SalesLine2_L@1000000002 : Record 37;
+    BEGIN
+      IF (SalesCrMemoLine_P.Type = SalesCrMemoLine_P.Type::Item) OR
+        ((SalesCrMemoLine_P.Type = SalesCrMemoLine_P.Type::"Charge (Item)") AND
+        (SalesCrMemoLine_P."Item Charge Pricing Item No." <> ''))
+      THEN BEGIN
+        Currency_L.InitRoundingPrecision;
+
+        IF SalesCrMemoLine_P.Type = SalesCrMemoLine_P.Type::Item THEN
+          Item_L.GET(SalesCrMemoLine_P."No.")
+        ELSE
+          Item_L.GET(SalesCrMemoLine_P."Item Charge Pricing Item No.");
+
+        IF Item_L."Item Disc. Group" <> '' THEN BEGIN
+          IF ItemDiscountGroup_L.GET(Item_L."Item Disc. Group") THEN BEGIN
+            IF (ItemDiscountGroup_L."Maintain Sales Summary") AND
+               (NOT (ItemDiscountGroup_L."Exclude Sales Blanket Order" AND
+               (SalesCrMemoLine_P."Blanket Order No." <> '')))
+            THEN BEGIN
+              IF NOT SalesDiscSalesSummary_L.GET(SalesDiscSalesSummary_L."Document Type"::"Posted Credit Memo",
+                SalesCrMemoLine_P."Document No.",Item_L."Item Disc. Group",
+                SalesCrMemoLine_P."CMC Campaign No.")
+              THEN BEGIN
+                SalesDiscSalesSummary_L.INIT;
+                SalesDiscSalesSummary_L."Document Type" := SalesDiscSalesSummary_L."Document Type"::"Posted Credit Memo";
+                SalesDiscSalesSummary_L."Document No." := SalesCrMemoLine_P."Document No.";
+                SalesDiscSalesSummary_L."Item Disc. Group Code" := Item_L."Item Disc. Group";
+                SalesDiscSalesSummary_L."Campaign No." := SalesCrMemoLine_P."CMC Campaign No.";
+                SalesDiscSalesSummary_L."Document Date" := SalesCrMemoHeader_P."Posting Date";
+                SalesDiscSalesSummary_L."Order Date" := GetOrderDate2(SalesCrMemoLine_P);
+                SalesDiscSalesSummary_L."Customer No." := SalesCrMemoHeader_P."Bill-to Customer No.";
+                SalesDiscSalesSummary_L."Cust. Disc. Group Code" := SalesCrMemoHeader_P."Customer Disc. Group";
+                SalesDiscSalesSummary_L."Unit of Measure Code" := ItemDiscountGroup_L."Unit of Measure Code";
+                IF NOT ItemDiscountGroup_L."Not Convert UoM" THEN
+                  SalesDiscSalesSummary_L.Quantity :=
+                    - ROUND(SalesCrMemoLine_P."Quantity (Base)" /
+                      cduSalesPriceDiscMgt_L.ConvertUnitofMeasure(Item_L."Base Unit of Measure",
+                      ItemDiscountGroup_L."Unit of Measure Code",Item_L."No."),0.00001);
+                IF SalesCrMemoHeader_P."Currency Code" <> '' THEN
+                  SalesDiscSalesSummary_L."Gross Total Amount (LCY)" :=
+                    - ROUND(CurrExchRate_L.ExchangeAmtFCYToLCY(
+                      SalesDiscSalesSummary_L."Document Date",SalesCrMemoHeader_P."Currency Code",
+                      SalesCrMemoLine_P.Quantity * SalesCrMemoLine_P."Unit Price",SalesCrMemoHeader_P."Currency Factor"),
+                      Currency_L."Amount Rounding Precision")
+                ELSE
+                  SalesDiscSalesSummary_L."Gross Total Amount (LCY)" :=
+                    - ROUND(SalesCrMemoLine_P.Quantity * SalesCrMemoLine_P."Unit Price",Currency_L."Amount Rounding Precision");
+                SalesDiscSalesSummary_L.INSERT;
+              END ELSE BEGIN
+                IF NOT ItemDiscountGroup_L."Not Convert UoM" THEN
+                  SalesDiscSalesSummary_L.Quantity := SalesDiscSalesSummary_L.Quantity -
+                    ROUND(SalesCrMemoLine_P."Quantity (Base)" /
+                    cduSalesPriceDiscMgt_L.ConvertUnitofMeasure(Item_L."Base Unit of Measure",
+                    ItemDiscountGroup_L."Unit of Measure Code",Item_L."No."),0.00001);
+                IF SalesCrMemoHeader_P."Currency Code" <> '' THEN
+                  SalesDiscSalesSummary_L."Gross Total Amount (LCY)" := SalesDiscSalesSummary_L."Gross Total Amount (LCY)" -
+                    ROUND(CurrExchRate_L.ExchangeAmtFCYToLCY(
+                      SalesDiscSalesSummary_L."Document Date",SalesCrMemoHeader_P."Currency Code",
+                      SalesCrMemoLine_P.Quantity * SalesCrMemoLine_P."Unit Price",SalesCrMemoHeader_P."Currency Factor"),
+                      Currency_L."Amount Rounding Precision")
+                ELSE
+                  SalesDiscSalesSummary_L."Gross Total Amount (LCY)" := SalesDiscSalesSummary_L."Gross Total Amount (LCY)" -
+                    ROUND(SalesCrMemoLine_P.Quantity * SalesCrMemoLine_P."Unit Price",Currency_L."Amount Rounding Precision");
+                SalesDiscSalesSummary_L.MODIFY;
+              END;
+
+              // If return order line is partially received and invoiced then the corresponding line
+              // from Sales Disc. Sales Summary must be updated
+              IF SalesLine_P."Document Type" = SalesLine_P."Document Type"::"Return Order" THEN BEGIN
+                IF SalesLine_P."Qty. to Invoice" + SalesLine_P."Quantity Invoiced" <> SalesLine_P.Quantity THEN BEGIN
+                  IF SalesDiscSalesSummary_L.GET(SalesDiscSalesSummary_L."Document Type"::"Return Order",
+                    SalesLine_P."Document No.",Item_L."Item Disc. Group",SalesLine_P."CMC Campaign No.")
+                  THEN BEGIN
+                    IF NOT ItemDiscountGroup_L."Not Convert UoM" THEN
+                      SalesDiscSalesSummary_L.Quantity := SalesDiscSalesSummary_L.Quantity +
+                        ROUND(SalesCrMemoLine_P."Quantity (Base)" /
+                        cduSalesPriceDiscMgt_L.ConvertUnitofMeasure(Item_L."Base Unit of Measure",
+                        ItemDiscountGroup_L."Unit of Measure Code",Item_L."No."),0.00001);
+                    IF SalesCrMemoHeader_P."Currency Code" <> '' THEN
+                      SalesDiscSalesSummary_L."Gross Total Amount (LCY)" := SalesDiscSalesSummary_L."Gross Total Amount (LCY)"
+                        + ROUND(CurrExchRate_L.ExchangeAmtFCYToLCY(
+                        SalesDiscSalesSummary_L."Document Date",SalesCrMemoHeader_P."Currency Code",
+                        SalesCrMemoLine_P.Quantity * SalesCrMemoLine_P."Unit Price",SalesCrMemoHeader_P."Currency Factor"),
+                        Currency_L."Amount Rounding Precision")
+                    ELSE
+                      SalesDiscSalesSummary_L."Gross Total Amount (LCY)" := SalesDiscSalesSummary_L."Gross Total Amount (LCY)"
+                        + ROUND(SalesCrMemoLine_P.Quantity * SalesCrMemoLine_P."Unit Price",Currency_L."Amount Rounding Precision");
+                    SalesDiscSalesSummary_L.MODIFY;
+                  END;
+                END;
+              END;
+
+              // If the sales cr. memo line is get from a receipt line that come from a return order line then
+              // the line from Sales Disc. Sales Summary corresponding to return order line must be updated
+              IF SalesLine_P."Document Type" = SalesLine_P."Document Type"::"Credit Memo" THEN BEGIN
+                IF (SalesLine_P."Return Receipt No." <> '') AND (SalesLine_P."Return Receipt Line No." <> 0) THEN BEGIN
+                  IF ReturnRcptLine_L.GET(SalesLine_P."Return Receipt No.",SalesLine_P."Return Receipt Line No.") THEN BEGIN
+                    IF SalesLine2_L.GET(SalesLine2_L."Document Type"::"Return Order",ReturnRcptLine_L."Return Order No.",
+                      ReturnRcptLine_L."Return Order Line No.")
+                    THEN BEGIN
+                      IF SalesDiscSalesSummary_L.GET(SalesDiscSalesSummary_L."Document Type"::"Return Order",
+                        SalesLine2_L."Document No.",Item_L."Item Disc. Group",SalesLine2_L."CMC Campaign No.")
+                      THEN BEGIN
+                        IF NOT ItemDiscountGroup_L."Not Convert UoM" THEN
+                          SalesDiscSalesSummary_L.Quantity := SalesDiscSalesSummary_L.Quantity +
+                            ROUND(SalesCrMemoLine_P."Quantity (Base)" /
+                            cduSalesPriceDiscMgt_L.ConvertUnitofMeasure(Item_L."Base Unit of Measure",
+                            ItemDiscountGroup_L."Unit of Measure Code",Item_L."No."),0.00001);
+                        IF SalesCrMemoHeader_P."Currency Code" <> '' THEN
+                          SalesDiscSalesSummary_L."Gross Total Amount (LCY)" :=
+                            SalesDiscSalesSummary_L."Gross Total Amount (LCY)" +
+                              ROUND(CurrExchRate_L.ExchangeAmtFCYToLCY(
+                              SalesDiscSalesSummary_L."Document Date",SalesCrMemoHeader_P."Currency Code",
+                              SalesCrMemoLine_P.Quantity * SalesCrMemoLine_P."Unit Price",SalesCrMemoHeader_P."Currency Factor"),
+                              Currency_L."Amount Rounding Precision")
+                        ELSE
+                          SalesDiscSalesSummary_L."Gross Total Amount (LCY)" :=
+                            SalesDiscSalesSummary_L."Gross Total Amount (LCY)" +
+                            ROUND(SalesCrMemoLine_P.Quantity * SalesCrMemoLine_P."Unit Price",Currency_L."Amount Rounding Precision");
+                        SalesDiscSalesSummary_L.MODIFY;
+                      END;
+                    END;
+                  END;
+                END;
+              END;
+            END;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE GetOrderDate@8053013(SalesInvLine_P@8053000 : Record 113) OrderDate_L : Date;
+    VAR
+      SalesShipmentHeader_L@8053002 : Record 110;
+      SalesHeader_L@8053001 : Record 36;
+    BEGIN
+      OrderDate_L := 0D;
+      IF SalesInvLine_P."Shipment No." <> '' THEN BEGIN
+        IF SalesShipmentHeader_L.GET(SalesInvLine_P."Shipment No.") THEN BEGIN
+          IF SalesHeader_L.GET(SalesHeader_L."Document Type"::Order,SalesShipmentHeader_L."Order No.") THEN
+            OrderDate_L := SalesHeader_L."Order Date";
+        END;
+      END;
+      EXIT(OrderDate_L);
+    END;
+
+    PROCEDURE GetOrderDate2@8053014(SalesCrMemoLine_P@8053000 : Record 115) OrderDate_L : Date;
+    VAR
+      ReturnRcptHeader_L@8053002 : Record 6660;
+      SalesHeader_L@8053001 : Record 36;
+    BEGIN
+      OrderDate_L := 0D;
+      IF SalesCrMemoLine_P."Return Receipt No." <> '' THEN BEGIN
+        IF ReturnRcptHeader_L.GET(SalesCrMemoLine_P."Return Receipt No.") THEN BEGIN
+          IF SalesHeader_L.GET(SalesHeader_L."Document Type"::"Return Order",ReturnRcptHeader_L."Return Order No.") THEN
+            OrderDate_L := SalesHeader_L."Order Date";
+        END;
+      END;
+      EXIT(OrderDate_L);
+    END;
+
+    PROCEDURE InitCallByBatch@1000000002(CallByUpdateSalesBatch_P@1000000000 : Boolean);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Instancie la variable globale CallByUpdateSalesBatch_G pour g'rer le cas de la mise . jour du
+      // groupe remise client dans la traitement de MAJ Valeur document vente (R8053107)
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - CallByUpdateSalesBatch_P
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      // --> 20151027-APP19-ADV01.01.00-2318-DRN01
+      CallByUpdateSalesBatch_G := CallByUpdateSalesBatch_P;
+      // <-- 20151027-APP19-ADV01.01.00-2318-DRN01
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20140428-APP19-CMC02.02.00-2050-FEC01 : ADDOBJ.
+      20140723-APP19-CMC02.02.00-DRN01 : Refactoring
+      20150429-APP19-CMC02.02.00-2963-FHS01 : MODCODE (Diminue les 'critures)
+      20151027-APP19-ADV01.01.00-2318-DRN01 : MODCODE (UpdateSalesDiscSalesSummary : MAJ du groupe rem. client en cas de MAJ sur le client
+                                                       factur' depuis la saisie de la commande)
+      20151104-APP19-ADV01.01.00-2437-DRN01 : MODCODE (OnRun : conditionner la maj du groupe rem. client)
+      20150222-APP19-ADV01.01.00-2712-CJY01 : MODCODE (Chgt rSgle dans le cas retour non extrait d'un document)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

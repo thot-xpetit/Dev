@@ -1,0 +1,315 @@
+OBJECT Codeunit 60073 Exelience Third Export
+{
+  OBJECT-PROPERTIES
+  {
+    Date=20/12/18;
+    Heure=00:00:00;
+    Liste versions=SP3356,SP3386;
+  }
+  PROPERTIES
+  {
+    TableNo=8061230;
+    OnRun=BEGIN
+            CodeUnit_G := Processing;
+
+            ExportThird;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      CodeUnit_G@60001 : Integer;
+      cduMoteurInterface_G@60002 : Codeunit 8061230;
+      cduToolsFile_G@60003 : Codeunit 8053405;
+      ConnectorName_G@60014 : Code[20];
+      ImpExpFolder_G@60013 : Text[256];
+      LogFolder_G@60012 : Text[256];
+      ExtensionFile_G@60011 : Text[10];
+      PrefixFile_G@60010 : Text[10];
+      ItemTemplateCode_G@60009 : Code[20];
+      CustomerTemplateCode_G@60008 : Code[20];
+      VendorTemplateCode_G@60007 : Code[20];
+      ContactTemplateCode_G@60006 : Code[20];
+      AccountTemplateCode_G@60005 : Code[20];
+      GlobalTemplateCode_G@60004 : Code[20];
+      Text60000@60025 : TextConst 'ENU=Error Creating File %1 \%2.;FRA=Erreur cr'ation fichier %1 \%2.';
+      Text60001@60000 : TextConst 'ENU=Line No %1 : INSEE City Code missing;FRA=Ligne N› %1 : Code INSEE Ville absent';
+      Text60002@60015 : TextConst 'ENU=Line No %1 : INSEE City Code truncated;FRA=Ligne N› %1 : Code INSEE Ville tronqu'';
+      TxtEcrit_G@60016 : Text[1024];
+      LineNo_G@60017 : Integer;
+      FileOutstream_G@60018 : OutStream;
+      recCompanyInfo_G@60019 : Record 79;
+      cduFormatFieldsManage_G@60020 : Codeunit 8060985;
+      FileCreationDateTime_G@60021 : DateTime;
+      TextUnknown@60022 : TextConst 'ENU=Unknown;FRA=Inconnu';
+
+    PROCEDURE ExportThird@60001();
+    VAR
+      FileLogName_L@60001 : Text[256];
+    BEGIN
+      // Entr'es:
+      // - Filename_P : Nom du Fichier des exp'ditions . g'n'rer
+      // Sorties:
+      // - Result_L : Erreur Retourn'e , Vide Si Ok
+      //----------------------------------------------------------------------------------------------------------------------------------
+      cduMoteurInterface_G.GetParameter(CodeUnit_G, ConnectorName_G, ImpExpFolder_G, LogFolder_G, ExtensionFile_G, PrefixFile_G);
+      cduMoteurInterface_G.GetTemplatesCode (ConnectorName_G, ItemTemplateCode_G, CustomerTemplateCode_G, VendorTemplateCode_G,
+        ContactTemplateCode_G, AccountTemplateCode_G, GlobalTemplateCode_G);
+      // --> 20181220-Wi00-ADV01.01.00-3386-MRU01
+      {BEFORE
+      cduToolsFile_G.LogInit(LogFolder_G, 'EXEL_THIRD');
+      AFTER}
+      cduToolsFile_G.LogInit(LogFolder_G, ConnectorName_G);
+      // <-- 20181220-Wi00-ADV01.01.00-3386-MRU01
+      cduToolsFile_G.LogInitCodeUnit(CodeUnit_G);
+
+      ExportTexte();
+
+      FileLogName_L := cduToolsFile_G.LogName;
+      cduToolsFile_G.LogClose();
+
+      // Pour g'rer le ROLLBACK.
+      IF cduToolsFile_G.LogErreurType() = 'E' THEN BEGIN
+        ERROR('ERREUR ' + FileLogName_L);
+      END ELSE BEGIN
+        IF cduToolsFile_G.LogErreurType() = 'I' THEN BEGIN
+          cduMoteurInterface_G.InsertLog(CodeUnit_G, FileLogName_L);
+        END ELSE BEGIN
+          cduMoteurInterface_G.InsertOk(CodeUnit_G);
+        END;
+      END;
+    END;
+
+    PROCEDURE ExportTexte@60005() Result_L : Text[256];
+    VAR
+      FileNameOuvert_L@60002 : Boolean;
+      NbCarEcrit_L@60001 : Integer;
+      FileName_L@60004 : Text[256];
+      FilePath_L@60007 : Text[256];
+      FileN_L@60006 : Text[256];
+      FileTemp_L@60008 : Text[256];
+      FileExport_L@60009 : File;
+      recContact_L@60000 : Record 5050;
+      recVendor_L@60003 : Record 23;
+      recPostCode_L@60013 : Record 225;
+      recCountryRegion_L@60005 : Record 9;
+      recContactPerson_L@60010 : Record 5050;
+    BEGIN
+      //R'cup'ration des informations Soci't'
+      recCompanyInfo_G.GET;
+
+      //Date de cr'ation du fichier
+      FileCreationDateTime_G := CURRENTDATETIME;
+
+      FileNameOuvert_L := FALSE;
+      NbCarEcrit_L := 0;
+
+      // Cr'ation du fichier F_U_E_MULTI_JJ_MM_SSAA_HH_MN_SS.csv ou F_T_E_MULTI_JJ_MM_SSAA_HH_MN_SS.csv
+      FileName_L := ImpExpFolder_G + '\' + DELCHR(PrefixFile_G, '<>', ' ') + FORMAT(CURRENTDATETIME, 0,
+        '<Day,2>_<Month,2>_<Year4>_<Hours24,2>_<Minutes,2>_<Seconds,2>') + '.' + DELCHR(ExtensionFile_G, '<>', ' ');
+      cduToolsFile_G.LogInitFileExecute(FileName_L);
+      cduToolsFile_G.SplitFilename(FileName_L, FilePath_L, FileN_L);
+      FileTemp_L := FilePath_L + 'Temp_' + FileN_L;
+      IF NOT FileExport_L.CREATE(FileTemp_L) THEN BEGIN
+        cduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text60000, FileTemp_L, GETLASTERRORTEXT), 1, MAXSTRLEN(Result_L)));
+        CLEARLASTERROR;
+      END ELSE BEGIN
+        FileExport_L.CREATEOUTSTREAM(FileOutstream_G);
+        FileNameOuvert_L := TRUE;
+
+        //Export des contacts dont le type est Exploitation agricole et le vendeur est Multiplicateur
+        LineNo_G := 1;
+
+        recContact_L.RESET;
+        recContact_L.SETRANGE("Contact Type", recContact_L."Contact Type"::Farm);
+        IF recContact_L.FINDSET THEN REPEAT
+          IF recVendor_L.GET(recContact_L."Vendor No.") THEN BEGIN
+            IF recVendor_L.Multiplier THEN BEGIN
+              IF LineNo_G = 1 THEN BEGIN
+                //Insertion des lignes de DEBUT et de COM
+                InitLine('DEBUT');
+                InsertFileInfo;
+                InsertLine;
+
+                InitLine('COM');
+                AddConvertedTextAndComma(recContact_L.FIELDCAPTION("Vendor No."));
+                AddConvertedTextAndComma(recVendor_L.FIELDCAPTION(Multiplier));
+                AddConvertedTextAndComma(recContact_L.FIELDCAPTION("Registration No."));
+                TxtEcrit_G += 'EAN13_TIERS' + ';';
+                AddConvertedTextAndComma(recContact_L.FIELDCAPTION(Name));
+                AddConvertedTextAndComma(recContact_L.FIELDCAPTION("E-Mail"));
+                AddConvertedTextAndComma(recContact_L.FIELDCAPTION("Legal Form"));
+                TxtEcrit_G += 'Technicien Commercial Coop' + ';';
+                TxtEcrit_G += 'Code Interne Technicien Commercial' + ';';
+                TxtEcrit_G += 'Site Gestion' + ';';
+                AddConvertedTextAndComma(recCompanyInfo_G.FIELDCAPTION("GLN Code"));
+                InsertLine;
+              END;
+
+              //Insertion de la ligne ENT et de la DET associ'e
+              InitLine('ENT');
+              TxtEcrit_G += COPYSTR(COMPANYNAME,1,1) + recContact_L."Vendor No." + ';';
+              AddConvertedTextAndComma(recVendor_L.FIELDCAPTION(Multiplier));
+              TxtEcrit_G += DELCHR(recContact_L."Registration No.",'<>',' ') + ';';
+              TxtEcrit_G += '' + ';';
+              AddConvertedTextAndComma(recContact_L.Name);
+              AddConvertedTextAndComma(recContact_L."E-Mail");
+              AddConvertedTextAndComma(recContact_L."Legal Form");
+              TxtEcrit_G += '' + ';';
+              TxtEcrit_G += '' + ';';
+              TxtEcrit_G += '' + ';';
+              AddConvertedTextAndComma(recCompanyInfo_G."GLN Code");
+              InsertLine;
+
+              InitLine('DET');
+              TxtEcrit_G += COPYSTR(COMPANYNAME,1,1) + recContact_L."Vendor No." + ';';
+              TxtEcrit_G += 'Siege Social' + ';';
+              TxtEcrit_G += '' + ';';
+              TxtEcrit_G += '' + ';';
+              TxtEcrit_G += '' + ';';
+              AddConvertedTextAndComma(recContact_L.Address);
+              AddConvertedTextAndComma(recContact_L."Address 2");
+              TxtEcrit_G += '' + ';';
+              AddConvertedTextAndComma(recContact_L."Post Code");
+              AddConvertedTextAndComma(recContact_L.City);
+
+              //R'cup'ration du code INSEE
+              IF NOT recPostCode_L.GET(recContact_L."Post Code", recContact_L.City) THEN
+                cduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text60001, LineNo_G), 1, MAXSTRLEN(Result_L)))
+              ELSE BEGIN
+                IF STRLEN(recPostCode_L."INSEE No.") > 10 THEN
+                  cduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text60002, LineNo_G), 1, MAXSTRLEN(Result_L)));
+                TxtEcrit_G += COPYSTR(recPostCode_L."INSEE No.", 1, 10);
+              END;
+              TxtEcrit_G += ';';
+
+              // --> 20181112-WI00-ADV01.01.00-3356-MRU01
+              {BEFORE
+              TxtEcrit_G += recContact_L."Country/Region Code" + ';';
+              AFTER}
+              recCountryRegion_L.GET(recContact_L."Country/Region Code");
+              TxtEcrit_G += recCountryRegion_L.Name + ';';
+              // <-- 20181112-WI00-ADV01.01.00-3356-MRU01
+
+              // --> 20181114-WI00-ADV01.01.00-3356-MRU01
+              {BEFORE
+              IF recContact_L.Surname <> '' THEN
+                AddConvertedTextAndComma(recContact_L.Surname)
+              ELSE
+              // --> 20181112-WI00-ADV01.01.00-3356-MRU01
+              {BEFORE
+                AddConvertedTextAndComma(recContact_L."Middle Name");
+
+              AddConvertedTextAndComma(recContact_L."First Name");
+              AFTER}
+                IF recContact_L."Middle Name" <> '' THEN
+                  AddConvertedTextAndComma(recContact_L."Middle Name")
+                ELSE
+                  TxtEcrit_G += TextUnknown + ';';
+
+              IF recContact_L."First Name" <> '' THEN
+                AddConvertedTextAndComma(recContact_L."First Name")
+              ELSE
+                TxtEcrit_G += TextUnknown + ';';
+              // <-- 20181112-WI00-ADV01.01.00-3356-MRU01
+              AFTER}
+              recContactPerson_L.SETRANGE("Company No.", recContact_L."Company No.");
+              recContactPerson_L.SETRANGE(Type, recContact_L.Type::Person);
+              IF recContactPerson_L.FINDFIRST THEN BEGIN
+                IF recContactPerson_L.Surname <> '' THEN
+                  AddConvertedTextAndComma(recContactPerson_L.Surname)
+                ELSE
+                  IF recContactPerson_L."Middle Name" <> '' THEN
+                    AddConvertedTextAndComma(recContactPerson_L."Middle Name")
+                  ELSE
+                    TxtEcrit_G += TextUnknown + ';';
+
+                IF recContactPerson_L."First Name" <> '' THEN
+                  AddConvertedTextAndComma(recContactPerson_L."First Name")
+                ELSE
+                  TxtEcrit_G += TextUnknown + ';';
+              END ELSE BEGIN
+                TxtEcrit_G += TextUnknown + ';';
+                TxtEcrit_G += TextUnknown + ';';
+              END;
+              // <-- 20181114-WI00-ADV01.01.00-3356-MRU01
+              AddConvertedTextAndComma(recContact_L."Phone No.");
+              AddConvertedTextAndComma(recContact_L."Mobile Phone No.");
+              AddConvertedTextAndComma(recContact_L."E-Mail");
+              TxtEcrit_G += '' + ';';
+              InsertLine;
+            END;
+          END;
+        UNTIL recContact_L.NEXT = 0;
+
+        IF LineNo_G <> 1 THEN BEGIN
+          //Insertion de la ligne de FIN
+          InitLine('FIN');
+          InsertFileInfo;
+          TxtEcrit_G += FORMAT(LineNo_G) + ';';
+          InsertLine;
+        END;
+
+        NbCarEcrit_L := FileExport_L.LEN;
+        FileExport_L.CLOSE;
+      END;
+
+      IF (NbCarEcrit_L > 0) THEN BEGIN
+        IF cduToolsFile_G.LogErreurType() = 'E' THEN BEGIN
+          IF FileNameOuvert_L THEN BEGIN
+            FILE.ERASE(FileTemp_L);
+          END;
+        END ELSE BEGIN
+          IF RENAME(FileTemp_L, FileName_L) THEN BEGIN
+          END;
+        END;
+      END ELSE BEGIN
+        IF FileNameOuvert_L THEN BEGIN
+          FILE.ERASE(FileTemp_L);
+        END;
+      END;
+    END;
+
+    PROCEDURE InitLine@60008(LineType_P@60000 : Text[20]);
+    BEGIN
+      TxtEcrit_G := '';
+      TxtEcrit_G += FORMAT(LineNo_G) + ';';
+      TxtEcrit_G += LineType_P + ';';
+    END;
+
+    PROCEDURE InsertLine@60003();
+    BEGIN
+      //Suppression du dernier point virgule des lignes
+      TxtEcrit_G := COPYSTR(TxtEcrit_G, 1, STRLEN(TxtEcrit_G) - 1);
+
+      FileOutstream_G.WRITETEXT(TxtEcrit_G);
+      FileOutstream_G.WRITETEXT();
+      LineNo_G += 1;
+    END;
+
+    PROCEDURE InsertFileInfo@60007();
+    BEGIN
+      AddConvertedTextAndComma(cduFormatFieldsManage_G."FormDateTimeDD/MM/AAAAhh:mm:ss"(FileCreationDateTime_G));
+      AddConvertedTextAndComma(recCompanyInfo_G."GLN Code");
+      AddConvertedTextAndComma(recCompanyInfo_G."Seed Partner GLN Code");
+    END;
+
+    PROCEDURE AddConvertedTextAndComma@60011(Text_P@60000 : Text[500]);
+    BEGIN
+      TxtEcrit_G += CONVERTSTR(cduFormatFieldsManage_G.Ascii2Ansi(Text_P), ';', ',') + ';';
+    END;
+
+    BEGIN
+    {
+      //--> 3LI BEGIN
+      20181016-WI00-ADV01.01.00-3356-MRU01 CREATE Object
+      20181112-WI00-ADV01.01.00-3356-MRU01 Modifications Nom Pays + interloc
+      20181114-WI00-ADV01.01.00-3356-MRU01 Modification Interloc : les informations doivent provenir du premier contact personne
+      20181220-Wi00-ADV01.01.00-3386-MRU01 Passage du ConnecteurName pour le nom du log
+      //<-- 3LI BEGIN
+    }
+    END.
+  }
+}
+

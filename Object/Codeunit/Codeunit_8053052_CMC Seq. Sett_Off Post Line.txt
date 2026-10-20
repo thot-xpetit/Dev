@@ -1,0 +1,364 @@
+OBJECT Codeunit 8053052 CMC Seq. Sett_Off Post Line
+{
+  OBJECT-PROPERTIES
+  {
+    Date=30/10/14;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    TableNo=8053501;
+    Permissions=TableData 21=rimd,
+                TableData 25=rimd,
+                TableData 8053041=rimd,
+                TableData 8053374=rimd;
+    OnRun=VAR
+            L_CUVendEntryApplyPostedEnt@8053001 : Codeunit 227;
+            L_CUGenJnlPostBatch@8053000 : Codeunit 13;
+            L_CUCustEntryApplyPostedEnt@8053002 : Codeunit 226;
+            L_TempJnlLineDim@8053004 : TEMPORARY Record 356;
+            L_NextGenJnlLineNo@8053003 : Integer;
+            L_NextNo@8053005 : Integer;
+            GLEntry_L@8053006 : Record 17;
+            NoSeriesMgt_L@8053007 : Codeunit 396;
+            VendEntryApplyPostEntries_L@8053008 : Codeunit 227;
+            CMCRestraint_L@8053010 : Record 8053373;
+            CapitalSetup_L@8053011 : Record 8053350;
+            CustomerPG_L@8053012 : Record 92;
+            VendorPG_L@8053013 : Record 93;
+            Customer_L@8053014 : Record 18;
+            vendor_L@8053015 : Record 23;
+            CustApplyProp_L@8053016 : Record 8053506;
+            OldInv_L@8053017 : Code[20];
+          BEGIN
+            G_CMCSetup.GET;
+            G_CMCSetup.TESTFIELD("SettOff Bal Acount");
+            ApplicationDate_G:="Posting Date";
+            Contact_G.GET("Account No.");
+
+            DocNum_G := "Document No.";
+
+            VendLedgerEntry_G.LOCKTABLE;
+            CustLedgerEntry_G.LOCKTABLE;
+            RestraintEntry_G.LOCKTABLE;
+
+            //Retrouver l''criture . compenser
+            VendorInvoice_G.RESET;
+            VendorInvoice_G.SETRANGE("Vendor No.",Contact_G."Vendor No.");
+            VendorInvoice_G.SETRANGE("Document No.","Farmer Document No.");
+            VendorInvoice_G.SETRANGE(Open,TRUE);
+            VendorInvoice_G.FINDFIRST;
+            //*********Lettrage des 'critures fournisseur********//
+            CompenProp_L.RESET;
+            CompenProp_L.SETRANGE("SettOff Type",CompenProp_L."SettOff Type"::Proposed);
+            CompenProp_L.SETRANGE("Entry Type",CompenProp_L."Entry Type"::Vendor);
+            CompenProp_L.SETRANGE("Invoice No","Farmer Document No.");
+            IF CompenProp_L.FINDSET THEN BEGIN
+              AmountToCompensate_G := 0;
+              REPEAT
+                AmountToCompensate_G += CompenProp_L.Amount;
+                VendLedgerEntry_G.GET(CompenProp_L."Entry No.");
+                VendLedgerEntry_G."Amount to Apply" := CompenProp_L.Amount;
+                VendLedgerEntry_G."Applies-to ID" := USERID;
+                CODEUNIT.RUN(CODEUNIT::"Vend. Entry-Edit",VendLedgerEntry_G);
+                VendLedgerEntry_G.MODIFY;
+              UNTIL CompenProp_L.NEXT=0;
+                VendorInvoice_G."Amount to Apply" := -AmountToCompensate_G;
+                VendorInvoice_G."Applying Entry" := TRUE;
+                VendorInvoice_G."Applies-to ID" := USERID;
+                CODEUNIT.RUN(CODEUNIT::"Vend. Entry-Edit",VendorInvoice_G);
+                VendorInvoice_G.MODIFY;
+
+              CLEAR(VendEntryApplyPostEntries_L);
+              VendEntryApplyPostEntries_L.SetHideForm(TRUE);
+              VendEntryApplyPostEntries_L.SetDateAndDocNo("Posting Date","Document No.");
+              VendEntryApplyPostEntries_L.SetNoCommitTreatment(TRUE);
+              VendEntryApplyPostEntries_L.RUN(VendorInvoice_G);
+            END;
+
+            //Purge des avoirs et rSglement
+            CustApplyProp_L.RESET;
+            CustApplyProp_L.SETCURRENTKEY("Invoice No");
+            CustApplyProp_L.SETRANGE("SettOff Applies-to ID","SettOff Applies-to ID");
+            IF CustApplyProp_L.FINDSET THEN
+              REPEAT
+                IF (OldInv_L<>CustApplyProp_L."Invoice No")  THEN BEGIN
+                  OldInv_L := CustApplyProp_L."Invoice No";
+                  ApplyCustomerLedger(OldInv_L,"SettOff Applies-to ID","Posting Date","Document No.");
+                END;
+              UNTIL CustApplyProp_L.NEXT=0;
+
+            //*********Lettrage des 'critures clients ********//
+            CompenProp_L.RESET;
+            CompenProp_L.SETRANGE("SettOff Type",CompenProp_L."SettOff Type"::Proposed);
+            CompenProp_L.SETRANGE("Entry Type",CompenProp_L."Entry Type"::Customer);
+            CompenProp_L.SETRANGE("Invoice No","Farmer Document No.");
+            IF CompenProp_L.FINDSET THEN BEGIN
+              AmountToCompensate_G := 0;
+              //Recharger l''criture . compenser
+              VendorInvoice_G.RESET;
+              VendorInvoice_G.SETRANGE("Vendor No.",Contact_G."Vendor No.");
+              VendorInvoice_G.SETRANGE("Document No.","Farmer Document No.");
+              VendorInvoice_G.SETRANGE(Open,TRUE);
+              VendorInvoice_G.FINDFIRST;
+              REPEAT
+                CustLedgerEntry_G.GET(CompenProp_L."Entry No.");
+                CustLedgerEntry_G."Applies-to ID" := USERID;
+                CustLedgerEntry_G."Amount to Apply":= CompenProp_L.Amount;
+                AmountToCompensate_G += CompenProp_L.Amount;
+                CustLedgerEntry_G.MODIFY;
+              UNTIL CompenProp_L.NEXT=0;
+              IF AmountToCompensate_G <> 0 THEN BEGIN
+                GenJournalLine_G.INIT;
+                GenJournalLine_G."Line No." := L_NextGenJnlLineNo;
+                L_NextGenJnlLineNo+= 10000;
+                GenJournalLine_G."Document No." := DocNum_G;
+                GenJournalLine_G.VALIDATE("Posting Date",ApplicationDate_G);
+                GenJournalLine_G."Account Type" := GenJournalLine_G."Account Type"::Customer;
+                GenJournalLine_G.VALIDATE("Account No.",CustLedgerEntry_G."Customer No.");
+                // --> 20140911-FINA13-CMC02.02.00-2377-AKH01
+                //BEFORE
+                //CapitalSetup_L.GET;
+                //CapitalSetup_L.TESTFIELD("SettOff Source Code");
+                //GenJournalLine_G."Source Code" := CapitalSetup_L."SettOff Source Code";
+                //AFTER
+                G_CMCSetup.TESTFIELD("SettOff Source Code");
+                GenJournalLine_G."Source Code" := G_CMCSetup."SettOff Source Code";
+                // <-- 20140911-FINA13-CMC02.02.00-2377-AKH01
+                GenJournalLine_G.Description:=STRSUBSTNO(Text8053004,VendLedgerEntry_G."Document No.");
+                GenJournalLine_G.VALIDATE(Amount,-AmountToCompensate_G);
+                GenJournalLine_G."Applies-to ID":=USERID;
+                GenJournalLine_G.VALIDATE("Bal. Account Type",GenJournalLine_G."Bal. Account Type"::"G/L Account");
+                GenJournalLine_G.VALIDATE("Bal. Account No.",G_CMCSetup."SettOff Bal Acount");
+                GenJournalLine_G."Setting Off":=TRUE;
+                vendor_L.GET(VendorInvoice_G."Vendor No.");
+                Customer_L.GET(CustLedgerEntry_G."Customer No.");
+                VendorPG_L.GET(vendor_L."Vendor Posting Group");
+                CustomerPG_L.GET(Customer_L."Customer Posting Group");
+                GenJournalLine_G."Same G/L Acc. Set Off" := (VendorPG_L."Payables Account"=CustomerPG_L."Receivables Account");
+                CLEAR(GenJnlPostLine_G);
+                GenJnlPostLine_G.RunWithCheck(GenJournalLine_G,L_TempJnlLineDim);
+
+                VendorInvoice_G."Applies-to ID" := USERID;
+                VendorInvoice_G."Amount to Apply" := -AmountToCompensate_G;
+                VendorInvoice_G.MODIFY;
+                CODEUNIT.RUN(CODEUNIT::"Vend. Entry-Edit",VendorInvoice_G);
+
+                GenJournalLine_G.INIT;
+                GenJournalLine_G."Line No." := L_NextGenJnlLineNo;
+                L_NextGenJnlLineNo+= 10000;
+                GenJournalLine_G."Document No." := DocNum_G;
+                GenJournalLine_G.VALIDATE("Posting Date",ApplicationDate_G);
+                GenJournalLine_G."Account Type" := GenJournalLine_G."Account Type"::Vendor;
+                GenJournalLine_G.VALIDATE("Account No.",VendorInvoice_G."Vendor No.");
+                // --> 20140911-FINA13-CMC02.02.00-2377-AKH01
+                //BEFORE
+                //GenJournalLine_G."Source Code" := CapitalSetup_L."SettOff Source Code";
+                //AFTER
+                GenJournalLine_G."Source Code" := G_CMCSetup."SettOff Source Code";
+                // <-- 20140911-FINA13-CMC02.02.00-2377-AKH01
+                GenJournalLine_G.Description:=STRSUBSTNO(Text8053004,VendorInvoice_G."Document No.");
+                GenJournalLine_G.VALIDATE(Amount,AmountToCompensate_G);
+                GenJournalLine_G."Applies-to ID":=USERID;
+                GenJournalLine_G.VALIDATE("Bal. Account Type",GenJournalLine_G."Bal. Account Type"::"G/L Account");
+                GenJournalLine_G.VALIDATE("Bal. Account No.",G_CMCSetup."SettOff Bal Acount");
+                GenJournalLine_G."Setting Off":=TRUE;
+                GenJournalLine_G."Same G/L Acc. Set Off" := (VendorPG_L."Payables Account"=CustomerPG_L."Receivables Account");
+                CLEAR(GenJnlPostLine_G);
+                GenJnlPostLine_G.RunWithCheck(GenJournalLine_G,L_TempJnlLineDim);
+              END;
+            END;
+
+
+            //*********Lettrage des 'critures retenues ********//
+            CompenProp_L.RESET;
+            CompenProp_L.SETRANGE("SettOff Type",CompenProp_L."SettOff Type"::Proposed);
+            CompenProp_L.SETRANGE("Entry Type",CompenProp_L."Entry Type"::Restraint);
+            CompenProp_L.SETRANGE("Invoice No","Farmer Document No.");
+            IF CompenProp_L.FINDSET THEN BEGIN
+              AmountToCompensate_G := 0;
+              //Recharger l''criture . compenser
+              VendorInvoice_G.RESET;
+              VendorInvoice_G.SETRANGE("Vendor No.",Contact_G."Vendor No.");
+              VendorInvoice_G.SETRANGE("Document No.","Farmer Document No.");
+              VendorInvoice_G.SETRANGE(Open,TRUE);
+              VendorInvoice_G.FINDFIRST;
+              REPEAT
+                RestraintEntry_G.GET(CompenProp_L."Entry No.");
+                RestraintEntry_G."Amount to Apply" := CompenProp_L.Amount;
+                RestraintEntry_G.MODIFY;
+                AmountToCompensate_G += CompenProp_L.Amount;
+                VendorInvoice_G."Amount to Apply" := - CompenProp_L.Amount;
+                VendorInvoice_G."Applying Entry" := TRUE;
+                VendorInvoice_G."Applies-to ID" := USERID;
+                CODEUNIT.RUN(CODEUNIT::"Vend. Entry-Edit",VendorInvoice_G);
+                VendorInvoice_G.MODIFY;
+
+                GenJournalLine_G.INIT;
+                GenJournalLine_G."Line No." := L_NextGenJnlLineNo;
+                L_NextGenJnlLineNo+= 10000;
+                GenJournalLine_G."Document No." := DocNum_G;
+                GenJournalLine_G.VALIDATE("Posting Date",ApplicationDate_G);
+                GenJournalLine_G."Account Type" := GenJournalLine_G."Account Type"::Vendor;
+                GenJournalLine_G.VALIDATE("Account No.",VendorInvoice_G."Vendor No.");
+                CapitalSetup_L.GET;
+                CapitalSetup_L.TESTFIELD("Restraint Source Code");
+                GenJournalLine_G."Source Code" := CapitalSetup_L."Restraint Source Code";
+                CMCRestraint_L.GET(RestraintEntry_G."Restraint Code");
+                GenJournalLine_G.Description := CMCRestraint_L.Description;
+                GenJournalLine_G.VALIDATE(Amount,-VendorInvoice_G."Amount to Apply");
+                GenJournalLine_G."Applies-to ID":=USERID;
+
+                RestraintEntry_G.TESTFIELD("Restraint Bal. Account No.");
+                CASE RestraintEntry_G."Restraint Bal. Account Type" OF
+                  RestraintEntry_G."Restraint Bal. Account Type"::General:
+                    BEGIN
+                      GenJournalLine_G.VALIDATE("Bal. Account Type",GenJournalLine_G."Bal. Account Type"::"G/L Account");
+                      GenJournalLine_G.VALIDATE("Bal. Account No.",RestraintEntry_G."Restraint Bal. Account No.");
+                      GenJournalLine_G."External Document No." := RestraintEntry_G."Document No.";
+                      GenJournalLine_G."Setting Off":=TRUE;
+                      CLEAR(GenJnlPostLine_G);
+                      GenJnlPostLine_G.RunWithCheck(GenJournalLine_G,L_TempJnlLineDim);
+                      GenJnlPostLine_G.GetGLReg(GLRec_G);
+                    END;
+                  RestraintEntry_G."Restraint Bal. Account Type"::Vendor:
+                    BEGIN
+                      GenJournalLine_G.VALIDATE("Bal. Account Type",GenJournalLine_G."Bal. Account Type"::"G/L Account");
+                      GenJournalLine_G.VALIDATE("Bal. Account No.",G_CMCSetup."SettOff Bal Acount");
+                      GenJournalLine_G."External Document No." := RestraintEntry_G."Document No.";
+                      GenJournalLine_G."Setting Off":=TRUE;
+                      CLEAR(GenJnlPostLine_G);
+                      GenJnlPostLine_G.RunWithCheck(GenJournalLine_G,L_TempJnlLineDim);
+                      GenJnlPostLine_G.GetGLReg(GLRec_G);
+
+                      GenJournalLine1_G.INIT;
+                      GenJournalLine1_G."Line No." := 10000;
+                      GenJournalLine1_G."Document No." :=GenJournalLine_G."Document No.";
+                      GenJournalLine1_G.VALIDATE("Posting Date",GenJournalLine_G."Posting Date");
+                      GenJournalLine1_G."Account Type" := GenJournalLine_G."Account Type"::"G/L Account";
+                      GenJournalLine1_G.VALIDATE("Account No.",G_CMCSetup."SettOff Bal Acount");
+                      GenJournalLine1_G."Source Code" := GenJournalLine_G."Source Code";
+                      GenJournalLine1_G.Description:= GenJournalLine_G.Description;
+                      GenJournalLine1_G.VALIDATE(Amount,GenJournalLine_G.Amount);
+                      GenJournalLine1_G.VALIDATE("Bal. Account Type",GenJournalLine_G."Bal. Account Type"::Vendor);
+                      GenJournalLine1_G.VALIDATE("Bal. Account No.",RestraintEntry_G."Restraint Bal. Account No.");
+                      GenJournalLine1_G."Setting Off":=TRUE;
+                      CLEAR(GenJnlPostLine1_G);
+                      GenJnlPostLine1_G.RunWithCheck(GenJournalLine1_G,L_TempJnlLineDim);
+                    END;
+                   END;
+
+                //**** insertion d'une 'criture retenue d'taill'e*****//
+                DtldRestraintEntry_G.RESET;
+                IF DtldRestraintEntry_G.FINDLAST THEN
+                  L_NextNo :=DtldRestraintEntry_G."Entry No."+1
+                ELSE
+                  L_NextNo := 1;
+
+                DtldRestraintEntry_G.INIT;
+                DtldRestraintEntry_G."Entry No." := L_NextNo;
+                DtldRestraintEntry_G."Restraint Entry No." := RestraintEntry_G."Entry No.";
+                DtldRestraintEntry_G."Entry Type" := DtldRestraintEntry_G."Entry Type"::Compensation;
+                DtldRestraintEntry_G."Member No." := Contact_G."No.";
+                DtldRestraintEntry_G."Posting Date" := ApplicationDate_G;
+                DtldRestraintEntry_G."Document No." := DocNum_G;
+                DtldRestraintEntry_G.Amount := -RestraintEntry_G."Amount to Apply";
+                DtldRestraintEntry_G."User Id" := USERID;
+                DtldRestraintEntry_G."Restraint Code" := RestraintEntry_G."Restraint Code";
+                DtldRestraintEntry_G."G/L Registers No." := GLRec_G."No.";
+                GLEntry_L.GET(GLRec_G."From Entry No.");
+                DtldRestraintEntry_G."G/L Document No." := GLEntry_L."Document No.";
+                DtldRestraintEntry_G.INSERT;
+
+                RestraintEntry_G."SettOff Applies-to ID" :='';
+                RestraintEntry_G."Amount to Apply":=0;
+                RestraintEntry_G.MODIFY;
+              UNTIL CompenProp_L.NEXT=0;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Contact_G@8053000 : Record 5050;
+      VendLedgerEntry_G@8053001 : Record 25;
+      G_CMCSetup@8053003 : Record 8052982;
+      ApplicationDate_G@8053008 : Date;
+      CustLedgerEntry_G@8053010 : Record 21;
+      AmountToCompensate_G@8053002 : Decimal;
+      GenJournalLine_G@8053012 : Record 81;
+      DocNum_G@8053013 : Code[20];
+      Text8053004@8053015 : TextConst 'FRA=Compensation %1';
+      GenJnlPostLine_G@8053016 : Codeunit 12;
+      RestraintEntry_G@8053017 : Record 8053374;
+      Text8053005@8053018 : TextConst 'FRA=%1 %2';
+      MvtType_G@8053019 : Record 8053353;
+      DtldRestraintEntry_G@8053020 : Record 8053375;
+      GLRec_G@8053021 : Record 45;
+      VendorInvoice_G@8053004 : Record 25;
+      CompenProp_L@8053005 : Record 8053041;
+      GenJournalLine1_G@8053006 : Record 81;
+      GenJnlPostLine1_G@8053007 : Codeunit 12;
+
+    PROCEDURE SetContact@8053000(NewContact_P@8053000 : Record 5050);
+    BEGIN
+      Contact_G := NewContact_P;
+    END;
+
+    PROCEDURE ApplyCustomerLedger@8053006(Inv_P@8053000 : Code[20];SettOffAp_P@8053004 : Code[20];PostingDate_P@8053006 : Date;DocNo_P@8053007 : Code[20]);
+    VAR
+      CustApplyPrp_L@8053001 : Record 8053506;
+      ToApplyAmnt_L@8053002 : Decimal;
+      ToApplyCustLed_L@8053003 : Record 21;
+      CustEntryApplyPostEntries_L@8053005 : Codeunit 226;
+    BEGIN
+      ToApplyAmnt_L := 0;
+      CustApplyPrp_L.RESET;
+      CustApplyPrp_L.SETRANGE("SettOff Applies-to ID",SettOffAp_P);
+      CustApplyPrp_L.SETRANGE("Invoice No",Inv_P);
+      IF NOT CustApplyPrp_L.FINDSET THEN
+        EXIT;
+      CustLedgerEntry_G.RESET;
+      CustLedgerEntry_G.SETRANGE("Customer No.",CustApplyPrp_L."Source N›");
+      CustLedgerEntry_G.SETRANGE("Document No.",Inv_P);
+      CustLedgerEntry_G.SETRANGE(Open,TRUE);
+      CustLedgerEntry_G.FINDFIRST;
+      REPEAT
+        ToApplyCustLed_L.GET(CustApplyPrp_L."Entry No.");
+        ToApplyCustLed_L."Amount to Apply" := -CustApplyPrp_L.Amount;
+        ToApplyCustLed_L."Applies-to ID" := USERID;
+        ToApplyCustLed_L.MODIFY;
+        ToApplyAmnt_L += ToApplyCustLed_L."Amount to Apply";
+      UNTIL CustApplyPrp_L.NEXT=0;
+      CustLedgerEntry_G."Amount to Apply" := -ToApplyAmnt_L;
+      CustLedgerEntry_G."Applying Entry" := TRUE;
+      CustLedgerEntry_G."Applies-to ID" := USERID;
+      CustLedgerEntry_G.MODIFY;
+
+      CLEAR(CustEntryApplyPostEntries_L);
+      CustEntryApplyPostEntries_L.SetHideForm(TRUE);
+      CustEntryApplyPostEntries_L.SetDateAndDocNo(PostingDate_P,DocNo_P);
+      CustEntryApplyPostEntries_L.SetNoCommitTreatment(TRUE);
+      CustEntryApplyPostEntries_L.RUN(CustLedgerEntry_G);
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+
+      20140617-FINA28-CMC02.02.00-AKH01 : CEREATOBJECT (SPEC TERNOVEO )
+      20140624-FINA28-CMC02.02.00-BRA01 : MODCODE (Neutraliser les Commit)
+      20140625-FINA28-CMC02.02.00-BRA01 : MODCODE (Mettre la description de la retenue dans l''criture de compensation)
+      20140625-FINA28-CMC02.02.00-BRA02 : MODCODE (Code journal compensation retenu=code journal constatation retenue)
+      20140626-FINA28-CMC02.02.00-BRA01 : MODCODE (Code journale compensation pour les transfert client/Frs)
+      20140701-FINA28-CMC02.02.00-BRA01 : ADDCODe (MAJ Cham "Same G/L Acc. Set Off")
+      20140707-FINA28-CMC02.02.00-BRA01 : ADDCODE (Changement du systSme de compensation/Lettrage client)
+      20140911-FINA13-CMC02.02.00-2377-AKH01 : MODCODE (type compensation sur la tabe "CMC Setup")
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

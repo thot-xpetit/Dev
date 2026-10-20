@@ -1,0 +1,1042 @@
+OBJECT Codeunit 8053003 CMC ONIGC Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=30/10/14;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text805B@8053000 : TextConst 'ENU="Department no. ";FRA=" N› Dep. "';
+      Text805D@8053001 : TextConst 'ENU=Other Entries;FRA=" Autres entrees"';
+      Text805DB@8053017 : TextConst 'FRA=" Bonis"';
+      Text805G@8053002 : TextConst 'ENU=Commercial output;FRA=" Commercialisation"';
+      Text805A@8053003 : TextConst 'ENU=Initial Stock;FRA=Stock de Debut';
+      Text805K@8053004 : TextConst 'ENU=Final Stock;FRA=Stock Final';
+      Text805C@8053005 : TextConst 'ENU=Cereal Collection;FRA=Collecte totale';
+      Text805DZ@8053006 : TextConst 'ENU=Total Entries;FRA=" Total entrees hors collecte"';
+      Text805E@8053016 : TextConst 'FRA=" Total entrees"';
+      Text805F@8053007 : TextConst 'ENU=Retrocessions;FRA=" Retrocessions Unions"';
+      Text805H@8053008 : TextConst 'ENU=Other Outputs;FRA=" Autres sorties"';
+      Text805HF@8053014 : TextConst 'FRA=" Freintes"';
+      Text805I@8053009 : TextConst 'ENU=Total Outputs;FRA=Total des sorties';
+      Text805IE@8053015 : TextConst 'FRA="  Dont vente directe aux Eleveurs"';
+      Text805IB@8053025 : TextConst 'FRA="  Dont vente directe aux Brasseurs"';
+      Text805IAA@8053023 : TextConst 'FRA="  Dont vente directe au IAA"';
+      Text805G2@8053010 : TextConst 'ENU=Total Outputs;FRA=" Total des sorties reprise"';
+      G_Windows@8053011 : Dialog;
+      Text8053011@8053012 : TextConst 'FRA=Traitement :  #1###########';
+      Text805CA@8053013 : TextConst 'FRA=" Achats Negoce"';
+      Text805DC1@8053018 : TextConst 'FRA=Total des entrees depots';
+      Text805DC2@8053019 : TextConst 'FRA=Total des sorties collectes';
+      Text805DC3@8053020 : TextConst 'FRA=Total des sorties reprise';
+      Text805DC4@8053021 : TextConst 'FRA=Total stock final depots';
+      CMCSpecies_G@8053022 : Record 8052988;
+      Bio_G@8053024 : Boolean;
+      Text805Item@1000000000 : TextConst 'FRA=V'rifiez l''article #1##########\page #2# colonne #3# mal d'finis !';
+
+    PROCEDURE FillONIGCBuffer@8053007(StartDate_P@8053000 : Date;EndDate_P@8053001 : Date;Type_P@8053003 : 'Stock Collection,Stock at Collector';Bio_P@8053007 : Boolean);
+    VAR
+      ONIGCBuffer_L@8053002 : Record 8053058;
+      CMCONIGCLines_L@8053004 : Record 8053057;
+      Val@8053005 : Decimal;
+      ind@8053006 : Integer;
+    BEGIN
+      // -----------------------------------------------------------------------------------------
+      //                  Appel fonctions pour remplissage ONIGC Buffer
+      // -----------------------------------------------------------------------------------------
+      ONIGCBuffer_L.RESET;
+      ONIGCBuffer_L.DELETEALL;
+      Bio_G:=Bio_P;
+
+      G_Windows.OPEN(Text8053011);
+
+      IF Type_P = 0 THEN BEGIN
+        CalcBalanceToDate(StartDate_P,FALSE,Type_P);
+        CalcStockInputsCollection(StartDate_P,EndDate_P);
+        CalcLine(StartDate_P,EndDate_P,'E02','CA','');
+        CalcLine(StartDate_P,EndDate_P,'T20','D','>0');
+        CalcLine(StartDate_P,EndDate_P,'T10','DB','>0');
+        CalcTotal('CA|D|DB','DZ');
+        CalcTotal('C|DZ','E');
+        CalcRetrocessions;
+        CalcLine(StartDate_P,EndDate_P,'S10','G','');
+        CalcLine(StartDate_P,EndDate_P,'T20','H','<0');
+        CalcLine(StartDate_P,EndDate_P,'S20','H','');
+        CalcLine(StartDate_P,EndDate_P,'T10','HF','<0');
+        CalcTotal('G|H|HF','I');
+        CalcFinalBalanceByDept(StartDate_P,EndDate_P);
+        CalcBalanceToDate(EndDate_P,TRUE,Type_P);
+      END ELSE BEGIN
+        CalcBalanceToDate(StartDate_P,FALSE,Type_P);
+        CalcStockInputsAtCollector(StartDate_P,EndDate_P);
+        CalcStockOutputsAtCollector(StartDate_P,EndDate_P);
+        CalcStockOutputsRetakeAtCollec(StartDate_P,EndDate_P);
+        CalcFinalBalanceByDept2(StartDate_P,EndDate_P);
+        CalcBalanceToDate(EndDate_P,TRUE,Type_P);
+      END;
+
+      // -----------------------------------------------------------------------------------------
+      //                  Calcul 'dont' pour remplissage ONIGC Buffer
+      // -----------------------------------------------------------------------------------------
+      CMCONIGCLines_L.SETFILTER(CMCONIGCLines_L."Page No.Link",'>%1',0);
+      IF CMCONIGCLines_L.FINDSET THEN REPEAT
+        IF ONIGCBuffer_L.FINDSET THEN REPEAT
+          ind:=(CMCONIGCLines_L."Page No.Link"-2)*7+CMCONIGCLines_L."Column Index Link";
+          Val:=GetBufferValue(ONIGCBuffer_L,CMCONIGCLines_L."Buffer Value No.");
+          AssignBufferValue(ONIGCBuffer_L,ind,Val);
+          ONIGCBuffer_L.MODIFY;
+        UNTIL ONIGCBuffer_L.NEXT=0;
+      UNTIL CMCONIGCLines_L.NEXT=0;
+      G_Windows.CLOSE;
+    END;
+
+    PROCEDURE CalcStockInputsCollection@8053000(StartDate_P@8053000 : Date;EndDate_P@8053001 : Date);
+    VAR
+      CMCSetup_L@8053010 : Record 8052982;
+      ItemLedgEntry_L@8053003 : Record 32;
+      Item_L@8053004 : Record 27;
+      Location_L@8053005 : Record 14;
+      ONIGCBuff_L@8053006 : Record 8053058;
+      ONIGCBuffTotal_L@8053002 : Record 8053058;
+      DeptCode_L@8053007 : Code[2];
+      ONIGCLine_L@8053008 : Record 8053057;
+      ONIGC_L@8053009 : Record 8053056;
+      ONIGCItemsFound_L@8053011 : Boolean;
+      Date_L@8053012 : Date;
+      vendor_l@8053013 : Record 23;
+      CMCSpeciesSetup_L@1000000000 : Record 8053323;
+    BEGIN
+      // ---------------------------------------------------------------------------------------------------------
+      // Calcul collecte par d'partements pour d'claration mensuelle ONIGC (1-ere partie)  typ's "B" et total "C"
+      // 2012 : d'partement de l'apporteur et non plus du collecteur
+      // ---------------------------------------------------------------------------------------------------------
+      CMCSetup_L.GET;
+
+      ItemLedgEntry_L.SETRANGE("Posting Date",StartDate_P,EndDate_P);
+      ItemLedgEntry_L.SETRANGE("Movement Type",ItemLedgEntry_L."Movement Type" :: E01);
+      IF ItemLedgEntry_L.FIND('-') THEN BEGIN
+        REPEAT
+          G_Windows.UPDATE(1,ItemLedgEntry_L."Entry No.");
+          Item_L.GET(ItemLedgEntry_L."Item No.");
+          CMCSpeciesSetup_L.GET(Item_L."Species Code");
+          IF (Item_L."ONIGC Column Index" <> 0) AND (Bio_G = CMCSpeciesSetup_L."Biologic Species") AND
+            GetPageCol( ONIGCLine_L,CMCSetup_L."Monthly ONIGC Code",Item_L)
+          THEN BEGIN
+            IF Location_L.GET(ItemLedgEntry_L."Location Code") THEN BEGIN
+              IF StartDate_P >= 010712D THEN BEGIN
+                vendor_l.GET(ItemLedgEntry_L."Source No.");
+                IF (vendor_l."Country/Region Code" <> 'FR') AND (vendor_l."Country/Region Code" <> '') THEN
+                  DeptCode_L:='99'
+                ELSE
+                  DeptCode_L := COPYSTR(vendor_l."Post Code",1,2);
+              END;
+              IF ONIGCBuff_L.GET(DeptCode_L,0,'B') THEN BEGIN
+                AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",ItemLedgEntry_L.Quantity);
+                ONIGCBuff_L.MODIFY;
+              END ELSE BEGIN
+                ONIGCBuff_L.INIT;
+                ONIGCBuff_L."Line ID" := DeptCode_L;
+                ONIGCBuff_L.Type := 0;
+                ONIGCBuff_L."Calc Type" := 'B';
+                ONIGCBuff_L.Description := Text805B + DeptCode_L;
+                AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",ItemLedgEntry_L.Quantity);
+                ONIGCBuff_L.INSERT;
+              END;
+              IF ONIGCBuffTotal_L.GET('',0,'C') THEN BEGIN
+                AssignBufferValue(ONIGCBuffTotal_L,ONIGCLine_L."Buffer Value No.",ItemLedgEntry_L.Quantity);
+                ONIGCBuffTotal_L.MODIFY;
+              END ELSE BEGIN
+                ONIGCBuffTotal_L.Type := 0;
+                ONIGCBuffTotal_L."Calc Type" := 'C';
+                ONIGCBuffTotal_L.Description := Text805C;
+                AssignBufferValue(ONIGCBuffTotal_L,ONIGCLine_L."Buffer Value No.",ItemLedgEntry_L.Quantity);
+                ONIGCBuffTotal_L.INSERT;
+              END;
+              ONIGCItemsFound_L := TRUE;
+            END;
+          END;
+        UNTIL ItemLedgEntry_L.NEXT = 0;
+      END;
+
+      IF NOT ONIGCItemsFound_L THEN BEGIN
+        ONIGCBuff_L.INIT;
+        ONIGCBuff_L."Line ID" := DeptCode_L;
+        ONIGCBuff_L.Type := 0;
+        ONIGCBuff_L."Calc Type" := 'B';
+        ONIGCBuff_L.Description := Text805B ;
+        ONIGCBuff_L.INSERT;
+        ONIGCBuffTotal_L.Type := 0;
+        ONIGCBuffTotal_L."Calc Type" := 'C';
+        ONIGCBuffTotal_L.Description := Text805C;
+        IF ONIGCBuffTotal_L.INSERT THEN;
+      END;
+    END;
+
+    PROCEDURE CalcTotal@8053015(TypeFilter_P@8053000 : Text[30];TypeTotal_P@8053001 : Code[2]);
+    VAR
+      ONIGCBuff_L@8053002 : Record 8053058;
+      ONIGCBuffTotal_L@8053003 : Record 8053058;
+      Counter_L@8053004 : Integer;
+    BEGIN
+      // -----------------------------------------------------------------------------------------
+      // Calcul total pour d'claration mensuelle ONIGC (1-ere partie)
+      // -----------------------------------------------------------------------------------------
+      // --> 20121012-wi00-CMC01.04.06-JLT01
+
+      ONIGCBuffTotal_L.SETRANGE(Type,0);
+      ONIGCBuffTotal_L.SETRANGE("Calc Type",TypeTotal_P);
+
+      IF NOT ONIGCBuffTotal_L.FINDFIRST THEN BEGIN
+        ONIGCBuffTotal_L.Type := 0;
+        ONIGCBuffTotal_L."Calc Type" := TypeTotal_P;
+        CASE TypeTotal_P OF
+          'DZ': ONIGCBuffTotal_L.Description := Text805DZ;
+          'E' : ONIGCBuffTotal_L.Description := Text805E;
+          'I' : ONIGCBuffTotal_L.Description := Text805I;
+        END;
+        ONIGCBuffTotal_L.INSERT;
+      END;
+
+      ONIGCBuff_L.SETRANGE(Type,0);
+      ONIGCBuff_L.SETFILTER("Calc Type",TypeFilter_P);
+      IF ONIGCBuff_L.FINDSET THEN  BEGIN
+        ONIGCBuffTotal_L.Type := 0;
+        ONIGCBuffTotal_L."Calc Type" := TypeTotal_P;
+        REPEAT
+          ONIGCBuffTotal_L."Value 1" += ONIGCBuff_L."Value 1";
+          ONIGCBuffTotal_L."Value 2" += ONIGCBuff_L."Value 2";
+          ONIGCBuffTotal_L."Value 3" += ONIGCBuff_L."Value 3";
+          ONIGCBuffTotal_L."Value 4" += ONIGCBuff_L."Value 4";
+          ONIGCBuffTotal_L."Value 5" += ONIGCBuff_L."Value 5";
+          ONIGCBuffTotal_L."Value 6" += ONIGCBuff_L."Value 6";
+          ONIGCBuffTotal_L."Value 7" += ONIGCBuff_L."Value 7";
+          ONIGCBuffTotal_L."Value 8" += ONIGCBuff_L."Value 8";
+          ONIGCBuffTotal_L."Value 9" += ONIGCBuff_L."Value 9";
+          ONIGCBuffTotal_L."Value 10" += ONIGCBuff_L."Value 10";
+          ONIGCBuffTotal_L."Value 11" += ONIGCBuff_L."Value 11";
+          ONIGCBuffTotal_L."Value 12" += ONIGCBuff_L."Value 12";
+          ONIGCBuffTotal_L."Value 13" += ONIGCBuff_L."Value 13";
+          ONIGCBuffTotal_L."Value 14" += ONIGCBuff_L."Value 14";
+          ONIGCBuffTotal_L."Value 15" += ONIGCBuff_L."Value 15";
+          ONIGCBuffTotal_L."Value 16" += ONIGCBuff_L."Value 16";
+          ONIGCBuffTotal_L."Value 17" += ONIGCBuff_L."Value 17";
+          ONIGCBuffTotal_L."Value 18" += ONIGCBuff_L."Value 18";
+          ONIGCBuffTotal_L."Value 19" += ONIGCBuff_L."Value 19";
+          ONIGCBuffTotal_L."Value 20" += ONIGCBuff_L."Value 20";
+          ONIGCBuffTotal_L."Value 21" += ONIGCBuff_L."Value 21";
+          ONIGCBuffTotal_L."Value 22" += ONIGCBuff_L."Value 22";
+          ONIGCBuffTotal_L."Value 23" += ONIGCBuff_L."Value 23";
+          ONIGCBuffTotal_L."Value 24" += ONIGCBuff_L."Value 24";
+          ONIGCBuffTotal_L."Value 25" += ONIGCBuff_L."Value 25";
+          ONIGCBuffTotal_L."Value 26" += ONIGCBuff_L."Value 26";
+          ONIGCBuffTotal_L."Value 27" += ONIGCBuff_L."Value 27";
+          ONIGCBuffTotal_L."Value 28" += ONIGCBuff_L."Value 28";
+          ONIGCBuffTotal_L."Value 29" += ONIGCBuff_L."Value 29";
+          ONIGCBuffTotal_L."Value 30" += ONIGCBuff_L."Value 30";
+          ONIGCBuffTotal_L."Value 31" += ONIGCBuff_L."Value 31";
+          ONIGCBuffTotal_L."Value 32" += ONIGCBuff_L."Value 32";
+          ONIGCBuffTotal_L."Value 33" += ONIGCBuff_L."Value 33";
+          ONIGCBuffTotal_L."Value 34" += ONIGCBuff_L."Value 34";
+          ONIGCBuffTotal_L."Value 35" += ONIGCBuff_L."Value 35";
+          ONIGCBuffTotal_L."Value 36" += ONIGCBuff_L."Value 36";
+          ONIGCBuffTotal_L."Value 37" += ONIGCBuff_L."Value 37";
+          ONIGCBuffTotal_L."Value 38" += ONIGCBuff_L."Value 38";
+          ONIGCBuffTotal_L."Value 39" += ONIGCBuff_L."Value 39";
+          ONIGCBuffTotal_L."Value 40" += ONIGCBuff_L."Value 40";
+          ONIGCBuffTotal_L."Value 41" += ONIGCBuff_L."Value 41";
+          ONIGCBuffTotal_L."Value 42" += ONIGCBuff_L."Value 42";
+          ONIGCBuffTotal_L."Value 43" += ONIGCBuff_L."Value 43";
+          ONIGCBuffTotal_L."Value 44" += ONIGCBuff_L."Value 44";
+          ONIGCBuffTotal_L."Value 45" += ONIGCBuff_L."Value 45";
+          ONIGCBuffTotal_L."Value 46" += ONIGCBuff_L."Value 46";
+          ONIGCBuffTotal_L."Value 47" += ONIGCBuff_L."Value 47";
+          ONIGCBuffTotal_L."Value 48" += ONIGCBuff_L."Value 48";
+          ONIGCBuffTotal_L."Value 49" += ONIGCBuff_L."Value 49";
+          ONIGCBuffTotal_L."Value 50" += ONIGCBuff_L."Value 50";
+          ONIGCBuffTotal_L."Value 51" += ONIGCBuff_L."Value 51";
+          ONIGCBuffTotal_L."Value 52" += ONIGCBuff_L."Value 52";
+          ONIGCBuffTotal_L."Value 53" += ONIGCBuff_L."Value 53";
+          ONIGCBuffTotal_L."Value 54" += ONIGCBuff_L."Value 54";
+          ONIGCBuffTotal_L."Value 55" += ONIGCBuff_L."Value 55";
+          ONIGCBuffTotal_L."Value 56" += ONIGCBuff_L."Value 56";
+        UNTIL ONIGCBuff_L.NEXT = 0;
+        ONIGCBuffTotal_L.MODIFY;
+      END;
+    END;
+
+    PROCEDURE CalcRetrocessions@8053019();
+    VAR
+      ONIGCBuff_L@8053000 : Record 8053058;
+    BEGIN
+      // -----------------------------------------------------------------------------------------
+      // Calcul total entr'es pour d'claration mensuelle ONIGC (1-ere partie)  typ's "F" (toujours zero)
+      // -----------------------------------------------------------------------------------------
+      ONIGCBuff_L.Type := 0;
+      ONIGCBuff_L."Calc Type" := 'F';
+      ONIGCBuff_L.Description := Text805F;
+      ONIGCBuff_L.INSERT;
+    END;
+
+    PROCEDURE CalcLine@8053009(StartDate_P@8053000 : Date;EndDate_P@8053001 : Date;FilterMvt_P@8053015 : Text[30];Type_P@8053016 : Code[2];FilterQty_P@8053017 : Text[30]);
+    VAR
+      CMCSetup_L@8053013 : Record 8052982;
+      ItemLedgEntry_L@8053003 : Record 32;
+      Item_L@8053004 : Record 27;
+      Location_L@8053005 : Record 14;
+      ONIGCBuff_L@8053006 : Record 8053058;
+      ONIGCBuffTotal_L@8053010 : Record 8053058;
+      DeptCode_L@8053007 : Code[2];
+      ONIGCLine_L@8053008 : Record 8053057;
+      ONIGC_L@8053009 : Record 8053056;
+      IsComm_L@8053002 : Boolean;
+      Counter_L@8053011 : Integer;
+      AddTotal_L@8053012 : Boolean;
+      ONIGCItemsFound_L@8053014 : Boolean;
+      Mvt_L@8053018 : Code[10];
+      Qty_l@8053019 : Decimal;
+      Cust_L@8053020 : Record 18;
+      CMCSpeciesSetup_L@1000000000 : Record 8053323;
+    BEGIN
+      // -----------------------------------------------------------------------------------------
+      // Calcul lignes pour d'claration mensuelle ONIGC (1-ere partie)
+      // -----------------------------------------------------------------------------------------
+      CMCSetup_L.GET;
+      ItemLedgEntry_L.SETRANGE("Posting Date",StartDate_P,EndDate_P);
+      IF FilterQty_P<>'' THEN ItemLedgEntry_L.SETFILTER(Quantity,FilterQty_P);
+      ItemLedgEntry_L.SETFILTER("Movement Type",FilterMvt_P);
+
+      IF ItemLedgEntry_L.FINDSET THEN BEGIN
+        REPEAT
+          G_Windows.UPDATE(1,ItemLedgEntry_L."Entry No.");
+          Item_L.GET(ItemLedgEntry_L."Item No.");
+          CMCSpeciesSetup_L.GET(Item_L."Species Code");
+          IF (Item_L."ONIGC Column Index" <> 0) AND (Bio_G = CMCSpeciesSetup_L."Biologic Species")
+            AND GetPageCol( ONIGCLine_L,CMCSetup_L."Monthly ONIGC Code",Item_L)
+          THEN BEGIN
+            Mvt_L:=FORMAT(ItemLedgEntry_L."Movement Type");
+            IF ONIGCBuff_L.GET('',0,Type_P) THEN BEGIN
+              IF Mvt_L IN ['S03','S04','S05','S10','S20'] THEN
+                Qty_l:=-ItemLedgEntry_L.Quantity ELSE Qty_l:=ItemLedgEntry_L.Quantity ;
+              IF (Qty_l < 0) AND (Type_P IN ['H','HF']) THEN Qty_l:=ABS(Qty_l);
+              AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",Qty_l);
+              ONIGCBuff_L.MODIFY;
+            END ELSE BEGIN
+              ONIGCBuff_L.INIT;
+              ONIGCBuff_L.Type := 0;
+              ONIGCBuff_L."Calc Type" := Type_P ;
+              CASE Type_P OF
+                'CA' : ONIGCBuff_L.Description := Text805CA;
+                'D'  : ONIGCBuff_L.Description := Text805D;
+                'DB' : ONIGCBuff_L.Description := Text805DB;
+                'G'  : ONIGCBuff_L.Description := Text805G;
+                'H'  : ONIGCBuff_L.Description := Text805H;
+                'HF' : ONIGCBuff_L.Description := Text805HF;
+              END;
+
+              IF Mvt_L IN ['S03','S04','S05','S10','S20'] THEN
+                Qty_l:=-ItemLedgEntry_L.Quantity ELSE Qty_l:=ItemLedgEntry_L.Quantity ;
+              IF (Qty_l < 0) AND (Type_P IN ['H','HF']) THEN Qty_l:=ABS(Qty_l);
+              AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",Qty_l);
+              ONIGCBuff_L.INSERT;
+            END;
+
+            // Dont Eleveur
+            IF Mvt_L='S10' THEN BEGIN
+              Cust_L.GET(ItemLedgEntry_L."Source No.");
+
+              IF (Cust_L.Breeder=TRUE) THEN BEGIN
+                IF ONIGCBuff_L.GET('',0,'IE') THEN BEGIN
+                  AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",Qty_l);
+                  ONIGCBuff_L.MODIFY;
+                END ELSE BEGIN
+                  ONIGCBuff_L.INIT;
+                  ONIGCBuff_L.Type := 0;
+                  ONIGCBuff_L."Calc Type" := 'IE';
+                  ONIGCBuff_L.Description := Text805IE;
+                  AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",Qty_l);
+                  ONIGCBuff_L.INSERT;
+                END;
+              END;
+              IF (Cust_L."Food Industry"=TRUE ) AND (Bio_G=TRUE) THEN BEGIN
+                IF ONIGCBuff_L.GET('',0,'II') THEN BEGIN
+                  AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",Qty_l);
+                  ONIGCBuff_L.MODIFY;
+                END ELSE BEGIN
+                  ONIGCBuff_L.INIT;
+                  ONIGCBuff_L.Type := 0;
+                  ONIGCBuff_L."Calc Type" := 'II';
+                  ONIGCBuff_L.Description := Text805IAA;
+                  AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",Qty_l);
+                  ONIGCBuff_L.INSERT;
+                END;
+              END;
+              IF (Cust_L.Breeder=TRUE) THEN BEGIN
+                IF ONIGCBuff_L.GET('',0,'IJ') THEN BEGIN
+                  AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",Qty_l);
+                  ONIGCBuff_L.MODIFY;
+                END ELSE BEGIN
+                  ONIGCBuff_L.INIT;
+                  ONIGCBuff_L.Type := 0;
+                  ONIGCBuff_L."Calc Type" := 'IJ';
+                  ONIGCBuff_L.Description := Text805IB;
+                  AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",Qty_l);
+                  ONIGCBuff_L.INSERT;
+                END;
+              END;
+            END;
+          END;
+        UNTIL ItemLedgEntry_L.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CalcBalanceToDate@8053002(Date_P@8053001 : Date;Final_P@8053000 : Boolean;Type_P@8053014 : Option);
+    VAR
+      CMCSetup_L@8053011 : Record 8052982;
+      ItemLedgEntry_L@8053008 : Record 32;
+      Item_L@8053007 : Record 27;
+      Location_L@8053006 : Record 14;
+      ONIGCBuff_L@8053005 : Record 8053058;
+      DeptCode_L@8053004 : Code[2];
+      ONIGCLine_L@8053003 : Record 8053057;
+      ONIGC_L@8053002 : Record 8053056;
+      Inputs_L@8053009 : Decimal;
+      Outputs_L@8053010 : Decimal;
+      ONIGCItemsFound_L@8053012 : Boolean;
+      Qty_L@8053013 : Dialog;
+      CMCSpeciesSetup_L@1000000000 : Record 8053323;
+    BEGIN
+      // -----------------------------------------------------------------------------------------
+      // Calcul stock pour d'claration mensuelle ONIGC (1-ere partie)  typ's "A" et "K"
+      // -----------------------------------------------------------------------------------------
+      CMCSetup_L.GET;
+
+      IF NOT Final_P THEN
+        ItemLedgEntry_L.SETFILTER("Posting Date",'<%1',Date_P)
+      ELSE
+        ItemLedgEntry_L.SETFILTER("Posting Date",'<=%1',Date_P);
+      IF Type_P=0 THEN
+        ItemLedgEntry_L.SETFILTER("Movement Type",'%1|%2|%3|%4|%5|%6|%7|%8', ItemLedgEntry_L."Movement Type"::E01,
+          ItemLedgEntry_L."Movement Type"::E05, ItemLedgEntry_L."Movement Type"::E02, ItemLedgEntry_L."Movement Type"::T10,
+          ItemLedgEntry_L."Movement Type"::T20, ItemLedgEntry_L."Movement Type"::S10,ItemLedgEntry_L."Movement Type"::S05,
+          ItemLedgEntry_L."Movement Type"::S20)
+      ELSE
+        ItemLedgEntry_L.SETFILTER("Movement Type",'%1|%2',ItemLedgEntry_L."Movement Type"::E03,ItemLedgEntry_L."Movement Type"::S03);
+
+      IF ItemLedgEntry_L.FINDSET THEN
+        REPEAT
+          G_Windows.UPDATE(1,ItemLedgEntry_L."Entry No.");
+          Item_L.GET(ItemLedgEntry_L."Item No.");
+          CMCSpeciesSetup_L.GET(Item_L."Species Code");
+          IF (Item_L."ONIGC Column Index" <> 0) AND (Bio_G = CMCSpeciesSetup_L."Biologic Species") AND
+            GetPageCol( ONIGCLine_L,CMCSetup_L."Monthly ONIGC Code",Item_L)
+          THEN BEGIN
+            IF NOT Final_P THEN BEGIN
+              IF ONIGCBuff_L.GET('',Type_P,'A') THEN BEGIN
+                AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",ItemLedgEntry_L.Quantity);
+                ONIGCBuff_L.MODIFY;
+              END ELSE BEGIN
+                ONIGCBuff_L.INIT;
+                ONIGCBuff_L.Type := Type_P;
+                ONIGCBuff_L."Calc Type" := 'A';
+                ONIGCBuff_L.Description := Text805A;
+                AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",ItemLedgEntry_L.Quantity);
+                ONIGCBuff_L.INSERT;
+              END;
+            END ELSE
+              IF ONIGCBuff_L.GET('',Type_P,'K') THEN BEGIN
+                AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",ItemLedgEntry_L.Quantity);
+                ONIGCBuff_L.MODIFY;
+              END ELSE BEGIN
+                ONIGCBuff_L.INIT;
+                ONIGCBuff_L.Type := Type_P;
+                ONIGCBuff_L."Calc Type" := 'K';
+                ONIGCBuff_L.Description := Text805K;
+                AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",ItemLedgEntry_L.Quantity);
+                ONIGCBuff_L.INSERT;
+              END;
+            ONIGCItemsFound_L := TRUE;
+          END;
+        UNTIL ItemLedgEntry_L.NEXT = 0;
+
+      IF NOT ONIGCItemsFound_L THEN BEGIN
+        ONIGCBuff_L.Type := Type_P;
+        IF NOT Final_P THEN  BEGIN
+          ONIGCBuff_L."Calc Type" := 'A';
+          ONIGCBuff_L.Description := Text805A;
+        END ELSE BEGIN
+          ONIGCBuff_L."Calc Type" := 'K';
+          ONIGCBuff_L.Description := Text805K;
+        END;
+        ONIGCBuff_L.INSERT;
+      END;
+    END;
+
+    PROCEDURE CalcFinalBalanceByDept@8053005(StartDate_P@8053000 : Date;EndDate_P@8053001 : Date);
+    VAR
+      CMCSetup_L@8053010 : Record 8052982;
+      ItemLedgEntry_L@8053003 : Record 32;
+      Item_L@8053004 : Record 27;
+      Location_L@8053005 : Record 14;
+      ONIGCBuff_L@8053006 : Record 8053058;
+      DeptCode_L@8053007 : Code[2];
+      ONIGCLine_L@8053008 : Record 8053057;
+      ONIGC_L@8053009 : Record 8053056;
+      ONIGCItemsFound_L@8053011 : Boolean;
+      CMCSpeciesSetup_L@1000000000 : Record 8053323;
+    BEGIN
+      // -----------------------------------------------------------------------------------------
+      // Calcul stock final par d'partements pour d'claration mensuelle ONIGC (1-ere partie)  typ's "J"
+      // -----------------------------------------------------------------------------------------
+      CMCSetup_L.GET;
+      ItemLedgEntry_L.SETFILTER("Posting Date",'<=%1',EndDate_P);
+      ItemLedgEntry_L.SETFILTER("Movement Type",'%1|%2|%3|%4|%5|%6|%7|%8',ItemLedgEntry_L."Movement Type"::E01,
+        ItemLedgEntry_L."Movement Type"::E05,ItemLedgEntry_L."Movement Type"::E02,ItemLedgEntry_L."Movement Type"::T10,
+        ItemLedgEntry_L."Movement Type"::T20,ItemLedgEntry_L."Movement Type"::S10,ItemLedgEntry_L."Movement Type"::S05,
+        ItemLedgEntry_L."Movement Type"::S20);
+
+      IF ItemLedgEntry_L.FIND('-') THEN BEGIN
+        REPEAT
+          G_Windows.UPDATE(1,ItemLedgEntry_L."Entry No.");
+          Item_L.GET(ItemLedgEntry_L."Item No.");
+          CMCSpeciesSetup_L.GET(Item_L."Species Code");
+          IF (Item_L."ONIGC Column Index" <> 0) AND (Bio_G = CMCSpeciesSetup_L."Biologic Species") AND
+            GetPageCol( ONIGCLine_L,CMCSetup_L."Monthly ONIGC Code",Item_L)
+          THEN BEGIN
+            IF Location_L.GET(ItemLedgEntry_L."Location Code") THEN BEGIN
+              DeptCode_L :=GetDeptLocation(Location_L);
+              IF ONIGCBuff_L.GET(DeptCode_L,0,'J') THEN BEGIN
+                AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",ItemLedgEntry_L.Quantity);
+                ONIGCBuff_L.MODIFY;
+              END ELSE BEGIN
+                ONIGCBuff_L.INIT;
+                ONIGCBuff_L."Line ID" := DeptCode_L;
+                ONIGCBuff_L.Type := 0;
+                ONIGCBuff_L."Calc Type" := 'J';
+                ONIGCBuff_L.Description := Text805B + DeptCode_L;
+                AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",ItemLedgEntry_L.Quantity);
+                ONIGCBuff_L.INSERT;
+              END;
+            END;
+            ONIGCItemsFound_L := TRUE;
+          END;
+        UNTIL ItemLedgEntry_L.NEXT = 0;
+      END;
+
+      IF NOT ONIGCItemsFound_L THEN BEGIN
+        ONIGCBuff_L."Line ID" := DeptCode_L;
+        ONIGCBuff_L.Type := 0;
+        ONIGCBuff_L."Calc Type" := 'J';
+        ONIGCBuff_L.Description := Text805B + DeptCode_L;
+        ONIGCBuff_L.INSERT;
+      END;
+    END;
+
+    PROCEDURE CalcStockInputsAtCollector@8053008(StartDate_P@8053000 : Date;EndDate_P@8053001 : Date);
+    VAR
+      CMCSetup_L@8053010 : Record 8052982;
+      ItemLedgEntry_L@8053003 : Record 32;
+      ItemLedgEntry2_L@8053013 : Record 32;
+      Item_L@8053004 : Record 27;
+      Location_L@8053005 : Record 14;
+      ONIGCBuff_L@8053006 : Record 8053058;
+      ONIGCBuffTotal_L@8053002 : Record 8053058;
+      DeptCode_L@8053007 : Code[2];
+      ONIGCLine_L@8053008 : Record 8053057;
+      ONIGC_L@8053009 : Record 8053056;
+      ONIGCItemsFound_L@8053011 : Boolean;
+      Continue_L@8053012 : Boolean;
+      CMCSpeciesSetup_L@1000000000 : Record 8053323;
+    BEGIN
+      // --------------------------------------------------------------------------------------------------------
+      // Calcul collecte par d'partements pour d'claration mensuelle ONIGC (2-eme partie) E03 = apport en d'pot
+      // --------------------------------------------------------------------------------------------------------
+      CMCSetup_L.GET;
+
+      ItemLedgEntry_L.SETRANGE("Posting Date",StartDate_P,EndDate_P);
+      ItemLedgEntry_L.SETRANGE("Movement Type",ItemLedgEntry_L."Movement Type" :: E03);
+      IF ItemLedgEntry_L.FINDSET THEN BEGIN
+        ONIGCBuffTotal_L.Type := 1;
+        ONIGCBuffTotal_L."Calc Type" := 'C';
+        ONIGCBuffTotal_L.Description := Text805DC1;
+        REPEAT
+          Continue_L:=TRUE;
+          IF ItemLedgEntry_L.Quantity<0 THEN BEGIN
+            ItemLedgEntry2_L.RESET;
+            ItemLedgEntry2_L.GET(ItemLedgEntry_L."Entry No.");
+            IF ItemLedgEntry2_L.NEXT<>0 THEN BEGIN
+              IF ItemLedgEntry2_L."Stock Type"<>ItemLedgEntry_L."Stock Type" THEN
+                Continue_L:=FALSE;
+            END;
+          END;
+          IF Continue_L=TRUE THEN BEGIN
+            G_Windows.UPDATE(1,ItemLedgEntry_L."Entry No.");
+            Item_L.GET(ItemLedgEntry_L."Item No.");
+            CMCSpeciesSetup_L.GET(Item_L."Species Code");
+            IF (Item_L."ONIGC Column Index" <> 0) AND (Bio_G = CMCSpeciesSetup_L."Biologic Species") AND
+              GetPageCol( ONIGCLine_L,CMCSetup_L."Monthly ONIGC Code",Item_L)
+            THEN BEGIN
+              IF Location_L.GET(ItemLedgEntry_L."Location Code") THEN BEGIN
+                DeptCode_L:=GetDeptLocation(Location_L);
+                IF ONIGCBuff_L.GET(DeptCode_L,1,'B') THEN BEGIN
+                  AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",ItemLedgEntry_L.Quantity);
+                  AssignBufferValue(ONIGCBuffTotal_L,ONIGCLine_L."Buffer Value No.",ItemLedgEntry_L.Quantity);
+                  ONIGCBuff_L.MODIFY;
+                END ELSE BEGIN
+                  ONIGCBuff_L.INIT;
+                  ONIGCBuff_L."Line ID" := DeptCode_L;
+                  ONIGCBuff_L.Type := 1;
+                  ONIGCBuff_L."Calc Type" := 'B';
+                  ONIGCBuff_L.Description := Text805B + DeptCode_L;
+                  AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",ItemLedgEntry_L.Quantity);
+                  AssignBufferValue(ONIGCBuffTotal_L,ONIGCLine_L."Buffer Value No.",ItemLedgEntry_L.Quantity);
+                  ONIGCBuff_L.INSERT;
+                END;
+              END;
+              ONIGCItemsFound_L := TRUE;
+            END;
+          END;
+        UNTIL ItemLedgEntry_L.NEXT = 0;
+        ONIGCBuffTotal_L.INSERT;
+      END;
+
+      IF NOT ONIGCItemsFound_L THEN BEGIN
+        ONIGCBuff_L.INIT;
+        ONIGCBuff_L."Line ID" := DeptCode_L;
+        ONIGCBuff_L.Type := 1;
+        ONIGCBuff_L."Calc Type" := 'B';
+        ONIGCBuff_L.Description := Text805B + DeptCode_L;
+        ONIGCBuff_L.INSERT;
+        ONIGCBuffTotal_L.Type := 1;
+        ONIGCBuffTotal_L."Calc Type" := 'C';
+        ONIGCBuffTotal_L.Description := Text805DC1;
+        IF ONIGCBuffTotal_L.INSERT THEN;
+      END;
+    END;
+
+    PROCEDURE CalcStockOutputsAtCollector@8053011(StartDate_P@8053000 : Date;EndDate_P@8053001 : Date);
+    VAR
+      CMCSetup_L@8053003 : Record 8052982;
+      ItemLedgEntry_L@8053016 : Record 32;
+      Item_L@8053015 : Record 27;
+      Location_L@8053014 : Record 14;
+      ONIGCBuff_L@8053013 : Record 8053058;
+      ONIGCBuffTotal_L@8053012 : Record 8053058;
+      DeptCode_L@8053011 : Code[2];
+      ONIGCLine_L@8053010 : Record 8053057;
+      ONIGC_L@8053002 : Record 8053056;
+      ONIGCItemsFound_L@8053004 : Boolean;
+      Continue_L@8053005 : Boolean;
+      ItemLedgEntry2_L@8053006 : Record 32;
+      CMCSpeciesSetup_L@1000000000 : Record 8053323;
+    BEGIN
+      // ---------------------------------------------------------------------------------------------------------
+      // Calcul collecte par d'partements pour d'claration mensuelle ONIGC (2-eme partie) sortie  E03
+      // ---------------------------------------------------------------------------------------------------------
+      CMCSetup_L.GET;
+
+      ItemLedgEntry_L.SETRANGE("Posting Date",StartDate_P,EndDate_P);
+      ItemLedgEntry_L.SETFILTER(Quantity,'<=%1',0);
+      ItemLedgEntry_L.SETRANGE("Movement Type",ItemLedgEntry_L."Movement Type" :: E03);
+      IF ItemLedgEntry_L.FIND('-') THEN BEGIN
+        ONIGCBuffTotal_L.Type := 1;
+        ONIGCBuffTotal_L."Calc Type" := 'E';
+        ONIGCBuffTotal_L.Description := Text805DC2;
+        REPEAT
+          Continue_L:=TRUE;
+          ItemLedgEntry2_L.RESET;
+          ItemLedgEntry2_L.GET(ItemLedgEntry_L."Entry No.");
+          IF ItemLedgEntry2_L.NEXT<>0 THEN
+            IF ItemLedgEntry2_L."Stock Type"=ItemLedgEntry_L."Stock Type" THEN
+              Continue_L:=FALSE;
+
+          IF Continue_L=TRUE THEN BEGIN
+            G_Windows.UPDATE(1,ItemLedgEntry_L."Entry No.");
+            Item_L.GET(ItemLedgEntry_L."Item No.");
+            CMCSpeciesSetup_L.GET(Item_L."Species Code");
+            IF (Item_L."ONIGC Column Index" <> 0) AND (Bio_G = CMCSpeciesSetup_L."Biologic Species") AND
+              GetPageCol( ONIGCLine_L,CMCSetup_L."Monthly ONIGC Code",Item_L)
+            THEN BEGIN
+              IF Location_L.GET(ItemLedgEntry_L."Location Code") THEN BEGIN
+                DeptCode_L := GetDeptLocation(Location_L);
+                IF ONIGCBuff_L.GET(DeptCode_L,1,'D') THEN BEGIN
+                  AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",-ItemLedgEntry_L.Quantity);
+                  AssignBufferValue(ONIGCBuffTotal_L,ONIGCLine_L."Buffer Value No.",-ItemLedgEntry_L.Quantity);
+                  ONIGCBuff_L.MODIFY;
+                END ELSE BEGIN
+                  ONIGCBuff_L.INIT;
+                  ONIGCBuff_L."Line ID" := DeptCode_L;
+                  ONIGCBuff_L.Type := 1;
+                  ONIGCBuff_L."Calc Type" := 'D';
+                  ONIGCBuff_L.Description := Text805B + DeptCode_L;
+                  AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",-ItemLedgEntry_L.Quantity);
+                  AssignBufferValue(ONIGCBuffTotal_L,ONIGCLine_L."Buffer Value No.",-ItemLedgEntry_L.Quantity);
+                  ONIGCBuff_L.INSERT;
+                END;
+              END;
+              ONIGCItemsFound_L := TRUE;
+            END;
+          END;
+        UNTIL ItemLedgEntry_L.NEXT = 0;
+        ONIGCBuffTotal_L.INSERT;
+      END;
+
+      IF NOT ONIGCItemsFound_L THEN BEGIN
+         ONIGCBuffTotal_L.Type := 1;
+         ONIGCBuffTotal_L."Calc Type" := 'E';
+         ONIGCBuffTotal_L.Description := Text805DC2;
+         IF ONIGCBuffTotal_L.INSERT THEN;
+         ONIGCBuff_L."Line ID" := DeptCode_L;
+         ONIGCBuff_L.Type := 1;
+         ONIGCBuff_L."Calc Type" := 'D';
+         ONIGCBuff_L.Description := Text805B + DeptCode_L;
+         IF ONIGCBuff_L.INSERT THEN;
+      END;
+    END;
+
+    PROCEDURE CalcStockOutputsRetakeAtCollec@8053010(StartDate_P@8053000 : Date;EndDate_P@8053001 : Date);
+    VAR
+      CMCSetup_L@8053003 : Record 8052982;
+      ItemLedgEntry_L@8053016 : Record 32;
+      Item_L@8053015 : Record 27;
+      Location_L@8053014 : Record 14;
+      ONIGCBuff_L@8053013 : Record 8053058;
+      ONIGCBuffTotal_L@8053012 : Record 8053058;
+      DeptCode_L@8053011 : Code[2];
+      ONIGCLine_L@8053010 : Record 8053057;
+      ONIGC_L@8053002 : Record 8053056;
+      ONIGCItemsFound_L@8053004 : Boolean;
+      CMCSpeciesSetup_L@1000000000 : Record 8053323;
+    BEGIN
+      // ---------------------------------------------------------------------------------------------------------
+      // Calcul collecte par d'partements pour d'claration mensuelle ONIGC (2-eme partie)  typ's "F" et total "G"
+      // ---------------------------------------------------------------------------------------------------------
+      CMCSetup_L.GET;
+
+      ItemLedgEntry_L.SETRANGE("Posting Date",StartDate_P,EndDate_P);
+      ItemLedgEntry_L.SETRANGE("Movement Type",ItemLedgEntry_L."Movement Type" :: S03);
+      IF ItemLedgEntry_L.FIND('-') THEN BEGIN
+        ONIGCBuffTotal_L.Type := 1;
+        ONIGCBuffTotal_L."Calc Type" := 'G';
+        ONIGCBuffTotal_L.Description := Text805DC3;
+        REPEAT
+          G_Windows.UPDATE(1,ItemLedgEntry_L."Entry No.");
+          Item_L.GET(ItemLedgEntry_L."Item No.");
+          CMCSpeciesSetup_L.GET(Item_L."Species Code");
+          IF (Item_L."ONIGC Column Index" <> 0) AND (Bio_G = CMCSpeciesSetup_L."Biologic Species") AND
+            GetPageCol( ONIGCLine_L,CMCSetup_L."Monthly ONIGC Code",Item_L)
+          THEN BEGIN
+            IF Location_L.GET(ItemLedgEntry_L."Location Code") THEN BEGIN
+              DeptCode_L := GetDeptLocation(Location_L);
+              IF ONIGCBuff_L.GET(DeptCode_L,1,'F') THEN BEGIN
+                AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",ItemLedgEntry_L.Quantity);
+                AssignBufferValue(ONIGCBuffTotal_L,ONIGCLine_L."Buffer Value No.",ItemLedgEntry_L.Quantity);
+                ONIGCBuff_L.MODIFY;
+              END ELSE BEGIN
+                ONIGCBuff_L.INIT;
+                ONIGCBuff_L."Line ID" := DeptCode_L;
+                ONIGCBuff_L.Type := 1;
+                ONIGCBuff_L."Calc Type" := 'F';
+                ONIGCBuff_L.Description := Text805B + DeptCode_L;
+                AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",ItemLedgEntry_L.Quantity);
+                AssignBufferValue(ONIGCBuffTotal_L,ONIGCLine_L."Buffer Value No.",ItemLedgEntry_L.Quantity);
+                ONIGCBuff_L.INSERT;
+              END;
+            END;
+            ONIGCItemsFound_L := TRUE;
+          END;
+        UNTIL ItemLedgEntry_L.NEXT = 0;
+        ONIGCBuffTotal_L.INSERT;
+      END;
+
+      IF NOT ONIGCItemsFound_L THEN
+        BEGIN
+         ONIGCBuff_L.INIT;
+         ONIGCBuff_L.Type := 1;
+         ONIGCBuff_L."Calc Type" := 'F';
+         ONIGCBuff_L.Description := Text805B;
+         ONIGCBuff_L.INSERT;
+         ONIGCBuffTotal_L.Type := 1;
+         ONIGCBuffTotal_L."Calc Type" := 'G';
+         ONIGCBuffTotal_L.Description := Text805DC3;
+         IF ONIGCBuffTotal_L.INSERT THEN;
+      END;
+    END;
+
+    PROCEDURE CalcFinalBalanceByDept2@8053012(StartDate_P@8053000 : Date;EndDate_P@8053001 : Date);
+    VAR
+      CMCSetup_L@8053002 : Record 8052982;
+      ItemLedgEntry_L@8053003 : Record 32;
+      Item_L@8053004 : Record 27;
+      Location_L@8053005 : Record 14;
+      ONIGCBuff_L@8053006 : Record 8053058;
+      DeptCode_L@8053007 : Code[2];
+      ONIGCLine_L@8053008 : Record 8053057;
+      ONIGC_L@8053009 : Record 8053056;
+      ONIGCItemsFound_L@8053010 : Boolean;
+      CMCSpeciesSetup_L@1000000000 : Record 8053323;
+    BEGIN
+      // -----------------------------------------------------------------------------------------
+      // Calcul stock final par d'partements pour d'claration mensuelle ONIGC (2-eme partie)
+      // -----------------------------------------------------------------------------------------
+      // E03 : apport en d'pot
+      // S03 : sortie en d'port
+
+      CMCSetup_L.GET;
+      ItemLedgEntry_L.SETFILTER("Posting Date",'<=%1',EndDate_P);
+      ItemLedgEntry_L.SETFILTER("Movement Type",'%1|%2', ItemLedgEntry_L."Movement Type"::E03,ItemLedgEntry_L."Movement Type"::S03);
+      IF ItemLedgEntry_L.FIND('-') THEN BEGIN
+        REPEAT
+          G_Windows.UPDATE(1,ItemLedgEntry_L."Entry No.");
+          Item_L.GET(ItemLedgEntry_L."Item No.");
+          CMCSpeciesSetup_L.GET(Item_L."Species Code");
+          IF (Item_L."ONIGC Column Index" <> 0) AND (Bio_G = CMCSpeciesSetup_L."Biologic Species") THEN BEGIN
+            ONIGCLine_L.SETRANGE("Code ONIGC",CMCSetup_L."Monthly ONIGC Code");
+            ONIGCLine_L.SETRANGE("Page No.",Item_L."ONIGC Page No.");
+            ONIGCLine_L.SETRANGE("Column Index",Item_L."ONIGC Column Index");
+            IF NOT ONIGCLine_L.FINDFIRST THEN ERROR('V'rifiez l''article #1',Item_L."No.");
+            IF Location_L.GET(ItemLedgEntry_L."Location Code") THEN BEGIN
+              DeptCode_L := GetDeptLocation(Location_L);
+              IF ONIGCBuff_L.GET(DeptCode_L,1,'H') THEN BEGIN
+                AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",ItemLedgEntry_L.Quantity);
+                ONIGCBuff_L.MODIFY;
+              END ELSE BEGIN
+                ONIGCBuff_L.INIT;
+                ONIGCBuff_L."Line ID" := DeptCode_L;
+                ONIGCBuff_L.Type := 1;
+                ONIGCBuff_L."Calc Type" := 'H';
+                ONIGCBuff_L.Description := Text805B + DeptCode_L;
+                AssignBufferValue(ONIGCBuff_L,ONIGCLine_L."Buffer Value No.",ItemLedgEntry_L.Quantity);
+                ONIGCBuff_L.INSERT;
+              END;
+            END;
+            ONIGCItemsFound_L := TRUE;
+          END;
+        UNTIL ItemLedgEntry_L.NEXT = 0;
+      END;
+
+      IF NOT ONIGCItemsFound_L THEN BEGIN
+        ONIGCBuff_L."Line ID" := DeptCode_L;
+        ONIGCBuff_L.Type := 1;
+        ONIGCBuff_L."Calc Type" := 'H';
+        ONIGCBuff_L.Description := Text805B + DeptCode_L;
+        ONIGCBuff_L.INSERT;
+      END;
+    END;
+
+    PROCEDURE AssignBufferValue@8053001(VAR P_ONIGCBuffer@8053000 : Record 8053058;P_ValueNo@8053001 : Integer;P_ValueToAssign@8053002 : Decimal);
+    BEGIN
+      // -----------------------------------------------------------------------------------------
+      // Assigner valeur au bon champ dans la table buffer par rapport au numero
+      // -----------------------------------------------------------------------------------------
+      CASE P_ValueNo OF
+        1 : P_ONIGCBuffer."Value 1" += P_ValueToAssign;
+        2 : P_ONIGCBuffer."Value 2" += P_ValueToAssign;
+        3 : P_ONIGCBuffer."Value 3" += P_ValueToAssign;
+        4 : P_ONIGCBuffer."Value 4" += P_ValueToAssign;
+        5 : P_ONIGCBuffer."Value 5" += P_ValueToAssign;
+        6 : P_ONIGCBuffer."Value 6" += P_ValueToAssign;
+        7 : P_ONIGCBuffer."Value 7" += P_ValueToAssign;
+        8 : P_ONIGCBuffer."Value 8" += P_ValueToAssign;
+        9 : P_ONIGCBuffer."Value 9" += P_ValueToAssign;
+        10: P_ONIGCBuffer."Value 10" += P_ValueToAssign;
+        11: P_ONIGCBuffer."Value 11" += P_ValueToAssign;
+        12: P_ONIGCBuffer."Value 12" += P_ValueToAssign;
+        13: P_ONIGCBuffer."Value 13" += P_ValueToAssign;
+        14: P_ONIGCBuffer."Value 14" += P_ValueToAssign;
+        15: P_ONIGCBuffer."Value 15" += P_ValueToAssign;
+        16: P_ONIGCBuffer."Value 16" += P_ValueToAssign;
+        17: P_ONIGCBuffer."Value 17" += P_ValueToAssign;
+        18: P_ONIGCBuffer."Value 18" += P_ValueToAssign;
+        19: P_ONIGCBuffer."Value 19" += P_ValueToAssign;
+        20: P_ONIGCBuffer."Value 20" += P_ValueToAssign;
+        21: P_ONIGCBuffer."Value 21" += P_ValueToAssign;
+        22: P_ONIGCBuffer."Value 22" += P_ValueToAssign;
+        23: P_ONIGCBuffer."Value 23" += P_ValueToAssign;
+        24: P_ONIGCBuffer."Value 24" += P_ValueToAssign;
+        25: P_ONIGCBuffer."Value 25" += P_ValueToAssign;
+        26: P_ONIGCBuffer."Value 26" += P_ValueToAssign;
+        27: P_ONIGCBuffer."Value 27" += P_ValueToAssign;
+        28: P_ONIGCBuffer."Value 28" += P_ValueToAssign;
+        29: P_ONIGCBuffer."Value 29" += P_ValueToAssign;
+        30: P_ONIGCBuffer."Value 30" += P_ValueToAssign;
+        31: P_ONIGCBuffer."Value 31" += P_ValueToAssign;
+        32: P_ONIGCBuffer."Value 32" += P_ValueToAssign;
+        33: P_ONIGCBuffer."Value 33" += P_ValueToAssign;
+        34: P_ONIGCBuffer."Value 34" += P_ValueToAssign;
+        35: P_ONIGCBuffer."Value 35" += P_ValueToAssign;
+        36: P_ONIGCBuffer."Value 36" += P_ValueToAssign;
+        37: P_ONIGCBuffer."Value 37" += P_ValueToAssign;
+        38: P_ONIGCBuffer."Value 38" += P_ValueToAssign;
+        39: P_ONIGCBuffer."Value 39" += P_ValueToAssign;
+        40: P_ONIGCBuffer."Value 40" += P_ValueToAssign;
+        41: P_ONIGCBuffer."Value 41" += P_ValueToAssign;
+        42: P_ONIGCBuffer."Value 42" += P_ValueToAssign;
+        43: P_ONIGCBuffer."Value 43" += P_ValueToAssign;
+        44: P_ONIGCBuffer."Value 44" += P_ValueToAssign;
+        45: P_ONIGCBuffer."Value 45" += P_ValueToAssign;
+        46: P_ONIGCBuffer."Value 46" += P_ValueToAssign;
+        47: P_ONIGCBuffer."Value 47" += P_ValueToAssign;
+        48: P_ONIGCBuffer."Value 48" += P_ValueToAssign;
+        49: P_ONIGCBuffer."Value 49" += P_ValueToAssign;
+        50: P_ONIGCBuffer."Value 50" += P_ValueToAssign;
+        51: P_ONIGCBuffer."Value 51" += P_ValueToAssign;
+        52: P_ONIGCBuffer."Value 52" += P_ValueToAssign;
+        53: P_ONIGCBuffer."Value 53" += P_ValueToAssign;
+        54: P_ONIGCBuffer."Value 54" += P_ValueToAssign;
+        55: P_ONIGCBuffer."Value 55" += P_ValueToAssign;
+        56: P_ONIGCBuffer."Value 56" += P_ValueToAssign;
+      END;
+    END;
+
+    PROCEDURE GetBufferValue@8053018(VAR P_ONIGCBuffer@8053000 : Record 8053058;P_ValueNo@8053001 : Integer) L_result : Decimal;
+    BEGIN
+      // --> 20121011-wi00-CMC01.04.06-TLM-JLT01
+      // -----------------------------------------------------------------------------------------
+      // Retrouver la valeur dans la table buffer par rapport au numero
+      // -----------------------------------------------------------------------------------------
+
+      CASE P_ValueNo OF
+        1 : L_result := P_ONIGCBuffer."Value 1" ;
+        2 : L_result := P_ONIGCBuffer."Value 2" ;
+        3 : L_result := P_ONIGCBuffer."Value 3" ;
+        4 : L_result := P_ONIGCBuffer."Value 4" ;
+        5 : L_result := P_ONIGCBuffer."Value 5" ;
+        6 : L_result := P_ONIGCBuffer."Value 6" ;
+        7 : L_result := P_ONIGCBuffer."Value 7" ;
+        8 : L_result := P_ONIGCBuffer."Value 8" ;
+        9 : L_result := P_ONIGCBuffer."Value 9" ;
+        10: L_result := P_ONIGCBuffer."Value 10";
+        11: L_result := P_ONIGCBuffer."Value 11";
+        12: L_result := P_ONIGCBuffer."Value 12";
+        13: L_result := P_ONIGCBuffer."Value 13";
+        14: L_result := P_ONIGCBuffer."Value 14";
+        15: L_result := P_ONIGCBuffer."Value 15";
+        16: L_result := P_ONIGCBuffer."Value 16";
+        17: L_result := P_ONIGCBuffer."Value 17";
+        18: L_result := P_ONIGCBuffer."Value 18";
+        19: L_result := P_ONIGCBuffer."Value 19";
+        20: L_result := P_ONIGCBuffer."Value 20";
+        21: L_result := P_ONIGCBuffer."Value 21";
+        22: L_result := P_ONIGCBuffer."Value 22";
+        23: L_result := P_ONIGCBuffer."Value 23";
+        24: L_result := P_ONIGCBuffer."Value 24";
+        25: L_result := P_ONIGCBuffer."Value 25";
+        26: L_result := P_ONIGCBuffer."Value 26";
+        27: L_result := P_ONIGCBuffer."Value 27";
+        28: L_result := P_ONIGCBuffer."Value 28";
+        29: L_result := P_ONIGCBuffer."Value 29";
+        30: L_result := P_ONIGCBuffer."Value 30";
+        31: L_result := P_ONIGCBuffer."Value 31";
+        32: L_result := P_ONIGCBuffer."Value 32";
+        33: L_result := P_ONIGCBuffer."Value 33";
+        34: L_result := P_ONIGCBuffer."Value 34";
+        35: L_result := P_ONIGCBuffer."Value 35";
+        36: L_result := P_ONIGCBuffer."Value 36";
+        37: L_result := P_ONIGCBuffer."Value 37";
+        38: L_result := P_ONIGCBuffer."Value 38";
+        39: L_result := P_ONIGCBuffer."Value 39";
+        40: L_result := P_ONIGCBuffer."Value 40";
+        41: L_result := P_ONIGCBuffer."Value 41";
+        42: L_result := P_ONIGCBuffer."Value 42";
+        43: L_result := P_ONIGCBuffer."Value 43";
+        44: L_result := P_ONIGCBuffer."Value 44";
+        45: L_result := P_ONIGCBuffer."Value 45";
+        46: L_result := P_ONIGCBuffer."Value 46";
+        47: L_result := P_ONIGCBuffer."Value 47";
+        48: L_result := P_ONIGCBuffer."Value 48";
+        49: L_result := P_ONIGCBuffer."Value 49";
+        50: L_result := P_ONIGCBuffer."Value 50";
+        51: L_result := P_ONIGCBuffer."Value 51";
+        52: L_result := P_ONIGCBuffer."Value 52";
+        53: L_result := P_ONIGCBuffer."Value 53";
+        54: L_result := P_ONIGCBuffer."Value 54";
+        55: L_result := P_ONIGCBuffer."Value 55";
+        56: L_result := P_ONIGCBuffer."Value 56";
+      END;
+    END;
+
+    PROCEDURE GetFieldCaption@8053004(ID_P@8053000 : Integer) Result : Text[30];
+    VAR
+      ONIGCLines_L@8053001 : Record 8053057;
+      CMCSetup_L@8053002 : Record 8052982;
+    BEGIN
+      // -----------------------------------------------------------------------------------------
+      // Trouver le libelle des champs de la table Buffer ONIGC
+      // -----------------------------------------------------------------------------------------
+      CMCSetup_L.GET;
+      ONIGCLines_L.SETRANGE("Code ONIGC",CMCSetup_L."Monthly ONIGC Code");
+      ONIGCLines_L.SETRANGE("Buffer Value No.",ID_P);
+      IF ONIGCLines_L.FINDFIRST THEN
+        Result := ONIGCLines_L."Title 1"
+      ELSE
+        Result := '';
+      EXIT(Result);
+    END;
+
+    PROCEDURE GetFieldCaption2@8053016(ID_P@8053000 : Integer) Result : Text[30];
+    VAR
+      ONIGCLines_L@8053001 : Record 8053057;
+      CMCSetup_L@8053002 : Record 8052982;
+    BEGIN
+      // -----------------------------------------------------------------------------------------
+      // Trouver le libell' des champs de la table Buffer ONIGC
+      // -----------------------------------------------------------------------------------------
+      CMCSetup_L.GET;
+      ONIGCLines_L.SETRANGE("Code ONIGC",CMCSetup_L."Monthly ONIGC Code");
+      ONIGCLines_L.SETRANGE("Buffer Value No.",ID_P);
+      IF ONIGCLines_L.FINDFIRST THEN
+        Result := ONIGCLines_L."Title 2"
+      ELSE
+        Result := '';
+      EXIT(Result);
+    END;
+
+    PROCEDURE GetDeptLocation@8053003(Location_P@8053000 : Record 14) DeptCode_L : Code[2];
+    BEGIN
+      // cas o- le magasin est affect' . un autre d'partement que son code postal
+      IF (Location_P."Country/Region Code"<>'FR')AND (Location_P."Country/Region Code"<>'') THEN
+        DeptCode_L := '99'
+      ELSE
+        IF Location_P.Area<>'' THEN
+          DeptCode_L:=Location_P.Area
+        ELSE
+         DeptCode_L:=COPYSTR(Location_P."Post Code",1,2);
+    END;
+
+    PROCEDURE GetPageCol@1000000000(VAR ONIGCLine_P@1000000000 : Record 8053057;VAR MonthlyCode_P@1000000001 : Code[10];VAR Item_P@1000000002 : Record 27) ok : Boolean;
+    BEGIN
+      ONIGCLine_P.SETRANGE("Code ONIGC",MonthlyCode_P);
+      ONIGCLine_P.SETRANGE("Page No.",Item_P."ONIGC Page No.");
+      ONIGCLine_P.SETRANGE("Column Index",Item_P."ONIGC Column Index");
+      IF (Item_P."ONIGC Page No."=0) AND (Item_P."ONIGC Column Index"=0) THEN EXIT(FALSE);
+      IF NOT ONIGCLine_P.FINDFIRST THEN ERROR(Text805Item,Item_P."No.",Item_P."ONIGC Page No.",Item_P."ONIGC Column Index");
+      EXIT(TRUE);
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI START
+
+      ------------------------------------------------------------------------
+      20110601-Wi00-CMC01.04 : Version RTM 01.04 - NavAgri
+      ------------------------------------------------------------------------
+      20120802-Wi00-CMC01.04.05-JLT01 : 2012 Page 1 : le d'partement des stocks est celui des apporteurs et non plus des silos
+      20121011-wi00-CMC01.04.06-JLT01 : FranceAgriMer 2012
+      20130305-Wi01-CMC02.01.00-TLM-JLT01 : FranceAgriMer Bio -> value 25 . 56 -> aller jusqu'a page 9
+      20131211-CER17/001-CMC02.02.00-PPE01 : MODCODE (fields from table CMC Species moved to CMC Species Setup)
+
+      // --> 3LI STOP
+    }
+    END.
+  }
+}
+

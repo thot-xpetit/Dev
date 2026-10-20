@@ -1,0 +1,364 @@
+OBJECT Codeunit 50094 cDal Sicapa Contr"le Conv Qt'
+{
+  OBJECT-PROPERTIES
+  {
+    Date=10/07/25;
+    Heure=17:42:38;
+    Modifi'=Oui;
+    Liste versions=;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            TableItem_L@1000000000 : Record 27;
+            ItemUnitofMeasure_L@1000000001 : Record 5404;
+            FormatFieldsManage_L@1000000003 : Codeunit 8060985;
+            booEcart_L@1000000004 : Boolean;
+            Ecart_L@1000000002 : Decimal;
+          BEGIN
+            CodeUnit_G := 8087762;
+            MoteurInterface_G.GetParameter(CodeUnit_G, ConnectorName_G, ImpExpFolder_G, LogFolder_G, ExtensionFile_G, PrefixFile_G);
+            MoteurInterface_G.GetTemplatesCode(ConnectorName_G, ItemTemplateCode_G, CustomerTemplateCode_G, VendorTemplateCode_G,
+              ContactTemplateCode_G, AccountTemplateCode_G, GlobalTemplateCode_G);
+            ToolsFile_G.LogInit(LogFolder_G, 'SICAPA');
+            ToolsFile_G.LogInitCodeUnit(CodeUnit_G);
+
+
+            // Traiter tous les produits Inoxa
+            IF TableSicapaItem_G.FINDSET THEN BEGIN
+              REPEAT
+                IF TableSicapaItem_G."N›" <> '' THEN BEGIN
+                  UniteSicapa_G := TableSicapaItem_G."Unite Vente";
+
+                  // Retrouver les codes NavAgri par rapport au code Inoxa
+                  TableItemCrossRef_G.SETRANGE("Cross-Reference Type", TableItemCrossRef_G."Cross-Reference Type"::Vendor);
+                  // Non car ceratin Produit SicaLog non factur' Inoxa
+                  // Non TableItemCrossRef_G.SETRANGE("Cross-Reference Type No.", TablePurchaseHeader_G."Pay-to Vendor No.");
+                  TableItemCrossRef_G.SETRANGE("Cross-Reference No.", TableSicapaItem_G."N›");
+                  IF TableItemCrossRef_G.FINDSET THEN BEGIN
+                    REPEAT
+                      LigneOK_G := TRUE;
+                      ArticleNav_G := TableItemCrossRef_G."Item No.";
+                      VariantNav_G := TableItemCrossRef_G."Variant Code";
+                      CLEAR(QteBasInd_G);
+                      IF NOT TableArticle_G.GET(ArticleNav_G) THEN BEGIN
+                        CLEAR(TableArticle_G);
+                      END;
+                      QteBasInd_G := TableArticle_G."Indiv. Base Qty";
+                      Capacity_G := TableArticle_G.Capacity;
+                      IF ArticleNav_G = '' THEN BEGIN
+                        CLEAR(TableVariant_G);
+                      END ELSE BEGIN
+                        IF NOT TableVariant_G.GET(ArticleNav_G, VariantNav_G) THEN BEGIN
+                          CLEAR(TableVariant_G);
+                        END ELSE BEGIN
+                          QteBasInd_G := TableVariant_G."Indiv. Base Qty";
+                          Capacity_G := TableVariant_G.Capacity;
+                        END;
+                      END;
+
+                      // Correspondance unit' NavAgri en d'nominagtion EDI
+                      UniteNavEdi_G := MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G, 'Unit of Measure', 'Code',
+                        TableArticle_G."Base Unit of Measure", FALSE, TRUE);
+                      IF UniteNavEdi_G = '' THEN BEGIN
+                        ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text0008A, ArticleNav_G, VariantNav_G
+                          , TableArticle_G."Base Unit of Measure"), 1, MAXSTRLEN(Result_G)));
+                        LigneOK_G := FALSE;
+                      END;
+
+                      //-------------------------------------
+                      // Conversion : Calcul des Orders.
+                      //-------------------------------------
+                      CoefUniteOrder_G := ToolsFile_G.CoefConvUniteItem(UniteNavEdi_G, UniteSicapa_G, Capacity_G, TRUE, ArticleNav_G);
+                      IF CoefUniteOrder_G = 0 THEN BEGIN
+                        ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(
+                          Text0016, ArticleNav_G, VariantNav_G, TableSicapaItem_G."N›",
+                          UniteSicapa_G, UniteNavEdi_G), 1, MAXSTRLEN(Result_G)));
+                      END;
+                      QteBasIndOrder_G := QteBasInd_G * CoefUniteOrder_G;
+
+                      //-------------------------------------
+                      // Conversion : Calcul des InsDes.
+                      //-------------------------------------
+                      CLEAR(CoefUniteInsDes_G);
+                      IF UniteSicapa_G <> '' THEN BEGIN
+                        CASE TRUE OF
+                          UniteNavEdi_G = UniteSicapa_G: BEGIN
+                            CoefUniteInsDes_G := 1 ;
+                          END;
+                          ((UniteNavEdi_G = 'KGM') AND (UniteSicapa_G = 'TNE')): BEGIN
+                            CoefUniteInsDes_G := 0.001;
+                          END;
+                          ((UniteNavEdi_G = 'TNE') AND (UniteSicapa_G = 'KGM')): BEGIN
+                            CoefUniteInsDes_G := 1000;
+                          END;
+                          (((UPPERCASE(UniteNavEdi_G) = 'PCE') AND (UPPERCASE(UniteSicapa_G) = 'DOSE')) OR
+                          ((UPPERCASE(UniteNavEdi_G) = 'DOSE') AND (UPPERCASE(UniteSicapa_G) = 'PCE'))): BEGIN
+                            CoefUniteInsDes_G := 1;
+                          END;
+                          (((UPPERCASE(UniteNavEdi_G) = 'PCE') AND (UPPERCASE(UniteSicapa_G) = 'LTR')) OR
+                          ((UPPERCASE(UniteNavEdi_G) = 'PCE') AND (UPPERCASE(UniteSicapa_G) = 'KGM'))
+                          OR ((UPPERCASE(UniteNavEdi_G) = 'DOSE') AND (UPPERCASE(UniteSicapa_G) = 'KGM'))
+                          ): BEGIN
+                            IF (ArticleNav_G <> '') AND
+                                (((TableItem_L.GET(ArticleNav_G)) AND (TableItem_L.Capacity <> 0))) THEN BEGIN
+                              CoefUniteInsDes_G := TableItem_L.Capacity;
+                            END ELSE
+                            IF ((TableItem_L.GET(ArticleNav_G)) AND (TableItem_L.Capacity <> 0)) THEN BEGIN
+                              CoefUniteInsDes_G := TableItem_L.Capacity;
+                            END ELSE BEGIN
+                              //ErreurLigne_L := TRUE;
+                              CoefUniteInsDes_G := 0;
+                              ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(
+                                Text0016, ArticleNav_G, VariantNav_G, TableSicapaItem_G."N›",
+                                UniteSicapa_G, UniteNavEdi_G), 1, MAXSTRLEN(Result_G)));
+                            END;
+                          END;
+                          ((UPPERCASE(UniteNavEdi_G) = 'LTR') AND (UPPERCASE(UniteSicapa_G) = 'TNE')): BEGIN
+                            IF (ArticleNav_G <> '') AND
+                                (((TableItem_L.GET(ArticleNav_G)) AND (TableItem_L.Capacity <> 0))) THEN BEGIN
+                              ItemUnitofMeasure_L.SETRANGE("Item No.", TableItem_L."No.");
+                              ItemUnitofMeasure_L.SETRANGE(Code, 'L');
+                              IF ItemUnitofMeasure_L.FINDSET THEN BEGIN
+                                CoefUniteInsDes_G := (ItemUnitofMeasure_L.Weight / TableItem_L.Capacity);
+                              END;
+                            END ELSE BEGIN
+                              IF ((TableItem_L.GET(ArticleNav_G)) AND (TableItem_L.Capacity <> 0)) THEN BEGIN
+                                ItemUnitofMeasure_L.SETRANGE("Item No.", TableItem_L."No.");
+                                ItemUnitofMeasure_L.SETRANGE(Code, 'L');
+                                IF ItemUnitofMeasure_L.FINDSET THEN BEGIN
+                                  CoefUniteInsDes_G := (ItemUnitofMeasure_L.Weight / TableItem_L.Capacity);
+                                END;
+                              END ELSE BEGIN
+                                //ErreurLigne_L := TRUE;
+                                CoefUniteInsDes_G := 0;
+                                ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(
+                                  Text0016, ArticleNav_G, VariantNav_G, TableSicapaItem_G."N›",
+                                  UniteSicapa_G, UniteNavEdi_G), 1, MAXSTRLEN(Result_G)));
+                              END;
+                            END;
+                          END;
+                          ((UPPERCASE(UniteNavEdi_G) = 'TNE') AND (UPPERCASE(UniteSicapa_G) = 'LTR')): BEGIN
+                            IF (ArticleNav_G <> '') AND
+                                (((TableItem_L.GET(ArticleNav_G)) AND (TableItem_L.Capacity <> 0))) THEN BEGIN
+                              ItemUnitofMeasure_L.SETRANGE("Item No.", TableItem_L."No.");
+                              ItemUnitofMeasure_L.SETRANGE(Code, 'T');
+                              IF ItemUnitofMeasure_L.FINDSET THEN BEGIN
+                                CoefUniteInsDes_G := (ItemUnitofMeasure_L."Qty. per Unit of Measure" * TableItem_L.Capacity);
+                              END;
+                            END ELSE BEGIN
+                              IF ((TableItem_L.GET(ArticleNav_G)) AND (TableItem_L.Capacity <> 0)) THEN BEGIN
+                                ItemUnitofMeasure_L.SETRANGE("Item No.", TableItem_L."No.");
+                                ItemUnitofMeasure_L.SETRANGE(Code, 'T');
+                                IF ItemUnitofMeasure_L.FINDSET THEN BEGIN
+                                  CoefUniteInsDes_G := (ItemUnitofMeasure_L."Qty. per Unit of Measure" * TableItem_L.Capacity);
+                                END;
+                              END ELSE BEGIN
+                                //ErreurLigne_L := TRUE;
+                                CoefUniteInsDes_G := 0;
+                                ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(
+                                  Text0016, ArticleNav_G, VariantNav_G, TableSicapaItem_G."N›",
+                                  UniteSicapa_G, UniteNavEdi_G), 1, MAXSTRLEN(Result_G)));
+                              END;
+                            END;
+                          END;
+                          (((UPPERCASE(UniteNavEdi_G) = 'LTR') AND (UPPERCASE(UniteSicapa_G) = 'PCE')) OR
+                          ((UPPERCASE(UniteNavEdi_G) = 'KGM') AND (UPPERCASE(UniteSicapa_G) = 'PCE'))
+                          OR ((UPPERCASE(UniteNavEdi_G) = 'KGM') AND (UPPERCASE(UniteSicapa_G) = 'DOSE'))
+                          ): BEGIN
+                            IF (ArticleNav_G <> '') AND
+                                (((TableItem_L.GET(ArticleNav_G)) AND (TableItem_L.Capacity <> 0))) THEN BEGIN
+                              CoefUniteInsDes_G := 1 / TableItem_L.Capacity;
+                            END ELSE
+                            IF ((TableItem_L.GET(ArticleNav_G)) AND (TableItem_L.Capacity <> 0)) THEN BEGIN
+                              CoefUniteInsDes_G := 1 / TableItem_L.Capacity;
+                            END ELSE BEGIN
+                              //ErreurLigne_L := TRUE;
+                              CoefUniteInsDes_G := 0;
+                              ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(
+                                Text0016, ArticleNav_G, VariantNav_G, TableSicapaItem_G."N›",
+                                UniteSicapa_G, UniteNavEdi_G), 1, MAXSTRLEN(Result_G)));
+                            END;
+                          END ELSE BEGIN
+                            //ErreurLigne_L := TRUE;
+                            CoefUniteInsDes_G := 0;
+                            ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(
+                              Text0016, ArticleNav_G, VariantNav_G, TableSicapaItem_G."N›",
+                              UniteSicapa_G, UniteNavEdi_G), 1, MAXSTRLEN(Result_G)));
+                          END;
+                        END;
+                      END;
+                      QteBasIndInsDes_G := QteBasInd_G * CoefUniteInsDes_G;
+
+                      //-------------------------------------
+                      // Conversion : Calcul des DesAdv : Donc l'inverse pour quantit' & unit' : Inoxa => NavAgri
+                      //-------------------------------------
+                      CoefUniteDesAdv_G := ToolsFile_G.CoefConvUniteItem(UniteSicapa_G, UniteNavEdi_G, Capacity_G, TRUE, ArticleNav_G);
+                      QteBasIndDesAdv_G := QteBasIndOrder_G * CoefUniteDesAdv_G;
+
+                      //-------------------------------------
+                      // Ecrire dans fichier CSV
+                      //-------------------------------------
+                      Tab_G :=9;
+                      IF NOT FileNameOuvert_G THEN BEGIN
+                        FileTemp_G := '\\Vwpnagriws01\NavAgri\Sicapa\' + COMPANYNAME + '_TempCompareConversion.csv';
+            IF (TableSicapaItem_G."N›" = '102742') THEN BEGIN
+            MessageDebug(STRSUBSTNO('Ouvre fichier:%1-%2', CoefUniteDesAdv_G));
+            END;
+
+                        IF NOT FileExport_G.CREATE(FileTemp_G) THEN BEGIN
+                          FileTemp_G := '\\Vwpnagriws01\NavAgri\Sicapa\' + COMPANYNAME + '_TempCompareConversion.csv';
+                          ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0003, FileTemp_G, GETLASTERRORTEXT), 1, MAXSTRLEN(Result_G)));
+                          CLEARLASTERROR;
+                        END ELSE BEGIN
+                          FileExport_G.CREATEOUTSTREAM(FileExportOutstream_G);
+                          FileNameOuvert_G := TRUE;
+                          txtEcrit_G := 'Article Inoxa'  + FORMAT(Tab_G) + 'Article Nav' + FORMAT(Tab_G) + 'Variante' + FORMAT(Tab_G)
+                            + 'Unit' Inoxa' + FORMAT(Tab_G) + 'Unit' Nav' + FORMAT(Tab_G) + 'Unit' Nav Edi' + FORMAT(Tab_G)
+                            + 'Contenance' + FORMAT(Tab_G)
+                            + 'Quantit' indivisible' + FORMAT(Tab_G)
+                            + 'Orders Coef' + FORMAT(Tab_G) + 'Orders Quantit'' + FORMAT(Tab_G)
+                            + 'InsDes Coef' + FORMAT(Tab_G) + 'InsDes Quantit'' + FORMAT(Tab_G)
+                            + 'DesAdv Coef' + FORMAT(Tab_G) + 'DesAdv Quantit'' + FORMAT(Tab_G)
+                            + 'Orders - InsDes Ecart' + FORMAT(Tab_G)
+                            + 'DesAdv Ecart' + FORMAT(Tab_G)
+                            + 'NavAgri Ecart' + FORMAT(Tab_G);
+                          FileExportOutstream_G.WRITETEXT(txtEcrit_G);
+                          FileExportOutstream_G.WRITETEXT();
+                        END;
+                      END;
+
+                      txtEcrit_G := '';
+
+                      txtEcrit_G += FormatFieldsManage_L.Ascii2Ansi(TableSicapaItem_G."N›") + FORMAT(Tab_G);
+                      txtEcrit_G += FormatFieldsManage_L.Ascii2Ansi(ArticleNav_G) + FORMAT(Tab_G);
+                      txtEcrit_G += FormatFieldsManage_L.Ascii2Ansi(VariantNav_G) + FORMAT(Tab_G);
+                      txtEcrit_G += FormatFieldsManage_L.Ascii2Ansi(UniteSicapa_G) + FORMAT(Tab_G);
+                      txtEcrit_G += FormatFieldsManage_L.Ascii2Ansi(TableArticle_G."Base Unit of Measure") + FORMAT(Tab_G);
+                      txtEcrit_G += FormatFieldsManage_L.Ascii2Ansi(UniteNavEdi_G) + FORMAT(Tab_G);
+                      txtEcrit_G += PADSTR(FORMAT(Capacity_G, 0,
+                        '<Sign><Integer><Decimals>'), 9,' ') + FORMAT(Tab_G);
+                      txtEcrit_G += PADSTR(FORMAT(QteBasInd_G, 0,
+                        '<Sign><Integer><Decimals>'), 9,' ') + FORMAT(Tab_G);
+
+                      txtEcrit_G += PADSTR(FORMAT(CoefUniteOrder_G, 0,
+                        '<Sign><Integer><Decimals>'), 9,' ') + FORMAT(Tab_G);
+                      IF QteBasIndOrder_G < 0 THEN BEGIN
+                        Signe_G := '-';
+                      END ELSE BEGIN
+                        Signe_G := ' ';
+                      END;
+                      txtEcrit_G += PADSTR(Signe_G, 1,' ');
+                      txtEcrit_G += PADSTR(FORMAT(QteBasIndOrder_G, 0,
+                        '<Sign><Integer><Decimals>'), 9,' ') + FORMAT(Tab_G);
+
+                      txtEcrit_G += PADSTR(FORMAT(CoefUniteInsDes_G, 0,
+                        '<Sign><Integer><Decimals>'), 9,' ') + FORMAT(Tab_G);
+                      IF QteBasIndInsDes_G < 0 THEN BEGIN
+                        Signe_G := '-';
+                      END ELSE BEGIN
+                        Signe_G := ' ';
+                      END;
+                      txtEcrit_G += PADSTR(FORMAT(QteBasIndInsDes_G, 0,
+                        '<Sign><Integer><Decimals>'), 9,' ') + FORMAT(Tab_G);
+
+                      txtEcrit_G += PADSTR(FORMAT(CoefUniteDesAdv_G, 0,
+                        '<Sign><Integer><Decimals>'), 9,' ') + FORMAT(Tab_G);
+                      IF QteBasIndDesAdv_G < 0 THEN BEGIN
+                        Signe_G := '-';
+                      END ELSE BEGIN
+                        Signe_G := ' ';
+                      END;
+                      txtEcrit_G += PADSTR(Signe_G, 1,' ');
+                      txtEcrit_G += PADSTR(FORMAT(QteBasIndDesAdv_G, 0,
+                        '<Sign><Integer><Decimals>'), 9,' ') + FORMAT(Tab_G);
+
+                      booEcart_L := FALSE;
+
+                      Ecart_L := QteBasIndInsDes_G - QteBasIndOrder_G;
+                      IF Ecart_L <> 0 THEN booEcart_L := TRUE;
+                      txtEcrit_G += PADSTR(FORMAT(Ecart_L, 0,
+                        '<Sign><Integer><Decimals>'), 9,' ') + FORMAT(Tab_G);
+                      Ecart_L := QteBasIndDesAdv_G - QteBasInd_G;
+                      IF Ecart_L <> 0 THEN booEcart_L := TRUE;
+                      txtEcrit_G += PADSTR(FORMAT(Ecart_L, 0,
+                        '<Sign><Integer><Decimals>'), 9,' ') + FORMAT(Tab_G);
+                      txtEcrit_G += FORMAT(booEcart_L) + FORMAT(Tab_G);
+
+                      IF FileNameOuvert_G THEN BEGIN
+                        FileExportOutstream_G.WRITETEXT(txtEcrit_G);
+                        FileExportOutstream_G.WRITETEXT();
+                      END;
+
+                    UNTIL TableItemCrossRef_G.NEXT = 0;
+                  END;
+                END;
+
+              UNTIL TableSicapaItem_G.NEXT = 0;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      "<-- 3LI GLOBALS -->"@1000000000 : Integer;
+      MoteurInterface_G@1000000014 : Codeunit 8061230;
+      ToolsFile_G@1000000013 : Codeunit 8053405;
+      ConnectorName_G@1000000012 : Code[20];
+      ImpExpFolder_G@1000000011 : Text[256];
+      LogFolder_G@1000000010 : Text[256];
+      ExtensionFile_G@1000000009 : Text[10];
+      PrefixFile_G@1000000008 : Text[30];
+      ItemTemplateCode_G@1000000007 : Code[20];
+      CustomerTemplateCode_G@1000000006 : Code[20];
+      VendorTemplateCode_G@1000000005 : Code[20];
+      ContactTemplateCode_G@1000000004 : Code[20];
+      AccountTemplateCode_G@1000000003 : Code[20];
+      GlobalTemplateCode_G@1000000002 : Code[20];
+      CodeUnit_G@1000000001 : Integer;
+      TableSicapaItem_G@1000000015 : Record 8053425;
+      TableItemCrossRef_G@1000000016 : Record 5717;
+      TableArticle_G@1000000022 : Record 27;
+      TableVariant_G@1000000023 : Record 5401;
+      ArticleNav_G@1000000017 : Code[20];
+      VariantNav_G@1000000018 : Code[10];
+      CoefUniteOrder_G@1000000019 : Decimal;
+      CoefUniteInsDes_G@1000000034 : Decimal;
+      CoefUniteDesAdv_G@1000000035 : Decimal;
+      QteBasInd_G@1000000036 : Decimal;
+      QteBasIndOrder_G@1000000031 : Decimal;
+      QteBasIndInsDes_G@1000000032 : Decimal;
+      QteBasIndDesAdv_G@1000000027 : Decimal;
+      Capacity_G@1000000028 : Decimal;
+      UniteNavEdi_G@1000000020 : Text[30];
+      UniteSicapa_G@1000000021 : Text[30];
+      Text0008A@1000000024 : TextConst 'ENU=Error Corresponding "%1" : "%2" Doesn''t exist for Order : "%3", Line : "%4";FRA=Erreur correspondance "%3" non param'tr'e pour article : "%1-%2" dans "%4"';
+      Result_G@1000000025 : Text[250];
+      LigneOK_G@1000000026 : Boolean;
+      Text0016@1000000029 : TextConst 'FRA=INFO : Produit Nav "%1-%2" Inoxa "%3" unit' sicapa "%4" non convertible unit' Nav "%5".';
+      Signe_G@1000000030 : Text[1];
+      txtEcrit_G@1000000033 : Text[1024];
+      FileTemp_G@1000000040 : Text[250];
+      FileExport_G@1000000038 : File;
+      FileExportOutstream_G@1000000037 : OutStream;
+      FileNameOuvert_G@1000000039 : Boolean;
+      Text0003@1000000041 : TextConst 'ENU=Error Creating File %1 \%2.;FRA=Erreur cr'ation fichier %1 \%2.';
+      Tab_G@1000000042 : Char;
+      MessageDebugNb_G@1000000043 : Integer;
+
+    PROCEDURE MessageDebug@1000000001(Message_P@1000000000 : Text[250]);
+    BEGIN
+      IF ((USERID = 'ERIC SAINT-LEGER') OR (USERID = 'CHRISTOPHE DAL')) THEN BEGIN
+        IF MessageDebugNb_G < 20 THEN BEGIN
+          MessageDebugNb_G += 1;
+          MESSAGE(Message_P);
+        END;
+      END;
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

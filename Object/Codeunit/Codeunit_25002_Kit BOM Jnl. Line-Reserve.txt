@@ -1,0 +1,217 @@
+OBJECT Codeunit 25002 Kit BOM Jnl. Line-Reserve
+{
+  OBJECT-PROPERTIES
+  {
+    Date=12/12/07;
+    Heure=00:00:00;
+    Liste versions=KITNA5.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 337=rimd;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      ReservMgt@1006 : Codeunit 99000845;
+      CreateReservEntry@1007 : Codeunit 99000830;
+      ReservEngineMgt@1008 : Codeunit 99000831;
+
+    PROCEDURE FilterReservFor@9(VAR FilterReservEntry@1000 : Record 337;KitBOMJnlLine@1001 : Record 25001);
+    VAR
+      BOMJnlLine@1480000 : Record 89;
+    BEGIN
+      FilterReservEntry.SETRANGE("Source Type",DATABASE::"Kit BOM Journal Line");
+      IF BOMJnlLine.GET(KitBOMJnlLine."Journal Template Name",KitBOMJnlLine."Journal Batch Name",KitBOMJnlLine."Journal Line No.") THEN
+        FilterReservEntry.SETRANGE("Source Subtype",BOMJnlLine."Entry Type")
+      ELSE
+        FilterReservEntry.SETRANGE("Source Subtype",0);
+      FilterReservEntry.SETRANGE("Source ID",KitBOMJnlLine."Journal Template Name");
+      FilterReservEntry.SETRANGE("Source Batch Name",KitBOMJnlLine."Journal Batch Name");
+      FilterReservEntry.SETRANGE("Source Prod. Order Line",KitBOMJnlLine."Journal Line No.");
+      FilterReservEntry.SETRANGE("Source Ref. No.",KitBOMJnlLine."Line No.");
+    END;
+
+    PROCEDURE FindReservEntry@1(KitBOMJnlLine@1000 : Record 25001;VAR ReservEntry@1001 : Record 337) : Boolean;
+    BEGIN
+      ReservEngineMgt.InitFilterAndSortingLookupFor(ReservEntry,FALSE);
+      FilterReservFor(ReservEntry,KitBOMJnlLine);
+      EXIT(ReservEntry.FINDLAST);
+    END;
+
+    PROCEDURE ReservEntryExist@4(KitBOMJnlLine@1000 : Record 25001) : Boolean;
+    VAR
+      ReservEntry@1001 : Record 337;
+    BEGIN
+      ReservEngineMgt.InitFilterAndSortingLookupFor(ReservEntry,FALSE);
+      FilterReservFor(ReservEntry,KitBOMJnlLine);
+      EXIT(NOT ReservEntry.ISEMPTY);
+    END;
+
+    PROCEDURE TransferKitBOMLineToItemJnlLin@1480001(VAR OldKitBOMJnlLine@1000 : Record 25001;VAR NewItemJnlLine@1001 : Record 83;TransferQty@1002 : Decimal);
+    VAR
+      OldReservEntry@1003 : Record 337;
+      EndLoop@1005 : Boolean;
+    BEGIN
+      IF NOT FindReservEntry(OldKitBOMJnlLine,OldReservEntry) THEN
+        EXIT;
+
+      OldReservEntry.Lock;
+
+      CLEAR(CreateReservEntry);
+      NewItemJnlLine.TESTFIELD("Item No.",OldKitBOMJnlLine."No.");
+      NewItemJnlLine.TESTFIELD("Variant Code",OldKitBOMJnlLine."Variant Code");
+      NewItemJnlLine.TESTFIELD("Location Code",OldKitBOMJnlLine."Location Code");
+
+      IF TransferQty = 0 THEN
+        EXIT;
+
+      IF ReservEngineMgt.InitRecordSet2(OldReservEntry,NewItemJnlLine."Serial No.",NewItemJnlLine."Lot No.") THEN
+        REPEAT
+          OldReservEntry.TESTFIELD("Item No.",OldKitBOMJnlLine."No.");
+          OldReservEntry.TESTFIELD("Variant Code",OldKitBOMJnlLine."Variant Code");
+          OldReservEntry.TESTFIELD("Location Code",OldKitBOMJnlLine."Location Code");
+
+
+          TransferQty := CreateReservEntry.TransferReservEntry(DATABASE::"Item Journal Line",
+            NewItemJnlLine."Entry Type",NewItemJnlLine."Journal Template Name",NewItemJnlLine."Journal Batch Name",0,
+            NewItemJnlLine."Line No.",NewItemJnlLine."Qty. per Unit of Measure",OldReservEntry,TransferQty);
+
+          IF ReservEngineMgt.NEXTRecord(OldReservEntry) = 0 THEN
+            EndLoop := TRUE;
+        UNTIL EndLoop OR (TransferQty = 0);
+    END;
+
+    PROCEDURE DeleteLine@2(VAR KitBOMJnlLine@1000 : Record 25001);
+    BEGIN
+      IF NOT ReservEntryExist(KitBOMJnlLine) THEN
+        EXIT;
+
+      WITH KitBOMJnlLine DO BEGIN
+        ReservMgt.SetKitBOMJnlLine(KitBOMJnlLine);
+        ReservMgt.SetItemTrackingHandling(1); // Allow Deletion
+        ReservMgt.DeleteReservEntries(TRUE,0);
+      END;
+    END;
+
+    PROCEDURE CallItemTracking@14(VAR KitBOMJnlLine@1000 : Record 25001);
+    VAR
+      BOMJnlLine@1480000 : Record 89;
+      TrackingSpecification@1001 : Record 336;
+      ItemTrackingForm@1002 : Form 6510;
+    BEGIN
+      InitTrackingSpecification(KitBOMJnlLine,TrackingSpecification);
+      BOMJnlLine.GET(KitBOMJnlLine."Journal Template Name",KitBOMJnlLine."Journal Batch Name",KitBOMJnlLine."Journal Line No.");
+      ItemTrackingForm.SetSource(TrackingSpecification,BOMJnlLine."Posting Date");
+      ItemTrackingForm.RUNMODAL;
+    END;
+
+    PROCEDURE InitTrackingSpecification@13(VAR KitBOMJnlLine@1000 : Record 25001;VAR TrackingSpecification@1003 : Record 336);
+    VAR
+      BOMJnlLine@1480000 : Record 89;
+    BEGIN
+      BOMJnlLine.GET(KitBOMJnlLine."Journal Template Name",KitBOMJnlLine."Journal Batch Name",KitBOMJnlLine."Journal Line No.");
+      TrackingSpecification.INIT;
+      TrackingSpecification."Source Type" := DATABASE::"Kit BOM Journal Line";
+      WITH KitBOMJnlLine DO BEGIN
+        TrackingSpecification."Item No." := "No.";
+        TrackingSpecification."Location Code" := "Location Code";
+        TrackingSpecification.Description := Description;
+        TrackingSpecification."Variant Code" := "Variant Code";
+        TrackingSpecification."Source Subtype" := BOMJnlLine."Entry Type";
+        TrackingSpecification."Source ID" := "Journal Template Name";
+        TrackingSpecification."Source Batch Name" := "Journal Batch Name";
+        TrackingSpecification."Source Prod. Order Line" := "Journal Line No.";
+        TrackingSpecification."Source Ref. No." := "Line No.";
+        TrackingSpecification."Quantity (Base)" := "Extended Quantity (Base)";
+        TrackingSpecification."Qty. to Handle" := "Extended Quantity";
+        TrackingSpecification."Qty. to Handle (Base)" := "Extended Quantity (Base)";
+        TrackingSpecification."Qty. to Invoice" := "Extended Quantity";
+        TrackingSpecification."Qty. to Invoice (Base)" := "Extended Quantity (Base)";
+        TrackingSpecification."Quantity Handled (Base)" := 0;
+        TrackingSpecification."Quantity Invoiced (Base)" := 0;
+        TrackingSpecification."Qty. per Unit of Measure" := "Qty. per Unit of Measure";
+      END;
+    END;
+
+    PROCEDURE TransferKitLineToItemJnlLinRet@60000(VAR OldKitBOMJnlLine@1000 : Record 25001;VAR NewItemJnlLine@1001 : Record 83;TransferQty@1002 : Decimal);
+    VAR
+      OldReservEntry@1003 : Record 337;
+      EndLoop@1005 : Boolean;
+    BEGIN
+      // --> 20171211-WI00-ADV01.01.00-3286-CJY01
+      //fonction bas'e sur la copie de la fonction standard TransferKitBOMLineToItemJnlLin
+      IF NOT FindReservEntryReturn(OldKitBOMJnlLine,OldReservEntry) THEN
+        EXIT;
+
+      OldReservEntry.Lock;
+
+      CLEAR(CreateReservEntry);
+      NewItemJnlLine.TESTFIELD("Item No.",OldKitBOMJnlLine."No.");
+      NewItemJnlLine.TESTFIELD("Variant Code",OldKitBOMJnlLine."Variant Code");
+      NewItemJnlLine.TESTFIELD("Location Code",OldKitBOMJnlLine."Location Code");
+
+      IF TransferQty = 0 THEN
+        EXIT;
+
+      IF ReservEngineMgt.InitRecordSet2(OldReservEntry,NewItemJnlLine."Serial No.",NewItemJnlLine."Lot No.") THEN
+        REPEAT
+          OldReservEntry.TESTFIELD("Item No.",OldKitBOMJnlLine."No.");
+          OldReservEntry.TESTFIELD("Variant Code",OldKitBOMJnlLine."Variant Code");
+          OldReservEntry.TESTFIELD("Location Code",OldKitBOMJnlLine."Location Code");
+
+
+          TransferQty := CreateReservEntry.TransferReservEntry(DATABASE::"Item Journal Line",
+            NewItemJnlLine."Entry Type",NewItemJnlLine."Journal Template Name",NewItemJnlLine."Journal Batch Name",0,
+            NewItemJnlLine."Line No.",NewItemJnlLine."Qty. per Unit of Measure",OldReservEntry,TransferQty);
+
+          IF ReservEngineMgt.NEXTRecord(OldReservEntry) = 0 THEN
+            EndLoop := TRUE;
+        UNTIL EndLoop OR (TransferQty = 0);
+
+      // <-- 20171211-WI00-ADV01.01.00-3286-CJY01
+    END;
+
+    PROCEDURE FindReservEntryReturn@60002(KitBOMJnlLine@1000 : Record 25001;VAR ReservEntry@1001 : Record 337) : Boolean;
+    BEGIN
+      // --> 20171211-WI00-ADV01.01.00-3286-CJY01
+      ReservEngineMgt.InitFilterAndSortingLookupFor(ReservEntry,FALSE);
+      FilterReservForReturn(ReservEntry,KitBOMJnlLine);
+      EXIT(ReservEntry.FINDLAST);
+      // <-- 20171211-WI00-ADV01.01.00-3286-CJY01
+    END;
+
+    PROCEDURE FilterReservForReturn@60005(VAR FilterReservEntry@1000 : Record 337;KitBOMJnlLine@1001 : Record 25001);
+    VAR
+      BOMJnlLine@1480000 : Record 89;
+    BEGIN
+      // --> 20171211-WI00-ADV01.01.00-3286-CJY01
+      FilterReservEntry.SETRANGE("Source Type",DATABASE::"Kit BOM Journal Line");
+      IF BOMJnlLine.GET(KitBOMJnlLine."Journal Template Name",KitBOMJnlLine."Journal Batch Name",KitBOMJnlLine."Journal Line No.") THEN
+        FilterReservEntry.SETRANGE("Source Subtype",BOMJnlLine."Entry Type")
+      ELSE
+        FilterReservEntry.SETRANGE("Source Subtype",1);
+      FilterReservEntry.SETRANGE("Source ID",KitBOMJnlLine."Journal Template Name");
+      FilterReservEntry.SETRANGE("Source Batch Name",KitBOMJnlLine."Journal Batch Name");
+      FilterReservEntry.SETRANGE("Source Prod. Order Line",KitBOMJnlLine."Journal Line No.");
+      FilterReservEntry.SETRANGE("Source Ref. No.",KitBOMJnlLine."Line No.");
+      // <-- 20171211-WI00-ADV01.01.00-3286-CJY01
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+
+      20171211-WI00-ADV01.01.00-3286-CJY01 : ADDFUNC (Ajout fonction TransferKitLineToItemJnlLinRet)
+      20171211-WI00-ADV01.01.00-3286-CJY01 : ADDFUNC (Ajout fonction FindReservEntryReturn)
+      20171211-WI00-ADV01.01.00-3286-CJY01 : ADDFUNC (Ajout fonction FilterReservForReturn)
+
+      // --> 3LI END
+    }
+    END.
+  }
+}
+

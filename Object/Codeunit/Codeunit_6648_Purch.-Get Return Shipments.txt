@@ -1,0 +1,244 @@
+OBJECT Codeunit 6648 Purch.-Get Return Shipments
+{
+  OBJECT-PROPERTIES
+  {
+    Date=12/08/14;
+    Heure=00:00:00;
+    Liste versions=NAVW14.00,TER01.01.00;
+  }
+  PROPERTIES
+  {
+    TableNo=39;
+    OnRun=BEGIN
+            PurchHeader.GET("Document Type","Document No.");
+            PurchHeader.TESTFIELD("Document Type",PurchHeader."Document Type"::"Credit Memo");
+            PurchHeader.TESTFIELD(Status,PurchHeader.Status::Open);
+
+            ReturnShptLine.SETCURRENTKEY("Pay-to Vendor No.");
+            ReturnShptLine.SETRANGE("Pay-to Vendor No.",PurchHeader."Pay-to Vendor No.");
+            ReturnShptLine.SETFILTER("Return Qty. Shipped Not Invd.",'<>0');
+            ReturnShptLine.SETRANGE("Currency Code",PurchHeader."Currency Code");
+
+            GetReturnShptLines.SETTABLEVIEW(ReturnShptLine);
+            GetReturnShptLines.LOOKUPMODE := TRUE;
+            GetReturnShptLines.SetPurchHeader(PurchHeader);
+            GetReturnShptLines.RUNMODAL;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=The %1 on the %2 %3 and the %4 %5 must be the same.;FRA=Le %1 de l''%2 %3 et de l''%4 %5 doit ^tre le m^me.';
+      PurchHeader@1001 : Record 38;
+      PurchLine@1002 : Record 39;
+      ReturnShptHeader@1003 : Record 6650;
+      ReturnShptLine@1004 : Record 6651;
+      GetReturnShptLines@1005 : Form 6648;
+      "<-- 3LI GLOBALS -->"@60001 : Integer;
+      ErrorMsg_G@60000 : Text[250];
+
+    PROCEDURE CreateInvLines@1(VAR ReturnShptLine2@1000 : Record 6651);
+    VAR
+      DifferentCurrencies@1001 : Boolean;
+      TempFromLineDim@1002 : TEMPORARY Record 357;
+      TempToLineDim@1003 : TEMPORARY Record 357;
+      DimMgt@1004 : Codeunit 408;
+      "<-- 3LI LOCALS -->"@60002 : Integer;
+      CMCSetup_L@60001 : Record 8052982;
+      EverythingOK_L@60000 : Boolean;
+      "<< 3LI TEXT CONSTANTS >>"@60004 : TextConst;
+      Text60000@60003 : TextConst 'ENU=The posting date of the receipt nõ %1 its > than the invoice posting date;FRA=La date de comptabilisation du bon de r'ception N› %1 est > . la date de comptabilisation de la facture';
+    BEGIN
+      WITH ReturnShptLine2 DO BEGIN
+        SETFILTER("Return Qty. Shipped Not Invd.",'<>0');
+        IF FIND('-') THEN BEGIN
+          // --> 20140725-TER01.01.00-RMZ01 Begin
+          CMCSetup_L.GET;
+          EverythingOK_L := TRUE;
+          // <-- 20140725-TER01.01.00-RMZ01 End
+
+          PurchLine.LOCKTABLE;
+          PurchLine.SETRANGE("Document Type",PurchHeader."Document Type");
+          PurchLine.SETRANGE("Document No.",PurchHeader."No.");
+          PurchLine."Document Type" := PurchHeader."Document Type";
+          PurchLine."Document No." := PurchHeader."No.";
+
+          REPEAT
+          // --> 20140718-TER01.01.00-RMZ01 Begin
+            ErrorMsg_G := '';
+            IF CMCSetup_L."Activ.Recept. Date Control Inv" THEN BEGIN
+          // --> 20140812-APP05-TER01.01.00-ENS01
+          // BEFORE
+          {
+              IF ReturnShptLine2."Posting Date" > PurchHeader."Posting Date" THEN
+                EverythingOK_L := FALSE;
+                ErrorMsg_G := STRSUBSTNO(Text60000,ReturnShptLine2."Document No.");
+          }
+          // AFTER
+              IF ReturnShptLine2."Posting Date" > PurchHeader."Posting Date" THEN BEGIN
+                EverythingOK_L := FALSE;
+                ErrorMsg_G := STRSUBSTNO(Text60000,ReturnShptLine2."Document No.");
+              END;
+          // <-- 20140812-APP05-TER01.01.00-ENS01
+            END;
+          UNTIL (NEXT = 0) OR (NOT EverythingOK_L);
+          IF NOT EverythingOK_L THEN
+            EXIT;
+
+          FINDFIRST;
+          REPEAT
+          // <-- 20140718-TER01.01.00-RMZ01 End
+
+            IF ReturnShptHeader."No." <> "Document No." THEN BEGIN
+              ReturnShptHeader.GET("Document No.");
+              ReturnShptHeader.TESTFIELD("Pay-to Vendor No.",PurchHeader."Pay-to Vendor No.");
+              DifferentCurrencies := FALSE;
+              IF ReturnShptHeader."Currency Code" <> PurchHeader."Currency Code" THEN BEGIN
+                MESSAGE(Text000,
+                  PurchHeader.FIELDCAPTION("Currency Code"),
+                  PurchHeader.TABLECAPTION, PurchHeader."No.",
+                  ReturnShptHeader.TABLECAPTION,ReturnShptHeader."No.");
+                DifferentCurrencies := TRUE;
+              END;
+            END;
+            IF NOT DifferentCurrencies THEN BEGIN
+              ReturnShptLine := ReturnShptLine2;
+              ReturnShptLine.InsertInvLineFromRetShptLine(PurchLine,TempFromLineDim);
+              DimMgt.MoveTempFromDimToTempToDim(TempFromLineDim,TempToLineDim);
+            END;
+          UNTIL NEXT = 0;
+          GetItemChargeAssgnt(ReturnShptLine2);
+          DimMgt.TransferTempToDimToDocDim(TempToLineDim);
+        END;
+      END;
+    END;
+
+    PROCEDURE SetPurchHeader@2(VAR PurchHeader2@1000 : Record 38);
+    BEGIN
+      PurchHeader.GET(PurchHeader2."Document Type",PurchHeader2."No.");
+      PurchHeader.TESTFIELD("Document Type",PurchHeader."Document Type"::"Credit Memo");
+    END;
+
+    PROCEDURE GetItemChargeAssgnt@5800(VAR ReturnShptLine@1000 : Record 6651);
+    VAR
+      PurchOrderLine@1001 : Record 39;
+      ItemChargeAssgntPurch@1002 : Record 5805;
+    BEGIN
+      WITH ReturnShptLine DO BEGIN
+        SETRANGE(Type,Type::"Charge (Item)");
+        IF FIND('-') THEN
+          REPEAT
+            IF PurchOrderLine.GET(
+                PurchOrderLine."Document Type"::"Return Order",
+                "Return Order No.","Return Order Line No.")
+            THEN BEGIN
+              ItemChargeAssgntPurch.LOCKTABLE;
+              ItemChargeAssgntPurch.RESET;
+              ItemChargeAssgntPurch.SETRANGE("Document Type",PurchOrderLine."Document Type");
+              ItemChargeAssgntPurch.SETRANGE("Document No.",PurchOrderLine."Document No.");
+              ItemChargeAssgntPurch.SETRANGE("Document Line No.",PurchOrderLine."Line No.");
+              IF ItemChargeAssgntPurch.FIND('-') THEN BEGIN
+                ItemChargeAssgntPurch.CALCSUMS("Qty. to Assign");
+                IF ItemChargeAssgntPurch."Qty. to Assign" <> 0 THEN
+                  CopyItemChargeAssgnt(PurchOrderLine,ReturnShptLine,ItemChargeAssgntPurch."Qty. to Assign");
+              END;
+            END;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE CopyItemChargeAssgnt@5801(PurchOrderLine@1000 : Record 39;ReturnShptLine@1001 : Record 6651;QtyToAssign@1002 : Decimal);
+    VAR
+      ReturnShptLine2@1003 : Record 6651;
+      PurchLine2@1004 : Record 39;
+      ItemChargeAssgntPurch@1005 : Record 5805;
+      ItemChargeAssgntPurch2@1006 : Record 5805;
+      InsertChargeAssgnt@1007 : Boolean;
+    BEGIN
+      WITH PurchOrderLine DO BEGIN
+        ItemChargeAssgntPurch.SETRANGE("Document Type","Document Type");
+        ItemChargeAssgntPurch.SETRANGE("Document No.","Document No.");
+        ItemChargeAssgntPurch.SETRANGE("Document Line No.","Line No.");
+        IF ItemChargeAssgntPurch.FIND('-') THEN
+          REPEAT
+            IF ItemChargeAssgntPurch."Qty. to Assign" <> 0 THEN BEGIN
+              ItemChargeAssgntPurch2 := ItemChargeAssgntPurch;
+              PurchLine2.SETRANGE("Return Shipment No.",ReturnShptLine."Document No.");
+              PurchLine2.SETRANGE("Return Shipment Line No.",ReturnShptLine."Line No.");
+              IF PurchLine2.FIND('-') THEN
+                REPEAT
+                  PurchLine2.CALCFIELDS("Qty. to Assign");
+                  InsertChargeAssgnt := PurchLine2."Qty. to Assign" <> PurchLine2.Quantity;
+                UNTIL (PurchLine2.NEXT = 0) OR InsertChargeAssgnt;
+
+              IF InsertChargeAssgnt THEN BEGIN
+                ItemChargeAssgntPurch2."Document Type" := PurchLine2."Document Type";
+                ItemChargeAssgntPurch2."Document No." := PurchLine2."Document No.";
+                ItemChargeAssgntPurch2."Document Line No." := PurchLine2."Line No.";
+                ItemChargeAssgntPurch2."Qty. Assigned" := 0;
+                IF ABS(QtyToAssign) < ABS(ItemChargeAssgntPurch2."Qty. to Assign") THEN
+                  ItemChargeAssgntPurch2."Qty. to Assign" := QtyToAssign;
+                IF ABS(PurchLine2.Quantity - PurchLine2."Qty. to Assign") <
+                   ABS(ItemChargeAssgntPurch2."Qty. to Assign")
+                THEN
+                  ItemChargeAssgntPurch2."Qty. to Assign" :=
+                    PurchLine2.Quantity - PurchLine2."Qty. to Assign";
+                ItemChargeAssgntPurch2.VALIDATE("Unit Cost");
+
+                IF ItemChargeAssgntPurch2."Applies-to Doc. Type" = "Document Type" THEN BEGIN
+                  ItemChargeAssgntPurch2."Applies-to Doc. Type" := PurchLine2."Document Type";
+                  ItemChargeAssgntPurch2."Applies-to Doc. No." := PurchLine2."Document No.";
+                  ReturnShptLine2.SETCURRENTKEY("Return Order No.","Return Order Line No.");
+                  ReturnShptLine2.SETRANGE("Return Order No.",ItemChargeAssgntPurch."Applies-to Doc. No.");
+                  ReturnShptLine2.SETRANGE("Return Order Line No.",ItemChargeAssgntPurch."Applies-to Doc. Line No.");
+                  ReturnShptLine2.SETRANGE("Document No.",ReturnShptLine."Document No.");
+                  IF ReturnShptLine2.FIND('-') THEN BEGIN
+                    PurchLine2.SETCURRENTKEY("Document Type","Receipt No.","Receipt Line No.");
+                    PurchLine2.SETRANGE("Document Type",PurchLine2."Document Type"::"Credit Memo");
+                    PurchLine2.SETRANGE("Return Shipment No.",ReturnShptLine2."Document No.");
+                    PurchLine2.SETRANGE("Return Shipment Line No.",ReturnShptLine2."Line No.");
+                    IF PurchLine2.FIND('-') AND (PurchLine2.Quantity <> 0) THEN
+                      ItemChargeAssgntPurch2."Applies-to Doc. Line No." := PurchLine2."Line No."
+                    ELSE
+                     InsertChargeAssgnt := FALSE;
+                  END ELSE
+                    InsertChargeAssgnt := FALSE;
+                END;
+              END;
+
+              IF InsertChargeAssgnt AND (ItemChargeAssgntPurch2."Qty. to Assign" <> 0) THEN BEGIN
+                ItemChargeAssgntPurch2.INSERT;
+                QtyToAssign := QtyToAssign - ItemChargeAssgntPurch2."Qty. to Assign";
+              END;
+            END;
+          UNTIL ItemChargeAssgntPurch.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE "<<3LI Functions>>"@8053000();
+    BEGIN
+    END;
+
+    PROCEDURE SendErrorMessage@60000(VAR ErrorMsg_P@60000 : Text[250]);
+    BEGIN
+      //20140710-APP05-TER01.01.00-TEAP037-RMZ01
+      // --------------------------------------------------------------------------------------------------------------------------
+      // To return the error message
+      // --------------------------------------------------------------------------------------------------------------------------
+      // Inputs
+      //    - ErrorMsg_P - a text to fill with the error
+      // Outputs
+
+      ErrorMsg_P := ErrorMsg_G;
+    END;
+
+    BEGIN
+    {
+      20140725-APP05-TER01.01.00-RMZ01 : MODCODE(CreateInvLines), ADDFUNC(SendErrorMessage)
+      20140812-APP05-TER01.01.00-ENS01 : MODCODE ( "CreateInvLines" )
+    }
+    END.
+  }
+}
+

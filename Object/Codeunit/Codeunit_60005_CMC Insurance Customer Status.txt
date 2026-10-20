@@ -1,0 +1,262 @@
+OBJECT Codeunit 60005 CMC Insurance Customer Status
+{
+  OBJECT-PROPERTIES
+  {
+    Date=03/11/15;
+    Heure=00:00:00;
+    Liste versions=TER01.01.00;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            CustomerRec_L@60000 : Record 18;
+            SalesContractRec_L@60001 : Record 8053012;
+          BEGIN
+            DeleteTableBuffer();
+            IF CustomerRec_L.FINDSET THEN BEGIN
+              NoOfRecordsInt_G := CustomerRec_L.COUNT;
+              WindowDia_G.OPEN(Text001);
+              REPEAT
+
+                CustCountInt_G := CustCountInt_G + 1;
+                WindowDia_G.UPDATE(1,CustomerRec_L."No.");
+                WindowDia_G.UPDATE(2,ROUND(CustCountInt_G / NoOfRecordsInt_G * 10000,1));
+
+                CLEAR(RemainingContractAmountDec_G); CLEAR(AmountShippedNotInvoiceDec_G);
+                CustomerRec_L.CALCFIELDS("Balance (LCY)");
+                SalesContractRec_L.SETRANGE("Customer No.",CustomerRec_L."No.");
+                // --> 20141204-CER29-TER01.01.00-RMZ01
+                SalesContractRec_L.SETFILTER(Status,'<>%1',SalesContractRec_L.Status::Closed);
+                // <-- 20141204-CER29-TER01.01.00-RMZ01
+                IF SalesContractRec_L.FINDSET THEN BEGIN
+                  REPEAT
+                    InsertTableBufferDetail(SalesContractRec_L);
+                  UNTIL SalesContractRec_L.NEXT = 0;
+
+                  InsertTableBufferTotal(SalesContractRec_L,FORMAT(CustomerRec_L."Insurance Status"),CustomerRec_L."Insurance Garantee",
+                    CustomerRec_L."Balance (LCY)");
+
+                END;
+              UNTIL CustomerRec_L.NEXT = 0;
+              WindowDia_G.CLOSE;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      WindowDia_G@60004 : Dialog;
+      CustCountInt_G@60001 : Integer;
+      NoOfRecordsInt_G@60005 : Integer;
+      RemainingContractAmountDec_G@60000 : Decimal;
+      AmountShippedNotInvoiceDec_G@60002 : Decimal;
+      Text001@60003 : TextConst 'ENU=Updating lines        #1###### @2@@@@@@@@@@@@;FRA=Mise . jour des lignes          #1###### @2@@@@@@@@@@@@';
+
+    PROCEDURE DeleteTableBuffer@60000();
+    VAR
+      InsuranceCustStatusRec_L@60001 : Record 60030;
+    BEGIN
+      WITH InsuranceCustStatusRec_L DO BEGIN
+        SETRANGE("User ID",USERID);
+        DELETEALL;
+      END;
+    END;
+
+    PROCEDURE InsertTableBufferDetail@60003(SalesContractRec_P@60000 : Record 8053012);
+    VAR
+      InsuranceCustStatusRec_L@60001 : Record 60030;
+      MatifPricesRec_L@60002 : Record 60029;
+      CalculOfSupplementsRec_L@60004 : Record 8053272;
+      PostedDeliveryRec_L@60006 : Record 8053014;
+      CMCMngtCdu_G@60003 : Codeunit 8052982;
+      UnitAmountDec_L@60005 : Decimal;
+      QtShippedNotInvoicedDec_L@60007 : Decimal;
+      ParitesDec_L@60008 : Decimal;
+      ParityAmountDec_L@60009 : Decimal;
+      MajorationDec_L@60010 : Decimal;
+      Bonus_l@60011 : Decimal;
+    BEGIN
+      // --> 20151103-CER29-TER01.01.00-2424-BSI01
+      QtShippedNotInvoicedDec_L := 0;
+      ParityAmountDec_L := 0;
+      MajorationDec_L := 0;
+      // <-- 20151103-CER29-TER01.01.00-2424-BSI01
+      WITH SalesContractRec_P DO BEGIN
+        CALCFIELDS("Invoiced Quantity","Delivered Quantity");
+        InsuranceCustStatusRec_L.INIT;
+        InsuranceCustStatusRec_L."Line No"  := 0;
+        InsuranceCustStatusRec_L."Contract No" := "No.";
+        InsuranceCustStatusRec_L."Campain No" := "Campaign No.";
+        InsuranceCustStatusRec_L."Customer No" := "Customer No.";
+        InsuranceCustStatusRec_L."Customer Name" := "Customer Name";
+        InsuranceCustStatusRec_L."Species Code" := "Species Code";
+        InsuranceCustStatusRec_L."Item code" := "Item No.";
+        InsuranceCustStatusRec_L."Starting date" := "Starting Date";
+        InsuranceCustStatusRec_L. "Ending date" := "Ending Date" ;
+        InsuranceCustStatusRec_L."Commercial type" := "Commercial Type";
+        InsuranceCustStatusRec_L."Qty on contract" := Quantity;
+        //InsuranceCustStatusRec_L."Shipped qty on contract" := 0;
+        InsuranceCustStatusRec_L."Shipped qty on contract" := SalesContractRec_P."Delivered Quantity";
+        //InsuranceCustStatusRec_L."Remaining qty on contrat" := 0;
+        InsuranceCustStatusRec_L."Remaining qty on contrat" :=InsuranceCustStatusRec_L."Qty on contract"
+                                                              -InsuranceCustStatusRec_L."Shipped qty on contract";
+        // --> 20150119-CER29-TER01.01.00-RMZ01
+        IF InsuranceCustStatusRec_L."Remaining qty on contrat" < 0 THEN
+          InsuranceCustStatusRec_L."Remaining qty on contrat" := 0;
+        // <-- 2015019-CER29-TER01.01.00-RMZ01
+
+        //prix unitaire
+        // --> 20141204-CER29-TER01.01.00-RMZ01
+        Bonus_l := 0;
+        IF EVALUATE(Bonus_l,SalesContractRec_P.Bonus) THEN;
+        // <-- 20141204-CER29-TER01.01.00-RMZ01
+        IF "Unit Price" <> 0 THEN
+          InsuranceCustStatusRec_L."Unit price" := "Unit Price"
+        ELSE BEGIN
+          IF (MatifPricesRec_L.GET("MATIF Terms Code","MATIF Species Code"))
+          // --> 20141204-CER29-TER01.01.00-RMZ01
+              AND (SalesContractRec_P."Contract Type" IN [SalesContractRec_P."Contract Type"::"Purch. Bonus",
+                  SalesContractRec_P."Contract Type"::"Sales Bonus"]) AND (SalesContractRec_P."Unit Price" = 0)
+          THEN
+          // <-- 20141204-CER29-TER01.01.00-RMZ01
+          BEGIN
+            //InsuranceCustStatusRec_L."Unit price" := MatifPricesRec_L."Matif Price" + "Matif Supplement" + Parity;
+            InsuranceCustStatusRec_L."Unit price" := MatifPricesRec_L."Matif Price" - "Matif Supplement" +
+                                                      // --> 20141204-CER29-TER01.01.00-RMZ01
+                                                      // Before
+                                                      //SalesContractRec_P."Parity Estimation";
+                                                      // After
+                                                      Bonus_l;
+                                                      // <-- 20141204-CER29-TER01.01.00-RMZ01
+          END;
+        END;
+        //Montant majoration
+        //CalculOfSupplementsRec_L.SETRANGE(CalculOfSupplementsRec_L."Campaign No.");
+        //CalculOfSupplementsRec_L.SETRANGE(CalculOfSupplementsRec_L."Specie Code");
+        //IF CalculOfSupplementsRec_L.FINDFIRST THEN
+        //  UnitAmountDec_L := CalculOfSupplementsRec_L."Supplement Price";
+      //InsuranceCustStatusRec_L."Supplement amount" := CMCMngtCdu_G.ReturnNbPeriod("Raise Starting Date","Ending Date","Raise Period")*
+        //  UnitAmountDec_L;
+        InsuranceCustStatusRec_L."Supplement amount" := CMCMngtCdu_G.ReturnNbPeriod("Raise Starting Date","Ending Date","Raise Period")*
+
+          SalesContractRec_P."Raise Unit Amount";
+
+        //Parit'
+        // --> 20141204-CER29-TER01.01.00-RMZ01
+        // Before
+        //InsuranceCustStatusRec_L."Parity amount" := "Parity Estimation";
+        // After
+        InsuranceCustStatusRec_L."Parity amount" := SalesContractRec_P."Estimated Parity";
+        // <-- 20141204-CER29-TER01.01.00-RMZ01
+
+        //Qt' livr' non factur'
+        CLEAR(PostedDeliveryRec_L);
+        PostedDeliveryRec_L.SETRANGE("Contract No.","No.");
+        PostedDeliveryRec_L.SETRANGE(Invoiced,FALSE);
+        PostedDeliveryRec_L.SETRANGE(Canceled,FALSE);
+        // --> 20151103-CER29-TER01.01.00-2424-BSI01
+        PostedDeliveryRec_L.SETRANGE("Invoiced Pre-payment",FALSE);
+        // <-- 20151103-CER29-TER01.01.00-2424-BSI01
+        IF PostedDeliveryRec_L.FINDSET THEN
+        REPEAT
+          QtShippedNotInvoicedDec_L += PostedDeliveryRec_L."Net Weight";
+          ParityAmountDec_L += PostedDeliveryRec_L."Parity amount";
+          // --> 20141204-CER29-TER01.01.00-RMZ01
+          // Before
+          //MajorationDec_L += ROUND(CMCMngtCdu_G.ReturnNbPeriod("Raise Starting Date",PostedDeliveryRec_L."Customer Delivery Date",
+          // After
+          MajorationDec_L += PostedDeliveryRec_L."Net Weight" *
+              ROUND(CMCMngtCdu_G.ReturnNbPeriod("Raise Starting Date",PostedDeliveryRec_L."Customer Delivery Date",
+          // <-- 20141204-CER29-TER01.01.00-RMZ01
+            "Raise Period")*"Raise Unit Amount", 0.001);
+
+        UNTIL PostedDeliveryRec_L.NEXT = 0;
+
+        InsuranceCustStatusRec_L."Shipped qty not invoiced" := QtShippedNotInvoicedDec_L;
+
+        //Montant solde contrat
+        InsuranceCustStatusRec_L."Remaining contract amount" :=
+         (InsuranceCustStatusRec_L."Unit price"+InsuranceCustStatusRec_L."Parity amount"+InsuranceCustStatusRec_L."Supplement amount")*
+
+            InsuranceCustStatusRec_L."Remaining qty on contrat";
+
+
+        //Montant majoration moyenne
+        IF QtShippedNotInvoicedDec_L <> 0 THEN
+          InsuranceCustStatusRec_L."Average Supplement amount" := MajorationDec_L / QtShippedNotInvoicedDec_L
+        ELSE
+
+
+          InsuranceCustStatusRec_L."Average Supplement amount" := 0;
+        //Parit' moyenne
+        IF QtShippedNotInvoicedDec_L <> 0 THEN
+          InsuranceCustStatusRec_L."Average Parity amount" := ParitesDec_L / QtShippedNotInvoicedDec_L
+        ELSE
+          InsuranceCustStatusRec_L."Average Parity amount" := 0;
+
+
+        //Montant livr' non factur'
+        InsuranceCustStatusRec_L."Amount shipped not invoice" :=
+          InsuranceCustStatusRec_L."Shipped qty not invoiced"
+          * (
+          // --> 20141204-CER29-TER01.01.00-RMZ01
+          // Before
+          //InsuranceCustStatusRec_L."Unit price" + InsuranceCustStatusRec_L."Supplement amount" +
+          InsuranceCustStatusRec_L."Unit price" + InsuranceCustStatusRec_L."Average Supplement amount" +
+          // After
+            InsuranceCustStatusRec_L."Parity amount" );
+          // <-- 20141204-CER29-TER01.01.00-RMZ01
+
+        InsuranceCustStatusRec_L."User ID" := USERID;
+        InsuranceCustStatusRec_L.INSERT(TRUE);
+        //--
+        RemainingContractAmountDec_G += InsuranceCustStatusRec_L."Remaining contract amount";
+        AmountShippedNotInvoiceDec_G += InsuranceCustStatusRec_L."Amount shipped not invoice";
+
+      END;
+    END;
+
+    PROCEDURE InsertTableBufferTotal@60005(SalesContractRec_P@60000 : Record 8053012;InsuranceStatusText_P@60003 : Text[20];InsuranceAmountDec_P@60004 : Decimal;BalanceCustomerDec_P@60005 : Decimal);
+    VAR
+      InsuranceCustStatusRec_L@60001 : Record 60030;
+      MatifPricesRec_L@60002 : Record 60029;
+    BEGIN
+      WITH SalesContractRec_P DO BEGIN
+        InsuranceCustStatusRec_L.INIT;
+        InsuranceCustStatusRec_L."Line No"  := 0;
+        InsuranceCustStatusRec_L."Customer No" := "Customer No.";
+        InsuranceCustStatusRec_L."Customer Name" := "Customer Name";
+        //--
+        InsuranceCustStatusRec_L."Remaining contract amount" := RemainingContractAmountDec_G;
+        InsuranceCustStatusRec_L."Amount shipped not invoice" := AmountShippedNotInvoiceDec_G;
+        //--
+        InsuranceCustStatusRec_L."Customer Balance" := BalanceCustomerDec_P;
+
+        InsuranceCustStatusRec_L."Amount owned by customer" :=
+          InsuranceCustStatusRec_L."Customer Balance" + InsuranceCustStatusRec_L."Amount shipped not invoice";
+
+        InsuranceCustStatusRec_L."Insurance status" := InsuranceStatusText_P;
+        InsuranceCustStatusRec_L."Insurance amount" := InsuranceAmountDec_P;
+
+        InsuranceCustStatusRec_L."Exceeding insurance amount" :=
+          InsuranceCustStatusRec_L."Insurance amount" - InsuranceCustStatusRec_L."Amount owned by customer";
+
+        InsuranceCustStatusRec_L."User ID" := USERID;
+        InsuranceCustStatusRec_L.INSERT(TRUE);
+      END;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20140919-CER29-TER01.01.00-SCF01 : CREATEOBJECT
+      20141204-CER29-TER01.01.00-RMZ01: ADDCODE(OnRun,InsertTableBufferDetail)
+      20150119-CER29-TER01.01.00-RMZ01: ADDCODE(InsertTableBufferDetail)
+      20151103-CER29-TER01.01.00-2424-BSI01 : ADDCODE (Initialisation des variables, Ne pas prendre en compte les acomptes factur's)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

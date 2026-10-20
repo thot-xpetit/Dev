@@ -1,0 +1,347 @@
+OBJECT Codeunit 8053041 CMC Reconciliation Transfer
+{
+  OBJECT-PROPERTIES
+  {
+    Date=05/10/18;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text8053000@8053000 : TextConst 'ENU=Do you want to validate the transfer reconciliation sheet?;FRA=Voulez-vous valider la feuille de rapprochement transfert ?';
+      RecSetup_G@1000000000 : Record 8052982;
+      Isconfirmed_G@1000000001 : Boolean;
+
+    PROCEDURE PostItemJnlLinesForTransferInd@8053010(RecReconciliationTransfer_P@8053000 : Record 8053308;Iter_P@8053004 : Integer);
+    VAR
+      RecTempJnlLineDim_L@64004 : TEMPORARY Record 356;
+      L_PostItemJnlLine@64005 : Codeunit 22;
+      L_recItem@64000 : Record 27;
+      RecItem_L@1000000003 : Record 27;
+      RecItemJnlLine_L@8053003 : Record 83;
+      RecPostedDelivery_L@8053002 : Record 8053014;
+      RecPostedReceipts_L@8053005 : Record 8052995;
+      Ecart_L@8053006 : Decimal;
+      IncomingICTransferDelivery_L@8053007 : Boolean;
+      IncomingICTransferReceipt_L@8053010 : Boolean;
+      IncomingICOnBehalfOfAdjust_L@8053011 : Boolean;
+      cduICInboxOutboxMgt_L@8053008 : Codeunit 427;
+      DocActionType_L@8053009 : 'Create,Update,Delete,Cancel,Reconcile';
+      cduCMCDimension_L@8053012 : Codeunit 8053004;
+      RecCellsLocation_L@8053013 : Record 8053031;
+      RecCellsLocation1_L@1000000000 : Record 8053031;
+      RecLocation_L@1000000001 : Record 14;
+    BEGIN
+      RecSetup_G.GET;
+      Ecart_L := 0;
+      WITH RecReconciliationTransfer_P DO BEGIN
+        CLEAR(RecPostedDelivery_L);
+        RecPostedDelivery_L.GET(RecPostedDelivery_L."Delivery Type"::Transfert,"Document No. (Out)");
+        CLEAR(RecPostedReceipts_L);
+        RecPostedReceipts_L.GET(RecPostedReceipts_L."Receipt Type"::Transfert,"Document No. (In)");
+        IncomingICTransferDelivery_L := (RecPostedDelivery_L."IC Direction" = RecPostedDelivery_L."IC Direction"::Incoming) AND
+          RecPostedDelivery_L."Shared Silo";
+        IncomingICTransferReceipt_L := (RecPostedReceipts_L."IC Direction" = RecPostedDelivery_L."IC Direction"::Incoming) AND
+          RecPostedReceipts_L."Shared Silo";
+        IncomingICOnBehalfOfAdjust_L := (RecPostedDelivery_L."IC Direction" = RecPostedDelivery_L."IC Direction"::Incoming) AND
+          RecPostedDelivery_L."On Behalf Of Adjustment";
+        IF "Standard Gap Tolerated" <> 0 THEN
+          Ecart_L := "Standard Gap Tolerated"
+        ELSE IF "Standard Gap Out Tolerance" <> 0 THEN
+          Ecart_L := "Standard Gap Out Tolerance";
+        IF Ecart_L <> 0 THEN BEGIN
+          RecItemJnlLine_L.INIT;
+          RecItemJnlLine_L."Posting Date"  := WORKDATE;
+          RecItemJnlLine_L."Document Date" := WORKDATE;
+          TESTFIELD("Gap Location Code");
+          TESTFIELD("Gap Cell Code");
+          RecCellsLocation_L.GET("Gap Location Code","Gap Cell Code");
+          IF RecReconciliationTransfer_P."Gap Location Code" = RecReconciliationTransfer_P."From-Location Code (Out)" THEN
+            RecItemJnlLine_L."Document No.":= "Document No. (Out)"
+          ELSE
+            RecItemJnlLine_L."Document No.":= "Document No. (In)";
+          RecItemJnlLine_L."Entry Type"    := RecItemJnlLine_L."Entry Type"::Transfer;
+          RecItemJnlLine_L."Item No."      := "Item No. (Out)";
+
+          IF Ecart_L < 0 THEN BEGIN
+            // --> 20151218-GEN04-CMC02.02.00-2349-NED01
+            {Before
+            IF Iter_P = 1 THEN BEGIN
+            After}
+            CASE Iter_P OF
+            // <-- 20151218-GEN04-CMC02.02.00-2349-NED01
+                1 : BEGIN
+                  RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Positive Adjmt.";
+                  RecItemJnlLine_L."Location Code" := "Gap Location Code";
+                  RecItemJnlLine_L."Indep. Transfer-From Location" := "From-Location Code (Out)";
+                  RecItemJnlLine_L."Indep. Transfer-To Location" := "To-Location Code (In)";
+                  RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::T10;
+                  IF RecCellsLocation_L."Ajustment Cell" THEN
+                    RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::E05;
+                  // --> 20151218-GEN04-CMC02.02.00-2349-NED01
+                  RecItemJnlLine_L.Quantity := ABS(Ecart_L);
+                  RecItemJnlLine_L."Cell Code" := "Gap Cell Code";
+                  IF Isconfirmed_G THEN BEGIN
+                    RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Negative Adjmt.";
+                    RecItemJnlLine_L.Quantity := ABS(Ecart_L);
+                    RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::S05;
+                    RecItemJnlLine_L."Location Code" := RecSetup_G."Indep. Transfer Transit Code";
+                    CLEAR(RecCellsLocation1_L);
+                    RecItemJnlLine_L."Cell Code"     := RecCellsLocation1_L.GetUncontroledCell(RecSetup_G."Indep. Transfer Transit Code"
+      );
+                  END;
+                END;
+              //END ELSE IF Iter_P = 2 THEN BEGIN
+              // <-- 20151218-GEN04-CMC02.02.00-2349-NED01
+                2 : BEGIN
+                  RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Negative Adjmt.";
+                  RecItemJnlLine_L."Indep. Transfer-From Location" := "From-Location Code (Out)";
+                  RecItemJnlLine_L."Indep. Transfer-To Location" := "To-Location Code (In)";
+                  RecItemJnlLine_L."Location Code" := RecSetup_G."Indep. Transfer Transit Code";
+                  RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::E05;
+                  // --> 20151218-GEN04-CMC02.02.00-2349-NED01
+                  RecItemJnlLine_L.Quantity := ABS(Ecart_L);
+                  RecItemJnlLine_L."Cell Code" := "Gap Cell Code";
+                  IF Isconfirmed_G THEN BEGIN
+                    RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::T10;
+                    RecItemJnlLine_L."Location Code" := "From-Location Code (Out)";
+                    CLEAR(RecCellsLocation1_L);
+                    RecItemJnlLine_L."Cell Code"     := RecCellsLocation1_L.GetUncontroledCell("From-Location Code (Out)");
+                  END;
+                END;
+                3 : BEGIN
+                  RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Positive Adjmt.";
+                  RecItemJnlLine_L."Location Code" := "From-Location Code (Out)";
+                  RecItemJnlLine_L.Quantity   := "Standard Weight (Out)";
+                  RecItemJnlLine_L."Indep. Transfer-From Location" := "From-Location Code (Out)";
+                  RecItemJnlLine_L."Indep. Transfer-To Location" := "To-Location Code (In)";
+                  RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::S05;
+                  CLEAR(RecCellsLocation1_L);
+                  RecItemJnlLine_L."Cell Code"     := RecCellsLocation1_L.GetUncontroledCell("From-Location Code (Out)");
+                END;
+                4 : BEGIN
+                  RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Negative Adjmt.";
+                  RecItemJnlLine_L."Location Code" := "From-Location Code (Out)";
+                  RecItemJnlLine_L.Quantity   := "Standard Weight (In)";
+                  RecItemJnlLine_L."Indep. Transfer-From Location" := "From-Location Code (Out)";
+                  RecItemJnlLine_L."Indep. Transfer-To Location" := "To-Location Code (In)";
+                  RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::S05;
+                  CLEAR(RecCellsLocation1_L);
+                  RecItemJnlLine_L."Cell Code"     := RecCellsLocation1_L.GetUncontroledCell("From-Location Code (Out)");
+                END;
+            END; //END Case
+            // <-- 20151218-GEN04-CMC02.02.00-2349-NED01
+          END ELSE IF Ecart_L > 0 THEN BEGIN
+            // --> 20151218-GEN04-CMC02.02.00-2349-NED01
+            {Before
+            IF Iter_P = 1 THEN BEGIN
+            After}
+            CASE Iter_P OF
+              1 : BEGIN
+                // <-- 20151218-GEN04-CMC02.02.00-2349-NED01
+                RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Positive Adjmt.";
+                RecItemJnlLine_L."Indep. Transfer-From Location" := "From-Location Code (Out)";
+                RecItemJnlLine_L."Indep. Transfer-To Location" := "To-Location Code (In)";
+                RecItemJnlLine_L."Location Code" := RecSetup_G."Indep. Transfer Transit Code";
+                RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::S05;
+                // --> 20151218-GEN04-CMC02.02.00-2349-NED01
+                RecItemJnlLine_L.Quantity := Ecart_L;
+                RecItemJnlLine_L."Cell Code" := "Gap Cell Code";
+                IF Isconfirmed_G THEN BEGIN
+                  RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::T11;
+                  RecItemJnlLine_L."Location Code" := "From-Location Code (Out)";
+                  CLEAR(RecCellsLocation1_L);
+                  RecItemJnlLine_L."Cell Code"     := RecCellsLocation1_L.GetUncontroledCell("From-Location Code (Out)");
+                END;
+              END;
+            //END ELSE IF Iter_P = 2 THEN BEGIN
+            // <-- 20151218-GEN04-CMC02.02.00-2349-NED01
+              2 : BEGIN
+                RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Negative Adjmt.";
+                RecItemJnlLine_L."Indep. Transfer-From Location" := "From-Location Code (Out)";
+                RecItemJnlLine_L."Indep. Transfer-To Location" := "To-Location Code (In)";
+                RecItemJnlLine_L."Location Code" := "Gap Location Code";
+                RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::T11;
+                IF RecCellsLocation_L."Ajustment Cell" THEN
+                  RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::S05;
+                // --> 20151218-GEN04-CMC02.02.00-2349-NED01
+                RecItemJnlLine_L.Quantity := Ecart_L;
+                RecItemJnlLine_L."Cell Code" := "Gap Cell Code";
+                IF Isconfirmed_G THEN BEGIN
+                  RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Positive Adjmt.";
+                  RecItemJnlLine_L.Quantity := Ecart_L;
+                  RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::S05;
+                  RecItemJnlLine_L."Location Code" := RecSetup_G."Indep. Transfer Transit Code";
+                  CLEAR(RecCellsLocation1_L);
+                  RecItemJnlLine_L."Cell Code"     := RecCellsLocation1_L.GetUncontroledCell(RecSetup_G."Indep. Transfer Transit Code");
+                END;
+             END;
+             3 : BEGIN
+               RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Positive Adjmt.";
+               RecItemJnlLine_L."Location Code" := "From-Location Code (Out)";
+               RecItemJnlLine_L.Quantity   := "Standard Weight (Out)";
+               RecItemJnlLine_L."Indep. Transfer-From Location" := "From-Location Code (Out)";
+               RecItemJnlLine_L."Indep. Transfer-To Location" := "To-Location Code (In)";
+               RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::S05;
+               CLEAR(RecCellsLocation1_L);
+               RecItemJnlLine_L."Cell Code"     := RecCellsLocation1_L.GetUncontroledCell("From-Location Code (Out)");
+             END;
+             4 : BEGIN
+               RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Negative Adjmt.";
+               RecItemJnlLine_L."Location Code" := "From-Location Code (Out)";
+               RecItemJnlLine_L.Quantity   := "Standard Weight (In)";
+               RecItemJnlLine_L."Indep. Transfer-From Location" := "From-Location Code (Out)";
+               RecItemJnlLine_L."Indep. Transfer-To Location" := "To-Location Code (In)";
+               RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::S05;
+               CLEAR(RecCellsLocation1_L);
+               RecItemJnlLine_L."Cell Code"     := RecCellsLocation1_L.GetUncontroledCell("From-Location Code (Out)");
+             END;
+            END; //END Case
+            // <-- 20151218-GEN04-CMC02.02.00-2349-NED01
+          END;
+
+          // --> 20151218-GEN04-CMC02.02.00-2349-NED01
+          //RecItemJnlLine_L.Quantity := ABS(Ecart_L);
+          RecLocation_L.GET(RecItemJnlLine_L."Location Code");
+          RecItemJnlLine_L."Shared Silo" := RecLocation_L."Shared Silo";
+          RecItemJnlLine_L."Force Entry In Shared Silo" := FALSE;
+          IF Isconfirmed_G THEN
+            RecItemJnlLine_L."Force Entry In Shared Silo" := TRUE;
+          // <-- 20151218-GEN04-CMC02.02.00-2349-NED01
+          RecItemJnlLine_L."Invoiced Quantity" := RecItemJnlLine_L.Quantity;
+          RecItemJnlLine_L."Quantity (Base)" := RecItemJnlLine_L.Quantity;
+          RecItemJnlLine_L."Invoiced Qty. (Base)" := RecItemJnlLine_L.Quantity;
+          L_recItem.GET(RecItemJnlLine_L."Item No.");
+          RecItemJnlLine_L."Gen. Prod. Posting Group" := L_recItem."Gen. Prod. Posting Group";
+          RecItemJnlLine_L."Inventory Posting Group" := L_recItem."Inventory Posting Group";
+          RecItemJnlLine_L."Unit of Measure Code" := L_recItem."Base Unit of Measure";
+          RecItemJnlLine_L."Qty. per Unit of Measure" := 1;
+          RecItemJnlLine_L."Product Group Code" := L_recItem."Product Group Code";
+          RecItemJnlLine_L."Item Category Code" := L_recItem."Item Category Code";
+          // --> 20151218-GEN04-CMC02.02.00-2349-NED01
+          //RecItemJnlLine_L."Cell Code" := "Gap Cell Code";
+          // <-- 20151218-GEN04-CMC02.02.00-2349-NED01
+          RecItemJnlLine_L."Stock Type" := RecItemJnlLine_L."Stock Type"::Company;
+          RecItemJnlLine_L."Vendor Storage" := FALSE;
+          RecItemJnlLine_L.VALIDATE("Campaign No.","Campaign No. (Out)");
+          RecItemJnlLine_L."Independent Transfer" := TRUE;
+          // --> 20150247-CER18/001-CMC02.02.00-2747-DRN01
+          RecItemJnlLine_L."Gap Entry" := TRUE;
+          // <-- 20150247-CER18/001-CMC02.02.00-2747-DRN01
+          RecTempJnlLineDim_L.DELETEALL;
+          CLEAR(cduCMCDimension_L);
+          cduCMCDimension_L.DimFromItemJnl(RecTempJnlLineDim_L,RecItemJnlLine_L,TRUE);
+          CLEAR(L_PostItemJnlLine);
+          L_PostItemJnlLine.RunWithCheck(RecItemJnlLine_L,RecTempJnlLineDim_L)
+        END;
+        RecPostedDelivery_L."Reconciliation Validated"   := TRUE;
+        RecPostedDelivery_L."Linked Input Transfer No."  := "Document No. (In)";
+        // --> 20150416-CER105-TER01.01.00-304-BSI01
+        RecPostedDelivery_L."Automatic Reconciliation" := "Automatic Reconciliation";
+        // <-- 20150416-CER105-TER01.01.00-304-BSI01
+        RecPostedDelivery_L.MODIFY;
+        RecPostedReceipts_L."Reconciliation Validated"   := TRUE;
+        RecPostedReceipts_L."Linked Output Transfer No." := "Document No. (Out)";
+        // --> 20150416-CER105-TER01.01.00-304-BSI01
+        RecPostedReceipts_L."Automatic Reconciliation" := "Automatic Reconciliation";
+        // <-- 20150416-CER105-TER01.01.00-304-BSI01
+        RecPostedReceipts_L.MODIFY;
+        // Envoi le flux IC de rapprochement livraison transfert vers la soci't' de gestion du silo partag'
+        // Envoi du flux IC de rapprochement livraison transfert vers la soci't' de gestion ou la soci't' partenaire (cas des r'gules)
+        // pour r'gule des apports pour le compte de
+        IF (IncomingICTransferDelivery_L OR IncomingICOnBehalfOfAdjust_L) AND (Iter_P = 2) THEN BEGIN
+          cduICInboxOutboxMgt_L.CreateOutboxDeliveryDocAction(RecPostedDelivery_L,DocActionType_L::Reconcile);
+        END;
+        // Envoi le flux IC de rapprochement r'ception transfert vers la soci't' de gestion du silo partag'
+        IF IncomingICTransferReceipt_L AND (Iter_P = 2) THEN BEGIN
+          cduICInboxOutboxMgt_L.CreateOutboxCollectDocAction(RecPostedReceipts_L,DocActionType_L::Reconcile,TRUE);
+        END;
+      END;
+    END;
+
+    PROCEDURE ValidateReconciliation@8053000();
+    VAR
+      i@8053004 : Integer;
+      RecReconciliationTransfer_L@8053003 : Record 8053308;
+      RecPostedDelivery_L@8053001 : Record 8053014;
+      RecPostedReceipts_L@8053000 : Record 8052995;
+      To_Iter_L@1000000000 : Integer;
+    BEGIN
+      To_Iter_L   := 0;
+      CLEAR(RecReconciliationTransfer_L);
+      IF NOT CONFIRM(Text8053000,FALSE) THEN EXIT;
+      RecReconciliationTransfer_L.SETRANGE(Reconciled,TRUE);
+      IF RecReconciliationTransfer_L.FIND('-') THEN
+        REPEAT
+          // --> 20151218-GEN04-CMC02.02.00-2349-NED01
+          IsConfirmed(RecReconciliationTransfer_L);
+          // <-- 20151218-GEN04-CMC02.02.00-2349-NED01
+          RecPostedDelivery_L.GET(RecPostedDelivery_L."Delivery Type"::Transfert,RecReconciliationTransfer_L."Document No. (Out)");
+          RecPostedDelivery_L.TESTFIELD(Canceled,FALSE);
+          RecPostedReceipts_L.GET(RecPostedReceipts_L."Receipt Type"::Transfert,RecReconciliationTransfer_L."Document No. (In)");
+          RecPostedReceipts_L.TESTFIELD(Canceled,FALSE);
+          // --> 20151218-GEN04-CMC02.02.00-2349-NED01
+          //FOR i := 1 TO 2 DO
+          // <-- 20151218-GEN04-CMC02.02.00-2349-NED01
+          IF Isconfirmed_G THEN
+            To_Iter_L := 4
+          ELSE
+            To_Iter_L := 2;
+          FOR i := 1 TO To_Iter_L DO
+            PostItemJnlLinesForTransferInd(RecReconciliationTransfer_L,i);
+          RecReconciliationTransfer_L.DELETE;
+          // --> 20181005-WI00-ADV01.01.00-3366-FBE
+          COMMIT;
+          // <-- 20181005-WI00-ADV01.01.00-3366-FBE
+        UNTIL RecReconciliationTransfer_L.NEXT = 0;
+    END;
+
+    PROCEDURE IsConfirmed@1000000000(RecReconciliationTransfer_P@1000000001 : Record 8053308);
+    VAR
+      RecFromLocation_L@1000000000 : Record 14;
+    BEGIN
+      Isconfirmed_G := FALSE;
+      IF RecFromLocation_L.GET(RecReconciliationTransfer_P."From-Location Code (Out)") THEN
+        IF (RecReconciliationTransfer_P."IC Partner Code (Out)" <> '') AND (RecFromLocation_L."Shared Silo") AND
+             (RecSetup_G."Difference On" = RecSetup_G."Difference On"::"Transfer-From Location") THEN
+          Isconfirmed_G := TRUE;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20140122-Cer18/001-CMC02.02.00-BSA01 : Create Obj
+      20140128-Cer18/001-CMC02.02.00-BSA01 : ADDFUNC (PostItemJnlLinesForTransferInd)
+      20140129-Cer18/001-CMC02.02.00-BSA01 : ADDCODE (Valider que Si l'ecart n'est pas nul)
+      20140207-GEN15/001-CMC02.02.00-DRN01 : Gestion des livraisons/r'ceptions transfert collecte IC
+                                             Envoi du flux IC de rapprochement vers la soci't' de gestion
+                                             Dans le cas d'une livraison transfert IC rapproch'e dans la soci't' utilisatrice du silo
+                                             partag', le N› document des 'critures article g'n'r'es correspond . la r'ception transfert
+                                             car le magasin d''cart est forc' sur le magasin de destination
+                                             M^me principe pour la r'ception transfert IC
+      20140207-GEN15/001-CMC02.02.00-DRN01 : Gestion des livraisons transfert collecte IC pour r'gule des apports pour le compte de
+                                             Envoi du flux IC de rapprochement vers la soci't' de gestion ou la soci't' partenaire
+      20140207-Cer18/001-CMC02.02.00-BSA01 : ADDFUNC (ValidateReconciliation)
+      20140226-CER18/001-CMC02.02.00-DRN01 : Modification de la gestion du rattachement des mouvements d''cart au document origine
+      20140408-GEN15/001-CMC02.02.00-FBE01 : Modification de l'appel de la fonction CreateOutboxCollectDocAction
+      20140424-CER19-CMC02.02.00-SDE01     : ADDCODE (Ajout T11 S11 T21 T22 dans Movement Type)
+      20141229-Cer18-CMC02.02.00-2617-SDE01: ADDCODE (analytique + type mouvement sur cel ajust)
+      20150247-CER18/001-CMC02.02.00-2747-DRN01 : ADDCODE (Alimentation champ Gap Entry pour autoriser le mouvement d''cart sur cellule
+                                                           d'ajustement)
+      20150422-CER105-TER01.01.00-304-BSI01 : ADDCODE (Alimentation du champ "Automatic Reconciliation")
+      20151218-GEN04-CMC02.02.00-2349-NED01 : ADDCODE(Ajout Fonction 'IsConfirmed', modification de la fonction
+                                              'PostItemJnlLinesForTransferInd' pour le cas d''cart inter soci't' dans un silo partag')
+      20181005-WI00-ADV01.01.00-3366-FBE : MODFUNCT (ValidateReconciliation, AJout COMMIT pour limiter les LOCK sur validation collecte)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

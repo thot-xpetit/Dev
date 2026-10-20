@@ -1,0 +1,1220 @@
+OBJECT Codeunit 5704 TransferOrder-Post Shipment
+{
+  OBJECT-PROPERTIES
+  {
+    Date=26/05/15;
+    Heure=00:00:00;
+    Liste versions=NAVW16.00.01,LSW16.2,CMC02.02.00,CMB6.00.10.09;
+  }
+  PROPERTIES
+  {
+    TableNo=5740;
+    Permissions=TableData 6507=i;
+    OnRun=VAR
+            Item@1000 : Record 27;
+            SourceCodeSetup@1001 : Record 242;
+            InvtSetup@1002 : Record 313;
+            InventoryPostingSetup@1007 : Record 5813;
+            NoSeriesMgt@1003 : Codeunit 396;
+            UpdateAnalysisView@1004 : Codeunit 410;
+            UpdateItemAnalysisView@1009 : Codeunit 7150;
+            Window@1006 : Dialog;
+            LineCount@1005 : Integer;
+            NextLineNo@1008 : Integer;
+            "<< 3LI LOCALS >>"@8053000 : Integer;
+            WarehouseEmployee_L@8053001 : Record 7301;
+            cduWeighingManagement_L@8053002 : Codeunit 8053010;
+            CMBDocNote_L@8060983 : Record 8061363;
+            cduPostingCheck_L@8053003 : Codeunit 8053034;
+            ItemJnlLinePost_L@8053006 : Codeunit 22;
+            Item_L@8053004 : Record 27;
+            Location_L@8053005 : Record 14;
+            OldWeighingNo_L@8053008 : Integer;
+          BEGIN
+            // <-- 20110601-Wi00-CMC01.04
+            WarehouseEmployee_L.RESET;
+            WarehouseEmployee_L.SETCURRENTKEY("User ID","Location Code");
+            WarehouseEmployee_L.SETRANGE("User ID",USERID);
+            WarehouseEmployee_L.SETRANGE("Location Code","Transfer-from Code");
+            IF NOT WarehouseEmployee_L.FINDFIRST THEN
+              ERROR(STRSUBSTNO(Text8053000,"Transfer-from Code"));
+            // --> 20110601-Wi00-CMC01.04
+
+
+            IF Status = Status::Open THEN BEGIN
+              CODEUNIT.RUN(CODEUNIT::"Release Transfer Document",Rec);
+              Status := Status::Open;
+              MODIFY;
+              COMMIT;
+              Status := Status::Released;
+            END;
+            TransHeader := Rec;
+            TransHeader.SetHideValidationDialog(HideValidationDialog);
+
+            IF G_cduLSRetailPermission.isLSRetail THEN BEGIN // 20110601-Wi00-CMC01.04
+              //LS -
+              ICTProcesses.TransHeaderShip(TransHeader);
+              IF BOUtils.IsInStorePermitted() THEN BEGIN
+                InStoreFunc.TransferShippingCheck(TransHeader);
+                InStoreMgt.SendTransDocShip(TransHeader);
+              END;
+              //LS +
+            END;
+
+            WITH TransHeader DO BEGIN
+              TESTFIELD("Transfer-from Code");
+              TESTFIELD("Transfer-to Code");
+              IF ("Transfer-from Code" <> '') AND
+                 ("Transfer-from Code" = "Transfer-to Code")
+              THEN
+                ERROR
+                  (Text000,
+                  "No.",FIELDCAPTION("Transfer-from Code"),FIELDCAPTION("Transfer-to Code"));
+              TESTFIELD("In-Transit Code");
+              TESTFIELD(Status,Status::Released);
+              TESTFIELD("Posting Date");
+
+              // --> 20130801-App31-CMC02.02.00-BSI01
+              cduItemBlockingMgt_G.CheckItemBlockSetupForTrnsfHdr(TransHeader,FluxType_G::"Transfer Shipment");
+              // <-- 20130801-App31-CMC02.02.00-BSI01
+
+              //--> 20131202-Log07-CMC02.02.00-840-FHU01
+              cduPostingCheck_L.CheckTransferShipment(Rec);
+              //<-- 20131202-Log07-CMC02.02.00-840-FHU01
+
+              WhseReference := "Posting from Whse. Ref.";
+              "Posting from Whse. Ref." := 0;
+
+              IF ("Shipping Advice" = "Shipping Advice"::Complete) THEN
+                IF NOT GetShippingAdvice THEN
+                  ERROR(Text008);
+
+              CopyAndCheckDocDimToTempDocDim;
+
+              TransLine.RESET;
+              TransLine.SETRANGE("Document No.","No.");
+              TransLine.SETRANGE("Derived From Line No.",0);
+              TransLine.SETFILTER(Quantity,'<>0');
+              TransLine.SETFILTER("Qty. to Ship",'<>0');
+              IF NOT TransLine.FIND('-') THEN
+                ERROR(Text001);
+
+              WhseShip := TempWhseShptHeader.FIND('-');
+              InvtPickPutaway := WhseReference <> 0;
+              IF NOT (WhseShip OR InvtPickPutaway) THEN
+                CheckWarehouse(TransLine);
+
+              GetLocation("Transfer-from Code");
+              IF Location."Bin Mandatory" AND NOT (WhseShip OR InvtPickPutaway) THEN
+                WhsePosting := TRUE;
+
+              IF GUIALLOWED THEN BEGIN  //LS
+                Window.OPEN(
+                  '#1#################################\\' +
+                  Text003);
+
+                Window.UPDATE(1,STRSUBSTNO(Text004,"No."));
+              END;  //LS
+
+              SourceCodeSetup.GET;
+              SourceCode := SourceCodeSetup.Transfer;
+              InvtSetup.GET;
+              InvtSetup.TESTFIELD("Posted Transfer Shpt. Nos.");
+              InventoryPostingSetup.SETRANGE("Location Code","Transfer-from Code");
+              InventoryPostingSetup.FIND('-');
+              InventoryPostingSetup.SETRANGE("Location Code","Transfer-to Code");
+              InventoryPostingSetup.FIND('-');
+
+              IF RECORDLEVELLOCKING THEN BEGIN
+                NoSeriesLine.LOCKTABLE;
+                IF NoSeriesLine.FIND('+') THEN;
+                IF InvtSetup."Automatic Cost Posting" THEN  BEGIN
+                  GLEntry.LOCKTABLE;
+                  IF GLEntry.FIND('+') THEN;
+                END;
+              END;
+
+              // Insert shipment header
+              PostedWhseShptHeader.LOCKTABLE;
+              TransShptHeader.LOCKTABLE;
+              TransShptHeader.INIT;
+              TransShptHeader."Transfer-from Code" := "Transfer-from Code";
+              TransShptHeader."Transfer-from Name" := "Transfer-from Name";
+              TransShptHeader."Transfer-from Name 2" := "Transfer-from Name 2";
+              TransShptHeader."Transfer-from Address" := "Transfer-from Address";
+              TransShptHeader."Transfer-from Address 2" := "Transfer-from Address 2";
+              TransShptHeader."Transfer-from Post Code" := "Transfer-from Post Code";
+              TransShptHeader."Transfer-from City" := "Transfer-from City";
+              TransShptHeader."Transfer-from County" := "Transfer-from County";
+              TransShptHeader."Trsf.-from Country/Region Code" := "Trsf.-from Country/Region Code";
+              TransShptHeader."Transfer-from Contact" := "Transfer-from Contact";
+              TransShptHeader."Transfer-to Code" := "Transfer-to Code";
+              TransShptHeader."Transfer-to Name" := "Transfer-to Name";
+              TransShptHeader."Transfer-to Name 2" := "Transfer-to Name 2";
+              TransShptHeader."Transfer-to Address" := "Transfer-to Address";
+              TransShptHeader."Transfer-to Address 2" := "Transfer-to Address 2";
+              TransShptHeader."Transfer-to Post Code" := "Transfer-to Post Code";
+              TransShptHeader."Transfer-to City" := "Transfer-to City";
+              TransShptHeader."Transfer-to County" := "Transfer-to County";
+              TransShptHeader."Trsf.-to Country/Region Code" := "Trsf.-to Country/Region Code";
+              TransShptHeader."Transfer-to Contact" := "Transfer-to Contact";
+              TransShptHeader."Transfer Order Date" := "Posting Date";
+              TransShptHeader."Posting Date" := "Posting Date";
+              TransShptHeader."Shipment Date" := "Shipment Date";
+              TransShptHeader."Receipt Date" := "Receipt Date";
+              TransShptHeader."Shortcut Dimension 1 Code" := "Shortcut Dimension 1 Code";
+              TransShptHeader."Shortcut Dimension 2 Code" := "Shortcut Dimension 2 Code";
+              TransShptHeader."Transfer Order No." := "No.";
+              TransShptHeader."External Document No." := "External Document No.";
+              TransShptHeader."In-Transit Code" := "In-Transit Code";
+              TransShptHeader."Shipping Agent Code" := "Shipping Agent Code";
+              TransShptHeader."Shipping Agent Service Code" := "Shipping Agent Service Code";
+              TransShptHeader."Shipment Method Code" := "Shipment Method Code";
+              TransShptHeader."Transaction Type" := "Transaction Type";
+              TransShptHeader."Transport Method" := "Transport Method";
+              TransShptHeader."Entry/Exit Point" := "Entry/Exit Point";
+              TransShptHeader.Area := Area;
+              TransShptHeader."Transaction Specification" := "Transaction Specification";
+              TransShptHeader."No. Series" := InvtSetup."Posted Transfer Shpt. Nos.";
+              TransShptHeader."No." :=
+                NoSeriesMgt.GetNextNo(
+                  InvtSetup."Posted Transfer Shpt. Nos.","Posting Date",TRUE);
+              IF G_cduLSRetailPermission.isLSRetail THEN BEGIN// 20110601-Wi00-CMC01.04
+                //LS -
+                TransShptHeader."Reciving/Picking No." := "Reciving/Picking No.";
+                TransShptHeader."Store-to" := "Store-to";
+                TransShptHeader."Store-from" := "Store-from";
+                //LS +
+              END;
+
+              TransShptHeader.INSERT;
+
+              DimMgt.MoveOneDocDimToPostedDocDim(
+                TempDocDim,DATABASE::"Transfer Header",TempDocDim."Document Type"::" ","No.",0,
+                DATABASE::"Transfer Shipment Header",TransShptHeader."No.");
+              IF InvtSetup."Copy Comments Order to Shpt." THEN BEGIN
+                CopyCommentLines(1,2,"No.",TransShptHeader."No.");
+                TransShptHeader.COPYLINKS(Rec);
+              END;
+
+              IF WhseShip THEN BEGIN
+                WhseShptHeader.GET(TempWhseShptHeader."No.");
+                WhsePostShpt.CreatePostedShptHeader(PostedWhseShptHeader,WhseShptHeader,TransShptHeader."No.","Posting Date");
+              END;
+
+              // Insert shipment lines
+              LineCount := 0;
+              IF WhseShip THEN
+                PostedWhseShptLine.LOCKTABLE;
+              DocDim.LOCKTABLE;
+              IF InvtPickPutaway THEN
+                WhseRqst.LOCKTABLE;
+              TransShptLine.LOCKTABLE;
+              TransLine.SETRANGE(Quantity);
+              TransLine.SETRANGE("Qty. to Ship");
+              IF TransLine.FIND('-') THEN BEGIN
+                REPEAT
+                  LineCount := LineCount + 1;
+                  IF GUIALLOWED THEN  //LS
+                    Window.UPDATE(2,LineCount);
+
+                  IF TransLine."Item No." <> '' THEN BEGIN
+                    Item.GET(TransLine."Item No.");
+                    Item.TESTFIELD(Blocked,FALSE);
+                  END;
+
+            // --> 20140105-WI00-CMC02.02.00-1386-SD01
+                  CheckCellMandatory(TransLine);
+            // <-- 20140105-WI00-CMC02.02.00-1386-SD01
+
+                  TransShptLine.INIT;
+                  TransShptLine."Document No." := TransShptHeader."No.";
+                  TransShptLine."Line No." := TransLine."Line No.";
+                  TransShptLine."Item No." := TransLine."Item No.";
+                  TransShptLine.Description := TransLine.Description;
+                  TransShptLine.Quantity := TransLine."Qty. to Ship";
+                  TransShptLine."Unit of Measure" := TransLine."Unit of Measure";
+                  TransShptLine."Shortcut Dimension 1 Code" := TransLine."Shortcut Dimension 1 Code";
+                  TransShptLine."Shortcut Dimension 2 Code" := TransLine."Shortcut Dimension 2 Code";
+                  TransShptLine."Gen. Prod. Posting Group" := TransLine."Gen. Prod. Posting Group";
+                  TransShptLine."Inventory Posting Group" := TransLine."Inventory Posting Group";
+                  TransShptLine."Quantity (Base)" := TransLine."Qty. to Ship (Base)";
+                  TransShptLine."Qty. per Unit of Measure" := TransLine."Qty. per Unit of Measure";
+                  TransShptLine."Unit of Measure Code" := TransLine."Unit of Measure Code";
+                  TransShptLine."Gross Weight" := TransLine."Gross Weight";
+                  TransShptLine."Net Weight" := TransLine."Net Weight";
+                  TransShptLine."Unit Volume" := TransLine."Unit Volume";
+                  TransShptLine."Variant Code" := TransLine."Variant Code";
+                  TransShptLine."Units per Parcel" := TransLine."Units per Parcel";
+                  TransShptLine."Description 2" := TransLine."Description 2";
+                  TransShptLine."Transfer Order No." := TransLine."Document No.";
+                  TransShptLine."Shipment Date" := TransLine."Shipment Date";
+                  TransShptLine."Shipping Agent Code" := TransLine."Shipping Agent Code";
+                  TransShptLine."Shipping Agent Service Code" := TransLine."Shipping Agent Service Code";
+                  TransShptLine."In-Transit Code" := TransLine."In-Transit Code";
+                  TransShptLine."Transfer-from Code" := TransLine."Transfer-from Code";
+                  TransShptLine."Transfer-to Code" := TransLine."Transfer-to Code";
+                  TransShptLine."Transfer-from Bin Code" := TransLine."Transfer-from Bin Code";
+              // --> 20140105-WI00-CMC02.02.00-1386-SD01
+                  TransShptLine."Transfer-from Cell Code":=TransLine."Transfer-from Cell Code";
+              // <-- 20140105-WI00-CMC02.02.00-1386-SD01
+                  TransShptLine."Shipping Time" := TransLine."Shipping Time";
+                  TransShptLine."Item Category Code" := TransLine."Item Category Code";
+                  TransShptLine."Product Group Code" := TransLine."Product Group Code";
+                  //-->20130708-APP27-CMC02.02.00-AKH01
+                  TransShptLine."Truck Registration" := TransLine."Truck Registration";
+                  TransShptLine."Shipment Method Code" := TransLine."Shipment Method Code";
+                  TransShptLine."Actual Shipping Agent Code" := TransLine."Actual Shipping Agent Code";
+                  TransShptLine.Consignment := TransLine.Consignment ;
+                  //<--20130708-APP27-CMC02.02.00-AKH01
+
+                  // --> 20141219-APP27-CMC02.02.00-1817-DRN01
+                  TransShptLine."Driver Name" := TransLine."Driver Name";
+                  // <-- 20141219-APP27-CMC02.02.00-1817-DRN01
+
+                  // --> 20141219-LOG10-CMC02.02.00-1817-DRN01
+                  TransShptLine."Notebook Weighing No." := TransLine."Notebook Weighing No.";
+                  TransShptLine."Manual Weighing No." := TransLine."Manual Weighing No.";
+                  // <-- 20141219-LOG10-CMC02.02.00-1817-DRN01
+
+                  // --> 20140611-Log11-CMC02.02.00-2212-FEC01
+                  TransShptLine."Posting Date" := TransShptHeader."Posting Date";
+                  // --< 20140611-Log11-CMC02.02.00-2212-FEC01
+
+                  IF G_cduLSRetailPermission.isLSRetail THEN BEGIN // 20110601-Wi00-CMC01.04
+                    TransShptLine.Division := TransLine.Division;  //LS
+                    TransShptLine."Reason Code" := TransLine."Reason Code";  //LS
+                  END;
+
+                  IF TransLine."Qty. to Ship" > 0 THEN BEGIN
+                    OriginalQuantity := TransLine."Qty. to Ship";
+                    OriginalQuantityBase := TransLine."Qty. to Ship (Base)";
+
+                    // --> 20131216-Log12-CMC02.02.00-1263-FEC02
+                    {BEFORE
+                    // --> 20130612-Log11-CMC02.02.00-FEC03
+                    IF TransLine."Compensate Negative Inventory" THEN
+                      PostNegInventComp(TransLine,TransShptHeader,TransShptLine);
+                    // <-- 20130612-Log11-CMC02.02.00-FEC03
+                    AFTER}
+                    Item_L.GET(TransLine."Item No.");
+                    Location_L.GET(TransLine."Transfer-from Code");
+                    // --> 20140105-WI00-CMC02.02.00-1386-SD01
+                    //IF ItemJnlLinePost_L.ItemToReverse(Item_L,Location_L) THEN
+                     IF ItemJnlLinePost_L.ItemToReverse(Item_L,Location_L."Reverse Item Filter View") THEN
+                    // <-- 20140105-WI00-CMC02.02.00-1386-SD01
+                      PostReverseInventory(TransLine,TransShptHeader,TransShptLine)
+                    ELSE
+                      IF TransLine."Compensate Negative Inventory" THEN
+                        PostNegInventComp(TransLine,TransShptHeader,TransShptLine);
+                    // --< 20131216-Log12-CMC02.02.00-1263-FEC02
+
+                    PostItemJnlLine(TransLine,TransShptHeader,TransShptLine);
+                    TransShptLine."Item Shpt. Entry No." := InsertShptEntryRelation(TransShptLine);
+                    IF WhseShip THEN BEGIN
+                      WhseShptLine.SETCURRENTKEY(
+                        "No.","Source Type","Source Subtype","Source No.","Source Line No.");
+                      WhseShptLine.SETRANGE("No.",WhseShptHeader."No.");
+                      WhseShptLine.SETRANGE("Source Type",DATABASE::"Transfer Line");
+                      WhseShptLine.SETRANGE("Source No.",TransLine."Document No.");
+                      WhseShptLine.SETRANGE("Source Line No.",TransLine."Line No.");
+                      WhseShptLine.FIND('-');
+                      WhseShptLine.TESTFIELD("Qty. to Ship",TransShptLine.Quantity);
+                      // --> 20140402-LOG10-CMC02.02.00-1923-DRN01
+                      //BEFORE
+                      {
+                      // <-- 20120629-Int01-CMC02.01.00-DRN01
+                      TransShptLine."Weighing No." := cduWeighingManagement_L.PostWeighingRec(WhseShptLine."Weighing No.",
+                        TransShptHeader."No.");
+                      WhseShptLine."Weighing No." := TransShptLine."Weighing No.";
+                      // --> 20120629-Int01-CMC02.01.00-DRN01
+                      }
+                      //AFTER
+                      IF NOT WhseShptLine."Posted Weighing" THEN BEGIN
+                        OldWeighingNo_L := WhseShptLine."Weighing No.";
+                        WhseShptLine."Weighing No." := cduWeighingManagement_L.PostWeighingRec(WhseShptLine."Weighing No.",
+                          PostedWhseShptHeader."No.");
+                        cduWeighingManagement_L.CopyPostWeighNoToWhseShptLine(WhseShptLine,OldWeighingNo_L);
+                      END;
+                      TransShptLine."Weighing No." := WhseShptLine."Weighing No.";
+                      // <-- 20140402-LOG10-CMC02.02.00-1923-DRN01
+                      WhsePostShpt.CreatePostedShptLine(
+                        WhseShptLine,PostedWhseShptHeader,PostedWhseShptLine,TempWhseSplitSpecification);
+                    END;
+                    IF WhsePosting THEN
+                      PostWhseJnlLine(ItemJnlLine,OriginalQuantity,OriginalQuantityBase);
+
+                    // --> 20130612-Log11-CMC02.02.00-FEC04
+                    IF TransLine."Cancel Trsf-from Location Qty" THEN
+                      PostCancelTransFromLocQty(TransLine,TransShptHeader,TransShptLine);
+                    // <-- 20130612-Log11-CMC02.02.00-FEC04
+
+                  END;
+                  TransShptLine.INSERT;
+
+                  DimMgt.MoveOneDocDimToPostedDocDim(
+                    DocDim,DATABASE::"Transfer Line",DocDim."Document Type"::" ","No.",TransLine."Line No.",
+                    DATABASE::"Transfer Shipment Line",TransShptLine."Document No.");
+                UNTIL TransLine.NEXT = 0;
+              END;
+              //-->20130425-8060990/107-CMB6.00.10.09-AKH01
+               Language_G.RESET;
+               Language_G.SETRANGE(Language_G."Windows Language ID",WINDOWSLANGUAGE);
+               IF Language_G.FINDFIRST THEN
+                BEGIN
+                 DocNoteMgt_G.TransfertNoteInsert(Rec,Language_G.Code);
+                 DocNoteMgt_G.TransfertShipmentNoteInsert(TransShptHeader,Language_G.Code);
+                END;
+              //<--20130425-8060990/107-CMB6.00.10.09-AKH01
+
+              InvtSetup.GET;
+              IF InvtSetup."Automatic Cost Adjustment" <>
+                 InvtSetup."Automatic Cost Adjustment"::Never
+              THEN BEGIN
+                InvtAdjmt.SetProperties(TRUE,InvtSetup."Automatic Cost Posting");
+                InvtAdjmt.MakeMultiLevelAdjmt;
+              END;
+
+              IF WhseShip THEN
+                WhseShptLine.LOCKTABLE;
+              TransLine.LOCKTABLE;
+              TransLine.SETFILTER(Quantity,'<>0');
+              TransLine.SETFILTER("Qty. to Ship",'<>0');
+              IF TransLine.FIND('-') THEN BEGIN
+                NextLineNo := AssignLineNo(TransLine."Document No.");
+                REPEAT
+                  TransLine2.INIT;
+                  TransLine2 := TransLine;
+                  TransLine2."Transfer-from Code" := TransLine."In-Transit Code";
+                  TransLine2."In-Transit Code" := '';
+                  TransLine2."Derived From Line No." := TransLine."Line No.";
+                  TransLine2."Line No." := NextLineNo;
+                  NextLineNo := NextLineNo + 10000;
+                  TransLine2.Quantity := TransLine."Qty. to Ship";
+                  TransLine2."Quantity (Base)" := TransLine."Qty. to Ship (Base)";
+                  TransLine2."Qty. to Ship" := TransLine2.Quantity;
+                  TransLine2."Qty. to Ship (Base)" := TransLine2."Quantity (Base)";
+                  TransLine2."Qty. to Receive" := TransLine2.Quantity;
+                  TransLine2."Qty. to Receive (Base)" := TransLine2."Quantity (Base)";
+                  TransLine2."Quantity Shipped" := 0;
+                  TransLine2."Qty. Shipped (Base)" := 0;
+                  TransLine2."Quantity Received" := 0;
+                  TransLine2."Qty. Received (Base)" := 0;
+                  TransLine2."Qty. in Transit" := 0;
+                  TransLine2."Qty. in Transit (Base)" := 0;
+                  TransLine2."Outstanding Quantity" := TransLine2.Quantity;
+                  TransLine2."Outstanding Qty. (Base)" := TransLine2."Quantity (Base)";
+                  TransLine2.INSERT;
+
+                  TransferTracking(TransLine,TransLine2,TransLine."Qty. to Ship (Base)");
+
+                  TransLine.VALIDATE("Quantity Shipped",TransLine."Quantity Shipped" + TransLine."Qty. to Ship");
+
+                  // --> 20140123-Log11-CMC02.02.00-1564-FEC01
+                  TransLine."Cancel Transit Location Qty" := FALSE;
+                  TransLine."Compensate Negative Inventory" := FALSE;
+                  TransLine."Cancel Trsf-from Location Qty" := FALSE;
+                  // --< 20140123-Log11-CMC02.02.00-1564-FEC01
+
+                  // --> 20140317-App10-CMC02.02.00-1844-FEC01
+                  IF TransLine."Cancel Remaining Qty" AND (TransLine.Quantity <> TransLine."Quantity Shipped") THEN BEGIN
+                    TransLine.SystemModLinek(TRUE);
+                    TransLine.CancelRemQty;
+                  END;
+                  TransLine."Cancel Remaining Qty" := FALSE;
+                  TransLine.SetDefPackTypeValue; // R'initialisation avec les valeurs par d'faut.
+                  // --< 20140317-App10-CMC02.02.00-1844-FEC01
+
+                  // --> 20140611-Log11-CMC02.02.00-2212-FEC02
+                  IF TransLine."First Shipm. Posting Date" = 0D THEN
+                    TransLine."First Shipm. Posting Date" := TransShptHeader."Posting Date";
+                  // --< 20140611-Log11-CMC02.02.00-2212-FEC02
+
+                  TransLine.UpdateWithWarehouseShipReceive;
+
+                  IF G_cduLSRetailPermission.isLSRetail THEN // 20110601-Wi00-CMC01.04
+                    TransLine.UpdateInStoreDocStatus;  //LS
+
+                  TransLine.MODIFY;
+                UNTIL TransLine.NEXT = 0;
+              END;
+
+              IF G_cduLSRetailPermission.isLSRetail THEN // 20110601-Wi00-CMC01.04
+                ChangeInfoStoreStatus(1);  //LS
+
+              IF WhseShip THEN
+                WhseShptLine.LOCKTABLE;
+              LOCKTABLE;
+              IF WhseShip THEN BEGIN
+                WhsePostShpt.PostUpdateWhseDocuments(WhseShptHeader);
+                TempWhseShptHeader.DELETE;
+              END;
+
+              "Last Shipment No." := TransShptHeader."No.";
+              //LS -
+              IF "Retail Special Order" THEN
+                "SPO Transfer Status" := "SPO Transfer Status"::Shipped;
+              //LS +
+              MODIFY;
+
+              TransLine.SETRANGE(Quantity);
+              TransLine.SETRANGE("Qty. to Ship");
+              HeaderDeleted := DeleteOneTransferOrder(TransHeader,TransLine);
+              //-->20130611-8060990/107-CMB6.00.10.09-AKH01
+              IF HeaderDeleted THEN
+               BEGIN
+                MESSAGE('%1 %2',TransHeader."No.",HeaderDeleted);
+                CMBDocNote_L.RESET;
+                CMBDocNote_L.SETRANGE(CMBDocNote_L.Module,CMBDocNote_L.Module::Transfer);
+                CMBDocNote_L.SETRANGE(CMBDocNote_L."Document Type",CMBDocNote_L."Document Type"::Order);
+                CMBDocNote_L.SETRANGE(CMBDocNote_L."Document No.",TransHeader."No.");
+                // --> 20150526-APP19-CMC02.02.00-2963-FHS01
+                IF NOT(CMBDocNote_L.ISEMPTY) THEN
+                // <-- 20150526-APP19-CMC02.02.00-2963-FHS01
+                  CMBDocNote_L.DELETEALL;
+               END;
+              //<--20130611-8060990/107-CMB6.00.10.09-AKH01
+
+              IF NOT HeaderDeleted THEN BEGIN
+                WhseTransferRelease.Release(TransHeader);
+
+                // <-- 20110601-Wi00-CMC01.04
+                G_cduLogisticsTourMngt.Release(Rec);
+                // --> 20110601-Wi00-CMC01.04
+
+                ReserveTransLine.UpdateItemTrackingAfterPosting(TransHeader,0);
+              END;
+
+              IF G_cduLSRetailPermission.isLSRetail THEN // 20110601-Wi00-CMC01.04
+                BOUtils.ReplicateUsingRegEntry;  //LS
+
+              //LS -
+              //IF NOT InvtPickPutaway THEN
+              IF (NOT InvtPickPutaway) AND ("Reciving/Picking No." = '') AND (NOT TransHeader."InStore-Created Entry") THEN
+              //LS +
+                COMMIT;
+              CLEAR(WhsePostShpt);
+              CLEAR(InvtAdjmt);
+              IF GUIALLOWED THEN  //LS
+                Window.CLOSE;
+            END;
+            UpdateAnalysisView.UpdateAll(0,TRUE);
+            UpdateItemAnalysisView.UpdateAll(0,TRUE);
+
+            IF G_cduLSRetailPermission.isLSRetail THEN // 20110601-Wi00-CMC01.04
+              ICTProcesses.TransHeaderShipReceive(TransHeader);  //LS
+
+            Rec := TransHeader;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=Transfer order %2 cannot be posted because %3 and %4 are the same.;FRA=L''ordre de transfert %2 ne peut pas ^tre valid' car %3 et %4 sont identiques.';
+      Text001@1001 : TextConst 'ENU=There is nothing to post.;FRA=Il n''y a rien . valider.';
+      Text002@1002 : TextConst 'ENU="Warehouse handling is required for Transfer order = %1, %2 = %3.";FRA="Une activit' entrep"t est requise pour l''ordre de transfert = %1, %2 = %3."';
+      Text003@1003 : TextConst 'ENU=Posting transfer lines     #2######;FRA=Validation des lignes transfert     #2######';
+      Text004@1004 : TextConst 'ENU=Transfer Order %1;FRA=Ordre de transfert %1';
+      Text005@1005 : TextConst 'ENU=The combination of dimensions used in transfer order %1 is blocked. %2;FRA=La combinaison d''axes analytiques utilis'e pour l''ordre de transfert %1 est bloqu'e. %2';
+      Text006@1006 : TextConst 'ENU=The combination of dimensions used in transfer order %1, line no. %2 is blocked. %3;FRA=La combinaison d''axes analytiques utilis'e pour l''ordre de transfert %1, ligne n› %2, est bloqu'e. %3';
+      Text007@1007 : TextConst 'ENU=The dimensions used in transfer order %1, line no. %2 are invalid. %3;FRA=Les axes analytiques utilis's pour l''ordre de transfert %1, ligne n› %2, ne sont pas valides. %3';
+      TransShptHeader@1008 : Record 5744;
+      TransShptLine@1009 : Record 5745;
+      TransHeader@1010 : Record 5740;
+      TransLine@1011 : Record 5741;
+      TransLine2@1012 : Record 5741;
+      DocDim@1013 : Record 357;
+      TempDocDim@1014 : TEMPORARY Record 357;
+      Location@1015 : Record 14;
+      ItemJnlLine@1016 : Record 83;
+      WhseRqst@1027 : Record 5765;
+      WhseShptHeader@1022 : Record 7320;
+      TempWhseShptHeader@1030 : TEMPORARY Record 7320;
+      WhseShptLine@1028 : Record 7321;
+      PostedWhseShptHeader@1034 : Record 7322;
+      PostedWhseShptLine@1035 : Record 7323;
+      TempWhseSplitSpecification@1037 : TEMPORARY Record 336;
+      TempHandlingSpecification@1018 : TEMPORARY Record 336;
+      NoSeriesLine@1029 : Record 309;
+      GLEntry@1040 : Record 17;
+      ItemJnlPostLine@1021 : Codeunit 22;
+      DimMgt@1017 : Codeunit 408;
+      WhseTransferRelease@1019 : Codeunit 5773;
+      ReserveTransLine@1020 : Codeunit 99000836;
+      WhsePostShpt@1036 : Codeunit 5763;
+      InvtAdjmt@1041 : Codeunit 5895;
+      SourceCode@1023 : Code[10];
+      HideValidationDialog@1024 : Boolean;
+      HeaderDeleted@1025 : Boolean;
+      WhseShip@1026 : Boolean;
+      WhsePosting@1033 : Boolean;
+      InvtPickPutaway@1039 : Boolean;
+      WhseReference@1038 : Integer;
+      OriginalQuantity@1031 : Decimal;
+      OriginalQuantityBase@1032 : Decimal;
+      Text008@11042 : TextConst 'ENU=This order must be a complete shipment.;FRA=Cet ordre doit ^tre une exp'dition trait'e.';
+      ICTProcesses@1200070000 : Codeunit 10001416;
+      InStoreMgt@1200070001 : Codeunit 10001320;
+      BOUtils@1100409000 : Codeunit 99001452;
+      InStoreFunc@1100409001 : Codeunit 10001310;
+      "<< 3LI GLOBALS >>"@8053000 : Integer;
+      G_cduLogisticsTourMngt@8053001 : Codeunit 8052995;
+      G_cduLSRetailPermission@8053002 : Codeunit 8053005;
+      "<< 3LI TEXT GLOBALS >>"@8053004 : TextConst;
+      Text8053000@8053003 : TextConst 'FRA=Vous n''avez pas l''autorisation d''utiliser le magasin %1';
+      DocNoteMgt_G@8060982 : Codeunit 8061360;
+      Language_G@8060983 : Record 8;
+      Text8053001@8053005 : TextConst 'FRA=L''article qui est ajust' ne dispose pas d''un co-t unitaire.';
+      WeightDiffSetup_G@8053006 : Record 8053220;
+      FluxType_G@8053007 : 'None,Sales Order,Sales Return,Shipment,Return Receipt,Sales Invoice,Sales Credit Memo,Transfer Order (Outbound),Transfer Order (Inbound),Transfer Shipment,Transfer Receipt,Purchase Order,Purchase Return,Receipt,Return Shipment,Purchase Invoice,Purch. Credit Memo,Requisition Line,Item Ledger Entry';
+      cduItemBlockingMgt_G@8053008 : Codeunit 8053025;
+
+    LOCAL PROCEDURE PostItemJnlLine@2(VAR TransLine3@1000 : Record 5741;TransShptHeader2@1001 : Record 5744;TransShptLine2@1002 : Record 5745);
+    VAR
+      TempJnlLineDim@1003 : TEMPORARY Record 356;
+    BEGIN
+      ItemJnlLine.INIT;
+      ItemJnlLine."Posting Date" := TransShptHeader2."Posting Date";
+      ItemJnlLine."Document Date" := TransShptHeader2."Posting Date";
+      ItemJnlLine."Document No." := TransShptHeader2."No.";
+      ItemJnlLine."Document Type" := ItemJnlLine."Document Type"::"Transfer Shipment";
+      ItemJnlLine."Document Line No." := TransShptLine2."Line No.";
+      ItemJnlLine."Transfer Order No." := TransShptHeader2."Transfer Order No.";
+      ItemJnlLine."External Document No." := TransShptHeader2."External Document No.";
+      ItemJnlLine."Entry Type" := ItemJnlLine."Entry Type"::Transfer;
+      ItemJnlLine."Item No." := TransShptLine2."Item No.";
+      ItemJnlLine.Description := TransShptLine2.Description;
+      ItemJnlLine."Shortcut Dimension 1 Code" := TransShptLine2."Shortcut Dimension 1 Code";
+      ItemJnlLine."New Shortcut Dimension 1 Code" := TransShptLine2."Shortcut Dimension 1 Code";
+      ItemJnlLine."Shortcut Dimension 2 Code" := TransShptLine2."Shortcut Dimension 2 Code";
+      ItemJnlLine."New Shortcut Dimension 2 Code" := TransShptLine2."Shortcut Dimension 2 Code";
+      ItemJnlLine."Location Code" := TransShptHeader2."Transfer-from Code";
+      ItemJnlLine."New Location Code" := TransHeader."In-Transit Code";
+      ItemJnlLine.Quantity := TransShptLine2.Quantity;
+      ItemJnlLine."Invoiced Quantity" := TransShptLine2.Quantity;
+      ItemJnlLine."Quantity (Base)" := TransShptLine2."Quantity (Base)";
+      ItemJnlLine."Invoiced Qty. (Base)" := TransShptLine2."Quantity (Base)";
+      ItemJnlLine."Source Code" := SourceCode;
+      ItemJnlLine."Gen. Prod. Posting Group" := TransShptLine2."Gen. Prod. Posting Group";
+      ItemJnlLine."Inventory Posting Group" := TransShptLine2."Inventory Posting Group";
+      ItemJnlLine."Unit of Measure Code" := TransShptLine2."Unit of Measure Code";
+      ItemJnlLine."Qty. per Unit of Measure" := TransShptLine2."Qty. per Unit of Measure";
+      ItemJnlLine."Variant Code":= TransShptLine2."Variant Code";
+      ItemJnlLine."Bin Code" := TransLine."Transfer-from Bin Code";
+      // --> 20140105-WI00-CMC02.02.00-1386-SD01
+      ItemJnlLine."Cell Code":=TransLine."Transfer-from Cell Code";
+      // <-- 20140105-WI00-CMC02.02.00-1386-SD01
+      ItemJnlLine."Country/Region Code" := TransShptHeader2."Trsf.-from Country/Region Code";
+      ItemJnlLine."Transaction Type" :=  TransShptHeader2."Transaction Type";
+      ItemJnlLine."Transport Method" := TransShptHeader2."Transport Method";
+      ItemJnlLine."Entry/Exit Point" := TransShptHeader2."Entry/Exit Point";
+      ItemJnlLine.Area := TransShptHeader2.Area;
+      ItemJnlLine."Transaction Specification" := TransShptHeader2."Transaction Specification";
+      ItemJnlLine."Product Group Code" := TransLine."Product Group Code";
+      ItemJnlLine."Item Category Code" := TransLine."Item Category Code";
+
+      // --> 20140425-Log11-CMC02.02.00-2033-FEC01
+      {BEFORE
+      // --> 20130620-Log11-CMC02.02.00-FEC01
+      ItemJnlLine."Trsf.-from / to Location Code" := TransShptHeader2."Transfer-to Code";
+      // <-- 20130620-Log11-CMC02.02.00-FEC01
+      AFTER}
+      ItemJnlLine."Trsf.-from / to Location Code" := TransShptHeader2."Transfer-from Code";
+      ItemJnlLine."Trsf.-to Location Code" := TransShptHeader2."Transfer-to Code";
+      // --< 20140425-Log11-CMC02.02.00-2033-FEC01
+
+      IF G_cduLSRetailPermission.isLSRetail THEN // 20110601-Wi00-CMC01.04
+        ItemJnlLine.Division := TransLine.Division;  //LS
+
+      ReserveTransLine.TransferTransferToItemJnlLine(TransLine3,
+        ItemJnlLine,ItemJnlLine."Quantity (Base)",0);
+
+      TempDocDim.RESET;
+      TempDocDim.SETRANGE("Table ID",DATABASE::"Transfer Line");
+      TempDocDim.SETRANGE("Line No.",TransLine3."Line No.");
+      DimMgt.CopyDocDimToJnlLineDim(TempDocDim,TempJnlLineDim);
+      IF TempJnlLineDim.FIND('-') THEN
+        REPEAT
+          TempJnlLineDim."New Dimension Value Code" := TempJnlLineDim."Dimension Value Code";
+          TempJnlLineDim.MODIFY;
+        UNTIL TempJnlLineDim.NEXT = 0;
+
+      ItemJnlPostLine.RunWithCheck(ItemJnlLine,TempJnlLineDim);
+    END;
+
+    LOCAL PROCEDURE CopyCommentLines@22(FromDocumentType@1000 : Integer;ToDocumentType@1001 : Integer;FromNumber@1002 : Code[20];ToNumber@1003 : Code[20]);
+    VAR
+      InvtCommentLine@1004 : Record 5748;
+      InvtCommentLine2@1005 : Record 5748;
+    BEGIN
+      InvtCommentLine.SETRANGE("Document Type",FromDocumentType);
+      InvtCommentLine.SETRANGE("No.",FromNumber);
+      IF InvtCommentLine.FIND('-') THEN
+        REPEAT
+          InvtCommentLine2 := InvtCommentLine;
+          InvtCommentLine2."Document Type" := ToDocumentType;
+          InvtCommentLine2."No." := ToNumber;
+          InvtCommentLine2.INSERT;
+        UNTIL InvtCommentLine.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE CopyAndCheckDocDimToTempDocDim@34();
+    VAR
+      CurrLineNo@1000 : Integer;
+      TransfLine_L@1000000000 : Record 5741;
+      CMCDimension_L@1000000001 : Codeunit 8053004;
+    BEGIN
+      TempDocDim.RESET;
+      TempDocDim.DELETEALL;
+      DocDim.SETFILTER("Table ID",'%1|%2',DATABASE::"Transfer Header",DATABASE::"Transfer Line");
+      DocDim.SETRANGE("Document Type",DocDim."Document Type"::" ");
+      DocDim.SETRANGE("Document No.",TransHeader."No.");
+      IF DocDim.FIND('-') THEN BEGIN
+        CurrLineNo := DocDim."Line No.";
+        REPEAT
+          IF CurrLineNo <> DocDim."Line No." THEN BEGIN
+            TempDocDim.SETRANGE("Line No.",CurrLineNo);
+            CheckDimComb(CurrLineNo);
+            CheckDimValuePosting(CurrLineNo);
+            CurrLineNo := DocDim."Line No.";
+          END;
+          TempDocDim.INIT;
+          TempDocDim := DocDim;
+          TempDocDim.INSERT;
+        UNTIL DocDim.NEXT = 0;
+        TempDocDim.SETRANGE("Line No.",CurrLineNo);
+        CheckDimComb(CurrLineNo);
+        CheckDimValuePosting(CurrLineNo);
+      END;
+      // --> 20140331-Wi00-CMC02.02.00-1927-FEC01
+      TransfLine_L.RESET;
+      TransfLine_L.SETRANGE("Document No.",TransHeader."No.");
+      IF TransfLine_L.FINDSET THEN
+        REPEAT
+          CMCDimension_L.DimFromTransferShip(TempDocDim,TransfLine_L,TRUE);
+        UNTIL TransfLine_L.NEXT = 0;
+      // --< 20140331-Wi00-CMC02.02.00-1927-FEC01
+      TempDocDim.RESET;
+    END;
+
+    LOCAL PROCEDURE CheckDimComb@30(LineNo@1000 : Integer);
+    BEGIN
+      IF NOT DimMgt.CheckDocDimComb(TempDocDim) THEN
+        IF LineNo = 0 THEN
+          ERROR(
+            Text005,
+            TransHeader."No.",DimMgt.GetDimCombErr)
+        ELSE
+          ERROR(
+            Text006,
+            TransHeader."No.",LineNo,DimMgt.GetDimCombErr);
+    END;
+
+    LOCAL PROCEDURE CheckDimValuePosting@28(LineNo@1000 : Integer);
+    VAR
+      TheTransLine@1001 : Record 5741;
+      TableIDArr@1002 : ARRAY [10] OF Integer;
+      NumberArr@1003 : ARRAY [10] OF Code[20];
+    BEGIN
+      IF TheTransLine.GET(TransHeader."No.",LineNo) THEN BEGIN
+        TableIDArr[1] := DATABASE::Item;
+        NumberArr[1] := TheTransLine."Item No.";
+        IF NOT DimMgt.CheckDocDimValuePosting(TempDocDim,TableIDArr,NumberArr) THEN
+          ERROR(
+            Text007,
+            TransHeader."No.",LineNo,DimMgt.GetDimValuePostingErr);
+      END;
+    END;
+
+    PROCEDURE SetHideValidationDialog@14(NewHideValidationDialog@1000 : Boolean);
+    BEGIN
+      HideValidationDialog := NewHideValidationDialog;
+    END;
+
+    LOCAL PROCEDURE AssignLineNo@1(FromDocNo@1000 : Code[20]) : Integer;
+    VAR
+      TransLine3@1002 : Record 5741;
+    BEGIN
+      TransLine3.SETRANGE("Document No.",FromDocNo);
+      IF TransLine3.FIND('+') THEN
+        EXIT(TransLine3."Line No." + 10000);
+    END;
+
+    LOCAL PROCEDURE InsertShptEntryRelation@38(VAR TransShptLine@1002 : Record 5745) : Integer;
+    VAR
+      TempHandlingSpecification2@1000 : TEMPORARY Record 336;
+      ItemEntryRelation@1001 : Record 6507;
+      ItemTrackingMgt@1005 : Codeunit 6500;
+      WhseSNRequired@1003 : Boolean;
+      WhseLNRequired@1004 : Boolean;
+    BEGIN
+      IF WhsePosting THEN BEGIN
+        TempWhseSplitSpecification.RESET;
+        TempWhseSplitSpecification.DELETEALL;
+      END;
+
+      TempHandlingSpecification2.RESET;
+      IF ItemJnlPostLine.CollectTrackingSpecification(TempHandlingSpecification2) THEN BEGIN
+        TempHandlingSpecification2.SETRANGE("Buffer Status",0);
+        IF TempHandlingSpecification2.FIND('-') THEN BEGIN
+          REPEAT
+            IF WhsePosting OR WhseShip OR InvtPickPutaway THEN BEGIN
+              ItemTrackingMgt.CheckWhseItemTrkgSetup(
+                TransShptLine."Item No.",WhseSNRequired,WhseLNRequired,FALSE);
+              IF WhseSNRequired OR WhseLNRequired THEN BEGIN
+                TempWhseSplitSpecification := TempHandlingSpecification2;
+                TempWhseSplitSpecification."Source Type" := DATABASE::"Transfer Line";
+                TempWhseSplitSpecification."Source ID" := TransLine."Document No.";
+                TempWhseSplitSpecification."Source Ref. No." := TransLine."Line No.";
+                TempWhseSplitSpecification.INSERT;
+              END;
+            END;
+
+            ItemEntryRelation.INIT;
+            ItemEntryRelation."Item Entry No." := TempHandlingSpecification2."Entry No.";
+            ItemEntryRelation."Serial No." := TempHandlingSpecification2."Serial No.";
+            ItemEntryRelation."Lot No." := TempHandlingSpecification2."Lot No.";
+            ItemEntryRelation.TransferFieldsTransShptLine(TransShptLine);
+            ItemEntryRelation.INSERT;
+            TempHandlingSpecification := TempHandlingSpecification2;
+            TempHandlingSpecification."Source Prod. Order Line" := TransShptLine."Line No.";
+            TempHandlingSpecification."Buffer Status" := TempHandlingSpecification."Buffer Status"::MODIFY;
+            TempHandlingSpecification.INSERT;
+          UNTIL TempHandlingSpecification2.NEXT = 0;
+          EXIT(0);
+        END;
+      END ELSE
+        EXIT(ItemJnlLine."Item Shpt. Entry No.");
+    END;
+
+    PROCEDURE TransferTracking@3(VAR FromTransLine@1003 : Record 5741;VAR ToTransLine@1004 : Record 5741;TransferQty@1001 : Decimal);
+    VAR
+      DummySpecification@1005 : Record 336;
+    BEGIN
+      TempHandlingSpecification.RESET;
+      TempHandlingSpecification.SETRANGE("Source Prod. Order Line",ToTransLine."Derived From Line No.");
+      IF TempHandlingSpecification.FIND('-') THEN BEGIN
+        REPEAT
+          ReserveTransLine.TransferTransferToTransfer(
+            FromTransLine,ToTransLine,-TempHandlingSpecification."Quantity (Base)",1,TempHandlingSpecification);
+          TransferQty += TempHandlingSpecification."Quantity (Base)";
+        UNTIL TempHandlingSpecification.NEXT = 0;
+        TempHandlingSpecification.DELETEALL;
+      END;
+
+      IF TransferQty > 0 THEN
+        ReserveTransLine.TransferTransferToTransfer(
+          FromTransLine,ToTransLine,TransferQty,1,DummySpecification);
+    END;
+
+    LOCAL PROCEDURE CheckWarehouse@7301(VAR TransLine@1000 : Record 5741);
+    VAR
+      TransLine2@1001 : Record 5741;
+      WhseValidateSourceLine@1003 : Codeunit 5777;
+      ShowError@1002 : Boolean;
+      "<<3LI LOCALS>>"@8060982 : Integer;
+      BaselineMgt_L@8060983 : Codeunit 8060982;
+    BEGIN
+      TransLine2.COPY(TransLine);
+      IF TransLine2.FIND('-') THEN
+        REPEAT
+          GetLocation(TransLine2."Transfer-from Code");
+          // --> 20130528-8060990/CMB114-CMB6.00.10.09-FEC02
+          BaselineMgt_L.LocationIsAllowed(TransLine2."Transfer-from Code");
+          // --< 20130528-8060990/CMB114-CMB6.00.10.09-FEC02
+          IF Location."Require Pick" OR Location."Require Shipment" THEN BEGIN
+            IF Location."Bin Mandatory" THEN
+              ShowError := TRUE
+            ELSE
+              IF WhseValidateSourceLine.WhseLinesExist(
+                   DATABASE::"Transfer Line",
+                   0, // Out
+                   TransLine2."Document No.",
+                   TransLine2."Line No.",
+                   0,
+                   TransLine2.Quantity)
+              THEN
+                ShowError := TRUE;
+
+            IF ShowError THEN
+              ERROR(
+                Text002,
+                TransLine2."Document No.",
+                TransLine2.FIELDCAPTION("Line No."),
+                TransLine2."Line No.");
+          END;
+        UNTIL TransLine2.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE GetLocation@7300(LocationCode@1000 : Code[10]);
+    BEGIN
+      IF LocationCode = '' THEN
+        Location.GetLocationSetup(LocationCode,Location)
+      ELSE
+        IF Location.Code <> LocationCode THEN
+          Location.GET(LocationCode);
+    END;
+
+    LOCAL PROCEDURE PostWhseJnlLine@4(ItemJnlLine@1000 : Record 83;OriginalQuantity@1001 : Decimal;OriginalQuantityBase@1006 : Decimal);
+    VAR
+      WhseJnlLine@1002 : Record 7311;
+      TempWhseJnlLine2@1005 : TEMPORARY Record 7311;
+      ItemTrackingMgt@1004 : Codeunit 6500;
+      WMSMgmt@1007 : Codeunit 7302;
+      WhseJnlPostLine@1008 : Codeunit 7301;
+    BEGIN
+      WITH ItemJnlLine DO BEGIN
+        Quantity := OriginalQuantity;
+        "Quantity (Base)" := OriginalQuantityBase;
+        GetLocation("Location Code");
+        IF Location."Bin Mandatory" THEN
+          IF WMSMgmt.CreateWhseJnlLine(ItemJnlLine,1,WhseJnlLine,FALSE,FALSE) THEN BEGIN
+            WMSMgmt.SetTransferLine(TransLine,WhseJnlLine,0,TransShptHeader."No.");
+            ItemTrackingMgt.SplitWhseJnlLine(
+              WhseJnlLine,TempWhseJnlLine2,TempWhseSplitSpecification,TRUE);
+            IF TempWhseJnlLine2.FIND('-') THEN
+              REPEAT
+                WMSMgmt.CheckWhseJnlLine(TempWhseJnlLine2,1,0,TRUE);
+                WhseJnlPostLine.RUN(TempWhseJnlLine2);
+              UNTIL TempWhseJnlLine2.NEXT = 0;
+          END;
+      END;
+    END;
+
+    PROCEDURE SetWhseShptHeader@5(VAR WhseShptHeader2@1000 : Record 7320);
+    BEGIN
+      WhseShptHeader := WhseShptHeader2;
+      TempWhseShptHeader := WhseShptHeader;
+      TempWhseShptHeader.INSERT;
+    END;
+
+    LOCAL PROCEDURE GetShippingAdvice@6() : Boolean;
+    VAR
+      TransLine@1000 : Record 5741;
+    BEGIN
+      TransLine.SETRANGE("Document No.",TransHeader."No.");
+      IF TransLine.FIND('-') THEN
+        REPEAT
+          IF TransLine."Quantity (Base)" <>
+             TransLine."Qty. to Ship (Base)" + TransLine."Qty. Shipped (Base)"
+          THEN
+            EXIT(FALSE);
+        UNTIL TransLine.NEXT = 0;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE "<< 3LI FUNCTIONS >>"@8053000();
+    BEGIN
+    END;
+
+    PROCEDURE PostNegInventComp@8053001(VAR TransLine3_P@8053000 : Record 5741;TransShptHeader2_P@8053001 : Record 5744;TransShptLine2_P@8053002 : Record 5745);
+    VAR
+      ItemLedgerEntry_L@8053003 : Record 32;
+      QtyToAdjust_L@8053004 : Decimal;
+      TempJnlLineDim_L@8053005 : TEMPORARY Record 356;
+      CMCSetup_L@8053006 : Record 8052982;
+      Item_L@8053007 : Record 27;
+    BEGIN
+      CMCSetup_L.GET;
+      CMCSetup_L.TESTFIELD("Neg. Inv. Comp. Reason Code");
+
+      ItemLedgerEntry_L.RESET;
+      ItemLedgerEntry_L.SETCURRENTKEY("Item No.",Positive,"Location Code","Variant Code");
+      ItemLedgerEntry_L.SETRANGE("Item No.",TransLine3_P."Item No.");
+      ItemLedgerEntry_L.SETRANGE("Location Code",TransShptHeader2_P."Transfer-from Code");
+      ItemLedgerEntry_L.SETRANGE("Variant Code",TransLine3_P."Variant Code");
+      ItemLedgerEntry_L.CALCSUMS(Quantity);
+
+      QtyToAdjust_L := TransLine3_P."Qty. to Ship (Base)" - ItemLedgerEntry_L.Quantity;
+
+      WeightDiffSetup_G.CheckDiffQty(TransShptLine2_P."Item No.",0,TransLine3_P."Unit of Measure Code",
+                                     QtyToAdjust_L,TransLine3_P."Qty. to Ship (Base)");
+
+      IF QtyToAdjust_L > 0 THEN BEGIN
+
+        { Check Unit Cost
+        Item_L.GET(TransShptLine2_P."Item No.");
+        IF Item_L."Unit Cost" = 0 THEN
+          ERROR(Text8053001);
+        }
+
+        ItemJnlLine.INIT;
+        ItemJnlLine."Posting Date" := TransShptHeader2_P."Posting Date";
+        ItemJnlLine."Document Date" := TransShptHeader2_P."Posting Date";
+        ItemJnlLine."Document No." := TransShptHeader2_P."No.";
+        ItemJnlLine."Document Type" := ItemJnlLine."Document Type"::"Transfer Shipment";
+        ItemJnlLine."Document Line No." := TransShptLine2_P."Line No.";
+        ItemJnlLine."Transfer Order No." := TransShptHeader2_P."Transfer Order No.";
+        ItemJnlLine."External Document No." := TransShptHeader2_P."External Document No.";
+        ItemJnlLine."Entry Type" := ItemJnlLine."Entry Type"::"Positive Adjmt.";
+        ItemJnlLine."Item No." := TransShptLine2_P."Item No.";
+        ItemJnlLine.Description := TransShptLine2_P.Description;
+        ItemJnlLine."Shortcut Dimension 1 Code" := TransShptLine2_P."Shortcut Dimension 1 Code";
+        ItemJnlLine."New Shortcut Dimension 1 Code" := TransShptLine2_P."Shortcut Dimension 1 Code";
+        ItemJnlLine."Shortcut Dimension 2 Code" := TransShptLine2_P."Shortcut Dimension 2 Code";
+        ItemJnlLine."New Shortcut Dimension 2 Code" := TransShptLine2_P."Shortcut Dimension 2 Code";
+        ItemJnlLine."Location Code" := TransShptHeader2_P."Transfer-from Code";
+        ItemJnlLine.Quantity := QtyToAdjust_L;
+        ItemJnlLine."Invoiced Quantity" := QtyToAdjust_L;
+        ItemJnlLine."Quantity (Base)" := QtyToAdjust_L;
+        ItemJnlLine."Invoiced Qty. (Base)" := QtyToAdjust_L;
+        ItemJnlLine."Unit Cost" := Item_L."Unit Cost";
+        ItemJnlLine."Source Code" := SourceCode;
+        ItemJnlLine."Gen. Prod. Posting Group" := TransShptLine2_P."Gen. Prod. Posting Group";
+        ItemJnlLine."Inventory Posting Group" := TransShptLine2_P."Inventory Posting Group";
+        ItemJnlLine."Unit of Measure Code" := TransShptLine2_P."Unit of Measure Code";
+        ItemJnlLine."Qty. per Unit of Measure" := TransShptLine2_P."Qty. per Unit of Measure";
+        ItemJnlLine."Variant Code":= TransShptLine2_P."Variant Code";
+        ItemJnlLine."Bin Code" := TransLine."Transfer-from Bin Code";
+        // --> 20140105-WI00-CMC02.02.00-1386-SD01
+        ItemJnlLine."Cell Code":=TransLine."Transfer-from Cell Code";
+        // <-- 20140105-WI00-CMC02.02.00-1386-SD01
+        ItemJnlLine."Country/Region Code" := TransShptHeader2_P."Trsf.-from Country/Region Code";
+        ItemJnlLine."Transaction Type" :=  TransShptHeader2_P."Transaction Type";
+        ItemJnlLine."Transport Method" := TransShptHeader2_P."Transport Method";
+        ItemJnlLine."Entry/Exit Point" := TransShptHeader2_P."Entry/Exit Point";
+        ItemJnlLine.Area := TransShptHeader2_P.Area;
+        ItemJnlLine."Transaction Specification" := TransShptHeader2_P."Transaction Specification";
+        ItemJnlLine."Product Group Code" := TransLine."Product Group Code";
+        ItemJnlLine."Item Category Code" := TransLine."Item Category Code";
+        ItemJnlLine."Inv. Adjmt. Reason Code" := CMCSetup_L."Neg. Inv. Comp. Reason Code";
+        // --> 20140425-Log11-CMC02.02.00-2033-FEC02
+        {BEFORE
+        ItemJnlLine."Trsf.-from / to Location Code" := TransShptHeader2_P."Transfer-to Code";
+        AFTER}
+        ItemJnlLine."Trsf.-from / to Location Code" := TransShptHeader2_P."Transfer-from Code";
+        ItemJnlLine."Trsf.-to Location Code" := TransShptHeader2_P."Transfer-to Code";
+        // --< 20140425-Log11-CMC02.02.00-2033-FEC02
+        TempDocDim.RESET;
+        TempDocDim.SETRANGE("Table ID",DATABASE::"Transfer Line");
+        TempDocDim.SETRANGE("Line No.",TransLine3_P."Line No.");
+        DimMgt.CopyDocDimToJnlLineDim(TempDocDim,TempJnlLineDim_L);
+
+      // --> 20130716-Log12-CMC02.02.00-WSA01
+        ItemJnlPostLine.SetReverse(TRUE);
+      // <-- 20130716-Log12-CMC02.02.00-WSA01
+        ItemJnlPostLine.RunWithCheck(ItemJnlLine,TempJnlLineDim_L);
+
+      END;
+    END;
+
+    PROCEDURE PostCancelTransFromLocQty@8053002(VAR TransLine3_P@8053000 : Record 5741;TransShptHeader2_P@8053001 : Record 5744;TransShptLine2_P@8053002 : Record 5745);
+    VAR
+      ItemLedgerEntry_L@8053003 : Record 32;
+      TempJnlLineDim_L@8053004 : TEMPORARY Record 356;
+      CMCSetup_L@8053005 : Record 8052982;
+    BEGIN
+      CMCSetup_L.GET;
+      CMCSetup_L.TESTFIELD("Loc. Qty  Cancel. Reason Code");
+
+      ItemLedgerEntry_L.RESET;
+      ItemLedgerEntry_L.SETCURRENTKEY("Item No.",Positive,"Location Code","Variant Code");
+      ItemLedgerEntry_L.SETRANGE("Item No.",TransLine3_P."Item No.");
+      ItemLedgerEntry_L.SETRANGE("Location Code",TransShptHeader2_P."Transfer-from Code");
+      ItemLedgerEntry_L.SETRANGE("Variant Code",TransLine3_P."Variant Code");
+      ItemLedgerEntry_L.CALCSUMS(Quantity);
+
+      WeightDiffSetup_G.CheckDiffQty(TransLine3_P."Item No.",1,TransLine3_P."Unit of Measure Code",
+                                     ABS(ItemLedgerEntry_L.Quantity),TransLine3_P."Qty. to Ship (Base)");
+
+      IF ItemLedgerEntry_L.Quantity > 0 THEN BEGIN
+
+        ItemJnlLine.INIT;
+        ItemJnlLine."Posting Date" := TransShptHeader2_P."Posting Date";
+        ItemJnlLine."Document Date" := TransShptHeader2_P."Posting Date";
+        ItemJnlLine."Document No." := TransShptHeader2_P."No.";
+        ItemJnlLine."Document Type" := ItemJnlLine."Document Type"::"Transfer Shipment";
+        ItemJnlLine."Document Line No." := TransShptLine2_P."Line No.";
+        ItemJnlLine."Transfer Order No." := TransShptHeader2_P."Transfer Order No.";
+        ItemJnlLine."External Document No." := TransShptHeader2_P."External Document No.";
+        ItemJnlLine."Entry Type" := ItemJnlLine."Entry Type"::"Negative Adjmt.";
+        ItemJnlLine."Item No." := TransShptLine2_P."Item No.";
+        ItemJnlLine.Description := TransShptLine2_P.Description;
+        ItemJnlLine."Shortcut Dimension 1 Code" := TransShptLine2_P."Shortcut Dimension 1 Code";
+        ItemJnlLine."New Shortcut Dimension 1 Code" := TransShptLine2_P."Shortcut Dimension 1 Code";
+        ItemJnlLine."Shortcut Dimension 2 Code" := TransShptLine2_P."Shortcut Dimension 2 Code";
+        ItemJnlLine."New Shortcut Dimension 2 Code" := TransShptLine2_P."Shortcut Dimension 2 Code";
+        ItemJnlLine."Location Code" := TransShptHeader2_P."Transfer-from Code";
+        ItemJnlLine.Quantity := ItemLedgerEntry_L.Quantity;
+        ItemJnlLine."Invoiced Quantity" := ItemLedgerEntry_L.Quantity;
+        ItemJnlLine."Quantity (Base)" := ItemLedgerEntry_L.Quantity;
+        ItemJnlLine."Invoiced Qty. (Base)" := ItemLedgerEntry_L.Quantity;
+        ItemJnlLine."Source Code" := SourceCode;
+        ItemJnlLine."Gen. Prod. Posting Group" := TransShptLine2_P."Gen. Prod. Posting Group";
+        ItemJnlLine."Inventory Posting Group" := TransShptLine2_P."Inventory Posting Group";
+        ItemJnlLine."Unit of Measure Code" := TransShptLine2_P."Unit of Measure Code";
+        ItemJnlLine."Qty. per Unit of Measure" := TransShptLine2_P."Qty. per Unit of Measure";
+        ItemJnlLine."Variant Code":= TransShptLine2_P."Variant Code";
+        ItemJnlLine."Bin Code" := TransLine."Transfer-from Bin Code";
+        // --> 20140105-WI00-CMC02.02.00-1386-SD01
+        ItemJnlLine."Cell Code":=TransLine."Transfer-from Cell Code";
+        // <-- 20140105-WI00-CMC02.02.00-1386-SD01
+        ItemJnlLine."Country/Region Code" := TransShptHeader2_P."Trsf.-from Country/Region Code";
+        ItemJnlLine."Transaction Type" :=  TransShptHeader2_P."Transaction Type";
+        ItemJnlLine."Transport Method" := TransShptHeader2_P."Transport Method";
+        ItemJnlLine."Entry/Exit Point" := TransShptHeader2_P."Entry/Exit Point";
+        ItemJnlLine.Area := TransShptHeader2_P.Area;
+        ItemJnlLine."Transaction Specification" := TransShptHeader2_P."Transaction Specification";
+        ItemJnlLine."Product Group Code" := TransLine."Product Group Code";
+        ItemJnlLine."Item Category Code" := TransLine."Item Category Code";
+        ItemJnlLine."Inv. Adjmt. Reason Code" := CMCSetup_L."Loc. Qty  Cancel. Reason Code";
+        // --> 20140425-Log11-CMC02.02.00-2033-FEC03
+        {BEFORE
+        ItemJnlLine."Trsf.-from / to Location Code" := TransShptHeader2_P."Transfer-to Code";
+        AFTER}
+        ItemJnlLine."Trsf.-from / to Location Code" := TransShptHeader2_P."Transfer-from Code";
+        ItemJnlLine."Trsf.-to Location Code" := TransShptHeader2_P."Transfer-to Code";
+        // --< 20140425-Log11-CMC02.02.00-2033-FEC03
+        TempDocDim.RESET;
+        TempDocDim.SETRANGE("Table ID",DATABASE::"Transfer Line");
+        TempDocDim.SETRANGE("Line No.",TransLine3_P."Line No.");
+        DimMgt.CopyDocDimToJnlLineDim(TempDocDim,TempJnlLineDim_L);
+
+        ItemJnlPostLine.RunWithCheck(ItemJnlLine,TempJnlLineDim_L);
+
+      END;
+    END;
+
+    PROCEDURE PostReverseInventory@8053003(VAR TransLine3_P@8053000 : Record 5741;TransShptHeader2_P@8053001 : Record 5744;TransShptLine2_P@8053002 : Record 5745);
+    VAR
+      TempJnlLineDim_L@8053005 : TEMPORARY Record 356;
+      Item_L@8053007 : Record 27;
+      Location_L@8053006 : Record 14;
+    BEGIN
+      // --> 20131216-Log12-CMC02.02.00-1263-FEC01
+
+      Location_L.GET(TransShptHeader2_P."Transfer-from Code");
+      Location_L.TESTFIELD("Rvse Item Pos. Adj. Rsn Code");
+
+      ItemJnlLine.INIT;
+      ItemJnlLine."Posting Date" := TransShptHeader2_P."Posting Date";
+      ItemJnlLine."Document Date" := TransShptHeader2_P."Posting Date";
+      ItemJnlLine."Document No." := TransShptHeader2_P."No.";
+      ItemJnlLine."Document Type" := ItemJnlLine."Document Type"::"Transfer Shipment";
+      ItemJnlLine."Document Line No." := TransShptLine2_P."Line No.";
+      ItemJnlLine."Transfer Order No." := TransShptHeader2_P."Transfer Order No.";
+      ItemJnlLine."External Document No." := TransShptHeader2_P."External Document No.";
+      ItemJnlLine."Entry Type" := ItemJnlLine."Entry Type"::"Positive Adjmt.";
+      ItemJnlLine."Item No." := TransShptLine2_P."Item No.";
+      ItemJnlLine.Description := TransShptLine2_P.Description;
+      ItemJnlLine."Shortcut Dimension 1 Code" := TransShptLine2_P."Shortcut Dimension 1 Code";
+      ItemJnlLine."New Shortcut Dimension 1 Code" := TransShptLine2_P."Shortcut Dimension 1 Code";
+      ItemJnlLine."Shortcut Dimension 2 Code" := TransShptLine2_P."Shortcut Dimension 2 Code";
+      ItemJnlLine."New Shortcut Dimension 2 Code" := TransShptLine2_P."Shortcut Dimension 2 Code";
+      ItemJnlLine."Location Code" := TransShptHeader2_P."Transfer-from Code";
+      ItemJnlLine.Quantity := TransLine3_P."Qty. to Ship (Base)";
+      ItemJnlLine."Invoiced Quantity" := TransLine3_P."Qty. to Ship (Base)";
+      ItemJnlLine."Quantity (Base)" := TransLine3_P."Qty. to Ship (Base)";
+      ItemJnlLine."Invoiced Qty. (Base)" := TransLine3_P."Qty. to Ship (Base)";
+      ItemJnlLine."Unit Cost" := Item_L."Unit Cost";
+      ItemJnlLine."Source Code" := SourceCode;
+      ItemJnlLine."Gen. Prod. Posting Group" := TransShptLine2_P."Gen. Prod. Posting Group";
+      ItemJnlLine."Inventory Posting Group" := TransShptLine2_P."Inventory Posting Group";
+      ItemJnlLine."Unit of Measure Code" := TransShptLine2_P."Unit of Measure Code";
+      ItemJnlLine."Qty. per Unit of Measure" := TransShptLine2_P."Qty. per Unit of Measure";
+      ItemJnlLine."Variant Code":= TransShptLine2_P."Variant Code";
+      ItemJnlLine."Bin Code" := TransLine."Transfer-from Bin Code";
+      // --> 20140105-WI00-CMC02.02.00-1386-SD01
+      ItemJnlLine."Cell Code":=TransLine."Transfer-from Cell Code";
+      // <-- 20140105-WI00-CMC02.02.00-1386-SD01
+      ItemJnlLine."Country/Region Code" := TransShptHeader2_P."Trsf.-from Country/Region Code";
+      ItemJnlLine."Transaction Type" :=  TransShptHeader2_P."Transaction Type";
+      ItemJnlLine."Transport Method" := TransShptHeader2_P."Transport Method";
+      ItemJnlLine."Entry/Exit Point" := TransShptHeader2_P."Entry/Exit Point";
+      ItemJnlLine.Area := TransShptHeader2_P.Area;
+      ItemJnlLine."Transaction Specification" := TransShptHeader2_P."Transaction Specification";
+      ItemJnlLine."Product Group Code" := TransLine."Product Group Code";
+      ItemJnlLine."Item Category Code" := TransLine."Item Category Code";
+      ItemJnlLine."Inv. Adjmt. Reason Code" := Location_L."Rvse Item Pos. Adj. Rsn Code";
+      // --> 20140425-Log11-CMC02.02.00-2033-FEC04
+      {BEFORE
+      ItemJnlLine."Trsf.-from / to Location Code" := TransShptHeader2_P."Transfer-to Code";
+      AFTER}
+      ItemJnlLine."Trsf.-from / to Location Code" := TransShptHeader2_P."Transfer-from Code";
+      ItemJnlLine."Trsf.-to Location Code" := TransShptHeader2_P."Transfer-to Code";
+      // --< 20140425-Log11-CMC02.02.00-2033-FEC04
+      TempDocDim.RESET;
+      TempDocDim.SETRANGE("Table ID",DATABASE::"Transfer Line");
+      TempDocDim.SETRANGE("Line No.",TransLine3_P."Line No.");
+      DimMgt.CopyDocDimToJnlLineDim(TempDocDim,TempJnlLineDim_L);
+
+      ItemJnlPostLine.SetReverse(TRUE);
+
+      ItemJnlPostLine.RunWithCheck(ItemJnlLine,TempJnlLineDim_L);
+
+      // --< 20131216-Log12-CMC02.02.00-1263-FEC01
+    END;
+
+    LOCAL PROCEDURE CheckCellMandatory@8053006(VAR TransfLine_P@1000 : Record 5741);
+    VAR
+      TransfLine2_L@1001 : Record 5741;
+      CduItemJnlPostLine_L@8053000 : Codeunit 22;
+      recItem_L@8053001 : Record 27;
+    BEGIN
+      //------------------------------------------------------------------------------------------------
+      // CheckCellMandatory
+      //----------------------------------------------------------------------------------------------
+      // Input:
+      //   - TransferLine_P
+      //
+      // Output:
+      //------------------------------------------------------------------------------------------------
+      // --> 20140105-WI00-CMC02.02.00-1386-SD01
+
+      TransfLine2_L.COPY(TransfLine_P);
+      TransfLine2_L.SETFILTER("Qty. to Ship" ,'<>0');
+
+      IF TransfLine2_L.FINDSET THEN
+        REPEAT
+          GetLocation(TransfLine2_L."Transfer-from Code");
+          recItem_L.GET(TransfLine2_L."Item No.");
+          IF CduItemJnlPostLine_L.ItemToReverse(recItem_L,Location."Cell Item Filter View") THEN
+          BEGIN
+            TransfLine2_L.TESTFIELD(TransfLine2_L."Transfer-from Cell Code")
+          END;
+        UNTIL TransfLine2_L.NEXT = 0;
+    END;
+
+    BEGIN
+    {
+      LS = Changes made by LS Retail
+      // --> 3LI BEGIN
+      20110601-Wi00-CMC01.04 : Version RTM 01.04 - NavAgri
+      20120629-Int01-CMC02.01.00-DRN01 : ADDCODE (Validation de l'enregistrement pes'e)
+      20130425-8060990/107-CMB6.00.10.09-AKH01 : ADDCODE (gestion des mentions )
+      20130429-Log08-CMC02.02.00-WSA01 : ADDCODE (R'ception transfert automatique si "Auto Receipt"=true)
+      20130516-Log08-CMC02.02.00-WSA01  : DELCODE (R'ception Automatique)
+      20130528-8060990/CMB114-CMB6.00.10.09-FEC01 : ADDLOCAL (Dans fonction CheckWarehouse)
+      20130528-8060990/CMB114-CMB6.00.10.09-FEC02 : ADDCODE (Dans fonction CheckWarehouse)
+      20130611-8060990/107-CMB6.00.10.09-AKH01 : ADDCODE (suppression des lignes textes mentions du document  )
+      20130612-Log11-CMC02.02.00-FEC01 : ADDFUNCT (PostNegInventComp)
+      20130612-Log11-CMC02.02.00-FEC02 : ADDFUNCT (PostCancelTransFromLocQty)
+      20130612-Log11-CMC02.02.00-FEC03 : ADDCODE (Lancement de la fonction PostNegInventComp)
+      20130612-Log11-CMC02.02.00-FEC04 : ADDCODE (Lancement de la fonction PostCancelTransFromLocQty)
+      20130620-Log11-CMC02.02.00-FEC01 : ADDCODE (Alimentation du nouveau champ).
+      20130708-APP27-CMC02.02.00-AKH01 : ADDCODE (alimentation des nouveaux champs)
+      20130716-Log12-CMC02.02.00-WSA01 : ADDCODE (Gestion autoliquidation (Pbm 635))
+      20130801-App31-CMC02.02.00-BSI01 : ADDCODE (Check if item is blocked)
+      20131202-Log07-CMC02.02.00-840-FHU01 : ADDCODE (appel du code de gestion des champs obligatoire)
+      20131216-Log12-CMC02.02.00-1263-FEC01 : ADDFUNC (PostReverseInventory).
+      20131216-Log12-CMC02.02.00-1263-FEC02 : MODCODE.
+      20140105-WI00-CMC02.02.00-1386-SD01 : ADDCODE (modification ItemToReverse + gestion cellules)
+      20140123-Log11-CMC02.02.00-1564-FEC01 : ADDCODE.
+      20140317-App10-CMC02.02.00-1844-FEC01 : ADDCODE.
+      20140331-Wi00-CMC02.02.00-1927-FEC01 : ADDCODE.
+      20140402-LOG10-CMC02.02.00-1923-DRN01 : Gestion 'clatement de pes'e dans les exp'ditions entrep"t
+      20140425-Log11-CMC02.02.00-2033-FEC01 : ADDCODE.
+      20140425-Log11-CMC02.02.00-2033-FEC02 : ADDCODE.
+      20140425-Log11-CMC02.02.00-2033-FEC03 : ADDCODE.
+      20140425-Log11-CMC02.02.00-2033-FEC04 : ADDCODE.
+      20140611-Log11-CMC02.02.00-2212-FEC01 : ADDCODE.
+      20141219-APP27-CMC02.02.00-1817-DRN01 : Alimentation de champs dans T5745
+      20141219-LOG10-CMC02.02.00-1817-DRN01 : Alimentation de champs dans T5745
+      20150526-APP19-CMC02.02.00-2963-FHS01 : MODCODE (Optimisation)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

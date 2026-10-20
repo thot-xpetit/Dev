@@ -1,0 +1,748 @@
+OBJECT Report 8052988 CMC Create Supplement Invoice
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02/03/26;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,TER01.01.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Create Supplement Invoice;
+               FRA=G'n'rer facture compl'ment de prix];
+    ProcessingOnly=Oui;
+    OnPreReport=BEGIN
+                  IF GUIALLOWED THEN
+                   IF NOT G_HideDialog THEN
+                      G_win.OPEN(Text8053000+Text8053001+Text8053002+Text8053003);
+
+                  // --> 20131101-Cer15-CMC02.02.00-BSI01
+                  // --> 20131126-Cer15-CMC02.02.00-BSI01
+                  //BEFORE
+                  //InvoiceNo_G := 'TMP Supl0';
+                  //AFTER
+                  InvoiceNo_G := Text8053007;
+                  // <-- 20131126-Cer15-CMC02.02.00-BSI01
+                  // <-- 20131101-Cer15-CMC02.02.00-BSI01
+                END;
+
+    OnPostReport=BEGIN
+                   IF GUIALLOWED THEN
+                    IF NOT G_HideDialog THEN
+                      G_win.CLOSE;
+                 END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table8052983;
+        DataItemTableView=SORTING(Type,Collection Type,Generical Template,Vendor No.,Item No.,Campaign No.,Species Code)
+                          WHERE(Type=CONST(Contract));
+        OnPostDataItem=BEGIN
+
+                         // --> 20131101-Cer15-CMC02.02.00-BSI01
+                         PurchHeaderTmp_G.RESET;
+                         IF PurchHeaderTmp_G.FINDSET THEN
+                           REPEAT
+                             PurchLineTmp_G.RESET;
+                             PurchLineTmp_G.SETRANGE("Document Type", PurchHeaderTmp_G."Document Type");
+                             PurchLineTmp_G.SETRANGE("Document No.", PurchHeaderTmp_G."No.");
+                             // --> 20131126-Cer15-CMC02.02.00-BSI01
+                             //BEFORE
+                             {
+                              IF PurchLineTmp_G.FIND('-') THEN BEGIN
+                                PurchLineTmp_G.CALCSUMS("Line Amount");
+
+                                IF PurchLineTmp_G."Line Amount" < 0 THEN
+                                  CreateCreditMemo(PurchHeaderTmp_G)
+                                ELSE
+                                  CreateInvoice(PurchHeaderTmp_G);
+                             END;
+                             }
+                             //AFTER
+                             PurchLineTmp_G.CALCSUMS("Line Amount");
+
+                             IF PurchLineTmp_G."Line Amount" < 0 THEN
+                               CreateCreditMemo(PurchHeaderTmp_G)
+                             ELSE
+                               CreateInvoice(PurchHeaderTmp_G);
+                             // <-- 20131126-Cer15-CMC02.02.00-BSI01
+                           UNTIL PurchHeaderTmp_G.NEXT = 0;
+                         // <-- 20131101-Cer15-CMC02.02.00-BSI01
+                       END;
+
+        ReqFilterFields=No.,Contract Type,Campaign No.;
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=1;
+        DataItemTable=Table8053104;
+        DataItemTableView=SORTING(Contract No.,Invoiced,Canceled Line,Cancellation line)
+                          WHERE(Invoiced=CONST(Oui),
+                                Canceled Line=CONST(Non),
+                                Cancellation line=CONST(Non));
+        OnPreDataItem=BEGIN
+                        IF G_PostingDateReq = 0D THEN
+                          ERROR(Text8053005);
+                        IF G_DocDateReq = 0D THEN
+                          ERROR(Text8053006);
+
+                        G_ReceitTotalCount := "CMC Posted Receipts Line".COUNT;
+                        G_ReceiptCount := 0;
+                      END;
+
+        OnAfterGetRecord=VAR
+                           L_RecPurchLine@1000000000 : Record 39;
+                         BEGIN
+                           // --> 20150407-CER101-TER01.01.00-221-BSI01
+                           CMCSetup_G.GET;
+                           IF CMCSetup_G."Manage Price Supp. On Resump." THEN
+                             SETFILTER("Receipt Type",'%1|%2',"Receipt Type"::Receipt,"Receipt Type"::Resumption)
+                           ELSE SETFILTER("Receipt Type",'%1',"Receipt Type"::Receipt);
+                           // <-- 20150407-CER101-TER01.01.00-221-BSI01
+
+                           IF (IsLineToInvoice=FALSE) THEN
+                             CurrReport.SKIP;
+
+                           recPostedReceipts_G.GET("CMC Posted Receipts Line"."Receipt Type","CMC Posted Receipts Line"."No.");
+
+                           G_ReceiptCount += 1;
+                           IF GUIALLOWED THEN
+                             IF NOT G_HideDialog THEN BEGIN
+                               G_win.UPDATE(1,"CMC Posted Receipts Line"."No.");
+                               IF G_ReceitTotalCount<>0 THEN
+                                 G_win.UPDATE(2,ROUND((G_ReceiptCount/G_ReceitTotalCount)*10000,1));
+                             END;
+
+                           // --> 20131101-Cer15-CMC02.02.00-BSI01
+                           //BEFORE
+                           // --------------------------------------------------------------------
+                           // Cr'ation Ent^te Facture si RUPTURE sur Contrat
+                           // --------------------------------------------------------------------
+                           {
+                           IF (G_PreviousItem <> "CMC Posted Receipts Line"."Contract No.") THEN BEGIN
+
+                             L_RecPurchLine.RESET;
+                             L_RecPurchLine.SETRANGE("Document Type", G_RecPurHeader."Document Type");
+                             L_RecPurchLine.SETRANGE("Document No.", G_RecPurHeader."No.");
+                             IF L_RecPurchLine.FIND('-') THEN BEGIN
+                               L_RecPurchLine.CALCSUMS("Line Amount");
+
+                               IF L_RecPurchLine."Line Amount" < 0 THEN
+                                 CreateCreditMemo
+                               ELSE
+                                 CreateInvoice;
+
+                             END;
+
+                             recCollectionContract_L.GET("CMC Posted Receipts Line"."Contract No.");
+                             CLEAR(G_RecPurHeader);
+                             G_RecPurHeader.SetHideValidationDialog(TRUE);
+                             G_RecPurHeader.INIT;
+                             G_RecPurHeader."Document Type" :=G_RecPurHeader."Document Type"::Invoice;
+                             G_RecPurHeader."No." := 'TMP Supl';
+                             G_RecPurHeader.VALIDATE("Posting Date", G_PostingDateReq);
+                             G_RecPurHeader."Document Type" :=G_RecPurHeader."Document Type"::Invoice;
+                             G_RecPurHeader.VALIDATE("Buy-from Vendor No.",recCollectionContract_L."Vendor No.");
+                             G_RecPurHeader."Collection Invoice Type" := G_RecPurHeader."Collection Invoice Type"::Supplement;
+                             G_RecPurHeader."Campain No." := recCollectionContract_L."Campaign No.";
+                             G_RecPurHeader."Species Code" := recCollectionContract_L."Species Code";
+                             G_RecPurHeader.INSERT(TRUE);
+
+                             G_RecPurHeader.VALIDATE("Document Date", G_DocDateReq);
+                             cduBSLMgt_G.PurchUpdatePostingDesc(G_RecPurHeader);
+                             G_RecPurHeader.MODIFY(TRUE);
+
+                             G_PreviousItem := "CMC Posted Receipts Line"."Contract No.";
+                             G_NextLineNo := 10000;
+
+                           END;
+                           }
+                           // <-- 20131101-Cer15-CMC02.02.00-BSI01
+
+
+                           // --------------------------------------------------------------------
+                           // Cr'ation de la ligne de pr'sentation du BR
+                           // --------------------------------------------------------------------
+                           // --> 20131101-Cer15-CMC02.02.00-BSI01
+                           //BEFORE
+                           //  CLEAR(G_RecPurLine);
+                           // <-- 20131101-Cer15-CMC02.02.00-BSI01
+                         END;
+
+        OnPostDataItem=VAR
+                         L_RecPurchLine@1000000000 : Record 39;
+                       BEGIN
+
+                         // --> 20131101-Cer15-CMC02.02.00-BSI01
+                         //BEFORE
+                         {
+                         L_RecPurchLine.RESET;
+                         L_RecPurchLine.SETRANGE("Document Type", G_RecPurHeader."Document Type");
+                         L_RecPurchLine.SETRANGE("Document No.", G_RecPurHeader."No.");
+                         IF L_RecPurchLine.FIND('-') THEN BEGIN
+                           L_RecPurchLine.CALCSUMS("Line Amount");
+
+                           IF L_RecPurchLine."Line Amount" < 0 THEN
+                             CreateCreditMemo
+                           ELSE
+                             CreateInvoice;
+                         END;
+                         }
+                         // <-- 20131101-Cer15-CMC02.02.00-BSI01
+                       END;
+
+        DataItemLink=Contract No.=FIELD(No.);
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=2;
+        DataItemTable=Table8052997;
+        DataItemTableView=SORTING(Receipt Type,Posted Receipt No.,Invoiced,Line Type)
+                          WHERE(Invoiced=CONST(Non),
+                                Line Type=CONST(Complement));
+        OnAfterGetRecord=BEGIN
+
+                           // --> 20131101-Cer15-CMC02.02.00-BSI01
+                           ActualDueDate_G := GetInvoiceDueDate;
+
+                           IF NOT IsInvoiceHeaderAlreadyInserted THEN BEGIN
+                              PurchHeaderTmp_G.SetHideValidationDialog(TRUE);
+                              PurchHeaderTmp_G.INIT;
+                              PurchHeaderTmp_G."Document Type" := PurchHeaderTmp_G."Document Type"::Invoice;
+                              InvoiceNo_G := INCSTR(InvoiceNo_G);
+                              PurchHeaderTmp_G."No." := InvoiceNo_G;
+                              // --> 20140225-Wi00-CMC02.02.00-1745-SDE01
+                              PurchHeaderTmp_G.SetHideCollectifChoice(TRUE);
+                              // <-- 20140225-Wi00-CMC02.02.00-1745-SDE01
+
+                              PurchHeaderTmp_G.INSERT(FALSE);
+                              PurchHeaderTmp_G."Posting Date" := G_PostingDateReq;
+                              PurchHeaderTmp_G."Buy-from Vendor No." := "CMC Collection Contract"."Vendor No.";
+                              PurchHeaderTmp_G."Collection Invoice Type" := PurchHeaderTmp_G."Collection Invoice Type"::Supplement;
+                              PurchHeaderTmp_G."CMC Campaign No." := "CMC Collection Contract"."Campaign No.";
+                              PurchHeaderTmp_G."Species Code" := "CMC Collection Contract"."Species Code";
+                              PurchHeaderTmp_G."Document Date" := G_DocDateReq;
+                              PurchHeaderTmp_G."Store No." := "CMC Collection Contract"."No."; //contract No.
+                              PurchHeaderTmp_G."Due Date":= ActualDueDate_G;
+                              // PurchHeaderTmp_G.MODIFY(FALSE);// 20151210-Wi00-ADV-2465-JLT01 : DELETE
+                              // <-- 20131203-Cer15-CMC02.02.00-BSI01
+
+                              InsertInvoiceLines(PurchHeaderTmp_G);
+
+                           END ELSE BEGIN
+                              InsertInvoiceLines(PurchHeaderTmp_G);
+                           END;
+                           // <-- 20131101-Cer15-CMC02.02.00-BSI01
+
+                           //--> 20151210-Wi00-ADV-2465-JLT01
+                           CMCCreateCollectInvoiceOpt_G.InfoToHeader(PurchHeaderTmp_G,"CMC Posted Receipts Line"); // 20151203-Wi00-ADV-2465-JLT01
+                           PurchHeaderTmp_G.MODIFY(FALSE);
+                           //<-- 20151210-Wi00-ADV-2465-JLT01
+                         END;
+
+        DataItemLink=Posted Receipt No.=FIELD(No.),
+                     Receips Line No. Link=FIELD(Line No.);
+      }
+      SECTIONS
+      {
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=5610;
+      Height=1540;
+    }
+    CONTROLS
+    {
+      { 8053002;TextBox   ;3520 ;660  ;1650 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Document Date;
+                                                              FRA=Date document];
+                                                   SourceExpr=G_DocDateReq }
+      { 8053003;Label     ;110  ;660  ;3300 ;440  ;ParentControl=8053002 }
+      { 8053004;TextBox   ;3520 ;110  ;1650 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Posting Date;
+                                                              FRA=Date comptabilisation];
+                                                   SourceExpr=G_PostingDateReq;
+                                                   OnAfterValidate=BEGIN
+                                                                     G_DocDateReq:=G_PostingDateReq
+                                                                   END;
+                                                                    }
+      { 8053005;Label     ;110  ;110  ;3300 ;440  ;ParentControl=8053004 }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 8053000; ;Container ;
+                  ContainerType=ContentArea }
+
+      { 8053001;1;Group     ;
+                  CaptionML=FRA=Option;
+                  GroupType=Group }
+
+      { 8053003;2;Field     ;
+                  CaptionML=[ENU=Posting Date;
+                             FRA=Date comptabilisation];
+                  SourceExpr=G_PostingDateReq }
+
+      { 8053002;2;Field     ;
+                  CaptionML=[ENU=Document Date;
+                             FRA=Date document];
+                  SourceExpr=G_DocDateReq }
+
+      { 60000;2  ;Field     ;
+                  CaptionML=[ENU=Due Date bordereau;
+                             FRA=Date 'ch'ance bordereau];
+                  SourceExpr=DueDate_G }
+
+      { 8053004;2;Field     ;
+                  CaptionML=[ENU=Grouping Code;
+                             FRA=Code de regroupement];
+                  SourceExpr=GroupingCode_G;
+                  TableRelation="CMC Grouping Code" }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      G_RecCMCPdRptLine@8053000 : Record 8052997;
+      Text8053000@8053001 : TextConst 'ENU=Suplement Invoicing compute...\\;FRA=G'n'ration de facturation de suppl'ment...\\';
+      Text8053001@8053002 : TextConst 'ENU=Posted Receipt              #1#########\;FRA=R'ception Collecte valid'e  #1#########\';
+      Text8053002@8053003 : TextConst 'ENU=Progress\;FRA=Progression\';
+      Text8053003@8053004 : TextConst 'ENU=@2@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@;FRA=@2@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      G_HideDialog@8053005 : Boolean;
+      G_win@8053006 : Dialog;
+      G_ReceiptCount@8053009 : Integer;
+      G_ReceitTotalCount@8053010 : Integer;
+      G_RecPurHeaderInsert@8053011 : Record 38;
+      G_RecPurLineInsert@8053012 : Record 39;
+      G_NextLineNo@8053013 : Integer;
+      G_PreviousVendor@8053014 : Code[20];
+      G_DocDateReq@8053016 : Date;
+      G_PostingDateReq@8053017 : Date;
+      Text8053005@8053018 : TextConst 'ENU=Please enter the posting date.;FRA=Veuillez saisir une date de comptabilisation.';
+      Text8053006@8053019 : TextConst 'ENU=Please enter the document date.;FRA=Veuillez saisir la date du document.';
+      Text8053004@8053020 : TextConst 'FRA=Bon n› : %1';
+      G_DocDimTemp@1000000001 : TEMPORARY Record 357;
+      G_TempDocDim@1000000000 : TEMPORARY Record 357;
+      G_WithInvoiceCharge@1000000002 : Boolean;
+      cduBSLMgt_G@8060982 : Codeunit 8060982;
+      recCollectionContract_L@1000000003 : Record 8052983;
+      recPostedReceipts_G@1000000004 : Record 8052995;
+      PurchHeaderTmp_G@8053021 : TEMPORARY Record 38;
+      PurchLineTmp_G@8053022 : TEMPORARY Record 39;
+      CMCSetup_G@8053023 : Record 8052982;
+      ActualDueDate_G@8053025 : Date;
+      InvoiceNo_G@8053026 : Code[20];
+      PreviousDueDate_G@8053007 : Date;
+      Text8053007@8053008 : TextConst 'FRA=TMP Supl0';
+      GroupingCode_G@8053015 : Code[10];
+      DueDate_G@60000 : Date;
+      Text60000@60001 : TextConst 'ENU=Please enter the document date.;FRA=Veuillez saisir la date d'''ch'ance.';
+      CMCCreateCollectInvoiceOpt_G@1000000005 : Codeunit 8053066;
+      ArianeMgt_G@1000000006 : Codeunit 60125;
+
+    PROCEDURE SetHideDialog@8053001(L_HideD@8053000 : Boolean);
+    BEGIN
+      G_HideDialog := L_HideD;
+    END;
+
+    PROCEDURE CreateInvoice@8053005(PurchHeader_P@8053001 : Record 38);
+    VAR
+      L_CMCPurchLineVariatPrice@8053000 : Record 8053005;
+      L_CMCPostedReceiptLine@1000000000 : Record 8052997;
+    BEGIN
+      // --> 20131101-Cer15-CMC02.02.00-BSI01
+      // --> 20131203-Cer15-CMC02.02.00-BSI01
+      G_RecPurHeaderInsert.SetHideValidationDialog(TRUE);
+      // <-- 20131203-Cer15-CMC02.02.00-BSI01
+
+      // --> 20140225-Wi00-CMC02.02.00-1745-SDE01
+      G_RecPurHeaderInsert.SetHideCollectifChoice(TRUE);
+      // <-- 20140225-Wi00-CMC02.02.00-1745-SDE01
+
+      G_RecPurHeaderInsert.INIT;
+
+      // --> 20131203-Cer15-CMC02.02.00-BSI01
+      // <-- 20131203-Cer15-CMC02.02.00-BSI01
+      G_RecPurHeaderInsert."Document Type" := PurchHeader_P."Document Type"::Invoice;
+      G_RecPurHeaderInsert."No." := '';
+      G_RecPurHeaderInsert.INSERT(TRUE);
+
+      // --> 20131203-Cer15-CMC02.02.00-BSI01
+      G_RecPurHeaderInsert.VALIDATE("Buy-from Vendor No.",PurchHeader_P."Buy-from Vendor No.");
+      G_RecPurHeaderInsert.VALIDATE("Collection Invoice Type",G_RecPurHeaderInsert."Collection Invoice Type"::Supplement);
+      //--> 20151210-Wi00-ADV-2465-JLT01
+      // G_RecPurHeaderInsert.VALIDATE("CMC Campaign No.",PurchHeader_P."Campaign No.");
+      G_RecPurHeaderInsert.VALIDATE("CMC Campaign No.",PurchHeader_P."CMC Campaign No.");
+      G_RecPurHeaderInsert.VALIDATE("Activity Code",PurchHeader_P."Activity Code");
+      G_RecPurHeaderInsert.VALIDATE("Family Code",PurchHeader_P."Family Code");
+      G_RecPurHeaderInsert.VALIDATE("Sub-Family Code",PurchHeader_P."Sub-Family Code");
+      //<-- 20151210-Wi00-ADV-2465-JLT01
+
+      G_RecPurHeaderInsert.VALIDATE("Species Code",PurchHeader_P."Species Code");
+      // <-- 20131203-Cer15-CMC02.02.00-BSI01
+
+      // --> 20140812-CER15-CMC02.02.00-2368-FHS01
+      //BEFORE
+      //G_RecPurHeaderInsert.VALIDATE("Document Date",G_DocDateReq);
+      //AFTER
+      // <-- 20140812-CER15-CMC02.02.00-2368-FHS01
+      G_RecPurHeaderInsert."Vendor Invoice No." := G_RecPurHeaderInsert."No.";
+      cduBSLMgt_G.PurchUpdatePostingDesc(G_RecPurHeaderInsert);
+      G_RecPurHeaderInsert.VALIDATE("Posting Date", G_PostingDateReq);
+      //G_RecPurHeaderInsert.VALIDATE("Due Date",PurchHeader_P."Due Date");
+
+      // --> 20140812-CER15-CMC02.02.00-2368-FHS01
+      G_RecPurHeaderInsert.VALIDATE("Document Date",G_DocDateReq);
+      G_RecPurHeaderInsert."Due Date" := PurchHeader_P."Due Date";
+      // <-- 20140812-CER15-CMC02.02.00-2368-FHS01
+
+      // --> 20131218-Gen19/001-CMC02.02.00-FDA01
+      G_RecPurHeaderInsert."Grouping Code" := GroupingCode_G;
+      // <-- 20131218-Gen19/001-CMC02.02.00-FDA01
+
+      // --> 20260224-WI00-ADV01.01.00-42635-IJI
+      G_RecPurHeaderInsert."Send to Approved Platform" := ArianeMgt_G.PurchaseHeaderSendAP(G_RecPurHeaderInsert);
+      // <-- 20260224-WI00-ADV01.01.00-42635-IJI
+
+
+      G_RecPurHeaderInsert.MODIFY(TRUE);
+
+      PurchLineTmp_G.RESET;
+      PurchLineTmp_G.SETRANGE("Document Type",PurchHeader_P."Document Type");
+      PurchLineTmp_G.SETRANGE("Document No.",PurchHeader_P."No.");
+      IF PurchLineTmp_G.FINDSET THEN
+        REPEAT
+          G_RecPurLineInsert.INIT;
+
+          G_RecPurLineInsert."Document Type" := G_RecPurHeaderInsert."Document Type";
+          G_RecPurLineInsert."Document No." := G_RecPurHeaderInsert."No.";
+          G_RecPurLineInsert."Line No." := PurchLineTmp_G."Line No.";
+          G_RecPurLineInsert.INSERT(TRUE);
+
+          G_RecPurLineInsert.VALIDATE(Type,G_RecPurLineInsert.Type::Item);
+          G_RecPurLineInsert.VALIDATE("No.",PurchLineTmp_G."No.");
+          //20220608-CER-ADV-SP3590-CC42211-JLT -->
+          IF L_CMCPostedReceiptLine.GET(L_CMCPostedReceiptLine."Receipt Type"::Receipt,
+                                        PurchLineTmp_G."Collection Recept No.",PurchLineTmp_G."Collection Recept Line") THEN
+            IF "CMC Posted Receipts Line".GET("CMC Posted Receipts Line"."Receipt Type"::Receipt,PurchLineTmp_G."Collection Recept No.",
+                                              L_CMCPostedReceiptLine."Receips Line No. Link") THEN BEGIN
+              CMCCreateCollectInvoiceOpt_G.GetInvoiceVAT("CMC Posted Receipts Line",G_RecPurLineInsert);
+              G_RecPurLineInsert.VALIDATE("VAT Prod. Posting Group");
+            END;
+          // <-- 20220608-CER-ADV-SP3590-CC42211-JLT
+
+          G_RecPurLineInsert.VALIDATE(Quantity,PurchLineTmp_G.Quantity);
+          G_RecPurLineInsert.VALIDATE("Direct Unit Cost",PurchLineTmp_G."Direct Unit Cost");
+          G_RecPurLineInsert.VALIDATE("CMC Campaign No.",PurchLineTmp_G."CMC Campaign No.");
+          G_RecPurLineInsert.VALIDATE("Net Quantity",PurchLineTmp_G."Net Quantity");
+          G_RecPurLineInsert.VALIDATE("Location Code",PurchLineTmp_G."Location Code");
+          // --> 20160122-CER15-CMC02.02.00-2674-NED01
+          //G_RecPurLineInsert.VALIDATE("Line Collection Type",PurchLineTmp_G."Line Collection Type"::Collection);
+          G_RecPurLineInsert.VALIDATE("Line Collection Type",G_RecPurLineInsert."Line Collection Type"::Supplement);
+          // <-- 20160122-CER15-CMC02.02.00-2674-NED01
+          G_RecPurLineInsert.VALIDATE("Collection Recept No.",PurchLineTmp_G."Collection Recept No.");
+          G_RecPurLineInsert.VALIDATE("Collection Recept Line",PurchLineTmp_G."Collection Recept Line");
+          G_RecPurLineInsert.VALIDATE("Recept Date",PurchLineTmp_G."Recept Date");
+          G_RecPurLineInsert.VALIDATE("Budgeted Unit Cost",PurchLineTmp_G."Budgeted Unit Cost");
+
+          G_RecPurLineInsert.MODIFY(TRUE);
+        UNTIL PurchLineTmp_G.NEXT=0;
+
+      // <-- 20131101-Cer15-CMC02.02.00-BSI01
+    END;
+
+    PROCEDURE CreateCreditMemo@8053006(PurchHeader_P@8053001 : Record 38);
+    VAR
+      L_CMCPurchLineVariatPrice@8053000 : Record 8053005;
+      L_CMCPostedReceiptLine@1000000000 : Record 8052997;
+    BEGIN
+      // --> 20131101-Cer15-CMC02.02.00-BSI01
+
+      //AFTER
+      // --> 20131203-Cer15-CMC02.02.00-BSI01
+      G_RecPurHeaderInsert.SetHideValidationDialog(TRUE);
+      // <-- 20131203-Cer15-CMC02.02.00-BSI01
+
+      // --> 20140225-Wi00-CMC02.02.00-1745-SDE01
+      G_RecPurHeaderInsert.SetHideCollectifChoice(TRUE);
+      // <-- 20140225-Wi00-CMC02.02.00-1745-SDE01
+
+      G_RecPurHeaderInsert.INIT;
+
+      // --> 20131203-Cer15-CMC02.02.00-BSI01
+      //BEFORE
+      //G_RecPurHeaderInsert.COPY(PurchHeader_P);
+      // <-- 20131203-Cer15-CMC02.02.00-BSI01
+
+      G_RecPurHeaderInsert."Document Type" := G_RecPurHeaderInsert."Document Type"::"Credit Memo";
+      G_RecPurHeaderInsert."No." := '';
+      G_RecPurHeaderInsert."Pmt. Discount Date" := 0D;
+      G_RecPurHeaderInsert."Vendor Invoice No.":=G_RecPurHeaderInsert."No." ;
+      G_RecPurHeaderInsert.INSERT(TRUE);
+
+      // --> 20131203-Cer15-CMC02.02.00-BSI01
+      G_RecPurHeaderInsert.VALIDATE("Buy-from Vendor No.",PurchHeader_P."Buy-from Vendor No.");
+      G_RecPurHeaderInsert.VALIDATE("Collection Invoice Type",G_RecPurHeaderInsert."Collection Invoice Type"::Supplement);
+      //--> 20151210-Wi00-ADV-2465-JLT01
+      // G_RecPurHeaderInsert.VALIDATE("CMC Campaign No.",PurchHeader_P."Campaign No.");
+      G_RecPurHeaderInsert.VALIDATE("CMC Campaign No.",PurchHeader_P."CMC Campaign No.");
+      G_RecPurHeaderInsert.VALIDATE("Activity Code",PurchHeader_P."Activity Code");
+      G_RecPurHeaderInsert.VALIDATE("Family Code",PurchHeader_P."Family Code");
+      G_RecPurHeaderInsert.VALIDATE("Sub-Family Code",PurchHeader_P."Sub-Family Code");
+      //<-- 20151210-Wi00-ADV-2465-JLT01
+      G_RecPurHeaderInsert.VALIDATE("Species Code",PurchHeader_P."Species Code");
+      G_RecPurHeaderInsert.VALIDATE("Document Date",G_DocDateReq);
+      G_RecPurHeaderInsert.VALIDATE("Posting Date", G_PostingDateReq);
+      // <-- 20131203-Cer15-CMC02.02.00-BSI01
+
+      cduBSLMgt_G.PurchUpdatePostingDesc(G_RecPurHeaderInsert);
+      G_RecPurHeaderInsert.VALIDATE("Due Date",PurchHeader_P."Due Date");
+
+
+      // --> 20131218-Gen19/001-CMC02.02.00-FDA01
+      G_RecPurHeaderInsert."Grouping Code" := GroupingCode_G;
+      // <-- 20131218-Gen19/001-CMC02.02.00-FDA01
+
+      // --> 20260224-WI00-ADV01.01.00-42635-IJI
+      G_RecPurHeaderInsert."Send to Approved Platform" := ArianeMgt_G.PurchaseHeaderSendAP(G_RecPurHeaderInsert);
+      // <-- 20260224-WI00-ADV01.01.00-42635-IJI
+
+      G_RecPurHeaderInsert.MODIFY(TRUE);
+
+      PurchLineTmp_G.RESET;
+      PurchLineTmp_G.SETRANGE("Document Type",PurchHeader_P."Document Type");
+      PurchLineTmp_G.SETRANGE("Document No.",PurchHeader_P."No.");
+      IF PurchLineTmp_G.FINDSET THEN
+        REPEAT
+          G_RecPurLineInsert.INIT;
+          G_RecPurLineInsert."Document Type" := G_RecPurHeaderInsert."Document Type";
+          G_RecPurLineInsert."Document No." := G_RecPurHeaderInsert."No.";
+          G_RecPurLineInsert."Line No." := PurchLineTmp_G."Line No.";
+          G_RecPurLineInsert.INSERT(TRUE);
+
+          G_RecPurLineInsert.VALIDATE(Type,G_RecPurLineInsert.Type::Item);
+          //20220608-CER-ADV-SP3590-CC42211-JLT -->
+          IF L_CMCPostedReceiptLine.GET(L_CMCPostedReceiptLine."Receipt Type"::Receipt,
+                                        PurchLineTmp_G."Collection Recept No.",PurchLineTmp_G."Collection Recept Line") THEN
+            IF "CMC Posted Receipts Line".GET("CMC Posted Receipts Line"."Receipt Type"::Receipt,PurchLineTmp_G."Collection Recept No.",
+                                              L_CMCPostedReceiptLine."Receips Line No. Link") THEN BEGIN
+              CMCCreateCollectInvoiceOpt_G.GetInvoiceVAT("CMC Posted Receipts Line",G_RecPurLineInsert);
+              G_RecPurLineInsert.VALIDATE("VAT Prod. Posting Group");
+            END;
+          // <-- 20220608-CER-ADV-SP3590-CC42211-JLT
+
+
+          G_RecPurLineInsert.VALIDATE("No.",PurchLineTmp_G."No.");
+          G_RecPurLineInsert.VALIDATE("CMC Campaign No.",PurchLineTmp_G."CMC Campaign No.");
+          G_RecPurLineInsert.VALIDATE("Net Quantity",PurchLineTmp_G."Net Quantity");
+          G_RecPurLineInsert.VALIDATE("Location Code",PurchLineTmp_G."Location Code");
+          G_RecPurLineInsert.VALIDATE("Line Collection Type",PurchLineTmp_G."Line Collection Type"::Collection);
+          G_RecPurLineInsert.VALIDATE("Collection Recept No.",PurchLineTmp_G."Collection Recept No.");
+          G_RecPurLineInsert.VALIDATE("Collection Recept Line",PurchLineTmp_G."Collection Recept Line");
+          G_RecPurLineInsert.VALIDATE("Recept Date",PurchLineTmp_G."Recept Date");
+          G_RecPurLineInsert.VALIDATE("Budgeted Unit Cost",PurchLineTmp_G."Budgeted Unit Cost");
+
+          G_RecPurLineInsert.VALIDATE("Qty. to Receive",0);
+          G_RecPurLineInsert.VALIDATE(Quantity,PurchLineTmp_G.Quantity);
+          G_RecPurLineInsert.VALIDATE("Direct Unit Cost",-PurchLineTmp_G."Direct Unit Cost");
+          G_RecPurLineInsert."Tax Vat Base Amount" := -PurchLineTmp_G."Tax Vat Base Amount";
+          G_RecPurLineInsert.MODIFY(TRUE);
+        UNTIL PurchLineTmp_G.NEXT=0;
+
+      // --> 20131101-Cer15-CMC02.02.00-BSI01
+    END;
+
+    PROCEDURE IsLineToInvoice@8053002() : Boolean;
+    VAR
+      L_PostedReceiptLine@8053000 : Record 8052997;
+    BEGIN
+      L_PostedReceiptLine.RESET;
+      L_PostedReceiptLine.SETCURRENTKEY("Receipt Type","Posted Receipt No.");
+      L_PostedReceiptLine.SETRANGE("Receipt Type","CMC Posted Receipts Line"."Receipt Type");
+      L_PostedReceiptLine.SETRANGE("Posted Receipt No.","CMC Posted Receipts Line"."No.");
+      L_PostedReceiptLine.SETRANGE("Receips Line No. Link","CMC Posted Receipts Line"."Line No.");
+      L_PostedReceiptLine.SETRANGE(Invoiced, FALSE);
+      L_PostedReceiptLine.SETFILTER("Line Type", '%1', L_PostedReceiptLine."Line Type"::Complement);
+      IF L_PostedReceiptLine.FINDFIRST THEN
+        EXIT(TRUE);
+    END;
+
+    PROCEDURE GetInvoiceDueDate@8053009() : Date;
+    VAR
+      InvoiceDueDate_L@8053000 : Date;
+      CerealsInvSch_L@8053001 : Record 8053274;
+      CollectRecipt_L@8053002 : Record 8052993;
+      DueDateFound_L@8053003 : Boolean;
+      DueDate_L@8053004 : Date;
+    BEGIN
+      //------------------------------------------------------------------------------------------------
+      // The function gets the appropriate date for the invoice that will be created.
+      // Input:
+      //   -
+      // Output:
+      //   -  Date of the invoice that is going to be created
+      //------------------------------------------------------------------------------------------------
+
+      // --> 20131101-Cer15-CMC02.02.00-BSI01
+
+      InvoiceDueDate_L := 0D;
+      CerealsInvSch_L.RESET;
+      CerealsInvSch_L.SETRANGE("Campaign No.","CMC Collection Contract"."Campaign No.");
+
+      // --> 20131126-Cer15-CMC02.02.00-BSI01
+      //BEFORE
+      {
+      IF ("CMC Collection Contract"."Due Date" = 0D)
+        OR ("CMC Collection Contract"."Due Date" < "CMC Posted Receipt Line".Date) THEN BEGIN
+          IF CerealsInvSch_L.FINDSET THEN BEGIN
+            DueDateFound_L := FALSE;
+            REPEAT
+              IF "CMC Posted Receipt Line".Date <= CerealsInvSch_L."Collect Ending Date" THEN BEGIN
+                DueDateFound_L := TRUE;
+                DueDate_L := CerealsInvSch_L."Due Date";
+              END;
+            UNTIL (CerealsInvSch_L.NEXT = 0) OR DueDateFound_L;
+            IF DueDateFound_L THEN
+              InvoiceDueDate_L := DueDate_L;
+          END;
+       }
+      //AFTER
+      IF ("CMC Collection Contract"."Due Date" = 0D) OR
+        ("CMC Collection Contract"."Due Date" < "CMC Posted Receipt Line".Date) THEN BEGIN
+        IF CerealsInvSch_L.FINDSET THEN BEGIN
+          DueDateFound_L := FALSE;
+          REPEAT
+            IF "CMC Posted Receipt Line".Date <= CerealsInvSch_L."Collect Ending Date" THEN BEGIN
+              DueDateFound_L := TRUE;
+              DueDate_L := CerealsInvSch_L."Due Date";
+            END;
+          UNTIL (CerealsInvSch_L.NEXT = 0) OR DueDateFound_L;
+          IF DueDateFound_L THEN
+            InvoiceDueDate_L := DueDate_L;
+        END;
+
+      // <-- 20131126-Cer15-CMC02.02.00-BSI01
+      END ELSE BEGIN
+        IF CerealsInvSch_L.FINDSET THEN BEGIN
+          DueDateFound_L := FALSE;
+          REPEAT
+            IF "CMC Collection Contract"."Due Date" <= CerealsInvSch_L."Collect Ending Date" THEN BEGIN
+              DueDateFound_L := TRUE;
+              DueDate_L := CerealsInvSch_L."Due Date";
+            END;
+          UNTIL (CerealsInvSch_L.NEXT = 0) OR DueDateFound_L;
+          IF DueDateFound_L THEN
+            InvoiceDueDate_L := DueDate_L;
+        END;
+      END;
+
+      EXIT(InvoiceDueDate_L);
+      // <-- 20131101-Cer15-CMC02.02.00-BSI01
+    END;
+
+    PROCEDURE IsInvoiceHeaderAlreadyInserted@8053029() : Boolean;
+    BEGIN
+      // --> 20131101-Cer15-CMC02.02.00-BSI01
+      PurchHeaderTmp_G.RESET;
+      PurchHeaderTmp_G.SETRANGE("Store No.","CMC Collection Contract"."No.");
+      PurchHeaderTmp_G.SETRANGE("Due Date",ActualDueDate_G);
+      // --> 20131126-Cer15-CMC02.02.00-BSI01
+      //BEFORE
+      //IF PurchHeaderTmp_G.FINDFIRST THEN
+      //AFTER
+      IF NOT PurchHeaderTmp_G.ISEMPTY THEN
+      // <-- 20131126-Cer15-CMC02.02.00-BSI01
+        EXIT(TRUE)
+      ELSE
+        EXIT(FALSE);
+      // <-- 20131101-Cer15-CMC02.02.00-BSI01
+    END;
+
+    PROCEDURE InsertInvoiceLines@8053033(PurchHeader_P@8053000 : Record 38);
+    BEGIN
+      // --> 20131101-Cer15-CMC02.02.00-BSI01
+
+      PurchLineTmp_G.RESET;
+      PurchLineTmp_G.SETRANGE("Document Type",PurchHeader_P."Document Type");
+      PurchLineTmp_G.SETRANGE("Document No.",PurchHeader_P."No.");
+
+      IF PurchLineTmp_G.FINDLAST THEN
+        G_NextLineNo := PurchLineTmp_G."Line No." + 10000
+      ELSE
+        G_NextLineNo := 10000;
+
+      PurchLineTmp_G.INIT;
+      PurchLineTmp_G."Document Type" := PurchHeader_P."Document Type";
+      PurchLineTmp_G."Document No." := PurchHeader_P."No.";
+
+      PurchLineTmp_G."Line No." := G_NextLineNo;
+      PurchLineTmp_G.INSERT(FALSE);
+      PurchLineTmp_G.Type := PurchLineTmp_G.Type::Item;
+      PurchLineTmp_G."No." := recPostedReceipts_G."Item No.";
+      PurchLineTmp_G.Quantity := "CMC Posted Receipt Line".Quantity;
+      PurchLineTmp_G."Direct Unit Cost" := "CMC Posted Receipt Line"."Unit Price";
+      PurchLineTmp_G."CMC Campaign No." := recPostedReceipts_G."Campaign No.";
+      PurchLineTmp_G."Net Quantity" := "CMC Posted Receipt Line".Quantity;
+      PurchLineTmp_G."Location Code" := recPostedReceipts_G."Location Code";
+      PurchLineTmp_G."Line Collection Type" := PurchLineTmp_G."Line Collection Type"::Collection;
+      PurchLineTmp_G."Collection Recept No." := "CMC Posted Receipt Line"."Posted Receipt No.";
+      PurchLineTmp_G."Collection Recept Line" := "CMC Posted Receipt Line"."Line No.";
+      PurchLineTmp_G."Recept Date":=recPostedReceipts_G."Posting Date";
+      PurchLineTmp_G."Budgeted Unit Cost" := 0;
+      PurchLineTmp_G.MODIFY(FALSE);
+
+      // <-- 20131101-Cer15-CMC02.02.00-BSI01
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+      20110601-Wi00-CMC01.04 : Version RTM 01.04 - NavAgri
+      20120103-Wi00-CMC01.04.04-TLM10226-MBE01 : Debug Call UpdatePostingDesc
+      20121018-Cer12-CMC02.01.00-SD : ADDCODE (modification g'n'rale)
+      20130115-Cer12-CMC02.01.00-TLM15196-JLT01 :libell' Date comptabilisation
+      20131101-Cer15-CMC02.02.00-BSI01 : ADDCODE(modification du traitement de complements de prix)
+      20131126-Cer15-CMC02.02.00-BSI01 : MODCODE (code review)
+      20131203-Cer15-CMC02.02.00-BSI01 : MODCODE (removed validation on temporary table)
+      20131218-Gen19/001-CMC02.02.00-FDA01 : ADDCTRL (Grouping Code - request page)
+                                             MODFUNC (CreateInvoice, CreateCreditMemo - fill in field Grouping Code in header)
+      20140225-Wi00-CMC02.02.00-1745-SDE01 : ADDCODE (Neutralisation multicollectif)
+      20140812-CER15-CMC02.02.00-2368-FHS01 : MODCODE (la date de document est ins'r' aprSs la date de caompta)
+      20140918-CER15-CMC02.02.00-2368-FHS01 : ADDCODE (remet le date d''ch'ance aprSs la mise . jour de la date de doc
+      20150330-CER100-TER01.01.00-201-BSI01 : MODCODE (Ajout de la date d''ch'ance)
+      20150407-CER101-TER01.01.00-221-BSI01 : ADDCODE (Prise en compte des reprise ou non selon un param)
+      20150917-CER100-TER01.01.00-2279-SDE01 : MODECODE (Annulation 20150330-CER100-TER01.01.00-201-BSI01 )
+      20151204-Wi00-ADV-2465-JLT01 : ADDFUNC : InfoToHeader R'cup'rer dans ent^tes Activit',Famille, s-Famille + Campagne
+      20160122-CER36-TER01.01.00-2674-NED01 : MODCODE (Modification type ligne collecte dans ligne facture de collecte en compl'ment)
+      20220608-CER-ADV-SP3590-CC42211-JLT : MODCODE (r'cup'rer la tva de la facture initiale )
+      20260224-WI00-ADV01.01.00-42635-IJI : ADDCODE (A transmettre . la Plateforme Agr'e)
+      // --> 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

@@ -1,0 +1,335 @@
+OBJECT Report 8053388 CMC Post IG Balance
+{
+  OBJECT-PROPERTIES
+  {
+    Date=22/06/15;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 21=rimd,
+                TableData 25=rimd;
+    CaptionML=[ENU=Post Intragroup Balance;
+               FRA=Valide solde Intragroupe];
+    ProcessingOnly=Oui;
+    OnPreReport=BEGIN
+                  G_CMCSetup.GET;
+                  // 20150126-FINA13-CMC02.02.00-2629-BDN01
+                  G_CMCSetup.TESTFIELD("SettOff Bal Acount");
+                  // 20150126-FINA13-CMC02.02.00-2629-BDN01
+                END;
+
+    OnPostReport=VAR
+                   Text8053000_L@1000000000 : TextConst 'ENU=Batch done.;FRA=Traitement termin'.';
+                 BEGIN
+                   IF GUIALLOWED THEN
+                     MESSAGE(Text8053000_L);
+                 END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table5050;
+        OnPreDataItem=BEGIN
+                        SETRANGE("Intra Group",TRUE);
+                      END;
+
+        OnAfterGetRecord=VAR
+                           Cust_L@1000000000 : Record 18;
+                           Vend_L@1000000001 : Record 23;
+                           CustLE_L@1000000002 : Record 21;
+                           VendLE_L@1000000003 : Record 25;
+                           CVLE_L@1000000008 : Record 8053380;
+                           CustBal_L@1000000004 : Decimal;
+                           VendBal_L@1000000005 : Decimal;
+                           L_TempJnlLineDim@1000000006 : TEMPORARY Record 356;
+                           PostingGroup_L@1000000007 : Code[20];
+                           cduLetter_L@1000000009 : Codeunit 8053377;
+                         BEGIN
+                           //20150126-FINA13-CMC02.02.00-2629-BDN02
+                           CVLE_L.RESET;
+                           CVLE_L.SETCURRENTKEY("Contact No.","GLAccountNo.","Posting Date");
+                           CVLE_L.SETRANGE("Contact No.","No.");
+                           CVLE_L.SETRANGE("GLAccountNo.",GrpAccount_G);
+                           CVLE_L.SETRANGE("Posting Date",ApplyDate_G);
+                           CVLE_L.SETRANGE("Document No.",'S' + FORMAT(ApplyDate_G,0,'<Year><Month><Day>'));
+                           IF CVLE_L.FINDFIRST THEN
+                             CurrReport.SKIP;
+                           //20150126-FINA13-CMC02.02.00-2629-BDN02
+
+                           CustBal_L := 0;
+                           VendBal_L := 0;
+                           IF Cust_L.GET("Customer No.") THEN BEGIN
+                             CustLE_L.RESET;
+                             CustLE_L.SETCURRENTKEY("Customer No.",Open);
+                             CustLE_L.SETRANGE("Customer No.",Cust_L."No.");
+                             CustLE_L.SETRANGE(Open,TRUE);
+                             CustLE_L.SETRANGE("GLAccountNo.",GrpAccount_G);
+                             CustLE_L.SETFILTER("Posting Date",'..%1',ApplyDate_G);
+                             IF CustLE_L.FINDSET(FALSE,FALSE) THEN REPEAT
+                               CustLE_L.CALCFIELDS("Remaining Amt. (LCY)");
+                               CustBal_L := CustBal_L + CustLE_L."Remaining Amt. (LCY)";
+                             UNTIL CustLE_L.NEXT=0;
+                           END;
+                           IF Vend_L.GET("Vendor No.") THEN BEGIN
+                             VendLE_L.RESET;
+                             VendLE_L.SETCURRENTKEY("Vendor No.",Open);
+                             VendLE_L.SETRANGE("Vendor No.",Vend_L."No.");
+                             VendLE_L.SETRANGE(Open,TRUE);
+                             VendLE_L.SETRANGE("GLAccountNo.",GrpAccount_G);
+                             VendLE_L.SETFILTER("Posting Date",'..%1',ApplyDate_G);
+                             IF VendLE_L.FINDSET(FALSE,FALSE) THEN REPEAT
+                               VendLE_L.CALCFIELDS("Remaining Amt. (LCY)");
+                               VendBal_L := VendBal_L + VendLE_L."Remaining Amt. (LCY)";
+                             UNTIL VendLE_L.NEXT=0;
+                           END;
+                           IF (CustBal_L = 0) AND (VendBal_L = 0) THEN
+                             CurrReport.SKIP;
+
+                           IF CustBal_L <> 0 THEN BEGIN
+                             PostingGroup_L := '';
+                             IF CustLE_L.FINDSET(TRUE,FALSE) THEN REPEAT
+                               CustLE_L.CALCFIELDS("Remaining Amt. (LCY)");
+                               CustLE_L."Applying Entry" := TRUE;
+                               CustLE_L."Applies-to ID" := USERID;
+                               CustLE_L."Amount to Apply" := CustLE_L."Remaining Amt. (LCY)";
+                               CustLE_L.MODIFY;
+                               PostingGroup_L := CustLE_L."Customer Posting Group";
+                             UNTIL CustLE_L.NEXT=0;
+                             // Extourne client-gl + lettrage des 'critures clients
+                             G_RecGenJournalLine.INIT;
+                             G_RecGenJournalLine."Line No." := 10000;
+                             G_RecGenJournalLine."Document No." := 'S' + FORMAT(ApplyDate_G,0,'<Year><Month><Day>');
+                             G_RecGenJournalLine.VALIDATE("Posting Date",ApplyDate_G);
+                             G_RecGenJournalLine."Account Type" := G_RecGenJournalLine."Account Type"::Customer;
+                             G_RecGenJournalLine.VALIDATE("Account No.",Cust_L."No.");
+                             G_RecGenJournalLine."Posting Group" := PostingGroup_L;
+                             G_RecGenJournalLine.VALIDATE(Amount,- CustBal_L);
+                             G_RecGenJournalLine."Source Code" := G_CMCSetup."SettOff Source Code";
+                             G_RecGenJournalLine."Applies-to ID":=USERID;
+                             G_RecGenJournalLine.VALIDATE("Bal. Account Type",G_RecGenJournalLine."Bal. Account Type"::"G/L Account");
+                             G_RecGenJournalLine.VALIDATE("Bal. Account No.",G_CMCSetup."SettOff Bal Acount");
+                             G_RecGenJournalLine.Description := 'Solde au ' + FORMAT(ApplyDate_G);
+                             G_RecGenJournalLine."Setting Off":=FALSE;
+                             // 20150120-FINA13-CMC02.02.00-2629-BDN01
+                             // --> BEFORE
+                             //G_RecGenJournalLine."Same G/L Acc. Set Off" := TRUE;
+                             // --> AFTER
+                             G_RecGenJournalLine."Same G/L Acc. Set Off" := FALSE;
+                             // 20150120-FINA13-CMC02.02.00-2629-BDN01
+                             G_GenJnlPostLine.RunWithCheck(G_RecGenJournalLine,L_TempJnlLineDim);
+                             // 20150120-FINA13-CMC02.02.00-2629-BDN01
+                             { --> BEFORE
+                             G_RecGenJournalLine.INIT;
+                             G_RecGenJournalLine."Line No." := 10000;
+                             G_RecGenJournalLine."Document No." := 'S' + FORMAT(ApplyDate_G,0,'<Year><Month><Day>');
+                             G_RecGenJournalLine.VALIDATE("Posting Date",ApplyDate_G);
+                             G_RecGenJournalLine."Account Type" := G_RecGenJournalLine."Account Type"::Customer;
+                             G_RecGenJournalLine.VALIDATE("Account No.",Cust_L."No.");
+                             G_RecGenJournalLine."Posting Group" := PostingGroup_L;
+                             G_RecGenJournalLine.VALIDATE(Amount,CustBal_L);
+                             G_RecGenJournalLine."Source Code" := G_CMCSetup."SettOff Source Code";
+                             G_RecGenJournalLine.VALIDATE("Bal. Account Type",G_RecGenJournalLine."Bal. Account Type"::"G/L Account");
+                             G_RecGenJournalLine.VALIDATE("Bal. Account No.",G_CMCSetup."SettOff Bal Acount");
+                             G_RecGenJournalLine.Description := 'Solde au ' + FORMAT(ApplyDate_G);
+                             G_RecGenJournalLine."Setting Off":=FALSE;
+                             G_RecGenJournalLine."Same G/L Acc. Set Off" := FALSE;
+                             G_GenJnlPostLine.RunWithCheck(G_RecGenJournalLine,L_TempJnlLineDim);
+                             }
+                             // <-- 20150120-FINA13-CMC02.02.00-2629-BDN01
+                           END;
+
+                           IF VendBal_L <> 0 THEN BEGIN
+                             PostingGroup_L := '';
+                             IF VendLE_L.FINDSET(TRUE,FALSE) THEN REPEAT
+                               VendLE_L.CALCFIELDS("Remaining Amt. (LCY)");
+                               VendLE_L."Applying Entry" := TRUE;
+                               VendLE_L."Applies-to ID" := USERID;
+                               VendLE_L."Amount to Apply" := VendLE_L."Remaining Amt. (LCY)";
+                               VendLE_L.MODIFY;
+                               PostingGroup_L := VendLE_L."Vendor Posting Group";
+                             UNTIL VendLE_L.NEXT=0;
+                             // Extourne fourn-gl + lettrage des 'critures fournisseurs
+                             G_RecGenJournalLine.INIT;
+                             G_RecGenJournalLine."Line No." := 10000;
+                             G_RecGenJournalLine."Document No." := 'S' + FORMAT(ApplyDate_G,0,'<Year><Month><Day>');
+                             G_RecGenJournalLine.VALIDATE("Posting Date",ApplyDate_G);
+                             G_RecGenJournalLine."Account Type" := G_RecGenJournalLine."Account Type"::Vendor;
+                             G_RecGenJournalLine.VALIDATE("Account No.",Vend_L."No.");
+                             G_RecGenJournalLine."Posting Group" := PostingGroup_L;
+                             G_RecGenJournalLine.VALIDATE(Amount,- VendBal_L);
+                             G_RecGenJournalLine."Source Code" := G_CMCSetup."SettOff Source Code";
+                             G_RecGenJournalLine."Applies-to ID":=USERID;
+                             G_RecGenJournalLine.VALIDATE("Bal. Account Type",G_RecGenJournalLine."Bal. Account Type"::"G/L Account");
+                             G_RecGenJournalLine.VALIDATE("Bal. Account No.",G_CMCSetup."SettOff Bal Acount");
+                             G_RecGenJournalLine.Description := 'Solde au ' + FORMAT(ApplyDate_G);
+                             G_RecGenJournalLine."Setting Off":=FALSE;
+                             // 20150120-FINA13-CMC02.02.00-2629-BDN01
+                             // --> BEFORE
+                             //G_RecGenJournalLine."Same G/L Acc. Set Off" := TRUE;
+                             // --> AFTER
+                             G_RecGenJournalLine."Same G/L Acc. Set Off" := FALSE;
+                             // 20150120-FINA13-CMC02.02.00-2629-BDN01
+                             G_GenJnlPostLine.RunWithCheck(G_RecGenJournalLine,L_TempJnlLineDim);
+                             // 20150120-FINA13-CMC02.02.00-2629-BDN01
+                             { --> BEFORE
+                             G_RecGenJournalLine.INIT;
+                             G_RecGenJournalLine."Line No." := 10000;
+                             G_RecGenJournalLine."Document No." := 'S' + FORMAT(ApplyDate_G,0,'<Year><Month><Day>');
+                             G_RecGenJournalLine.VALIDATE("Posting Date",ApplyDate_G);
+                             G_RecGenJournalLine."Account Type" := G_RecGenJournalLine."Account Type"::Vendor;
+                             G_RecGenJournalLine.VALIDATE("Account No.",Vend_L."No.");
+                             G_RecGenJournalLine."Posting Group" := PostingGroup_L;
+                             G_RecGenJournalLine.VALIDATE(Amount,VendBal_L);
+                             G_RecGenJournalLine."Source Code" := G_CMCSetup."SettOff Source Code";
+                             G_RecGenJournalLine.VALIDATE("Bal. Account Type",G_RecGenJournalLine."Bal. Account Type"::"G/L Account");
+                             G_RecGenJournalLine.VALIDATE("Bal. Account No.",G_CMCSetup."SettOff Bal Acount");
+                             G_RecGenJournalLine.Description := 'Solde au ' + FORMAT(ApplyDate_G);
+                             G_RecGenJournalLine."Setting Off":=FALSE;
+                             G_RecGenJournalLine."Same G/L Acc. Set Off" := FALSE;
+                             G_GenJnlPostLine.RunWithCheck(G_RecGenJournalLine,L_TempJnlLineDim);
+                             }
+                             // <-- 20150120-FINA13-CMC02.02.00-2629-BDN01
+                           END;
+
+                           // --> 20150120-FINA13-CMC02.02.00-2629-BDN01
+                           // --> AFTER
+                           G_RecGenJournalLine.INIT;
+                           G_RecGenJournalLine."Line No." := 10000;
+                           G_RecGenJournalLine."Document No." := 'S' + FORMAT(ApplyDate_G,0,'<Year><Month><Day>');
+                           G_RecGenJournalLine.VALIDATE("Posting Date",ApplyDate_G);
+                           // --> 20150302-FINA13-CMC02.02.00-2629-BDN01
+                           // --> BEFORE
+                           IF ABS(CustBal_L) < ABS(VendBal_L) THEN BEGIN
+                             G_RecGenJournalLine."Account Type" := G_RecGenJournalLine."Account Type"::Vendor;
+                             G_RecGenJournalLine.VALIDATE("Account No.",Vend_L."No.");
+                             G_RecGenJournalLine.VALIDATE(Amount,ABS(VendBal_L) - ABS(CustBal_L));
+                           END
+                           ELSE IF ABS(CustBal_L) > ABS(VendBal_L) THEN BEGIN
+                             G_RecGenJournalLine."Account Type" := G_RecGenJournalLine."Account Type"::Customer;
+                             G_RecGenJournalLine.VALIDATE("Account No.",Cust_L."No.");
+                             G_RecGenJournalLine.VALIDATE(Amount,ABS(CustBal_L) - ABS(VendBal_L));
+                           END;
+                           // <-- AFTER
+                           IF ((VendBal_L <> 0) AND (CustBal_L = 0))
+                             OR
+                              ((VendBal_L > 0) AND (CustBal_L > 0))
+                             OR
+                              ((VendBal_L < 0) AND (CustBal_L > 0) AND (ABS(VendBal_L) < ABS(CustBal_L)))
+                             OR
+                              ((VendBal_L > 0) AND (CustBal_L < 0) AND (ABS(VendBal_L) > ABS(CustBal_L))) THEN BEGIN
+                             G_RecGenJournalLine."Account Type" := G_RecGenJournalLine."Account Type"::Vendor;
+                             G_RecGenJournalLine.VALIDATE("Account No.",Vend_L."No.");
+                             G_RecGenJournalLine.VALIDATE(Amount,VendBal_L + CustBal_L);
+                           END
+                           ELSE BEGIN
+                             G_RecGenJournalLine."Account Type" := G_RecGenJournalLine."Account Type"::Customer;
+                             G_RecGenJournalLine.VALIDATE("Account No.",Cust_L."No.");
+                             G_RecGenJournalLine.VALIDATE(Amount,VendBal_L + CustBal_L);
+                           END;
+                           // <-- 20150302-FINA13-CMC02.02.00-2629-BDN01
+                           G_RecGenJournalLine."Posting Group" := PostingGroup_L;
+                           G_RecGenJournalLine."Source Code" := G_CMCSetup."SettOff Source Code";
+                           G_RecGenJournalLine.VALIDATE("Bal. Account Type",G_RecGenJournalLine."Bal. Account Type"::"G/L Account");
+                           G_RecGenJournalLine.VALIDATE("Bal. Account No.",G_CMCSetup."SettOff Bal Acount");
+                           G_RecGenJournalLine.Description := 'Solde au ' + FORMAT(ApplyDate_G);
+                           G_RecGenJournalLine."Setting Off":=FALSE;
+                           G_RecGenJournalLine."Same G/L Acc. Set Off" := FALSE;
+                           IF G_RecGenJournalLine.Amount <> 0 THEN
+                             G_GenJnlPostLine.RunWithCheck(G_RecGenJournalLine,L_TempJnlLineDim);
+                           // <-- 20150120-FINA13-CMC02.02.00-2629-BDN01
+
+                           // --> 20150622-FINA23/001-CMC02.02.00-3035-FSH01
+                           cduLetter_L.RefreshCVLetter3("No.");
+                           // <-- 20150622-FINA23/001-CMC02.02.00-3035-FSH01
+                         END;
+
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=9020;
+      Height=3410;
+    }
+    CONTROLS
+    {
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1000000000;;Container;
+                  CaptionML=ENU=Options;
+                  ContainerType=ContentArea }
+
+      { 1000000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             FRA=Options];
+                  GroupType=Group }
+
+      { 1000000001;2;Field  ;
+                  CaptionML=[ENU=Apply date;
+                             FRA=Date de lettrage];
+                  SourceExpr=ApplyDate_G }
+
+      { 1000000003;2;Field  ;
+                  CaptionML=[ENU=G/L Account;
+                             FRA=Compte g'n'ral];
+                  SourceExpr=GrpAccount_G;
+                  TableRelation="G/L Account" }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      ApplyDate_G@1000000000 : Date;
+      GrpAccount_G@1000000001 : Code[20];
+      G_RecGenJournalLine@1000000002 : Record 81;
+      G_CMCSetup@1000000003 : Record 8052982;
+      G_GenJnlPostLine@1000000004 : Codeunit 12;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+
+      20141125-FINA13-CMC02.02.00-2629-BDN01 : CREATE OBJECT
+      20150112-FINA13-CMC02.02.00-2629-BDN01 : MODPROP (Add permissions on T21,25)
+      20150120-FINA13-CMC02.02.00-2629-BDN01 : MODCODE (Balance + Compensation on 1 operation)
+      20150126-FINA13-CMC02.02.00-2629-BDN01 : ADDCODE (Test parameter G_CMCSetup."SettOff Bal Acount")
+      20150126-FINA13-CMC02.02.00-2629-BDN02 : ADDCODE (Check operation already done)
+      20150302-FINA13-CMC02.02.00-2629-BDN01 : MODCODE (Check cust/vend balance sign)
+      20150622-FINA23/001-CMC02.02.00-3035-FSH01 : ADDCODE(Active le rafraichissement des lettres agriculteurs)
+
+      // --> 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

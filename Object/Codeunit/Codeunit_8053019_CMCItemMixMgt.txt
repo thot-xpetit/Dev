@@ -1,0 +1,198 @@
+OBJECT Codeunit 8053019 CMCItemMixMgt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=23/05/17;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@8053000 : TextConst 'ENU=This line is not part of an item mix!;FRA=Cette ligne ne fait pas partie d''un m'lange d''article!';
+      Text002@8053001 : TextConst 'ENU=Do you really want to cancel the item mix?;FRA=Voulez-vous vraiment annuler le m'lange?';
+
+    PROCEDURE CancelItemMix@8053001(SalesLine@8053000 : Record 37);
+    BEGIN
+      //------------------------------------------------------------------------------------------------
+      // Cancel the item mix.
+      // Input:  - the sales line from which the cancel of the item mix was requested
+      // Output: -
+      //------------------------------------------------------------------------------------------------
+      IF SalesLine."Item Mix Root Line No." = 0 THEN
+        MESSAGE(Text001)
+      ELSE BEGIN
+         IF DIALOG.CONFIRM(Text002,TRUE) THEN BEGIN
+           DeleteDocItemMixLines(SalesLine);
+           DeleteItemMixSalesLines(SalesLine,0);
+         END;
+      END;
+    END;
+
+    PROCEDURE DeleteDocItemMixLines@8053005(SalesLine@8053000 : Record 37);
+    VAR
+      DocItemMix_L@8053001 : Record 8053190;
+    BEGIN
+      //------------------------------------------------------------------------------------------------
+      // Deletes recorded item mixes.
+      // Input:  - the sales line from which the cancel of the item mix was requested
+      // Output: -
+      //------------------------------------------------------------------------------------------------
+      DocItemMix_L.RESET;
+      DocItemMix_L.SETRANGE("Document Type",SalesLine."Document Type");
+      DocItemMix_L.SETRANGE("Document No.",SalesLine."Document No.");
+      DocItemMix_L.SETRANGE("Document Line No.",SalesLine."Item Mix Root Line No.");
+      IF DocItemMix_L.FINDSET THEN
+        DocItemMix_L.DELETEALL;
+    END;
+
+    PROCEDURE DeleteItemMixSalesLines@8053008(SalesLine@8053000 : Record 37;UserModifiedQty@8053002 : Decimal);
+    VAR
+      SalesLine_L@8053001 : Record 37;
+    BEGIN
+      //------------------------------------------------------------------------------------------------
+      // Deletes the secondary lines of an item mix(the additives) and updates the original sales line of the mix to initial values.
+      // The cancel of the item mix can be done both from the original line or the secondaries lines of the mix.
+      // Input:  - the sales line from which the cancel of the item mix was requested
+      //         - UserModifiedQty - is different from 0 when the function is called
+      //            from OnValidate trigger of the field Quantity from page 46)
+      // Output: -
+      //------------------------------------------------------------------------------------------------
+      SalesLine_L.RESET;
+      SalesLine_L.SETRANGE("Document Type",SalesLine."Document Type");
+      SalesLine_L.SETRANGE("Document No.",SalesLine."Document No.");
+      SalesLine_L.SETRANGE("Item Mix Root Line No.",SalesLine."Item Mix Root Line No.");
+      SalesLine_L.SETFILTER("Line No.",'=%1',SalesLine."Item Mix Root Line No.");
+
+      IF SalesLine_L.FINDFIRST THEN BEGIN
+        SalesLine_L.VALIDATE("Item Mix Root Line No.",0);
+        IF UserModifiedQty <> 0 THEN
+          SalesLine_L.VALIDATE(Quantity,UserModifiedQty)
+        ELSE
+          SalesLine_L.VALIDATE(Quantity,SalesLine_L."Item Mix Base Quantity");
+        SalesLine_L.VALIDATE("Item Mix Base Quantity",0);
+        SalesLine_L.VALIDATE("Item Mix Code",'');
+        // --> 20170523-WI00-TER01.01.00-1675-BSI01
+        SalesLine_L."Blanket Order No." := '';
+        SalesLine_L."Blanket Order Line No." := 0;
+        // <-- 20170523-WI00-TER01.01.00-1675-BSI01
+        SalesLine_L.MODIFY(TRUE);
+      END;
+
+      SalesLine_L.RESET;
+      SalesLine_L.SETRANGE("Document Type",SalesLine."Document Type");
+      SalesLine_L.SETRANGE("Document No.",SalesLine."Document No.");
+      SalesLine_L.SETRANGE("Item Mix Root Line No.",SalesLine."Item Mix Root Line No.");
+      SalesLine_L.SETFILTER("Line No.",'<>%1',SalesLine."Item Mix Root Line No.");
+
+      IF SalesLine_L.FINDFIRST THEN
+        REPEAT
+          SalesLine_L.VALIDATE("Item Mix Root Line No.",0);
+          SalesLine_L.DELETE(TRUE);
+        UNTIL SalesLine_L.NEXT =0;
+    END;
+
+    PROCEDURE CheckPossibleMixtureExists@8053000(SalesLine@8053000 : Record 37) : Boolean;
+    VAR
+      ItemMixRootItem_L@8053001 : Record 8053188;
+      Item_L@8053002 : Record 27;
+    BEGIN
+      //------------------------------------------------------------------------------------------------
+      // Checks if there are possible mixture to create for the current sales line
+      // Input:  - Sales Line of the sales order
+      // Output: - TRUE if the Item Mix has additives
+      //         - FALSE if the Item Mix has't additives
+      //------------------------------------------------------------------------------------------------
+
+      //Item Level
+      ItemMixRootItem_L.RESET;
+      ItemMixRootItem_L.SETRANGE(Type,ItemMixRootItem_L.Type::Item);
+      ItemMixRootItem_L.SETRANGE("No.",SalesLine."No.");
+      IF ItemMixRootItem_L.FINDSET THEN
+        REPEAT
+          IF ItemMixHasAdditives(ItemMixRootItem_L."Item Mix Code") THEN
+            EXIT(TRUE)
+        UNTIL ItemMixRootItem_L.NEXT =0;
+
+      Item_L.GET(SalesLine."No.");
+
+      //Species Level
+      ItemMixRootItem_L.RESET;
+      ItemMixRootItem_L.SETRANGE(Type,ItemMixRootItem_L.Type::Species);
+      ItemMixRootItem_L.SETRANGE("No.",Item_L."Species Code");
+      IF ItemMixRootItem_L.FINDSET THEN
+        REPEAT
+          IF ItemMixHasAdditives(ItemMixRootItem_L."Item Mix Code") THEN
+            EXIT(TRUE)
+        UNTIL ItemMixRootItem_L.NEXT =0;
+
+      //Sub-family Level
+      ItemMixRootItem_L.RESET;
+      ItemMixRootItem_L.SETRANGE(Type,ItemMixRootItem_L.Type::"Sub-family");
+      ItemMixRootItem_L.SETRANGE("No.",Item_L."Sub-Family Code");
+      IF ItemMixRootItem_L.FINDSET THEN
+        REPEAT
+          IF ItemMixHasAdditives(ItemMixRootItem_L."Item Mix Code") THEN
+            EXIT(TRUE)
+        UNTIL ItemMixRootItem_L.NEXT =0;
+
+      //Family Level
+      ItemMixRootItem_L.RESET;
+      ItemMixRootItem_L.SETRANGE(Type,ItemMixRootItem_L.Type::Family);
+      ItemMixRootItem_L.SETRANGE("No.",Item_L."Family Code");
+      IF ItemMixRootItem_L.FINDSET THEN
+        REPEAT
+          IF ItemMixHasAdditives(ItemMixRootItem_L."Item Mix Code") THEN
+            EXIT(TRUE)
+        UNTIL ItemMixRootItem_L.NEXT =0;
+
+      //Activity Level
+      ItemMixRootItem_L.RESET;
+      ItemMixRootItem_L.SETRANGE(Type,ItemMixRootItem_L.Type::Activity);
+      ItemMixRootItem_L.SETRANGE("No.",Item_L."Activity Code");
+      IF ItemMixRootItem_L.FINDSET THEN
+        REPEAT
+          IF ItemMixHasAdditives(ItemMixRootItem_L."Item Mix Code") THEN
+            EXIT(TRUE)
+        UNTIL ItemMixRootItem_L.NEXT =0;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE ItemMixHasAdditives@8053002(ItemMixCode@8053001 : Code[10]) : Boolean;
+    VAR
+      ItemMixAdditiveItem_L@8053000 : Record 8053189;
+    BEGIN
+      //------------------------------------------------------------------------------------------------
+      // Checks if an Item Mix has additives
+      // Input:  - the ID of the Item Mix
+      // Output: - TRUE if the Item Mix has additives
+      //         - FALSE if the Item Mix has't additives
+      //------------------------------------------------------------------------------------------------
+      ItemMixAdditiveItem_L.RESET;
+      ItemMixAdditiveItem_L.SETRANGE("Item Mix Code",ItemMixCode);
+      IF ItemMixAdditiveItem_L.FINDSET THEN
+        EXIT(TRUE)
+      ELSE
+        EXIT(FALSE);
+    END;
+
+    BEGIN
+    {
+      20130517-Nut04-CMC02.02.00-BSI01 : NEWOBJ
+      20130524-Nut04-CMC02.02.00-BSI01 : MODOBJ (validate fields)
+      20130604-Nut04-CMC02.02.00-BSI01 : ADDFUNC (CheckPossibleMixtureExist)
+                                       : ADDFUNC (ItemMixHasAdditives)
+      20130610-Nut04-CMC02.02.00-BSI01 : ADDCODE (manage create item mix also from OnValidate trigger of the field Quantity from page 46)
+      20170523-WI00-TER01.01.00-1675-BSI01 : ADDCODE (Initialiser lêaffectation . la commande ouverte)
+    }
+    END.
+  }
+}
+

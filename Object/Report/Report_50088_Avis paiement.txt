@@ -1,0 +1,3435 @@
+OBJECT Report 50088 Avis paiement
+{
+  OBJECT-PROPERTIES
+  {
+    Date=22/12/20;
+    Heure=15:14:02;
+    Modifi'=Oui;
+    Liste versions=ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    OnInitReport=BEGIN
+                   IF CompanyInfo.GET THEN BEGIN
+                     FormatAddr.Company(CompanyAddr, CompanyInfo);
+                   END;
+                   IF tableadvitam_G.GET THEN ;
+                   ActProdTech_G:=tableadvitam_G."PV Tech Prod. Activity Code";
+                   ActReseauTech_G :=tableadvitam_G."PV Tech Sales Network Code";
+                 END;
+
+    OnPreReport=VAR
+                  Session_L@1000000000 : Record 2000000009;
+                BEGIN
+                  Session_L.SETRANGE(Session_L."Ma session",TRUE);
+                  IF  Session_L.FINDFIRST  THEN;
+                  IF Session_L."Nom de la base de donn'es"='NAV-ADVITAM-PRODUCTION' THEN BEGIN
+                    CLEAR(NomBddTest_G);
+                    ArchRep_G := 'NavAgri';
+                  END ELSE BEGIN
+                    NomBddTest_G :=  COPYSTR('TEST : ' + Session_L."Nom de la base de donn'es",1, MAXSTRLEN( NomBddTest_G));
+                    ArchRep_G := 'TEST';
+                  END;
+                   Month_G := DATE2DMY(TODAY,2);
+                    Year_G := DATE2DMY(TODAY,3);
+                  //-->20140113-Rpt01-ADV01.01.00_ADVITAM-ESR-8
+                  IF TttRecap_G THEN BEGIN
+                    Recap_G := 'R';
+                  END ELSE BEGIN
+                    Recap_G := 'I';
+                  END;
+                  TypImprime_G := 'AVISP';
+                  //<--20140113-Rpt01-ADV01.01.00_ADVITAM-ESR-8
+
+                  CLEAR(CampMapping_G);
+                  TableCampagne_G.SETFILTER(TableCampagne_G."Starting Date", '<= %1', TODAY);
+                  TableCampagne_G.SETFILTER(TableCampagne_G."Ending Date", '>= %1', TODAY);
+                  IF TableCampagne_G.FINDFIRST THEN BEGIN
+                    IF NOT EVALUATE(Camp1_G, TableCampagne_G."No.") THEN BEGIN
+                      Camp1_G :=0;
+                    END ELSE BEGIN
+                       CampMapp_G :=( Camp1_G * 10000) + ( Camp1_G + 1);
+                    END;
+                  END;
+
+                  // --> 20180305-Wi00-ADV01.01.00-3321-JCD
+                  IF GUIALLOWED THEN
+                    Win_G.OPEN(Text8053001+Text8053002+Text8053003+Text8053004);
+                  // <-- 20180305-Wi00-ADV01.01.00-3321-JCD
+                END;
+
+    OnPostReport=BEGIN
+                   // --> 20180305-Wi00-ADV01.01.00-3321-JCD
+                   IF GUIALLOWED THEN
+                     Win_G.CLOSE;
+                   // <-- 20180305-Wi00-ADV01.01.00-3321-JCD
+                 END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table8053501;
+        DataItemTableView=WHERE(Line Type=CONST(Farmer));
+        DataItemVarName=CMC Seq. Comp. Journal LineAgr;
+        PrintOnlyIfDetail=Oui;
+        OnPreDataItem=BEGIN
+                        //IF USERID = 'CHRISTOPHE DAL' THEN BEGIN
+                        //  MESSAGE('1');
+                        //END;
+
+                        // --> 20180305-Wi00-ADV01.01.00-3321-JCD
+                        IF GUIALLOWED THEN BEGIN
+                          NumberContact_G := "CMC Seq. Comp. Journal LineAgr".COUNT;
+                          Number_G := 0;
+                        END;
+                        // <-- 20180305-Wi00-ADV01.01.00-3321-JCD
+                      END;
+
+        OnAfterGetRecord=VAR
+                           CompJnlLine_L@1000000000 : Record 8053501;
+                           VendorBank_L@1000000001 : Record 288;
+                           FarmerBalance_L@1000000002 : Decimal;
+                           TablePaymentMethod_L@1000000003 : Record 289;
+                           CVLedgerMgt_L@1000000004 : Codeunit 8053377;
+                         BEGIN
+                           // --> 20180305-Wi00-ADV01.01.00-3321-JCD
+                           {BEFORE
+                           //-->20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+                           CVLedgerMgt_L.RefreshCVLetter2("Account No.");
+                           //-->20141012-Rpt01-ADV01.01.00_ADVITAM-CDL5
+                           COMMIT;
+                           //<--20141012-Rpt01-ADV01.01.00_ADVITAM-CDL5
+                           //<--20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+                           AFTER}
+                           IF GUIALLOWED THEN BEGIN
+                             Number_G += 1;
+                             IF Number_G MOD 5 = 0 THEN
+                               Win_G.UPDATE(1,"CMC Seq. Comp. Journal LineAgr"."Account No.");
+                             IF (NumberContact_G <> 0) THEN
+                               IF Number_G MOD 10 = 0 THEN
+                                 Win_G.UPDATE(2,ROUND((Number_G/NumberContact_G)*10000,1));
+                           END;
+                           IF (("Customer Balance" = 0) AND ("Vendor Balance" = 0)) THEN BEGIN
+                             CurrReport.SKIP;
+                           END;
+                           // <-- 20180305-Wi00-ADV01.01.00-3321-JCD
+
+
+
+                           CLEAR(RetenuCredit_G);
+                           CLEAR(RetenuDebit_G);
+                           CLEAR(TotalCredit_G);
+                           CLEAR(TotalDebit_G);
+                           CLEAR(APayer_G);
+                           CLEAR(ARecevoir_G);
+
+                           CALCFIELDS("Customer No.","Vendor No.","Amount To Restraint","OffSet Amount");
+                           FarmerBalance_L := "Vendor Balance";
+                           IF "Line Type" = "Line Type"::Document THEN BEGIN
+                             "Remaining Balance" := FarmerBalance_L -  "OffSet Amount";
+                           END ELSE BEGIN
+                             "Remaining Balance" := 0;
+                             CompJnlLine_L.RESET;
+                             CompJnlLine_L.SETCURRENTKEY("Capital Journal Template","Capital Batch Name","Line No.",Indentation);
+                             CompJnlLine_L.SETRANGE("Capital Journal Template","Capital Journal Template");
+                             CompJnlLine_L.SETRANGE("Capital Batch Name","Capital Batch Name");
+                             CompJnlLine_L.SETRANGE("Line Type","Line Type"::Document);
+                             CompJnlLine_L.SETRANGE(Indentation,1);
+                             CompJnlLine_L.SETRANGE("Account No.","Account No.");
+                             IF CompJnlLine_L.FINDSET THEN
+                               REPEAT
+                                  CompJnlLine_L.CALCFIELDS("Customer No.","Vendor No.","Amount To Restraint","OffSet Amount");
+                                 "Remaining Balance"  += CompJnlLine_L."Vendor Balance" - CompJnlLine_L."OffSet Amount"
+                               UNTIL CompJnlLine_L.NEXT = 0 ;
+                           END;
+
+                           // --> 20180305-Wi00-ADV01.01.00-3321-JCD
+                           {BEFORE
+                           IF (("Customer Balance" = 0) AND ("Vendor Balance" = 0)) THEN BEGIN
+                             CurrReport.SKIP;
+                           END;
+                           }
+                           // <-- 20180305-Wi00-ADV01.01.00-3321-JCD
+
+                           IF Contact_G."No." <> "Account No." THEN BEGIN
+                             CLEAR(VendorBank_L);
+                             //-->20140912-Rpt01-ADV01.01.00_ADVITAM-CDL2
+                             CLEAR(PaiementTexte_G);
+                             //<--20140912-Rpt01-ADV01.01.00_ADVITAM-CDL2
+                             IF Contact_G.GET("Account No.") THEN BEGIN
+                               FormatAddr.ContactAddr(ContactAddr, Contact_G);
+                               CASE Contact_G."Purchase Payment Method Code" OF
+                                 'VIE': BEGIN
+                                   IF NOT Vendor_G.GET(Contact_G."Vendor No.") THEN BEGIN
+                                     CLEAR(Vendor_G."Default Bank Account Code");
+                                   END;
+                                   IF Vendor_G."Default Bank Account Code" <> '' THEN BEGIN
+                                     IF NOT VendorBank_L.GET(Vendor_G."No.", Vendor_G."Default Bank Account Code") THEN BEGIN
+                                       VendorBank_L.SETRANGE(VendorBank_L."Vendor No.", Vendor_G."No.");
+                                       IF VendorBank_L.FINDFIRST() THEN BEGIN
+                                       END
+                                     END;
+                                   END ELSE BEGIN
+                                     VendorBank_L.SETRANGE(VendorBank_L."Vendor No.", Vendor_G."No.");
+                                     IF VendorBank_L.FINDFIRST() THEN BEGIN
+                                     END
+                                   END;
+                                   PaiementTexte_G := STRSUBSTNO(Text0002, VendorBank_L."Bank Branch No.", VendorBank_L."Agency Code",
+                                     VendorBank_L."Bank Account No.");
+                                 END;
+                                 'CHE': BEGIN
+                                   PaiementTexte_G := Text0003;
+                                 END;
+                                 ELSE BEGIN
+                                   //-->20140912-Rpt01-ADV01.01.00_ADVITAM-CDL2
+                                   //BEFORE
+                                   {
+                                   IF NOT TablePaymentMethod_L.GET(Contact_G."Purchase Payment Method Code") THEN BEGIN
+                                   }
+                                   //AFTER
+                                   IF TablePaymentMethod_L.GET(Contact_G."Purchase Payment Method Code") THEN BEGIN
+                                   //<--20140912-Rpt01-ADV01.01.00_ADVITAM-CDL2
+                                     PaiementTexte_G := STRSUBSTNO(Text0004, TablePaymentMethod_L.Description);
+                                   END;
+                                 END;
+                              END;
+                             END ELSE BEGIN
+                               CLEAR(ContactAddr);
+                               CLEAR(PaiementTexte_G);
+                             END;
+                           END;
+                           // --> 20140107-Rpt01-ADV01.01.00_ADVITAM-ESR-5
+                           CLEAR(SalesPurchPerson_G);
+                           TableContactSaleperson_G.SETRANGE(TableContactSaleperson_G."Contact Code","Account No." );
+                           TableContactSaleperson_G.SETRANGE(TableContactSaleperson_G."Prod. Activity Code",ActProdTech_G) ;
+                           TableContactSaleperson_G.SETRANGE(TableContactSaleperson_G."Sales Network Code",ActReseauTech_G) ;
+                           IF TableContactSaleperson_G.FINDFIRST  THEN BEGIN
+                             IF NOT SalesPurchPerson_G.GET(TableContactSaleperson_G."Salesperson Code") THEN BEGIN
+                               CLEAR(SalesPurchPerson_G);
+                             END;
+                           END;
+
+                           // <-- 20140107-Rpt01-ADV01.01.00_ADVITAM-ESR-5
+                           //-->20140113-Rpt01-ADV01.01.00_ADVITAM-ESR-8
+                           IF TableBac_G.GET("Account No." ,'MAPPING','PUBLICITE')  THEN BEGIN
+                             IF Recap_G = 'R' THEN BEGIN
+                                TableBac_G."Text 1" :='Oui';
+                                IF TableBac_G.MODIFY(TRUE) THEN BEGIN
+                                END;
+                              END;
+                           END ELSE BEGIN
+                              CLEAR(TableBac_G);
+                           END;
+
+                           IF (("Remaining Balance" = 0) AND ("Vendor Balance" <> 0 )) THEN BEGIN
+                             Debiteur_G := TRUE;
+                           //-->20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+                           //BEFORE
+                           {
+                             CurrReport.SKIP;
+                           }
+                           //<--20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+                           END ELSE BEGIN
+                             Debiteur_G := FALSE;
+                           END;
+                         END;
+
+        ReqFilterFields=Capital Journal Template,Capital Batch Name;
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Header;
+            SectionWidth=52650;
+            SectionHeight=6768;
+          }
+          CONTROLS
+          {
+            { 1000000003;TextBox;15600;0    ;6300 ;423  ;FontSize=9;
+                                                         FontBold=Oui;
+                                                         SourceExpr=ContactAddr[1];
+                                                         DataSetFieldName=ContactAddr_1_ }
+            { 1000000005;TextBox;15600;423  ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=Contact_G.Address;
+                                                         DataSetFieldName=ContactAddr_2_ }
+            { 1000000008;TextBox;15600;846  ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=Contact_G."Address 2";
+                                                         DataSetFieldName=ContactAddr_3_ }
+            { 1000000012;TextBox;15600;1269 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=STRSUBSTNO('%1  %2',Contact_G."Post Code",Contact_G.City);
+                                                         DataSetFieldName=ContactAddr_4_ }
+            { 1000000016;TextBox;15600;1692 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=ContactAddr[5];
+                                                         DataSetFieldName=ContactAddr_5_ }
+            { 1000000020;TextBox;15600;2115 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=ContactAddr[6];
+                                                         DataSetFieldName=ContactAddr_6_ }
+            { 1000000031;TextBox;15600;2538 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=ContactAddr[7];
+                                                         DataSetFieldName=ContactAddr_7_ }
+            { 1000000033;TextBox;15600;2961 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=ContactAddr[8];
+                                                         DataSetFieldName=ContactAddr_8_ }
+            { 1000000004;TextBox;0    ;1269 ;6300 ;423  ;FontSize=9;
+                                                         FontBold=Oui;
+                                                         SourceExpr=CompanyAddr[1];
+                                                         DataSetFieldName=CompanyAddr_1_ }
+            { 1000000006;TextBox;0    ;1692 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=CompanyAddr[2];
+                                                         DataSetFieldName=CompanyAddr_2_ }
+            { 1000000010;TextBox;0    ;2115 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=CompanyAddr[3];
+                                                         DataSetFieldName=CompanyAddr_3_ }
+            { 1000000014;TextBox;0    ;2538 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=CompanyAddr[4];
+                                                         DataSetFieldName=CompanyAddr_4_ }
+            { 1000000018;TextBox;0    ;2961 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=CompanyAddr[5];
+                                                         DataSetFieldName=CompanyAddr_5_ }
+            { 1000000028;TextBox;0    ;3384 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=CompanyAddr[6];
+                                                         DataSetFieldName=CompanyAddr_6_ }
+            { 1000000032;TextBox;0    ;3807 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=CompanyAddr[7];
+                                                         DataSetFieldName=CompanyAddr_7_ }
+            { 1000000034;TextBox;0    ;4230 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=CompanyAddr[8];
+                                                         DataSetFieldName=CompanyAddr_8_ }
+            { 1000000037;TextBox;6600 ;0    ;2100 ;423  ;CaptionML=[ENU=Boolsession;
+                                                                    FRA=Boolsession];
+                                                         SourceExpr=NomBddTest_G;
+                                                         DataSetFieldName=NomBddTest_G }
+            { 1000000038;TextBox;5400 ;0    ;1050 ;423  ;CaptionML=[ENU=Boolsession;
+                                                                    FRA=Boolsession];
+                                                         SourceExpr=ArchRep_G;
+                                                         DataSetFieldName=ArchRep_G }
+            { 1000000039;TextBox;5850 ;423  ;630  ;423  ;SourceExpr=FORMAT(TableBac_G."Boolean 1");
+                                                         DataSetFieldName=Bac1 }
+            { 1000000040;TextBox;6600 ;423  ;630  ;423  ;SourceExpr=FORMAT(TableBac_G."Boolean 2");
+                                                         DataSetFieldName=Bac2 }
+            { 1000000041;TextBox;7350 ;423  ;630  ;423  ;SourceExpr=FORMAT(TableBac_G."Boolean 3");
+                                                         DataSetFieldName=Bac3 }
+            { 1000000042;TextBox;4050 ;0    ;1050 ;423  ;SourceExpr=Contact_G."Company - Post Code";
+                                                         DataSetFieldName=PostCode }
+            { 1000000043;TextBox;2850 ;0    ;1050 ;423  ;SourceExpr=TypImprime_G;
+                                                         DataSetFieldName=TypImprime_G }
+            { 1000000044;TextBox;1650 ;0    ;1050 ;423  ;SourceExpr=FORMAT(CampMapp_G );
+                                                         DataSetFieldName=NoCampagne }
+            { 1000000045;TextBox;4650 ;423  ;1050 ;423  ;SourceExpr=Recap_G;
+                                                         DataSetFieldName=Recap_G }
+            { 1000000046;TextBox;2850 ;423  ;1470 ;423  ;SourceExpr=UPPERCASE(Imprimante_G);
+                                                         DataSetFieldName=Imprimante_G }
+            { 1000000048;TextBox;1200 ;0    ;210  ;423  ;Visible=Non;
+                                                         ForeColor=65535;
+                                                         SourceExpr=FORMAT(BoolMappage_G );
+                                                         DataSetFieldName=BoolMappage_G }
+            { 1000000049;TextBox;8850 ;0    ;2100 ;423  ;HorzAlign=Center;
+                                                         FontSize=9;
+                                                         SourceExpr=FORMAT(TODAY,0,'<Day,2>/<Month,2>/<Year4>');
+                                                         DataSetFieldName=PostingDate }
+            { 1000000047;TextBox;7050 ;1269 ;8400 ;846  ;Name=Company Name;
+                                                         HorzAlign=Center;
+                                                         FontName=verdana;
+                                                         FontSize=14;
+                                                         FontBold=Oui;
+                                                         CaptionML=[ENU=Company Name;
+                                                                    FRA=Nom soci't'];
+                                                         SourceExpr=CompanyInfo.Name;
+                                                         DataSetFieldName=Company_Name }
+            { 1000000050;TextBox;7050 ;2115 ;11130;423  ;HorzAlign=Center;
+                                                         SourceExpr=STRSUBSTNO('%1 - %2',  CompanyInfo.Address,CompanyInfo."Address 2");
+                                                         DataSetFieldName=CompanyInfo1 }
+            { 1000000051;TextBox;7050 ;2538 ;11130;423  ;HorzAlign=Center;
+                                                         SourceExpr=STRSUBSTNO('%1 %2', CompanyInfo."Post Code", CompanyInfo.City);
+                                                         DataSetFieldName=CompanyInfo2 }
+            { 1000000052;TextBox;7050 ;2961 ;11130;423  ;HorzAlign=Center;
+                                                         SourceExpr=STRSUBSTNO('%1 : %2   %3 : %4', CompanyInfo.FIELDCAPTION("Phone No."), CompanyInfo."Phone No.",CompanyInfo.FIELDCAPTION("Fax No."),CompanyInfo."Fax No.");
+                                                         DataSetFieldName=CompanyInfo3 }
+            { 1000000053;TextBox;7050 ;3807 ;11130;423  ;HorzAlign=Center;
+                                                         SourceExpr=STRSUBSTNO('%1   -  %2 : %3', 'Capital_G', CompanyInfo.FIELDCAPTION("Registration No."), CompanyInfo."Registration No.");
+                                                         DataSetFieldName=CompanyInfo4 }
+            { 1000000054;TextBox;7050 ;4230 ;11130;423  ;HorzAlign=Center;
+                                                         FontSize=7;
+                                                         FontBold=Non;
+                                                         CaptionML=[ENU=VAT Reg. No.;
+                                                                    FRA=N› id. intracomm.];
+                                                         SourceExpr=STRSUBSTNO('%1 :  %2',CompanyInfo.FIELDCAPTION("VAT Registration No."),CompanyInfo."VAT Registration No.");
+                                                         DataSetFieldName=CompanyInfo5 }
+            { 1000000055;TextBox;7050 ;5076 ;11130;423  ;HorzAlign=Center;
+                                                         SourceExpr='AgrementNo_G';
+                                                         DataSetFieldName=AgrementNo_G }
+            { 1000000056;TextBox;7050 ;4653 ;11130;423  ;HorzAlign=Center;
+                                                         FontSize=7;
+                                                         FontBold=Non;
+                                                         CaptionML=[ENU=VAT Reg. No.;
+                                                                    FRA=N› id. intracomm.];
+                                                         SourceExpr=STRSUBSTNO('%1 :  %2',CompanyInfo.FIELDCAPTION("Trade Register"),CompanyInfo."Trade Register");
+                                                         DataSetFieldName=CompanyInfo6 }
+            { 1000000057;TextBox;7050 ;3384 ;11130;423  ;HorzAlign=Center;
+                                                         SourceExpr=STRSUBSTNO('%1 : %2',CompanyInfo.FIELDCAPTION("APE Code"),CompanyInfo."APE Code");
+                                                         DataSetFieldName=CompanyInfo7 }
+            { 1000000058;TextBox;7050 ;5499 ;6510 ;423  ;SourceExpr='RespCenter.Contact';
+                                                         DataSetFieldName=AdresseCentreGestion }
+            { 1000000059;TextBox;8100 ;423  ;2100 ;423  ;SourceExpr=TableContactSaleperson_G."Sales Area Code";
+                                                         DataSetFieldName=region }
+            { 1000000060;TextBox;2550 ;846  ;5460 ;423  ;SourceExpr=[ STRSUBSTNO('%1%2',(Year_G*100+Month_G),"Account No.")];
+                                                         DataSetFieldName=NumDoc_G }
+            { 1000000061;TextBox;11400;0    ;1500 ;423  ;SourceExpr=[SalesPurchPerson_G.Code + ' ' + SalesPurchPerson_G.Name ];
+                                                         DataSetFieldName=TC }
+            { 1000000062;TextBox;0    ;6345 ;2100 ;423  ;SourceExpr=FORMAT(DatePaiement_G );
+                                                         DataSetFieldName=DatePaiement_G }
+            { 1000000063;TextBox;2550 ;6345 ;2100 ;423  ;SourceExpr=PaiementTexte_G;
+                                                         DataSetFieldName=PaiementTexte_G }
+            { 1000000072;TextBox;18450;3807 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=Contact_G.CompanyNameSpec;
+                                                         DataSetFieldName=SocNom }
+            { 1000000073;TextBox;18450;4653 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=Contact_G."Company - Address";
+                                                         DataSetFieldName=SocAdr1 }
+            { 1000000074;TextBox;18450;5499 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=Contact_G."Company - Address 2";
+                                                         DataSetFieldName=SocAdr2 }
+            { 1000000075;TextBox;18450;6345 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=STRSUBSTNO('%1  %2',Contact_G."Company - Post Code",Contact_G."Company - City");
+                                                         DataSetFieldName=SocCPV }
+            { 1000000076;TextBox;10500;423  ;1260 ;423  ;SourceExpr=Versionmapping_G;
+                                                         DataSetFieldName=VersionMapping_G }
+          }
+           }
+        { PROPERTIES
+          {
+            SectionType=TransHeader;
+            SectionWidth=52650;
+            SectionHeight=423;
+          }
+          CONTROLS
+          {
+          }
+           }
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=52650;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+            { 1000000009;TextBox;600  ;0    ;1500 ;423  ;SourceExpr="Account No.";
+                                                         DataSetFieldName=CMC_Seq__Comp__Journal_LineAgr__Account_No__ }
+            { 1000000011;TextBox;2250 ;0    ;4500 ;423  ;SourceExpr=Description;
+                                                         DataSetFieldName=CMC_Seq__Comp__Journal_LineAgr_Description }
+            { 1000000013;TextBox;6900 ;0    ;1800 ;423  ;SourceExpr="Customer Balance";
+                                                         DataSetFieldName=CMC_Seq__Comp__Journal_LineAgr__Customer_Balance_ }
+            { 1000000015;TextBox;8850 ;0    ;1800 ;423  ;SourceExpr="Vendor Balance";
+                                                         DataSetFieldName=CMC_Seq__Comp__Journal_LineAgr__Vendor_Balance_ }
+            { 1000000017;TextBox;10800;0    ;300  ;423  ;SourceExpr="Document Type";
+                                                         DataSetFieldName=CMC_Seq__Comp__Journal_LineAgr__Document_Type_ }
+            { 1000000019;TextBox;11250;0    ;1500 ;423  ;SourceExpr="Farmer Document No.";
+                                                         DataSetFieldName=CMC_Seq__Comp__Journal_LineAgr__Farmer_Document_No__ }
+            { 1000000021;TextBox;12900;0    ;1800 ;423  ;SourceExpr="OffSet Amount";
+                                                         DataSetFieldName=CMC_Seq__Comp__Journal_LineAgr__OffSet_Amount_ }
+            { 1000000022;TextBox;11100;423  ;1500 ;423  ;SourceExpr="Line Type";
+                                                         DataSetFieldName=CMC_Seq__Comp__Journal_LineAgr__Line_Type_ }
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=1;
+        DataItemTable=Table8053501;
+        DataItemTableView=WHERE(Line Type=CONST(Document));
+        DataItemVarName=CMC Seq. Comp. Journal LineDoc;
+        PrintOnlyIfDetail=Oui;
+        OnPreDataItem=BEGIN
+                        CMCSettOffLedEntTmpTotal_G.DELETEALL;
+                        CLEAR(CMCSettOffLedEntTmpTotal_G);
+                      END;
+
+        DataItemLink=Capital Journal Template=FIELD(Capital Journal Template),
+                     Capital Batch Name=FIELD(Capital Batch Name),
+                     Account No.=FIELD(Account No.);
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=52650;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+            { 1000000023;TextBox;12900;0    ;1800 ;423  ;SourceExpr="OffSet Amount";
+                                                         DataSetFieldName=CMC_Seq__Comp__Journal_LineDoc__OffSet_Amount_ }
+            { 1000000024;TextBox;8850 ;0    ;1800 ;423  ;SourceExpr="Vendor Balance";
+                                                         DataSetFieldName=CMC_Seq__Comp__Journal_LineDoc__Vendor_Balance_ }
+            { 1000000025;TextBox;10800;0    ;300  ;423  ;SourceExpr="Document Type";
+                                                         DataSetFieldName=CMC_Seq__Comp__Journal_LineDoc__Document_Type_ }
+            { 1000000026;TextBox;11250;0    ;1500 ;423  ;SourceExpr="Farmer Document No.";
+                                                         DataSetFieldName=CMC_Seq__Comp__Journal_LineDoc__Farmer_Document_No__ }
+            { 1000000027;TextBox;6900 ;0    ;1800 ;423  ;SourceExpr="Customer Balance";
+                                                         DataSetFieldName=CMC_Seq__Comp__Journal_LineDoc__Customer_Balance_ }
+            { 1000000029;TextBox;600  ;0    ;1500 ;423  ;SourceExpr="Account No.";
+                                                         DataSetFieldName=CMC_Seq__Comp__Journal_LineDoc__Account_No__ }
+            { 1000000007;TextBox;10650;423  ;1200 ;423  ;SourceExpr="Line Type";
+                                                         DataSetFieldName=CMC_Seq__Comp__Journal_LineDoc__Line_Type_ }
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=2;
+        DataItemTable=Table2000000026;
+        DataItemVarName=Detail;
+        PrintOnlyIfDetail=Non;
+        OnPreDataItem=VAR
+                        CVLedgEntry_L@1000000000 : Record 8053380;
+                        SettingOffRemain_L@1000000001 : Decimal;
+                        Trouve_L@1000000002 : Boolean;
+                      BEGIN
+                        CMCSettOffLedEntTmp_G.DELETEALL;
+                        CLEAR(CMCSettOffLedEntTmp_G);
+
+                        // Ligne facture . compenser (normalement une seule ligne.
+                        //CVLedgEntry_L.SETRANGE("Document No.", "CMC Seq. Comp. Journal LineDoc"."Farmer Document No.");
+                        //IF CVLedgEntry_L.FINDSET() THEN BEGIN
+                        //  REPEAT
+                        IF "CMC Seq. Comp. Journal LineDoc"."Sales/Puchase" = "CMC Seq. Comp. Journal LineDoc"."Sales/Puchase"::Purchase THEN BEGIN
+                          Trouve_L := CVLedgEntry_L.GET(CVLedgEntry_L."Customer / Vendor"::Vendor, "CMC Seq. Comp. Journal LineDoc"."Entry No.");
+                        END ELSE BEGIN
+                          Trouve_L := CVLedgEntry_L.GET(CVLedgEntry_L."Customer / Vendor"::Customer, "CMC Seq. Comp. Journal LineDoc"."Entry No.");
+                        END;
+
+                        IF Trouve_L THEN BEGIN
+                          CVLedgEntry_L.CALCFIELDS(Amount,"Remaining Amount","Original Amt. (LCY)","Remaining Amt. (LCY)","Amount (LCY)",
+                          "Debit Amount","Credit Amount","Debit Amount (LCY)","Credit Amount (LCY)");
+
+                          CMCSettOffLedEntTmp_G.INIT;
+                        //   CMCSettOffLedEntTmp_G.TRANSFERFIELDS(CVLedgEntry_L);
+                          CMCSettOffLedEntTmp_G."Posting Date" := CVLedgEntry_L."Posting Date";
+                          CMCSettOffLedEntTmp_G."Document Type" := CVLedgEntry_L."Document Type";
+                          CMCSettOffLedEntTmp_G."Document No." := CVLedgEntry_L."Document No.";
+                          CMCSettOffLedEntTmp_G.Description := CVLedgEntry_L.Description;
+                          CMCSettOffLedEntTmp_G."Original Ledger Entry No." := CVLedgEntry_L."Entry No.";
+                          IF CVLedgEntry_L."Customer / Vendor" = CVLedgEntry_L."Customer / Vendor"::Customer THEN BEGIN
+                            CMCSettOffLedEntTmp_G."Ledger type" := CMCSettOffLedEntTmp_G."Ledger type"::Customer;
+                          END ELSE BEGIN
+                            CMCSettOffLedEntTmp_G."Ledger type" := CMCSettOffLedEntTmp_G."Ledger type"::Vendor;
+                          END;
+
+                          CMCSettOffLedEntTmp_G."Account No." := Contact_G."No.";
+                          CMCSettOffLedEntTmp_G."Entry No." := G_NewSettEntryNo;
+                          G_NewSettEntryNo+=1;
+                          CMCSettOffLedEntTmp_G."Applies-to ID" := '';
+                          CMCSettOffLedEntTmp_G.Amount := CVLedgEntry_L.Amount;
+                          CMCSettOffLedEntTmp_G."Amount to Apply" := CMCSettOffLedEntTmp_G.Amount;
+                          CMCSettOffLedEntTmp_G."Remaining Amount" := CVLedgEntry_L."Remaining Amount";
+                          CMCSettOffLedEntTmp_G."Original Amt. (LCY)" := CVLedgEntry_L."Original Amt. (LCY)";
+                          CMCSettOffLedEntTmp_G."Remaining Amt. (LCY)" := CVLedgEntry_L."Remaining Amt. (LCY)";
+                          CMCSettOffLedEntTmp_G."Amount (LCY)" := CVLedgEntry_L."Amount (LCY)";
+                          CMCSettOffLedEntTmp_G."Debit Amount" := CVLedgEntry_L."Debit Amount";
+                          CMCSettOffLedEntTmp_G."Credit Amount" := CVLedgEntry_L."Credit Amount";
+                          CMCSettOffLedEntTmp_G."Debit Amount (LCY)" := CVLedgEntry_L."Debit Amount (LCY)";
+                          CMCSettOffLedEntTmp_G."Credit Amount (LCY)" := CVLedgEntry_L."Credit Amount (LCY)";
+                          CMCSettOffLedEntTmp_G."Original Amount" := CVLedgEntry_L."Original Amount";
+                          CMCSettOffLedEntTmp_G."Farmer Document No." := "CMC Seq. Comp. Journal LineDoc"."Farmer Document No.";
+                          CMCSettOffLedEntTmp_G."SettOff Amount to apply" := "CMC Seq. Comp. Journal LineDoc"."Vendor Balance";
+                          CMCSettOffLedEntTmp_G."IC Partner Code" := "CMC Seq. Comp. Journal LineDoc"."Document No.";
+                          CMCSettOffLedEntTmp_G."Due Date" := CVLedgEntry_L."Due Date";
+                          SettingOffRemain_L := GetRemainComp(0, CVLedgEntry_L."Entry No.");
+                          CMCSettOffLedEntTmp_G."Setting Off Remain" := SettingOffRemain_L;
+
+                          IF CMCSettOffLedEntTmp_G.INSERT THEN;
+                          CMCSettOffLedEntTmpTotal_G.TRANSFERFIELDS(CMCSettOffLedEntTmp_G);
+                          IF CMCSettOffLedEntTmpTotal_G.INSERT THEN;
+
+                          DetailCompensationClient(CMCSettOffLedEntTmp_G."Document No.");
+
+                          //<--20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+                          DetailLettrageCliFou(Contact_G."No.", CVLedgEntry_L."CV Entry Letter");
+                          //<--20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+                        //  UNTIL CVLedgEntry_L.NEXT = 0;
+                        END;
+
+                        // Les compensations
+                        IF Methode_G = '1' THEN BEGIN
+                          // M'thode initiale
+                          DetailCompensation();
+                        END ELSE BEGIN
+                          IF Debiteur_G THEN BEGIN
+                            CreateTmpCMCSetOff("CMC Seq. Comp. Journal LineDoc");
+                          END ELSE BEGIN
+                            DetailCompensation();
+                            //<--20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+                            DetailCompensationClient('');
+                            //<--20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+                          END;
+                        END;
+
+                        Detail.SETRANGE(Num'ro, 1, CMCSettOffLedEntTmp_G.COUNT);
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           IF Num'ro = 1 THEN BEGIN
+                             CMCSettOffLedEntTmp_G.FINDSET;
+                           END ELSE BEGIN
+                             CMCSettOffLedEntTmp_G.NEXT;
+                           END;
+                           // Certain sans type de document.
+                           //IF CMCSettOffLedEntTmp_G."Document Type" = CMCSettOffLedEntTmp_G."Document Type"::" " THEN BEGIN
+                           //  CurrReport.SKIP;
+                           //END ELSE BEGIN
+                             IF CMCSettOffLedEntTmp_G.Amount < 0 THEN BEGIN
+                               CLEAR(Debit_G);
+                               Credit_G := -CMCSettOffLedEntTmp_G.Amount;
+                               TotalCredit_G += -CMCSettOffLedEntTmp_G.Amount;
+                             END ELSE BEGIN
+                               Debit_G := CMCSettOffLedEntTmp_G.Amount;
+                               TotalDebit_G += -CMCSettOffLedEntTmp_G.Amount;
+                               CLEAR(Credit_G);
+                             END;
+                           //END;
+                           IF Num'ro = CMCSettOffLedEntTmp_G.COUNT THEN BEGIN
+                             APayer_G := TotalCredit_G + TotalDebit_G;
+                             CLEAR(ARecevoir_G);
+                             CLEAR(TexteSolde_G);
+                             IF APayer_G > 0 THEN BEGIN
+                               APayer_G -= (RetenuCredit_G + RetenuDebit_G);
+                               IF APayer_G < 0 THEN BEGIN
+                                 CLEAR(APayer_G);
+                                 CLEAR(TexteSolde_G);
+                           //Non      CLEAR(PaiementTexte_G);
+                               END ELSE BEGIN
+                                 TexteSolde_G := Text0005;
+                               END;
+                             END ELSE BEGIN
+                               ARecevoir_G := APayer_G;
+                               CLEAR(APayer_G);
+                               TexteSolde_G := Text0006;
+                           //Non    CLEAR(PaiementTexte_G);
+                             END;
+                           END;
+                         END;
+
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=52650;
+            SectionHeight=423;
+          }
+          CONTROLS
+          {
+            { 1000000030;TextBox;0    ;0    ;1500 ;423  ;SourceExpr=CMCSettOffLedEntTmp_G."Posting Date";
+                                                         DataSetFieldName=PostDate }
+            { 1000000035;TextBox;3750 ;0    ;2250 ;423  ;SourceExpr=CMCSettOffLedEntTmp_G.Description;
+                                                         DataSetFieldName=Desciption }
+            { 1000000036;TextBox;8700 ;0    ;2100 ;423  ;SourceExpr=Debit_G;
+                                                         DataSetFieldName=Debit_G }
+            { 1000000000;TextBox;6150 ;0    ;2100 ;423  ;SourceExpr=FORMAT(CMCSettOffLedEntTmp_G."Due Date" );
+                                                         DataSetFieldName=DateEch }
+            { 1000000001;TextBox;1650 ;0    ;1500 ;423  ;SourceExpr=CMCSettOffLedEntTmp_G."Document No.";
+                                                         DataSetFieldName=NoPiece }
+            { 1000000002;TextBox;11100;0    ;2100 ;423  ;SourceExpr=Credit_G;
+                                                         DataSetFieldName=Credit_G }
+            { 1000000064;TextBox;13650;0    ;2100 ;423  ;SourceExpr=[CMCSettOffLedEntTmp_G."Due Date" ];
+                                                         DataSetFieldName=triDateEch }
+          }
+           }
+        { PROPERTIES
+          {
+            SectionType=Footer;
+            SectionWidth=52650;
+            SectionHeight=1269;
+          }
+          CONTROLS
+          {
+            { 1000000065;TextBox;0    ;0    ;2100 ;423  ;SourceExpr=RetenuDebit_G;
+                                                         DataSetFieldName=RetenuDebit_G }
+            { 1000000066;TextBox;2400 ;0    ;2100 ;423  ;SourceExpr=RetenuCredit_G;
+                                                         DataSetFieldName=RetenuCredit_G }
+            { 1000000067;TextBox;7500 ;0    ;2100 ;423  ;SourceExpr=TotalCredit_G;
+                                                         DataSetFieldName=TotalCredit_G }
+            { 1000000068;TextBox;5100 ;0    ;2100 ;423  ;SourceExpr=TotalDebit_G;
+                                                         DataSetFieldName=TotalDebit_G }
+            { 1000000069;TextBox;10050;0    ;2100 ;423  ;SourceExpr=ARecevoir_G;
+                                                         DataSetFieldName=ARecevoir_G }
+            { 1000000070;TextBox;12450;0    ;2100 ;423  ;SourceExpr=APayer_G;
+                                                         DataSetFieldName=APayer_G }
+            { 1000000071;TextBox;14700;0    ;2100 ;423  ;SourceExpr=TexteSolde_G;
+                                                         DataSetFieldName=TexteSolde_G }
+          }
+           }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=9020;
+      Height=3410;
+    }
+    CONTROLS
+    {
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      OnOpenPage=VAR
+                   "<-- 3LI LOCALS -->"@1000000001 : Integer;
+                   PdfService_L@1000000000 : DotNet "'BusinessSolutions3LI.MailServices, Version=1.0.0.0, Culture=neutral, PublicKeyToken=511b8d9eb0af56cf'.BusinessSolutions3LI.MailServices.PdfService" RUNONCLIENT;
+                 BEGIN
+                   Methode_G := ' ';
+                   IF ISSERVICETIER THEN BEGIN
+                     PdfService_L := PdfService_L.PdfService();
+                     Imprimante_G := PdfService_L.DefaultPrinter();
+                     BoolMappage_G :=TRUE;
+                     Versionmapping_G:='00001'
+                   END;
+                 END;
+
+      OnQueryClosePage=BEGIN
+                         IF (CloseAction <> ACTION::Cancel) THEN BEGIN
+                           IF DatePaiement_G = 0D THEN BEGIN
+                             ERROR(Text0001);
+                           END;
+                         END;
+                       END;
+
+    }
+    CONTROLS
+    {
+      { 1000000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1000000000;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             FRA=Options] }
+
+      { 1000000004;2;Field  ;
+                  CaptionML=FRA=Inclure Zone Mappage;
+                  SourceExpr=BoolMappage_G }
+
+      { 1000000002;2;Field  ;
+                  CaptionML=FRA=Traitement R'cap;
+                  SourceExpr=TttRecap_G }
+
+      { 1000000003;2;Field  ;
+                  Name=Imprimante;
+                  DrillDown=Oui;
+                  CaptionML=FRA=Imprimante;
+                  SourceExpr=Imprimante_G;
+                  TableRelation=Imprimante }
+
+      { 1000000005;2;Field  ;
+                  Name=DatePaiement;
+                  CaptionML=FRA=Date paiement;
+                  NotBlank=Oui;
+                  SourceExpr=DatePaiement_G;
+                  OnValidate=BEGIN
+                               IF DatePaiement_G = 0D THEN BEGIN
+                                 ERROR(Text0001);
+                               END;
+                             END;
+                              }
+
+      { 1000000006;2;Field  ;
+                  Name=M'thode;
+                  SourceExpr=Methode_G }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      CompanyInfo@1000000006 : Record 79;
+      Contact_G@1000000000 : Record 5050;
+      Vendor_G@1000000034 : Record 23;
+      CMCSettOffLedEntTmp_G@1000000002 : TEMPORARY Record 8053020;
+      CMCSettOffLedEntTmpTotal_G@1000000035 : TEMPORARY Record 8053020;
+      FormatAddr@1000000004 : Codeunit 365;
+      ContactAddr@1000000003 : ARRAY [8] OF Text[50];
+      CompanyAddr@1000000005 : ARRAY [8] OF Text[50];
+      G_NewSettEntryNo@1000000001 : Integer;
+      Debit_G@1000000007 : Decimal;
+      Credit_G@1000000008 : Decimal;
+      Imprimante_G@1000000009 : Text[100];
+      BoolMappage_G@1000000010 : Boolean;
+      TttRecap_G@1000000011 : Boolean;
+      NomBddTest_G@1000000012 : Text[30];
+      ArchRep_G@1000000013 : Text[20];
+      TableBac_G@1000000014 : Record 8053468;
+      TypImprime_G@1000000015 : Text[30];
+      Recap_G@1000000017 : Text[1];
+      tableadvitam_G@1000000018 : Record 8053450;
+      TableContactSaleperson_G@1000000019 : Record 8053160;
+      SalesPurchPerson_G@1000000020 : Record 13;
+      ActProdTech_G@1000000021 : Code[10];
+      ActReseauTech_G@1000000022 : Code[10];
+      Mois_G@1000000025 : Code[10];
+      Month_G@1000000024 : Integer;
+      Year_G@1000000023 : Integer;
+      CampMapping_G@1000000026 : Text[10];
+      TableCampagne_G@1000000027 : Record 8052991;
+      Camp1_G@1000000028 : Integer;
+      CampMapp_G@1000000029 : Integer;
+      DatePaiement_G@1000000016 : Date;
+      Text0001@1000000030 : TextConst 'FRA=Date de paiement obligatoire';
+      Text0002@1000000031 : TextConst 'FRA=Le montant ci-dessus vous sera vers' par virement . la domiciliation suivante : %1 %2 %3.';
+      Text0003@1000000032 : TextConst 'FRA="Le montant ci-dessus, vous sera vers' par chSque s'par' "';
+      PaiementTexte_G@1000000033 : Text[150];
+      Text0004@1000000036 : TextConst 'FRA=Le montant ci-dessus, vous sera vers' par : %1.';
+      RetenuCredit_G@1000000037 : Decimal;
+      RetenuDebit_G@1000000038 : Decimal;
+      TotalCredit_G@1000000040 : Decimal;
+      TotalDebit_G@1000000039 : Decimal;
+      APayer_G@1000000041 : Decimal;
+      ARecevoir_G@1000000042 : Decimal;
+      Text0005@1000000043 : TextConst 'FRA=Nous vous devons :';
+      Text0006@1000000044 : TextConst 'FRA=Vous nous devez :';
+      TexteSolde_G@1000000045 : Text[30];
+      Methode_G@1000000046 : Text[1];
+      Debiteur_G@1000000047 : Boolean;
+      NumberContact_G@1000000049 : Integer;
+      Number_G@1000000048 : Integer;
+      Text8053001@1000000052 : TextConst 'ENU=Propose Compensation...\;FRA=Impression compensation...\';
+      Text8053002@1000000051 : TextConst 'ENU=Farmer              #1########\;FRA=Agriculteur           #1######\';
+      Text8053003@1000000050 : TextConst 'ENU=Progress\;FRA="Progression "';
+      Text8053004@1000000053 : TextConst 'ENU=@2@@@@@@@@@@@@@@@@@@@@@@@@@@@@;FRA=@2@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      Win_G@1000000054 : Dialog;
+      Versionmapping_G@1000000055 : Text[5];
+
+    PROCEDURE DetailCompensation@1000000013();
+    VAR
+      EcrComp_L@1000000000 : Record 8053041;
+      CVLedgerEntry_L@1000000006 : Record 8053380;
+      VendLEdgerEntry_L1@1000000001 : Record 25;
+      CustLedgerEntry_L1@1000000003 : Record 21;
+      CMCRestraintEntry_L@1000000004 : Record 8053374;
+      CMCRestraint_L@1000000005 : Record 8053373;
+      SettingOffRemain_L@1000000002 : Decimal;
+      CVLedgerEntryGet_L@1000000007 : Boolean;
+    BEGIN
+      //MESSAGE('0:%1:%2', EcrComp_L."Entry No.", EcrComp_L.Amount);
+      EcrComp_L.RESET;
+      EcrComp_L.SETRANGE("SettOff Type", EcrComp_L."SettOff Type"::Proposed);
+      EcrComp_L.SETRANGE("Invoice No", "CMC Seq. Comp. Journal LineDoc"."Farmer Document No.");
+      EcrComp_L.SETRANGE("SettOff Applies-to ID", "CMC Seq. Comp. Journal LineDoc"."Document No.");
+      IF EcrComp_L.FINDSET THEN BEGIN
+        REPEAT
+          CASE EcrComp_L."Entry Type" OF
+            EcrComp_L."Entry Type"::Vendor, EcrComp_L."Entry Type"::Customer: BEGIN
+
+              CMCSettOffLedEntTmpTotal_G.SETRANGE("Original Ledger Entry No.", EcrComp_L."Entry No.");
+              IF EcrComp_L."Entry Type" = EcrComp_L."Entry Type"::Customer THEN BEGIN
+                CMCSettOffLedEntTmpTotal_G.SETRANGE("Ledger type", CMCSettOffLedEntTmp_G."Ledger type"::Customer);
+              END ELSE BEGIN
+                CMCSettOffLedEntTmpTotal_G.SETRANGE("Ledger type", CMCSettOffLedEntTmp_G."Ledger type"::Vendor);
+              END;
+
+              IF CMCSettOffLedEntTmpTotal_G.ISEMPTY THEN BEGIN
+                IF EcrComp_L."Entry Type" = EcrComp_L."Entry Type"::Vendor THEN BEGIN
+                  CVLedgerEntryGet_L := CVLedgerEntry_L.GET(CVLedgerEntry_L."Customer / Vendor"::Vendor, EcrComp_L."Entry No.");
+                END ELSE BEGIN
+                  CVLedgerEntryGet_L := CVLedgerEntry_L.GET(CVLedgerEntry_L."Customer / Vendor"::Customer, EcrComp_L."Entry No.");
+                END;
+
+                IF CVLedgerEntryGet_L THEN BEGIN
+                  CVLedgerEntry_L.CALCFIELDS(Amount,"Remaining Amount","Original Amt. (LCY)","Remaining Amt. (LCY)","Amount (LCY)",
+                    "Debit Amount","Credit Amount","Debit Amount (LCY)","Credit Amount (LCY)");
+                  EnregEcriture(CVLedgerEntry_L, TRUE);
+                  //<--20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+                  //-->20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+                  // BEFORE
+                  {
+                  DetailCompensationClient(CMCSettOffLedEntTmp_G."Document No.");
+                  }
+                  //AFTER
+                  //<--20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+                END;
+              END;
+            END;
+
+            EcrComp_L."Entry Type"::Restraint: BEGIN
+              CMCSettOffLedEntTmpTotal_G.SETRANGE("Original Ledger Entry No.", EcrComp_L."Entry No.");
+              CMCSettOffLedEntTmpTotal_G.SETRANGE("Ledger type", CMCSettOffLedEntTmp_G."Ledger type"::Restraint);
+              IF CMCSettOffLedEntTmpTotal_G.ISEMPTY THEN BEGIN
+
+                IF CMCRestraintEntry_L.GET(EcrComp_L."Entry No.") THEN BEGIN
+                  CMCRestraintEntry_L.CALCFIELDS("Remaining Amount",Amount);
+                  CMCSettOffLedEntTmp_G.INIT;
+                  CMCSettOffLedEntTmp_G."Entry No." := G_NewSettEntryNo;
+                  G_NewSettEntryNo+=1;
+                  CMCSettOffLedEntTmp_G."Posting Date" := WORKDATE;
+                  CMCSettOffLedEntTmp_G."Document Type" := CMCSettOffLedEntTmp_G."Document Type"::" ";
+                  CMCSettOffLedEntTmp_G."Document No." := CMCRestraintEntry_L."Document No.";
+                  IF CMCRestraint_L.GET(CMCRestraintEntry_L."Restraint Code") THEN BEGIN
+                    CMCSettOffLedEntTmp_G.Description := CMCRestraint_L.Description;
+                  END;
+                  CMCSettOffLedEntTmp_G."User ID" := USERID;
+                  CMCSettOffLedEntTmp_G."Document Date" := WORKDATE;
+                  CMCSettOffLedEntTmp_G."Original Ledger Entry No." := CMCRestraintEntry_L."Entry No.";
+                  CMCSettOffLedEntTmp_G."Remaining Amount" := CMCRestraintEntry_L."Remaining Amount";
+                  CMCSettOffLedEntTmp_G.Amount := CMCRestraintEntry_L.Amount;
+                  CMCSettOffLedEntTmp_G."Amount to Apply" := CMCRestraintEntry_L."Amount to Apply";
+                  CMCSettOffLedEntTmp_G."Ledger type" := CMCSettOffLedEntTmp_G."Ledger type"::Restraint;
+                  CMCSettOffLedEntTmp_G."Account No." := Contact_G."No.";
+                  CMCSettOffLedEntTmp_G."Applies-to ID" := '';
+                  CMCSettOffLedEntTmp_G.Open := TRUE;
+                  CMCSettOffLedEntTmp_G."Farmer Document No." := "CMC Seq. Comp. Journal LineDoc"."Farmer Document No.";
+                  CMCSettOffLedEntTmp_G."SettOff Amount to apply" := "CMC Seq. Comp. Journal LineDoc"."Vendor Balance";
+                  CMCSettOffLedEntTmp_G."IC Partner Code" := "CMC Seq. Comp. Journal LineDoc"."Document No.";
+
+                  SettingOffRemain_L := GetRemainComp1(3, CMCRestraintEntry_L."Entry No.");
+
+                  CMCSettOffLedEntTmp_G."Amount to Apply" := EcrComp_L.Amount ;
+                  CMCSettOffLedEntTmp_G."SettOff Applies-to ID" := "CMC Seq. Comp. Journal LineDoc"."Document No.";
+
+                  CMCSettOffLedEntTmp_G."Setting Off Remain" := SettingOffRemain_L;
+
+                  IF CMCSettOffLedEntTmp_G.Amount < 0 THEN BEGIN
+                    RetenuCredit_G += -CMCSettOffLedEntTmp_G.Amount;
+                  END ELSE BEGIN
+                    RetenuDebit_G += CMCSettOffLedEntTmp_G.Amount;
+                  END;
+
+      //            IF CMCSettOffLedEntTmp_G.INSERT THEN;
+                  CMCSettOffLedEntTmpTotal_G.TRANSFERFIELDS(CMCSettOffLedEntTmp_G);
+                  IF CMCSettOffLedEntTmpTotal_G.INSERT THEN;
+                  //-->20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+                  //BEFORE
+                  {
+                  DetailCompensationClient(CMCSettOffLedEntTmp_G."Document No.");
+                  }
+                  //<--20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+                END;
+              END;
+            END;
+          END;
+        UNTIL EcrComp_L.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE DetailCompensationClient@1000000000(InvoiceNo_P@1000000001 : Code[20]);
+    VAR
+      EcrCompCust_L@1000000000 : Record 8053506;
+      CVLedgerEntry_L@1000000003 : Record 8053380;
+      SettingOffRemain_L@1000000002 : Decimal;
+    BEGIN
+      //MESSAGE('DCC:%1:%2', InvoiceNo_P, "CMC Seq. Comp. Journal LineDoc"."Document No.");
+      EcrCompCust_L.RESET;
+
+      //-->20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+      IF InvoiceNo_P <> '' THEN BEGIN
+      //<--20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+        EcrCompCust_L.SETRANGE("Invoice No", InvoiceNo_P);
+      //-->20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+      END;
+      //<--20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+      EcrCompCust_L.SETRANGE("SettOff Applies-to ID", "CMC Seq. Comp. Journal LineDoc"."Document No.");
+      IF EcrCompCust_L.FINDSET THEN BEGIN
+
+        //-->20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+        //-->20140917-Rpt01-ADV01.01.00_ADVITAM-CDL3
+        //BEFORE
+        {
+        IF CVLedgerEntry_L.GET(CVLedgerEntry_L."Customer / Vendor"::Customer, EcrCompCust_L."Entry No.") THEN BEGIN
+          EnregEcriture(CVLedgerEntry_L, TRUE);
+        END;
+        }
+        //<--20140917-Rpt01-ADV01.01.00_ADVITAM-CDL3
+      //<--20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+
+      //MESSAGE('DCC1:%1:%2', InvoiceNo_P, "CMC Seq. Comp. Journal LineDoc"."Document No.");
+        REPEAT
+          //-->20140917-Rpt01-ADV01.01.00_ADVITAM-CDL3
+          // Prendre l''criture d'Avoir.
+          IF CVLedgerEntry_L.GET(CVLedgerEntry_L."Customer / Vendor"::Customer, EcrCompCust_L."Entry No.") THEN BEGIN
+            EnregEcriture(CVLedgerEntry_L, TRUE);
+          END;
+          //<--20140917-Rpt01-ADV01.01.00_ADVITAM-CDL3
+
+          //-->20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+          // BEFORE
+          {
+          CMCSettOffLedEntTmpTotal_G.SETRANGE("Original Ledger Entry No.", EcrCompCust_L."Entry No.");
+          CMCSettOffLedEntTmpTotal_G.SETRANGE("Ledger type", CMCSettOffLedEntTmpTotal_G."Ledger type"::Customer);
+          IF CMCSettOffLedEntTmpTotal_G.ISEMPTY THEN BEGIN
+            IF CVLedgerEntry_L.GET(CVLedgerEntry_L."Customer / Vendor"::Customer, EcrCompCust_L."Entry No.") THEN BEGIN
+          }
+          //AFTER
+          CVLedgerEntry_L.SETRANGE("Customer / Vendor", CVLedgerEntry_L."Customer / Vendor"::Customer);
+          CVLedgerEntry_L.SETRANGE(CVLedgerEntry_L."Cust./Vend. No.", EcrCompCust_L."Source N›");
+          CVLedgerEntry_L.SETRANGE(CVLedgerEntry_L."Document No.", EcrCompCust_L."Invoice No");
+          IF CVLedgerEntry_L.FINDFIRST() THEN BEGIN
+            EnregEcriture(CVLedgerEntry_L, TRUE);
+          END;
+          //-->20140917-Rpt01-ADV01.01.00_ADVITAM-CDL3
+          CVLedgerEntry_L.SETRANGE("Customer / Vendor");
+          CVLedgerEntry_L.SETRANGE("Cust./Vend. No.");
+          CVLedgerEntry_L.SETRANGE("Document No.");
+          //<--20140917-Rpt01-ADV01.01.00_ADVITAM-CDL3
+        UNTIL EcrCompCust_L.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE GetRemainComp1@8053007(EntryType_P@8053000 : Integer;Seq_P@8053001 : Integer) : Decimal;
+    VAR
+      CompPro_L@8053002 : Record 8053041;
+      CustLedgEntry_L@8053003 : Record 21;
+      VendLedgeEntry_L@8053004 : Record 25;
+      RestraintEntry_L@8053005 : Record 8053374;
+    BEGIN
+      CompPro_L.SETCURRENTKEY("SettOff Type","Entry Type","Entry No.","Document No.","Invoice No");
+      CompPro_L.SETRANGE("SettOff Type",CompPro_L."SettOff Type"::Proposed);
+      CompPro_L.SETRANGE("Entry Type",EntryType_P);
+      CompPro_L.SETRANGE("Entry No.",Seq_P);
+      CompPro_L.CALCSUMS(Amount);
+       CASE EntryType_P OF
+           0 : BEGIN   //'criture comptable fournisseur
+              VendLedgeEntry_L.GET(Seq_P);
+              VendLedgeEntry_L.CALCFIELDS("Remaining Amount");
+              EXIT(VendLedgeEntry_L."Remaining Amount"-CompPro_L.Amount);
+           END;
+           1 : BEGIN  //'criture comptable client
+              CustLedgEntry_L.GET(Seq_P);
+              CustLedgEntry_L.CALCFIELDS("Remaining Amount");
+              EXIT(CustLedgEntry_L."Remaining Amount"-CompPro_L.Amount);
+           END;
+           3 : BEGIN //'criture clien
+              RestraintEntry_L.GET(Seq_P);
+              RestraintEntry_L.CALCFIELDS("Remaining Amount");
+              EXIT(RestraintEntry_L."Remaining Amount"-CompPro_L.Amount);
+           END;
+       END;
+    END;
+
+    PROCEDURE CreateTmpCMCSetOff@8053005(CompensationLine_P@8053008 : Record 8053501);
+    VAR
+      L_VendLEdgerEntry@8053000 : Record 25;
+      L_CustLedgerEntry@8053003 : Record 21;
+      CVLedgerEntry_L@1000000000 : Record 8053380;
+      L_CMCDebtRecognition@8053004 : Record 8053017;
+      L_Vendor@8053006 : Record 23;
+      L_EcrComp@8053001 : Record 8053041;
+      CMCRestraintEntry_L@8053007 : Record 8053374;
+      CMCRestraint_L@8053002 : Record 8053373;
+      IsToInsert_L@8053005 : Boolean;
+      SettingOffRemain_L@8053009 : Decimal;
+      CMCCompensationSetup_L@8053010 : Record 8053502;
+      CustLedgSourceFilter_L@8053011 : Text[1024];
+      CustApplyPrp_L@8053012 : Record 8053506;
+    BEGIN
+      Contact_G.GET(CompensationLine_P."Account No.");
+
+      //CDAL G_NewSettEntryNo := 1;
+      //cr'ation des 'critures fournisseurs
+      L_VendLEdgerEntry.RESET;
+      L_VendLEdgerEntry.SETCURRENTKEY("Vendor No.",Open,Positive,"Due Date","Currency Code");
+      L_VendLEdgerEntry.SETRANGE("Vendor No.",Contact_G."Vendor No.");
+      L_VendLEdgerEntry.SETRANGE(Open,TRUE);
+      // --> 20140626-FINA28-CMC02.02.00-AKH02
+      // BEFORE
+      //L_VendLEdgerEntry.SETFILTER("Applies-to ID",'');
+      // AFTER
+      L_VendLEdgerEntry.SETRANGE("Applies-to ID",'');
+      // <-- 20140626-FINA28-CMC02.02.00-AKH02
+      L_VendLEdgerEntry.SETRANGE("Setting Off not Allowed",FALSE);
+      L_VendLEdgerEntry.SETRANGE(Positive,TRUE);
+      L_VendLEdgerEntry.SETRANGE("Document Type",L_VendLEdgerEntry."Document Type"::"Credit Memo");// . supprimer avant livraison
+      // ici
+      {CMCCompensationSetup_L.GET(CMCCompensationSetup_L."Operation Type"::"Cereal Cr'dit Memo");
+      L_VendLEdgerEntry.SETRANGE("Source Code",CMCCompensationSetup_L."Source Code");
+       }
+      IF L_VendLEdgerEntry.FINDSET THEN
+        REPEAT
+          CMCSettOffLedEntTmpTotal_G.SETRANGE("Original Ledger Entry No.", L_VendLEdgerEntry."Entry No.");
+          CMCSettOffLedEntTmpTotal_G.SETRANGE("Ledger type", CMCSettOffLedEntTmp_G."Ledger type"::Vendor);
+          IF CMCSettOffLedEntTmpTotal_G.ISEMPTY THEN BEGIN
+            IsToInsert_L := FALSE;
+            L_VendLEdgerEntry.CALCFIELDS(Amount,"Remaining Amount","Original Amt. (LCY)","Remaining Amt. (LCY)","Amount (LCY)",
+            "Debit Amount","Credit Amount","Debit Amount (LCY)","Credit Amount (LCY)");
+
+            CMCSettOffLedEntTmp_G.INIT;
+            CMCSettOffLedEntTmp_G.TRANSFERFIELDS(L_VendLEdgerEntry);
+            CMCSettOffLedEntTmp_G."Original Ledger Entry No." := L_VendLEdgerEntry."Entry No.";
+            CMCSettOffLedEntTmp_G."Ledger type" := CMCSettOffLedEntTmp_G."Ledger type"::Vendor;
+            CMCSettOffLedEntTmp_G."Account No." := Contact_G."No.";
+            CMCSettOffLedEntTmp_G."Entry No." := G_NewSettEntryNo;
+            G_NewSettEntryNo+=1;
+            CMCSettOffLedEntTmp_G."Applies-to ID" := '';
+            CMCSettOffLedEntTmp_G.Amount := L_VendLEdgerEntry.Amount;
+            CMCSettOffLedEntTmp_G."Remaining Amount" := L_VendLEdgerEntry."Remaining Amount";
+            CMCSettOffLedEntTmp_G."Original Amt. (LCY)" := L_VendLEdgerEntry."Original Amt. (LCY)";
+            CMCSettOffLedEntTmp_G."Remaining Amt. (LCY)" := L_VendLEdgerEntry."Remaining Amt. (LCY)";
+            CMCSettOffLedEntTmp_G."Amount (LCY)" := L_VendLEdgerEntry."Amount (LCY)";
+            CMCSettOffLedEntTmp_G."Debit Amount" := L_VendLEdgerEntry."Debit Amount";
+            CMCSettOffLedEntTmp_G."Credit Amount" := L_VendLEdgerEntry."Credit Amount";
+            CMCSettOffLedEntTmp_G."Debit Amount (LCY)" := L_VendLEdgerEntry."Debit Amount (LCY)";
+            CMCSettOffLedEntTmp_G."Credit Amount (LCY)" := L_VendLEdgerEntry."Credit Amount (LCY)";
+            CMCSettOffLedEntTmp_G."Original Amount" := L_VendLEdgerEntry."Original Amount";
+            CMCSettOffLedEntTmp_G."Farmer Document No." := CompensationLine_P."Farmer Document No.";
+            CMCSettOffLedEntTmp_G."SettOff Amount to apply" := CompensationLine_P."Vendor Balance";
+            CMCSettOffLedEntTmp_G."IC Partner Code" := CompensationLine_P."Document No.";
+            SettingOffRemain_L := GetRemainComp(0, L_VendLEdgerEntry."Entry No.") ;
+      //CDAL      IF (SettingOffRemain_L > 0) THEN
+            IF ((SettingOffRemain_L > 0) AND (CMCSettOffLedEntTmp_G."Due Date" <= DatePaiement_G)) THEN
+                 IsToInsert_L := TRUE
+            ELSE
+                 IsToInsert_L := FALSE;
+
+            L_EcrComp.RESET;
+            L_EcrComp.SETCURRENTKEY("SettOff Type","Entry Type","Entry No.","Document No.","Invoice No");
+            L_EcrComp.SETRANGE("SettOff Type",L_EcrComp."SettOff Type"::Proposed);
+            L_EcrComp.SETRANGE("Invoice No",CompensationLine_P."Farmer Document No.");
+            L_EcrComp.SETRANGE("SettOff Applies-to ID",CompensationLine_P."Document No.");
+            L_EcrComp.SETRANGE("Entry Type",L_EcrComp."Entry Type"::Vendor);
+            L_EcrComp.SETRANGE("Entry No.",L_VendLEdgerEntry."Entry No.");
+            IF L_EcrComp.FINDFIRST THEN BEGIN
+              CMCSettOffLedEntTmp_G."Amount to Apply" := L_EcrComp.Amount ;
+              CMCSettOffLedEntTmp_G."SettOff Applies-to ID" := CompensationLine_P."Document No.";
+              //-->20140917-Rpt01-ADV01.01.00_ADVITAM-CDL4
+              IF ((CMCSettOffLedEntTmp_G."Due Date" <= DatePaiement_G)) THEN BEGIN
+              //<--20140917-Rpt01-ADV01.01.00_ADVITAM-CDL4
+                IsToInsert_L := TRUE;
+              //-->20140917-Rpt01-ADV01.01.00_ADVITAM-CDL4
+              END ELSE BEGIN
+                IsToInsert_L := FALSE;
+              END;
+              //<--20140917-Rpt01-ADV01.01.00_ADVITAM-CDL4
+
+            END ELSE
+              CMCSettOffLedEntTmp_G."Amount to Apply" := 0;
+
+            CMCSettOffLedEntTmp_G."Setting Off Remain" := SettingOffRemain_L;
+            IF IsToInsert_L THEN BEGIN
+              CMCSettOffLedEntTmp_G.INSERT;
+
+              CMCSettOffLedEntTmpTotal_G.TRANSFERFIELDS(CMCSettOffLedEntTmp_G);
+              IF CMCSettOffLedEntTmpTotal_G.INSERT THEN;
+              //<--20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+              IF CVLedgerEntry_L.GET(CVLedgerEntry_L."Customer / Vendor"::Vendor,
+                L_VendLEdgerEntry."Entry No.") THEN BEGIN
+                DetailLettrageCliFou(Contact_G."No.", CVLedgerEntry_L."CV Entry Letter");
+              END;
+              //<--20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+            END;
+          END;
+        UNTIL L_VendLEdgerEntry.NEXT=0;
+
+      //// les avances fournisseurs
+      // --> 20140626-FINA28-CMC02.02.00-AKH01
+      L_VendLEdgerEntry.RESET;
+      L_VendLEdgerEntry.SETCURRENTKEY("Vendor No.",Open,Positive,"Due Date","Currency Code");
+      L_VendLEdgerEntry.SETRANGE("Vendor No.",Contact_G."Vendor No.");
+      L_VendLEdgerEntry.SETRANGE(Open,TRUE);
+      L_VendLEdgerEntry.SETRANGE("Applies-to ID",'');
+      L_VendLEdgerEntry.SETRANGE("Setting Off not Allowed",FALSE);
+      L_VendLEdgerEntry.SETRANGE(Positive,TRUE);
+      L_VendLEdgerEntry.SETRANGE("Document Type",L_VendLEdgerEntry."Document Type"::Payment);
+
+      IF L_VendLEdgerEntry.FINDSET THEN
+        REPEAT
+          CMCSettOffLedEntTmpTotal_G.SETRANGE("Original Ledger Entry No.", L_VendLEdgerEntry."Entry No.");
+          CMCSettOffLedEntTmpTotal_G.SETRANGE("Ledger type", CMCSettOffLedEntTmp_G."Ledger type"::Vendor);
+          IF CMCSettOffLedEntTmpTotal_G.ISEMPTY THEN BEGIN
+            IsToInsert_L := FALSE;
+            L_VendLEdgerEntry.CALCFIELDS(Amount,"Remaining Amount","Original Amt. (LCY)","Remaining Amt. (LCY)","Amount (LCY)",
+            "Debit Amount","Credit Amount","Debit Amount (LCY)","Credit Amount (LCY)");
+
+            CMCSettOffLedEntTmp_G.INIT;
+            CMCSettOffLedEntTmp_G.TRANSFERFIELDS(L_VendLEdgerEntry);
+            CMCSettOffLedEntTmp_G."Original Ledger Entry No." := L_VendLEdgerEntry."Entry No.";
+            CMCSettOffLedEntTmp_G."Ledger type" := CMCSettOffLedEntTmp_G."Ledger type"::Vendor;
+            CMCSettOffLedEntTmp_G."Account No." := Contact_G."No.";
+            CMCSettOffLedEntTmp_G."Entry No." := G_NewSettEntryNo;
+            G_NewSettEntryNo+=1;
+            CMCSettOffLedEntTmp_G."Applies-to ID" := '';
+            CMCSettOffLedEntTmp_G.Amount := L_VendLEdgerEntry.Amount;
+            CMCSettOffLedEntTmp_G."Remaining Amount" := L_VendLEdgerEntry."Remaining Amount";
+            CMCSettOffLedEntTmp_G."Original Amt. (LCY)" := L_VendLEdgerEntry."Original Amt. (LCY)";
+            CMCSettOffLedEntTmp_G."Remaining Amt. (LCY)" := L_VendLEdgerEntry."Remaining Amt. (LCY)";
+            CMCSettOffLedEntTmp_G."Amount (LCY)" := L_VendLEdgerEntry."Amount (LCY)";
+            CMCSettOffLedEntTmp_G."Debit Amount" := L_VendLEdgerEntry."Debit Amount";
+            CMCSettOffLedEntTmp_G."Credit Amount" := L_VendLEdgerEntry."Credit Amount";
+            CMCSettOffLedEntTmp_G."Debit Amount (LCY)" := L_VendLEdgerEntry."Debit Amount (LCY)";
+            CMCSettOffLedEntTmp_G."Credit Amount (LCY)" := L_VendLEdgerEntry."Credit Amount (LCY)";
+            CMCSettOffLedEntTmp_G."Original Amount" := L_VendLEdgerEntry."Original Amount";
+            CMCSettOffLedEntTmp_G."Farmer Document No." := CompensationLine_P."Farmer Document No.";
+            CMCSettOffLedEntTmp_G."SettOff Amount to apply" := CompensationLine_P."Vendor Balance";
+            CMCSettOffLedEntTmp_G."IC Partner Code" := CompensationLine_P."Document No.";
+            SettingOffRemain_L := GetRemainComp(0, L_VendLEdgerEntry."Entry No.") ;
+            //-->20140917-Rpt01-ADV01.01.00_ADVITAM-CDL4
+            //BEFORE
+            {
+            IF ((SettingOffRemain_L > 0) AND (CMCSettOffLedEntTmp_G."Due Date" <= DatePaiement_G)) THEN
+            }
+            //AFTER
+            IF ((CMCSettOffLedEntTmp_G."Due Date" <= DatePaiement_G)) THEN
+            //<--20140917-Rpt01-ADV01.01.00_ADVITAM-CDL4
+               IsToInsert_L := TRUE
+            ELSE
+               IsToInsert_L := FALSE;
+
+            L_EcrComp.RESET;
+            L_EcrComp.SETCURRENTKEY("SettOff Type","Entry Type","Entry No.","Document No.","Invoice No");
+            L_EcrComp.SETRANGE("SettOff Type",L_EcrComp."SettOff Type"::Proposed);
+            L_EcrComp.SETRANGE("Invoice No",CompensationLine_P."Farmer Document No.");
+            L_EcrComp.SETRANGE("SettOff Applies-to ID",CompensationLine_P."Document No.");
+            L_EcrComp.SETRANGE("Entry Type",L_EcrComp."Entry Type"::Vendor);
+            L_EcrComp.SETRANGE("Entry No.",L_VendLEdgerEntry."Entry No.");
+            IF  L_EcrComp.FINDFIRST THEN BEGIN
+              CMCSettOffLedEntTmp_G."Amount to Apply" := L_EcrComp.Amount ;
+              CMCSettOffLedEntTmp_G."SettOff Applies-to ID" := CompensationLine_P."Document No.";
+              //-->20140917-Rpt01-ADV01.01.00_ADVITAM-CDL4
+              IF ((CMCSettOffLedEntTmp_G."Due Date" <= DatePaiement_G)) THEN
+              //<--20140917-Rpt01-ADV01.01.00_ADVITAM-CDL4
+                IsToInsert_L := TRUE
+              //-->20140917-Rpt01-ADV01.01.00_ADVITAM-CDL4
+              ELSE
+                IsToInsert_L := FALSE;
+              //<--20140917-Rpt01-ADV01.01.00_ADVITAM-CDL4
+            END ELSE
+              CMCSettOffLedEntTmp_G."Amount to Apply" := 0;
+            CMCSettOffLedEntTmp_G."Setting Off Remain" := SettingOffRemain_L;
+            IF IsToInsert_L THEN BEGIN
+              CMCSettOffLedEntTmp_G.INSERT;
+              CMCSettOffLedEntTmpTotal_G.TRANSFERFIELDS(CMCSettOffLedEntTmp_G);
+              IF CMCSettOffLedEntTmpTotal_G.INSERT THEN;
+              //<--20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+              IF CVLedgerEntry_L.GET(CVLedgerEntry_L."Customer / Vendor"::Vendor,
+                L_VendLEdgerEntry."Entry No.") THEN BEGIN
+                DetailLettrageCliFou(Contact_G."No.", CVLedgerEntry_L."CV Entry Letter");
+              END;
+              //<--20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+            END;
+          END;
+        UNTIL L_VendLEdgerEntry.NEXT=0;
+      // <-- 20140626-FINA28-CMC02.02.00-AKH01
+
+       L_CustLedgerEntry.RESET;
+       L_CustLedgerEntry.SETCURRENTKEY("Customer No.","Posting Date","Currency Code");
+       L_CustLedgerEntry.SETRANGE(L_CustLedgerEntry."Customer No.",Contact_G."Customer No.");
+       L_CustLedgerEntry.SETRANGE(Open,TRUE);
+       L_CustLedgerEntry.SETRANGE("Setting Off not Allowed",FALSE);
+       // --> 20140626-FINA28-CMC02.02.00-AKH02
+       // BEFORE
+       //L_CustLedgerEntry.SETFILTER("Applies-to ID",'');
+       // AFTER
+       L_CustLedgerEntry.SETRANGE("Applies-to ID",'');
+       // <-- 20140626-FINA28-CMC02.02.00-AKH02
+
+      // --> 20140707-FINA28-CMC02.02.00-BRA01
+      //BEFORE
+      {
+       CustLedgSourceFilter_L := '';
+       CMCCompensationSetup_L.RESET;
+       IF CMCCompensationSetup_L.FINDFIRST THEN
+        REPEAT
+          IF CMCCompensationSetup_L."Operation Type" IN [3,4,5,6] THEN
+            IF CustLedgSourceFilter_L = '' THEN
+              CustLedgSourceFilter_L := CMCCompensationSetup_L."Source Code"
+            ELSE
+              CustLedgSourceFilter_L += '|'+CMCCompensationSetup_L."Source Code";
+        UNTIL CMCCompensationSetup_L.NEXT = 0 ;
+
+        L_CustLedgerEntry.SETFILTER("Source Code",CustLedgSourceFilter_L);
+      }
+      // <-- 20140707-FINA28-CMC02.02.00-BRA01
+
+      IF L_CustLedgerEntry.FINDSET THEN
+        REPEAT
+          CMCSettOffLedEntTmpTotal_G.SETRANGE("Original Ledger Entry No.", L_CustLedgerEntry."Entry No.");
+          CMCSettOffLedEntTmpTotal_G.SETRANGE("Ledger type", CMCSettOffLedEntTmp_G."Ledger type"::Customer);
+          IF CMCSettOffLedEntTmpTotal_G.ISEMPTY THEN BEGIN
+            IsToInsert_L := FALSE;
+            L_CustLedgerEntry.CALCFIELDS(Amount,"Remaining Amount","Original Amt. (LCY)","Remaining Amt. (LCY)","Amount (LCY)",
+            "Debit Amount","Credit Amount","Debit Amount (LCY)","Credit Amount (LCY)","Original Amount");
+            CMCSettOffLedEntTmp_G.INIT;
+            CMCSettOffLedEntTmp_G."Entry No." := G_NewSettEntryNo;
+            G_NewSettEntryNo+=1;
+
+            CMCSettOffLedEntTmp_G."Posting Date" := L_CustLedgerEntry."Posting Date";
+            CMCSettOffLedEntTmp_G."Document Type" := L_CustLedgerEntry."Document Type";
+            CMCSettOffLedEntTmp_G."Document No." := L_CustLedgerEntry."Document No.";
+            CMCSettOffLedEntTmp_G.Description := L_CustLedgerEntry.Description;
+            CMCSettOffLedEntTmp_G."Currency Code" := L_CustLedgerEntry."Currency Code";
+            CMCSettOffLedEntTmp_G."Global Dimension 1 Code" := L_CustLedgerEntry."Global Dimension 1 Code";
+            CMCSettOffLedEntTmp_G."Global Dimension 2 Code" := L_CustLedgerEntry."Global Dimension 2 Code";
+            CMCSettOffLedEntTmp_G."User ID" := L_CustLedgerEntry."User ID";
+            CMCSettOffLedEntTmp_G."Source Code" := L_CustLedgerEntry."Source Code";
+            CMCSettOffLedEntTmp_G."Due Date" := L_CustLedgerEntry."Due Date";
+            CMCSettOffLedEntTmp_G."Document Date" := L_CustLedgerEntry."Document Date";
+            CMCSettOffLedEntTmp_G."External Document No." := L_CustLedgerEntry."External Document No.";
+            CMCSettOffLedEntTmp_G."Debit Amount" := L_CustLedgerEntry."Debit Amount";
+            CMCSettOffLedEntTmp_G."Credit Amount" := L_CustLedgerEntry."Credit Amount";
+            CMCSettOffLedEntTmp_G."Debit Amount (LCY)" := L_CustLedgerEntry."Debit Amount (LCY)";
+            CMCSettOffLedEntTmp_G."Credit Amount (LCY)" := L_CustLedgerEntry."Credit Amount (LCY)";
+            CMCSettOffLedEntTmp_G."Original Amount" := L_CustLedgerEntry."Original Amount";
+            CMCSettOffLedEntTmp_G."Original Ledger Entry No." := L_CustLedgerEntry."Entry No.";
+            CMCSettOffLedEntTmp_G."Ledger type" := CMCSettOffLedEntTmp_G."Ledger type"::Customer;
+            CMCSettOffLedEntTmp_G."Account No." := Contact_G."No.";
+            CMCSettOffLedEntTmp_G."Applies-to ID" := '';
+            CMCSettOffLedEntTmp_G.Amount := L_CustLedgerEntry.Amount;
+            CMCSettOffLedEntTmp_G."Remaining Amount" := L_CustLedgerEntry."Remaining Amount";
+            CMCSettOffLedEntTmp_G."Original Amt. (LCY)" := L_CustLedgerEntry."Original Amt. (LCY)";
+            CMCSettOffLedEntTmp_G."Remaining Amt. (LCY)" := L_CustLedgerEntry."Remaining Amt. (LCY)";
+            CMCSettOffLedEntTmp_G."Amount (LCY)" := L_CustLedgerEntry."Amount (LCY)";
+            CMCSettOffLedEntTmp_G."Debit Amount" := L_CustLedgerEntry."Debit Amount";
+            CMCSettOffLedEntTmp_G."Credit Amount" := L_CustLedgerEntry."Credit Amount";
+            CMCSettOffLedEntTmp_G."Debit Amount (LCY)" := L_CustLedgerEntry."Debit Amount (LCY)";
+            CMCSettOffLedEntTmp_G."Credit Amount (LCY)" := L_CustLedgerEntry."Credit Amount (LCY)";
+            CMCSettOffLedEntTmp_G."Original Amount" := L_CustLedgerEntry."Original Amount";
+            CMCSettOffLedEntTmp_G."Setting Off not Allowed" := L_CustLedgerEntry."Setting Off not Allowed";
+            CMCSettOffLedEntTmp_G.Open := TRUE;
+            CMCSettOffLedEntTmp_G."Farmer Document No." := CompensationLine_P."Farmer Document No.";
+            CMCSettOffLedEntTmp_G."SettOff Amount to apply" := CompensationLine_P."Vendor Balance";
+            CMCSettOffLedEntTmp_G."IC Partner Code" := CompensationLine_P."Document No.";
+            SettingOffRemain_L := GetRemainComp(1, L_CustLedgerEntry."Entry No.");
+            //-->20140917-Rpt01-ADV01.01.00_ADVITAM-CDL4
+            //BEFORE
+            {
+            IF ((SettingOffRemain_L > 0) AND (CMCSettOffLedEntTmp_G."Due Date" <= DatePaiement_G)) THEN
+            }
+            //AFTER
+            IF ((CMCSettOffLedEntTmp_G."Due Date" <= DatePaiement_G)) THEN
+            //<--20140917-Rpt01-ADV01.01.00_ADVITAM-CDL4
+                 IsToInsert_L := TRUE
+            ELSE
+                 IsToInsert_L := FALSE;
+      //IF USERID = 'CHRISTOPHE DAL' THEN BEGIN
+      //MESSAGE('C:%1:%2:%3:%4:%5', L_CustLedgerEntry."Remaining Amount", L_CustLedgerEntry."Entry No.", L_CustLedgerEntry."Document No.",
+      //  IsToInsert_L, SettingOffRemain_L, CMCSettOffLedEntTmp_G."Due Date");
+      //END;
+
+            L_EcrComp.RESET;
+            L_EcrComp.SETCURRENTKEY("SettOff Type","Entry Type","Entry No.","Document No.","Invoice No");
+            L_EcrComp.SETRANGE("SettOff Type",L_EcrComp."SettOff Type"::Proposed);
+            L_EcrComp.SETRANGE("Invoice No",CompensationLine_P."Farmer Document No.");
+            L_EcrComp.SETRANGE("SettOff Applies-to ID",CompensationLine_P."Document No.");
+            L_EcrComp.SETRANGE("Entry Type",L_EcrComp."Entry Type"::Customer);
+            L_EcrComp.SETRANGE("Entry No.",L_CustLedgerEntry."Entry No.");
+            IF  L_EcrComp.FINDFIRST THEN BEGIN
+              CMCSettOffLedEntTmp_G."Amount to Apply" := L_EcrComp.Amount ;
+              CMCSettOffLedEntTmp_G."SettOff Applies-to ID" := L_EcrComp."SettOff Applies-to ID";
+              //-->20140917-Rpt01-ADV01.01.00_ADVITAM-CDL4
+              IF ((CMCSettOffLedEntTmp_G."Due Date" <= DatePaiement_G)) THEN
+              //<--20140917-Rpt01-ADV01.01.00_ADVITAM-CDL4
+                IsToInsert_L := TRUE;
+            END;
+            CMCSettOffLedEntTmp_G."Setting Off Remain" := SettingOffRemain_L;
+            // --> 20140707-FINA28-CMC02.02.00-BRA01
+            CustApplyPrp_L.RESET;
+            CustApplyPrp_L.SETRANGE("Entry No.",L_CustLedgerEntry."Entry No.");
+            IF CustApplyPrp_L.FINDFIRST THEN BEGIN
+              IsToInsert_L := TRUE;
+              CustApplyPrp_L.CALCSUMS(Amount);
+              CMCSettOffLedEntTmp_G."Amount to Apply" += -CustApplyPrp_L.Amount ;
+              CMCSettOffLedEntTmp_G."SettOff Applies-to ID" := CustApplyPrp_L."SettOff Applies-to ID";
+            END;
+            CustApplyPrp_L.RESET;
+            // ici
+           // CustApplyPrp_L.SETRANGE("Invoice No",L_CustLedgerEntry."Document No.");
+            CustApplyPrp_L.SETRANGE("Invoice Entry No.",L_CustLedgerEntry."Entry No.");
+            IF CustApplyPrp_L.FINDFIRST THEN BEGIN
+              IsToInsert_L := TRUE;
+              CustApplyPrp_L.CALCSUMS(Amount);
+              IF CMCSettOffLedEntTmp_G."Amount to Apply"=0 THEN
+                CMCSettOffLedEntTmp_G."Amount to Apply" += CustApplyPrp_L.Amount ;
+              CMCSettOffLedEntTmp_G."SettOff Applies-to ID" := CustApplyPrp_L."SettOff Applies-to ID";
+            END;
+
+            // <-- 20140707-FINA28-CMC02.02.00-BRA01
+            IF IsToInsert_L THEN BEGIN
+              CMCSettOffLedEntTmp_G.INSERT;
+              CMCSettOffLedEntTmpTotal_G.TRANSFERFIELDS(CMCSettOffLedEntTmp_G);
+              IF CMCSettOffLedEntTmpTotal_G.INSERT THEN;
+              //<--20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+              IF CVLedgerEntry_L.GET(CVLedgerEntry_L."Customer / Vendor"::Customer,
+                L_CustLedgerEntry."Entry No.") THEN BEGIN
+                DetailLettrageCliFou(Contact_G."No.", CVLedgerEntry_L."CV Entry Letter");
+              END;
+              //<--20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+            END;
+          END;
+        UNTIL L_CustLedgerEntry.NEXT=0;
+
+      //cr'ation des 'critures Retenue
+      CMCRestraintEntry_L.RESET;
+      CMCRestraintEntry_L.SETRANGE("Member No.",Contact_G."No.");
+      CMCRestraintEntry_L.CALCFIELDS(CMCRestraintEntry_L."Remaining Amount");
+      CMCRestraintEntry_L.SETFILTER(CMCRestraintEntry_L."Remaining Amount",'<>0');
+      CMCRestraintEntry_L.SETRANGE(Reversed,FALSE);
+
+      IF CMCRestraintEntry_L.FINDSET(FALSE,FALSE) THEN
+        REPEAT
+          CMCSettOffLedEntTmpTotal_G.SETRANGE("Original Ledger Entry No.", CMCRestraintEntry_L."Entry No.");
+          CMCSettOffLedEntTmpTotal_G.SETRANGE("Ledger type", CMCSettOffLedEntTmp_G."Ledger type"::Restraint);
+          IF CMCSettOffLedEntTmpTotal_G.ISEMPTY THEN BEGIN
+            IsToInsert_L := FALSE;
+            CMCRestraintEntry_L.CALCFIELDS("Remaining Amount",Amount);
+            CMCSettOffLedEntTmp_G.INIT;
+            CMCSettOffLedEntTmp_G."Entry No." := G_NewSettEntryNo;
+            G_NewSettEntryNo+=1;
+            CMCSettOffLedEntTmp_G."Posting Date" := WORKDATE;
+            CMCSettOffLedEntTmp_G."Document Type" := CMCSettOffLedEntTmp_G."Document Type"::" ";
+            CMCSettOffLedEntTmp_G."Document No." := CMCRestraintEntry_L."Document No.";
+            CMCRestraint_L.GET(CMCRestraintEntry_L."Restraint Code");
+            CMCSettOffLedEntTmp_G.Description := CMCRestraint_L.Description;
+            CMCSettOffLedEntTmp_G."User ID" := USERID;
+            CMCSettOffLedEntTmp_G."Document Date" := WORKDATE;
+            CMCSettOffLedEntTmp_G."Original Ledger Entry No." := CMCRestraintEntry_L."Entry No.";
+            CMCSettOffLedEntTmp_G."Remaining Amount" := CMCRestraintEntry_L."Remaining Amount";
+            CMCSettOffLedEntTmp_G.Amount := CMCRestraintEntry_L.Amount;
+            CMCSettOffLedEntTmp_G."Amount to Apply" := CMCRestraintEntry_L."Amount to Apply";
+            CMCSettOffLedEntTmp_G."Ledger type" := CMCSettOffLedEntTmp_G."Ledger type"::Restraint;
+            CMCSettOffLedEntTmp_G."Account No." := Contact_G."No.";
+            CMCSettOffLedEntTmp_G."Applies-to ID" := '';
+            CMCSettOffLedEntTmp_G.Open := TRUE;
+            CMCSettOffLedEntTmp_G."Farmer Document No." := CompensationLine_P."Farmer Document No.";
+            CMCSettOffLedEntTmp_G."SettOff Amount to apply" := CompensationLine_P."Vendor Balance";
+            CMCSettOffLedEntTmp_G."IC Partner Code" := CompensationLine_P."Document No.";
+
+            SettingOffRemain_L := GetRemainComp(3, CMCRestraintEntry_L."Entry No.");
+      //CDAL      IF (SettingOffRemain_L > 0) THEN
+            IF ((SettingOffRemain_L > 0) AND (CMCSettOffLedEntTmp_G."Due Date" <= DatePaiement_G)) THEN
+                 IsToInsert_L := TRUE
+            ELSE
+                 IsToInsert_L := FALSE;
+
+            L_EcrComp.RESET;
+            L_EcrComp.SETCURRENTKEY("SettOff Type","Entry Type","Entry No.","Document No.","Invoice No");
+            L_EcrComp.SETRANGE("SettOff Type",L_EcrComp."SettOff Type"::Proposed);
+            L_EcrComp.SETRANGE("Invoice No",CompensationLine_P."Farmer Document No.");
+            L_EcrComp.SETRANGE("SettOff Applies-to ID",CompensationLine_P."Document No.");
+            L_EcrComp.SETRANGE("Entry Type",L_EcrComp."Entry Type"::Restraint);
+            L_EcrComp.SETRANGE("Entry No.",CMCRestraintEntry_L."Entry No.");
+            IF  L_EcrComp.FINDFIRST THEN BEGIN
+              CMCSettOffLedEntTmp_G."Amount to Apply" := L_EcrComp.Amount ;
+              CMCSettOffLedEntTmp_G."SettOff Applies-to ID" := L_EcrComp."SettOff Applies-to ID";
+               IsToInsert_L := TRUE;
+            END;
+
+            CMCSettOffLedEntTmp_G."Setting Off Remain" := SettingOffRemain_L;
+            IF IsToInsert_L THEN BEGIN
+              IF CMCSettOffLedEntTmp_G.Amount < 0 THEN BEGIN
+                RetenuCredit_G += -CMCSettOffLedEntTmp_G.Amount;
+              END ELSE BEGIN
+                RetenuDebit_G += CMCSettOffLedEntTmp_G.Amount;
+              END;
+
+      //        CMCSettOffLedEntTmp_G.INSERT;
+              CMCSettOffLedEntTmpTotal_G.TRANSFERFIELDS(CMCSettOffLedEntTmp_G);
+              IF CMCSettOffLedEntTmpTotal_G.INSERT THEN;
+            END;
+          END;
+        UNTIL CMCRestraintEntry_L.NEXT=0;
+      //CDAL   PAGE.RUN(PAGE::"CMC Seq. Apply Rest. Comp.",CMCSettOffLedEntTmp_G);
+    END;
+
+    PROCEDURE GetRemainComp@1000000001(EntryType_P@8053000 : Integer;Seq_P@8053001 : Integer) : Decimal;
+    VAR
+      CompPro_L@8053002 : Record 8053041;
+      CustLedgEntry_L@8053003 : Record 21;
+      VendLedgeEntry_L@8053004 : Record 25;
+      RestraintEntry_L@8053005 : Record 8053374;
+      CustApplyProp_L@8053006 : Record 8053506;
+    BEGIN
+      CompPro_L.SETCURRENTKEY("SettOff Type","Entry Type","Entry No.","Document No.","Invoice No");
+      CompPro_L.SETRANGE("SettOff Type",CompPro_L."SettOff Type"::Proposed);
+      CompPro_L.SETRANGE("Entry Type",EntryType_P);
+      CompPro_L.SETRANGE("Entry No.",Seq_P);
+      CompPro_L.CALCSUMS(Amount);
+       CASE EntryType_P OF
+           0 : BEGIN   //'criture comptable fournisseur
+              VendLedgeEntry_L.GET(Seq_P);
+              VendLedgeEntry_L.CALCFIELDS("Remaining Amount");
+              EXIT(VendLedgeEntry_L."Remaining Amount"-CompPro_L.Amount);
+           END;
+           1 : BEGIN  //'criture comptable client
+              CustLedgEntry_L.GET(Seq_P);
+              CustLedgEntry_L.CALCFIELDS("Remaining Amount");
+              // --> 20140707-FINA28-CMC02.02.00-BRA01
+              //BEFORE
+              //EXIT(CustLedgEntry_L."Remaining Amount"-CompPro_L.Amount);
+              //AFTER
+              CustApplyProp_L.RESET;
+              // --> 20180305-Wi00-ADV01.01.00-3321-JCD
+              CustApplyProp_L.SETCURRENTKEY("Invoice No","Invoice Entry No.");
+              // <-- 20180305-Wi00-ADV01.01.00-3321-JCD
+              CustApplyProp_L.SETRANGE("Invoice No",CustLedgEntry_L."Document No.");
+              CustApplyProp_L.CALCSUMS(Amount);
+              EXIT(CustLedgEntry_L."Remaining Amount"-CompPro_L.Amount-CustApplyProp_L.Amount);
+              // <-- 20140707-FINA28-CMC02.02.00-BRA01
+           END;
+           3 : BEGIN //'criture clien
+              RestraintEntry_L.GET(Seq_P);
+              RestraintEntry_L.CALCFIELDS("Remaining Amount");
+              EXIT(RestraintEntry_L."Remaining Amount"-CompPro_L.Amount);
+           END;
+       END;
+
+      //-->20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+    END;
+
+    PROCEDURE DetailLettrageCliFou@1000000003(Contact_P@1000000001 : Code[20];Lettre_P@1000000002 : Code[10]);
+    VAR
+      CVLedgerEnt_L@1000000000 : Record 8053380;
+    BEGIN
+      IF Lettre_P <> '' THEN BEGIN
+        // --> 20180305-Wi00-ADV01.01.00-3321-JCD
+        CVLedgerEnt_L.SETCURRENTKEY("Contact No.","CV Entry Letter");
+        // <-- 20180305-Wi00-ADV01.01.00-3321-JCD
+        CVLedgerEnt_L.SETRANGE("Contact No.", Contact_P);
+        CVLedgerEnt_L.SETRANGE("CV Entry Letter", Lettre_P);
+        CVLedgerEnt_L.SETRANGE(CVLedgerEnt_L."Setting Off", FALSE);
+        IF CVLedgerEnt_L.FINDSET THEN BEGIN
+          REPEAT
+            EnregEcriture(CVLedgerEnt_L, FALSE);
+          UNTIL CVLedgerEnt_L.NEXT = 0;
+        END;
+      END;
+      //<--20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+    END;
+
+    PROCEDURE EnregEcriture@1000000006(CVLedgerEntry_P@1000000000 : Record 8053380;DetailLettrageCliFou_P@1000000002 : Boolean);
+    VAR
+      SettingOffRemain_L@1000000001 : Decimal;
+    BEGIN
+      //<--20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+      CMCSettOffLedEntTmpTotal_G.SETRANGE("Original Ledger Entry No.", CVLedgerEntry_P."Entry No.");
+      IF CVLedgerEntry_P."Customer / Vendor" = CVLedgerEntry_P."Customer / Vendor"::Customer THEN BEGIN
+        CMCSettOffLedEntTmpTotal_G.SETRANGE("Ledger type", CMCSettOffLedEntTmpTotal_G."Ledger type"::Customer);
+      END ELSE BEGIN
+        CMCSettOffLedEntTmpTotal_G.SETRANGE("Ledger type", CMCSettOffLedEntTmpTotal_G."Ledger type"::Vendor);
+      END;
+      IF CMCSettOffLedEntTmpTotal_G.ISEMPTY THEN BEGIN
+        CVLedgerEntry_P.CALCFIELDS(Amount,"Remaining Amount","Original Amt. (LCY)","Remaining Amt. (LCY)","Amount (LCY)",
+          "Debit Amount","Credit Amount","Debit Amount (LCY)","Credit Amount (LCY)","Original Amount");
+
+        CMCSettOffLedEntTmp_G.INIT;
+        CMCSettOffLedEntTmp_G."Entry No." := G_NewSettEntryNo;
+        G_NewSettEntryNo+=1;
+
+        CMCSettOffLedEntTmp_G."Posting Date" := CVLedgerEntry_P."Posting Date";
+        CMCSettOffLedEntTmp_G."Document Type" := CVLedgerEntry_P."Document Type";
+        CMCSettOffLedEntTmp_G."Document No." := CVLedgerEntry_P."Document No.";
+        CMCSettOffLedEntTmp_G.Description := CVLedgerEntry_P.Description;
+        CMCSettOffLedEntTmp_G."Currency Code" := CVLedgerEntry_P."Currency Code";
+        CMCSettOffLedEntTmp_G."Global Dimension 1 Code" := CVLedgerEntry_P."Global Dimension 1 Code";
+        CMCSettOffLedEntTmp_G."Global Dimension 2 Code" := CVLedgerEntry_P."Global Dimension 2 Code";
+      //      CMCSettOffLedEntTmp_G."User ID" := CVLedgerEntry_L."User ID";
+        CMCSettOffLedEntTmp_G."Source Code" := CVLedgerEntry_P."Source Code";
+        CMCSettOffLedEntTmp_G."Due Date" := CVLedgerEntry_P."Due Date";
+        CMCSettOffLedEntTmp_G."Document Date" := CVLedgerEntry_P."Document Date";
+        CMCSettOffLedEntTmp_G."External Document No." := CVLedgerEntry_P."External Document No.";
+        CMCSettOffLedEntTmp_G."Debit Amount" := CVLedgerEntry_P."Debit Amount";
+        CMCSettOffLedEntTmp_G."Credit Amount" := CVLedgerEntry_P."Credit Amount";
+        CMCSettOffLedEntTmp_G."Debit Amount (LCY)" := CVLedgerEntry_P."Debit Amount (LCY)";
+        CMCSettOffLedEntTmp_G."Credit Amount (LCY)" := CVLedgerEntry_P."Credit Amount (LCY)";
+        CMCSettOffLedEntTmp_G."Original Amount" := CVLedgerEntry_P."Original Amount";
+        CMCSettOffLedEntTmp_G."Original Ledger Entry No." := CVLedgerEntry_P."Entry No.";
+
+        IF CVLedgerEntry_P."Customer / Vendor" = CVLedgerEntry_P."Customer / Vendor"::Customer THEN BEGIN
+          CMCSettOffLedEntTmp_G."Ledger type" := CMCSettOffLedEntTmp_G."Ledger type"::Customer;
+        END ELSE BEGIN
+          CMCSettOffLedEntTmp_G."Ledger type" := CMCSettOffLedEntTmp_G."Ledger type"::Vendor;
+        END;
+
+        CMCSettOffLedEntTmp_G."Account No." := Contact_G."No.";
+        CMCSettOffLedEntTmp_G."Applies-to ID" := '';
+        CMCSettOffLedEntTmp_G.Amount := CVLedgerEntry_P.Amount;
+        CMCSettOffLedEntTmp_G."Remaining Amount" := CVLedgerEntry_P."Remaining Amount";
+        CMCSettOffLedEntTmp_G."Original Amt. (LCY)" := CVLedgerEntry_P."Original Amt. (LCY)";
+        CMCSettOffLedEntTmp_G."Remaining Amt. (LCY)" := CVLedgerEntry_P."Remaining Amt. (LCY)";
+        CMCSettOffLedEntTmp_G."Amount (LCY)" := CVLedgerEntry_P."Amount (LCY)";
+        CMCSettOffLedEntTmp_G."Debit Amount" := CVLedgerEntry_P."Debit Amount";
+        CMCSettOffLedEntTmp_G."Credit Amount" := CVLedgerEntry_P."Credit Amount";
+        CMCSettOffLedEntTmp_G."Debit Amount (LCY)" := CVLedgerEntry_P."Debit Amount (LCY)";
+        CMCSettOffLedEntTmp_G."Credit Amount (LCY)" := CVLedgerEntry_P."Credit Amount (LCY)";
+        CMCSettOffLedEntTmp_G."Original Amount" := CVLedgerEntry_P."Original Amount";
+        CMCSettOffLedEntTmp_G."Setting Off not Allowed" := CVLedgerEntry_P."Setting Off not Allowed";
+        CMCSettOffLedEntTmp_G.Open := TRUE;
+        CMCSettOffLedEntTmp_G."Farmer Document No." := "CMC Seq. Comp. Journal LineDoc"."Farmer Document No.";
+
+        CMCSettOffLedEntTmp_G."SettOff Amount to apply" := "CMC Seq. Comp. Journal LineDoc"."Vendor Balance";
+        CMCSettOffLedEntTmp_G."IC Partner Code" := "CMC Seq. Comp. Journal LineDoc"."Document No.";
+
+        IF CVLedgerEntry_P."Customer / Vendor" = CVLedgerEntry_P."Customer / Vendor"::Customer THEN BEGIN
+          SettingOffRemain_L := GetRemainComp1(1, CVLedgerEntry_P."Entry No.");
+        END ELSE BEGIN
+          SettingOffRemain_L := GetRemainComp1(0, CVLedgerEntry_P."Entry No.");
+        END;
+
+        CMCSettOffLedEntTmp_G."Amount to Apply" := 0; //EcrCompCust_L.Amount ;
+        CMCSettOffLedEntTmp_G."SettOff Applies-to ID" := "CMC Seq. Comp. Journal LineDoc"."Document No.";
+
+        CMCSettOffLedEntTmp_G."Setting Off Remain" := SettingOffRemain_L;
+
+        IF CMCSettOffLedEntTmp_G.INSERT THEN;
+        CMCSettOffLedEntTmpTotal_G.TRANSFERFIELDS(CMCSettOffLedEntTmp_G);
+        IF CMCSettOffLedEntTmpTotal_G.INSERT THEN;
+
+        IF DetailLettrageCliFou_P THEN BEGIN
+          DetailLettrageCliFou(Contact_G."No.", CVLedgerEntry_P."CV Entry Letter");
+        END;
+      END;
+      //<--20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1
+    END;
+
+    BEGIN
+    {
+      20140828-Rpt01-ADV01.01.00_ADVITAM-CDL1 : - Ajout Recherche 'criture lettr'.
+                                                - Ajout fonction DetailLettrageCliFou
+      20140912-Rpt01-ADV01.01.00_ADVITAM-CDL2 : - Erreur libell' paiement : Si EC reprends RIB d'un autre, ...
+      20140917-Rpt01-ADV01.01.00_ADVITAM-CDL3 : - Manque 'criture client : compensation avoir - facture T8053506.
+                                                  + Prendre 'criture du N› s'quence (avoir) et aussi 'criture du N› facture
+                                                    (Avoir compensation par les factures).
+      20140917-Rpt01-ADV01.01.00_ADVITAM-CDL4 : - D'biteur : Pas les 'critures dont 'ch'ance > date de paiement
+      20141012-Rpt01-ADV01.01.00_ADVITAM-CDL5 : - 3Li Ajouter un Commit derriSre leur fonction m.j lettrage.
+      20180305-Wi00-ADV01.01.00-3321-JCD : ADDCODE (fen^tre d'avancement + ajout de SETCURRENTKEY)
+    }
+    END.
+  }
+  RDLDATA
+  {
+    <?xml version="1.0" encoding="utf-8"?>
+<Report xmlns="http://schemas.microsoft.com/sqlserver/reporting/2005/01/reportdefinition" xmlns:rd="http://schemas.microsoft.com/SQLServer/reporting/reportdesigner">
+  <Body>
+    <Height>2.07011cm</Height>
+    <ReportItems>
+      <List Name="list1">
+        <DataSetName>DataSet_Result</DataSetName>
+        <Grouping Name="list1_Details_Group">
+          <GroupExpressions>
+            <GroupExpression>=Fields!CMC_Seq__Comp__Journal_LineAgr__Account_No__.Value</GroupExpression>
+          </GroupExpressions>
+          <PageBreakAtEnd>true</PageBreakAtEnd>
+        </Grouping>
+        <ReportItems>
+          <Table Name="tablePied">
+            <Details>
+              <TableRows>
+                <TableRow>
+                  <Height>0.18519cm</Height>
+                  <TableCells>
+                    <TableCell>
+                      <ReportItems>
+                        <Textbox Name="DatePaiementCaption">
+                          <CanGrow>true</CanGrow>
+                          <Style>
+                            <PaddingBottom>2pt</PaddingBottom>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                          </Style>
+                          <Value>Date de paiement :</Value>
+                        </Textbox>
+                      </ReportItems>
+                    </TableCell>
+                    <TableCell>
+                      <ReportItems>
+                        <Textbox Name="TotauxCaption">
+                          <CanGrow>true</CanGrow>
+                          <Style>
+                            <PaddingBottom>2pt</PaddingBottom>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                          </Style>
+                          <Value>TOTAUX :</Value>
+                        </Textbox>
+                      </ReportItems>
+                    </TableCell>
+                    <TableCell>
+                      <ReportItems>
+                        <Textbox Name="textbox58">
+                          <CanGrow>true</CanGrow>
+                          <Style>
+                            <PaddingBottom>2pt</PaddingBottom>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                          </Style>
+                          <Value />
+                          <rd:DefaultName>textbox58</rd:DefaultName>
+                        </Textbox>
+                      </ReportItems>
+                    </TableCell>
+                  </TableCells>
+                </TableRow>
+              </TableRows>
+            </Details>
+            <Height>0.18519cm</Height>
+            <Style>
+              <BorderColor>
+                <Default>Red</Default>
+              </BorderColor>
+            </Style>
+            <TableColumns>
+              <TableColumn>
+                <Width>0.4551cm</Width>
+              </TableColumn>
+              <TableColumn>
+                <Width>0.62277cm</Width>
+              </TableColumn>
+              <TableColumn>
+                <Width>0.69462cm</Width>
+              </TableColumn>
+            </TableColumns>
+            <Top>1.74603cm</Top>
+            <Visibility>
+              <Hidden>true</Hidden>
+            </Visibility>
+            <Width>1.77249cm</Width>
+            <ZIndex>12</ZIndex>
+          </Table>
+          <Textbox Name="TexteSolde">
+            <CanGrow>true</CanGrow>
+            <Left>10.23334cm</Left>
+            <Style>
+              <Color>Red</Color>
+              <PaddingBottom>2pt</PaddingBottom>
+              <PaddingLeft>2pt</PaddingLeft>
+              <PaddingRight>2pt</PaddingRight>
+              <PaddingTop>2pt</PaddingTop>
+              <TextAlign>Right</TextAlign>
+            </Style>
+            <Top>1.74603cm</Top>
+            <Value>=Last(Fields!TexteSolde_G.Value)</Value>
+            <Visibility>
+              <Hidden>true</Hidden>
+            </Visibility>
+            <Width>1.26984cm</Width>
+            <ZIndex>11</ZIndex>
+          </Textbox>
+          <Textbox Name="ARecevoir">
+            <CanGrow>true</CanGrow>
+            <Left>17.75979cm</Left>
+            <Style>
+              <Color>Red</Color>
+              <PaddingBottom>2pt</PaddingBottom>
+              <PaddingLeft>2pt</PaddingLeft>
+              <PaddingRight>2pt</PaddingRight>
+              <PaddingTop>2pt</PaddingTop>
+              <TextAlign>Right</TextAlign>
+            </Style>
+            <Top>1.74603cm</Top>
+            <Value>=Last(Fields!ARecevoir_G.Value)</Value>
+            <Visibility>
+              <Hidden>true</Hidden>
+            </Visibility>
+            <Width>1.26984cm</Width>
+            <ZIndex>10</ZIndex>
+          </Textbox>
+          <Textbox Name="APayer">
+            <CanGrow>true</CanGrow>
+            <Left>16.30476cm</Left>
+            <Style>
+              <Color>Red</Color>
+              <PaddingBottom>2pt</PaddingBottom>
+              <PaddingLeft>2pt</PaddingLeft>
+              <PaddingRight>2pt</PaddingRight>
+              <PaddingTop>2pt</PaddingTop>
+              <TextAlign>Right</TextAlign>
+            </Style>
+            <Top>1.74603cm</Top>
+            <Value>=Last(Fields!APayer_G.Value)</Value>
+            <Visibility>
+              <Hidden>true</Hidden>
+            </Visibility>
+            <Width>1.26984cm</Width>
+            <ZIndex>9</ZIndex>
+          </Textbox>
+          <Textbox Name="Retenu">
+            <CanGrow>true</CanGrow>
+            <Left>14.73545cm</Left>
+            <Style>
+              <Color>Red</Color>
+              <PaddingBottom>2pt</PaddingBottom>
+              <PaddingLeft>2pt</PaddingLeft>
+              <PaddingRight>2pt</PaddingRight>
+              <PaddingTop>2pt</PaddingTop>
+              <TextAlign>Right</TextAlign>
+            </Style>
+            <Top>1.74603cm</Top>
+            <Value>=Last(Fields!RetenuCredit_G.Value)-Last(Fields!RetenuDebit_G.Value)</Value>
+            <Visibility>
+              <Hidden>true</Hidden>
+            </Visibility>
+            <Width>1.26984cm</Width>
+            <ZIndex>8</ZIndex>
+          </Textbox>
+          <Textbox Name="RetenuDebit">
+            <CanGrow>true</CanGrow>
+            <Left>13.28042cm</Left>
+            <Style>
+              <Color>Red</Color>
+              <PaddingBottom>2pt</PaddingBottom>
+              <PaddingLeft>2pt</PaddingLeft>
+              <PaddingRight>2pt</PaddingRight>
+              <PaddingTop>2pt</PaddingTop>
+              <TextAlign>Right</TextAlign>
+            </Style>
+            <Top>1.74603cm</Top>
+            <Value>=Last(Fields!RetenuDebit_G.Value)</Value>
+            <Visibility>
+              <Hidden>true</Hidden>
+            </Visibility>
+            <Width>1.26984cm</Width>
+            <ZIndex>7</ZIndex>
+          </Textbox>
+          <Textbox Name="RetenuCredit">
+            <CanGrow>true</CanGrow>
+            <Left>11.79894cm</Left>
+            <Style>
+              <Color>Red</Color>
+              <PaddingBottom>2pt</PaddingBottom>
+              <PaddingLeft>2pt</PaddingLeft>
+              <PaddingRight>2pt</PaddingRight>
+              <PaddingTop>2pt</PaddingTop>
+              <TextAlign>Right</TextAlign>
+            </Style>
+            <Top>1.74603cm</Top>
+            <Value>=Last(Fields!RetenuCredit_G.Value)</Value>
+            <Visibility>
+              <Hidden>true</Hidden>
+            </Visibility>
+            <Width>1.26984cm</Width>
+            <ZIndex>6</ZIndex>
+          </Textbox>
+          <Textbox Name="PaiementTexte">
+            <CanGrow>true</CanGrow>
+            <Left>2.08995cm</Left>
+            <Style>
+              <Color>Red</Color>
+              <PaddingBottom>2pt</PaddingBottom>
+              <PaddingLeft>2pt</PaddingLeft>
+              <PaddingRight>2pt</PaddingRight>
+              <PaddingTop>2pt</PaddingTop>
+              <TextAlign>Right</TextAlign>
+            </Style>
+            <Top>1.74603cm</Top>
+            <Value>=IIF(Fields!APayer_G.Value &lt;&gt; 0, Last(fields!PaiementTexte_G.Value), "")</Value>
+            <Visibility>
+              <Hidden>true</Hidden>
+            </Visibility>
+            <Width>1.5873cm</Width>
+            <ZIndex>5</ZIndex>
+          </Textbox>
+          <Textbox Name="DatePaie">
+            <CanGrow>true</CanGrow>
+            <Left>4.02593cm</Left>
+            <Style>
+              <Color>Red</Color>
+              <PaddingBottom>2pt</PaddingBottom>
+              <PaddingLeft>2pt</PaddingLeft>
+              <PaddingRight>2pt</PaddingRight>
+              <PaddingTop>2pt</PaddingTop>
+              <TextAlign>Right</TextAlign>
+            </Style>
+            <Top>1.74603cm</Top>
+            <Value>=first(fields!DatePaiement_G.Value)</Value>
+            <Visibility>
+              <Hidden>true</Hidden>
+            </Visibility>
+            <Width>1.5873cm</Width>
+            <ZIndex>4</ZIndex>
+          </Textbox>
+          <Textbox Name="TotalCredit">
+            <CanGrow>true</CanGrow>
+            <Left>8.47037cm</Left>
+            <Style>
+              <Color>Red</Color>
+              <PaddingBottom>2pt</PaddingBottom>
+              <PaddingLeft>2pt</PaddingLeft>
+              <PaddingRight>2pt</PaddingRight>
+              <PaddingTop>2pt</PaddingTop>
+              <TextAlign>Right</TextAlign>
+            </Style>
+            <Top>1.74603cm</Top>
+            <Value>=Last(Fields!TotalCredit_G.Value)</Value>
+            <Visibility>
+              <Hidden>true</Hidden>
+            </Visibility>
+            <Width>1.26984cm</Width>
+            <ZIndex>3</ZIndex>
+          </Textbox>
+          <Textbox Name="TotalDebit">
+            <CanGrow>true</CanGrow>
+            <Left>5.93069cm</Left>
+            <Style>
+              <Color>Red</Color>
+              <PaddingBottom>2pt</PaddingBottom>
+              <PaddingLeft>2pt</PaddingLeft>
+              <PaddingRight>2pt</PaddingRight>
+              <PaddingTop>2pt</PaddingTop>
+              <TextAlign>Right</TextAlign>
+            </Style>
+            <Top>1.74603cm</Top>
+            <Value>=Abs(Last(Fields!TotalDebit_G.Value))</Value>
+            <Visibility>
+              <Hidden>true</Hidden>
+            </Visibility>
+            <Width>1.5873cm</Width>
+            <ZIndex>2</ZIndex>
+          </Textbox>
+          <Table Name="table2">
+            <Details>
+              <TableRows>
+                <TableRow>
+                  <Height>0.31746cm</Height>
+                  <TableCells>
+                    <TableCell>
+                      <ReportItems>
+                        <Textbox Name="ContactAddress">
+                          <CanGrow>true</CanGrow>
+                          <Style>
+                            <PaddingBottom>2pt</PaddingBottom>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                          </Style>
+                          <Value>= Fields!ContactAddr_1_.Value + Chr(177)
++ Fields!ContactAddr_2_.Value + Chr(177)
++ Fields!ContactAddr_3_.Value + Chr(177)
++ Fields!ContactAddr_4_.Value + Chr(177)
++ Fields!ContactAddr_5_.Value + Chr(177)
++ Fields!ContactAddr_6_.Value + Chr(177)
++ Fields!ContactAddr_7_.Value + Chr(177)
++ Fields!ContactAddr_8_.Value + Chr(177)
++ Fields!CMC_Seq__Comp__Journal_LineAgr__Account_No__.Value + Chr(177)
++ Fields!TC.Value</Value>
+                        </Textbox>
+                      </ReportItems>
+                    </TableCell>
+                    <TableCell>
+                      <ReportItems>
+                        <Textbox Name="CompanyInfo">
+                          <CanGrow>true</CanGrow>
+                          <Style>
+                            <PaddingBottom>2pt</PaddingBottom>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                          </Style>
+                          <Value>= Fields!Company_Name.Value + Chr(177)
++ Fields!CompanyInfo1.Value + Chr(177)
++ Fields!CompanyInfo2.Value + Chr(177)
++ Fields!CompanyInfo3.Value + Chr(177)
++ Fields!CompanyInfo4.Value + Chr(177)
++ Fields!CompanyInfo5.Value + Chr(177)
++ Fields!AgrementNo_G.Value + Chr(177)
++ Fields!CompanyInfo6.Value + Chr(177)
++ Fields!CompanyInfo7.Value + Chr(177)
++ Fields!SocNom.Value + Chr(177)
++ Fields!SocAdr1.Value + Chr(177)
++ Fields!SocAdr2.Value + Chr(177)
++ Fields!SocCPV.Value + Chr(177)
++ Fields!CompanyAddr_5_.Value + Chr(177)
++ Fields!AdresseCentreGestion.Value + Chr(177)
++ Fields!NomBddTest_G.Value</Value>
+                        </Textbox>
+                      </ReportItems>
+                    </TableCell>
+                    <TableCell>
+                      <ReportItems>
+                        <Textbox Name="Mapping">
+                          <CanGrow>true</CanGrow>
+                          <Style>
+                            <PaddingBottom>2pt</PaddingBottom>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                          </Style>
+                          <Value>= Fields!BoolMappage_G.Value + Chr(177)
++ Fields!CMC_Seq__Comp__Journal_LineAgr__Account_No__.Value + Chr(177)
++ Fields!NumDoc_G.Value+ chr(177) 
++ fields!PostingDate.Value + chr(177) 
++ Fields!Imprimante_G.Value + Chr(177)
++ Fields!TypImprime_G.Value + Chr(177)
++ Fields!region.Value + Chr(177)
++ Fields!PostCode.Value + Chr(177)
++ Fields!NoCampagne.Value + Chr(177)
++ Fields!Bac1.Value + Chr(177)
++ Fields!Bac2.Value + Chr(177)
++ Fields!Bac3.Value + Chr(177)
++ Fields!Recap_G.Value + Chr(177)
++ Fields!ArchRep_G.Value+ Chr(177)
++ Fields!PostDate.Value+ Chr(177)
++ Fields!VersionMapping_G.Value</Value>
+                        </Textbox>
+                      </ReportItems>
+                    </TableCell>
+                  </TableCells>
+                </TableRow>
+              </TableRows>
+            </Details>
+            <Height>0.31746cm</Height>
+            <Style>
+              <Color>Red</Color>
+            </Style>
+            <TableColumns>
+              <TableColumn>
+                <Width>0.63492cm</Width>
+              </TableColumn>
+              <TableColumn>
+                <Width>0.63492cm</Width>
+              </TableColumn>
+              <TableColumn>
+                <Width>0.63492cm</Width>
+              </TableColumn>
+            </TableColumns>
+            <Visibility>
+              <Hidden>true</Hidden>
+            </Visibility>
+            <Width>1.90476cm</Width>
+            <ZIndex>1</ZIndex>
+          </Table>
+          <Table Name="Table1">
+            <DataSetName>DataSet_Result</DataSetName>
+            <Details>
+              <Sorting>
+                <SortBy>
+                  <Direction>Ascending</Direction>
+                  <SortExpression>=Fields!triDateEch.Value</SortExpression>
+                </SortBy>
+              </Sorting>
+              <TableRows>
+                <TableRow>
+                  <Height>0.423cm</Height>
+                  <TableCells>
+                    <TableCell>
+                      <ReportItems>
+                        <Textbox Name="textbox21">
+                          <Style>
+                            <FontSize>9pt</FontSize>
+                            <PaddingBottom>2pt</PaddingBottom>
+                            <PaddingLeft>0.075cm</PaddingLeft>
+                            <PaddingRight>0.075cm</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <VerticalAlign>Middle</VerticalAlign>
+                          </Style>
+                          <Value>=Fields!PostDate.Value</Value>
+                        </Textbox>
+                      </ReportItems>
+                    </TableCell>
+                    <TableCell>
+                      <ReportItems>
+                        <Textbox Name="textbox42">
+                          <Style>
+                            <FontSize>9pt</FontSize>
+                            <PaddingBottom>2pt</PaddingBottom>
+                            <PaddingLeft>0.075cm</PaddingLeft>
+                            <PaddingRight>0.075cm</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <VerticalAlign>Middle</VerticalAlign>
+                          </Style>
+                          <Value>=Fields!NoPiece.Value</Value>
+                        </Textbox>
+                      </ReportItems>
+                    </TableCell>
+                    <TableCell>
+                      <ReportItems>
+                        <Textbox Name="textbox26">
+                          <Style>
+                            <FontSize>9pt</FontSize>
+                            <PaddingBottom>2pt</PaddingBottom>
+                            <PaddingLeft>0.075cm</PaddingLeft>
+                            <PaddingRight>0.075cm</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <VerticalAlign>Middle</VerticalAlign>
+                          </Style>
+                          <Value>=Fields!Desciption.Value</Value>
+                        </Textbox>
+                      </ReportItems>
+                    </TableCell>
+                    <TableCell>
+                      <ReportItems>
+                        <Textbox Name="textbox39">
+                          <Style>
+                            <FontSize>9pt</FontSize>
+                            <PaddingBottom>2pt</PaddingBottom>
+                            <PaddingLeft>0.075cm</PaddingLeft>
+                            <PaddingRight>0.075cm</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <VerticalAlign>Middle</VerticalAlign>
+                          </Style>
+                          <Value>=Fields!DateEch.Value</Value>
+                        </Textbox>
+                      </ReportItems>
+                    </TableCell>
+                    <TableCell>
+                      <ReportItems>
+                        <Textbox Name="textbox31">
+                          <Style>
+                            <FontSize>9pt</FontSize>
+                            <Format>=Fields!Debit_GFormat.Value</Format>
+                            <PaddingBottom>2pt</PaddingBottom>
+                            <PaddingLeft>0.075cm</PaddingLeft>
+                            <PaddingRight>0.075cm</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <VerticalAlign>Middle</VerticalAlign>
+                          </Style>
+                          <Value>=Code.BlankZero(Fields!Debit_G.Value)</Value>
+                        </Textbox>
+                      </ReportItems>
+                    </TableCell>
+                    <TableCell>
+                      <ReportItems>
+                        <Textbox Name="textbox12">
+                          <Style>
+                            <FontSize>9pt</FontSize>
+                            <Format>=Fields!Credit_GFormat.Value</Format>
+                            <PaddingBottom>2pt</PaddingBottom>
+                            <PaddingLeft>0.075cm</PaddingLeft>
+                            <PaddingRight>0.075cm</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <VerticalAlign>Middle</VerticalAlign>
+                          </Style>
+                          <Value>=Code.BlankZero(Fields!Credit_G.Value)</Value>
+                        </Textbox>
+                      </ReportItems>
+                    </TableCell>
+                  </TableCells>
+                </TableRow>
+              </TableRows>
+            </Details>
+            <Header>
+              <RepeatOnNewPage>true</RepeatOnNewPage>
+              <TableRows>
+                <TableRow>
+                  <Height>0.423cm</Height>
+                  <TableCells>
+                    <TableCell>
+                      <ReportItems>
+                        <Textbox Name="textbox28">
+                          <CanGrow>true</CanGrow>
+                          <Style>
+                            <PaddingBottom>2pt</PaddingBottom>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                          </Style>
+                          <Value>="Date"</Value>
+                          <rd:DefaultName>textbox28</rd:DefaultName>
+                        </Textbox>
+                      </ReportItems>
+                    </TableCell>
+                    <TableCell>
+                      <ReportItems>
+                        <Textbox Name="textbox29">
+                          <CanGrow>true</CanGrow>
+                          <Style>
+                            <PaddingBottom>2pt</PaddingBottom>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                          </Style>
+                          <Value>="N› piSce"</Value>
+                          <rd:DefaultName>textbox29</rd:DefaultName>
+                        </Textbox>
+                      </ReportItems>
+                    </TableCell>
+                    <TableCell>
+                      <ReportItems>
+                        <Textbox Name="textbox30">
+                          <CanGrow>true</CanGrow>
+                          <Style>
+                            <PaddingBottom>2pt</PaddingBottom>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                          </Style>
+                          <Value>="Libell'"</Value>
+                          <rd:DefaultName>textbox30</rd:DefaultName>
+                        </Textbox>
+                      </ReportItems>
+                    </TableCell>
+                    <TableCell>
+                      <ReportItems>
+                        <Textbox Name="textbox32">
+                          <CanGrow>true</CanGrow>
+                          <Style>
+                            <PaddingBottom>2pt</PaddingBottom>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                          </Style>
+                          <Value>="Ech'ance"</Value>
+                          <rd:DefaultName>textbox32</rd:DefaultName>
+                        </Textbox>
+                      </ReportItems>
+                    </TableCell>
+                    <TableCell>
+                      <ReportItems>
+                        <Textbox Name="textbox33">
+                          <CanGrow>true</CanGrow>
+                          <Style>
+                            <PaddingBottom>2pt</PaddingBottom>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <TextAlign>Right</TextAlign>
+                          </Style>
+                          <Value>="D'bit"</Value>
+                          <rd:DefaultName>textbox33</rd:DefaultName>
+                        </Textbox>
+                      </ReportItems>
+                    </TableCell>
+                    <TableCell>
+                      <ReportItems>
+                        <Textbox Name="textbox34">
+                          <CanGrow>true</CanGrow>
+                          <Style>
+                            <PaddingBottom>2pt</PaddingBottom>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <TextAlign>Right</TextAlign>
+                          </Style>
+                          <Value>="Cr'dit"</Value>
+                          <rd:DefaultName>textbox34</rd:DefaultName>
+                        </Textbox>
+                      </ReportItems>
+                    </TableCell>
+                  </TableCells>
+                </TableRow>
+              </TableRows>
+            </Header>
+            <Height>1.269cm</Height>
+            <TableColumns>
+              <TableColumn>
+                <Width>1.9cm</Width>
+              </TableColumn>
+              <TableColumn>
+                <Width>2.22222cm</Width>
+              </TableColumn>
+              <TableColumn>
+                <Width>7.61905cm</Width>
+              </TableColumn>
+              <TableColumn>
+                <Width>1.9cm</Width>
+              </TableColumn>
+              <TableColumn>
+                <Width>2.85714cm</Width>
+              </TableColumn>
+              <TableColumn>
+                <Width>2.85714cm</Width>
+              </TableColumn>
+            </TableColumns>
+            <TableGroups>
+              <TableGroup>
+                <Grouping Name="Table1_Group1">
+                  <GroupExpressions>
+                    <GroupExpression>=Fields!CMC_Seq__Comp__Journal_LineAgr__Account_No__.Value</GroupExpression>
+                  </GroupExpressions>
+                </Grouping>
+                <Header>
+                  <RepeatOnNewPage>true</RepeatOnNewPage>
+                  <TableRows>
+                    <TableRow>
+                      <Height>0.423cm</Height>
+                      <TableCells>
+                        <TableCell>
+                          <ReportItems>
+                            <Textbox Name="textbox1">
+                              <CanGrow>true</CanGrow>
+                              <Style>
+                                <PaddingBottom>2pt</PaddingBottom>
+                                <PaddingLeft>2pt</PaddingLeft>
+                                <PaddingRight>2pt</PaddingRight>
+                                <PaddingTop>2pt</PaddingTop>
+                              </Style>
+                              <Value />
+                              <rd:DefaultName>textbox1</rd:DefaultName>
+                            </Textbox>
+                          </ReportItems>
+                        </TableCell>
+                        <TableCell>
+                          <ReportItems>
+                            <Textbox Name="textbox11">
+                              <CanGrow>true</CanGrow>
+                              <Style>
+                                <PaddingBottom>2pt</PaddingBottom>
+                                <PaddingLeft>2pt</PaddingLeft>
+                                <PaddingRight>2pt</PaddingRight>
+                                <PaddingTop>2pt</PaddingTop>
+                              </Style>
+                              <Value />
+                              <rd:DefaultName>textbox11</rd:DefaultName>
+                            </Textbox>
+                          </ReportItems>
+                        </TableCell>
+                        <TableCell>
+                          <ReportItems>
+                            <Textbox Name="textbox19">
+                              <CanGrow>true</CanGrow>
+                              <Style>
+                                <PaddingBottom>2pt</PaddingBottom>
+                                <PaddingLeft>2pt</PaddingLeft>
+                                <PaddingRight>2pt</PaddingRight>
+                                <PaddingTop>2pt</PaddingTop>
+                              </Style>
+                              <Value />
+                              <rd:DefaultName>textbox19</rd:DefaultName>
+                            </Textbox>
+                          </ReportItems>
+                        </TableCell>
+                        <TableCell>
+                          <ReportItems>
+                            <Textbox Name="textbox20">
+                              <CanGrow>true</CanGrow>
+                              <Style>
+                                <PaddingBottom>2pt</PaddingBottom>
+                                <PaddingLeft>2pt</PaddingLeft>
+                                <PaddingRight>2pt</PaddingRight>
+                                <PaddingTop>2pt</PaddingTop>
+                              </Style>
+                              <Value />
+                              <rd:DefaultName>textbox20</rd:DefaultName>
+                            </Textbox>
+                          </ReportItems>
+                        </TableCell>
+                        <TableCell>
+                          <ReportItems>
+                            <Textbox Name="textbox22">
+                              <CanGrow>true</CanGrow>
+                              <Style>
+                                <PaddingBottom>2pt</PaddingBottom>
+                                <PaddingLeft>2pt</PaddingLeft>
+                                <PaddingRight>2pt</PaddingRight>
+                                <PaddingTop>2pt</PaddingTop>
+                              </Style>
+                              <Value />
+                              <rd:DefaultName>textbox22</rd:DefaultName>
+                            </Textbox>
+                          </ReportItems>
+                        </TableCell>
+                        <TableCell>
+                          <ReportItems>
+                            <Textbox Name="textbox23">
+                              <CanGrow>true</CanGrow>
+                              <Style>
+                                <PaddingBottom>2pt</PaddingBottom>
+                                <PaddingLeft>2pt</PaddingLeft>
+                                <PaddingRight>2pt</PaddingRight>
+                                <PaddingTop>2pt</PaddingTop>
+                              </Style>
+                              <Value />
+                              <rd:DefaultName>textbox23</rd:DefaultName>
+                            </Textbox>
+                          </ReportItems>
+                        </TableCell>
+                      </TableCells>
+                    </TableRow>
+                  </TableRows>
+                </Header>
+              </TableGroup>
+            </TableGroups>
+            <Top>0.31746cm</Top>
+          </Table>
+        </ReportItems>
+        <Width>19.35555cm</Width>
+      </List>
+    </ReportItems>
+  </Body>
+  <BottomMargin>0.5cm</BottomMargin>
+  <Code>Public Function BlankZero(ByVal Value As Decimal)
+    if Value = 0 then
+        Return ""
+    end if
+    Return Value
+End Function
+
+Public Function BlankPos(ByVal Value As Decimal)
+    if Value &gt; 0 then
+        Return ""
+    end if
+    Return Value
+End Function
+
+Public Function BlankZeroAndPos(ByVal Value As Decimal)
+    if Value &gt;= 0 then
+        Return ""
+    end if
+    Return Value
+End Function
+
+Public Function BlankNeg(ByVal Value As Decimal)
+    if Value &lt; 0 then
+        Return ""
+    end if
+    Return Value
+End Function
+
+Public Function BlankNegAndZero(ByVal Value As Decimal)
+    if Value &lt;= 0 then
+        Return ""
+    end if
+    Return Value
+End Function
+
+Shared Data1 as Object
+Shared Data2 as Object
+Shared Data3 as Object
+
+Public Function GetData(Num as Integer, Group as integer) as Object
+if Group = 1 then
+   Return Cstr(Choose(Num, Split(Cstr(Data1),Chr(177))))
+End If
+
+if Group = 2 then
+   Return Cstr(Choose(Num, Split(Cstr(Data2),Chr(177))))
+End If
+
+if Group = 3 then
+   Return Cstr(Choose(Num, Split(Cstr(Data3),Chr(177))))
+End If
+
+End Function
+
+Public Function SetData(NewData as Object,Group as integer)
+  If Group = 1 and NewData &lt;&gt; "" Then
+      Data1 = NewData
+  End If
+
+  If Group = 2 and NewData &lt;&gt; "" Then
+      Data2 = NewData
+  End If
+
+ If Group = 3 and NewData &lt;&gt; "" Then
+      Data3 = NewData
+  End If
+
+End Function
+
+</Code>
+  <DataSets>
+    <DataSet Name="DataSet_Result">
+      <DataSetInfo xmlns="http://schemas.microsoft.com/SQLServer/reporting/reportdesigner">
+        <DataSetName>DataSet</DataSetName>
+        <TableName>Result</TableName>
+      </DataSetInfo>
+      <Fields>
+        <Field Name="ContactAddr_1_">
+          <DataField>ContactAddr_1_</DataField>
+        </Field>
+        <Field Name="ContactAddr_2_">
+          <DataField>ContactAddr_2_</DataField>
+        </Field>
+        <Field Name="ContactAddr_3_">
+          <DataField>ContactAddr_3_</DataField>
+        </Field>
+        <Field Name="ContactAddr_4_">
+          <DataField>ContactAddr_4_</DataField>
+        </Field>
+        <Field Name="ContactAddr_5_">
+          <DataField>ContactAddr_5_</DataField>
+        </Field>
+        <Field Name="ContactAddr_6_">
+          <DataField>ContactAddr_6_</DataField>
+        </Field>
+        <Field Name="ContactAddr_7_">
+          <DataField>ContactAddr_7_</DataField>
+        </Field>
+        <Field Name="ContactAddr_8_">
+          <DataField>ContactAddr_8_</DataField>
+        </Field>
+        <Field Name="CompanyAddr_1_">
+          <DataField>CompanyAddr_1_</DataField>
+        </Field>
+        <Field Name="CompanyAddr_2_">
+          <DataField>CompanyAddr_2_</DataField>
+        </Field>
+        <Field Name="CompanyAddr_3_">
+          <DataField>CompanyAddr_3_</DataField>
+        </Field>
+        <Field Name="CompanyAddr_4_">
+          <DataField>CompanyAddr_4_</DataField>
+        </Field>
+        <Field Name="CompanyAddr_5_">
+          <DataField>CompanyAddr_5_</DataField>
+        </Field>
+        <Field Name="CompanyAddr_6_">
+          <DataField>CompanyAddr_6_</DataField>
+        </Field>
+        <Field Name="CompanyAddr_7_">
+          <DataField>CompanyAddr_7_</DataField>
+        </Field>
+        <Field Name="CompanyAddr_8_">
+          <DataField>CompanyAddr_8_</DataField>
+        </Field>
+        <Field Name="NomBddTest_G">
+          <DataField>NomBddTest_G</DataField>
+        </Field>
+        <Field Name="ArchRep_G">
+          <DataField>ArchRep_G</DataField>
+        </Field>
+        <Field Name="Bac1">
+          <DataField>Bac1</DataField>
+        </Field>
+        <Field Name="Bac2">
+          <DataField>Bac2</DataField>
+        </Field>
+        <Field Name="Bac3">
+          <DataField>Bac3</DataField>
+        </Field>
+        <Field Name="PostCode">
+          <DataField>PostCode</DataField>
+        </Field>
+        <Field Name="TypImprime_G">
+          <DataField>TypImprime_G</DataField>
+        </Field>
+        <Field Name="NoCampagne">
+          <DataField>NoCampagne</DataField>
+        </Field>
+        <Field Name="Recap_G">
+          <DataField>Recap_G</DataField>
+        </Field>
+        <Field Name="Imprimante_G">
+          <DataField>Imprimante_G</DataField>
+        </Field>
+        <Field Name="BoolMappage_G">
+          <DataField>BoolMappage_G</DataField>
+        </Field>
+        <Field Name="PostingDate">
+          <DataField>PostingDate</DataField>
+        </Field>
+        <Field Name="Company_Name">
+          <DataField>Company_Name</DataField>
+        </Field>
+        <Field Name="CompanyInfo1">
+          <DataField>CompanyInfo1</DataField>
+        </Field>
+        <Field Name="CompanyInfo2">
+          <DataField>CompanyInfo2</DataField>
+        </Field>
+        <Field Name="CompanyInfo3">
+          <DataField>CompanyInfo3</DataField>
+        </Field>
+        <Field Name="CompanyInfo4">
+          <DataField>CompanyInfo4</DataField>
+        </Field>
+        <Field Name="CompanyInfo5">
+          <DataField>CompanyInfo5</DataField>
+        </Field>
+        <Field Name="AgrementNo_G">
+          <DataField>AgrementNo_G</DataField>
+        </Field>
+        <Field Name="CompanyInfo6">
+          <DataField>CompanyInfo6</DataField>
+        </Field>
+        <Field Name="CompanyInfo7">
+          <DataField>CompanyInfo7</DataField>
+        </Field>
+        <Field Name="AdresseCentreGestion">
+          <DataField>AdresseCentreGestion</DataField>
+        </Field>
+        <Field Name="region">
+          <DataField>region</DataField>
+        </Field>
+        <Field Name="NumDoc_G">
+          <DataField>NumDoc_G</DataField>
+        </Field>
+        <Field Name="TC">
+          <DataField>TC</DataField>
+        </Field>
+        <Field Name="DatePaiement_G">
+          <DataField>DatePaiement_G</DataField>
+        </Field>
+        <Field Name="PaiementTexte_G">
+          <DataField>PaiementTexte_G</DataField>
+        </Field>
+        <Field Name="SocNom">
+          <DataField>SocNom</DataField>
+        </Field>
+        <Field Name="SocAdr1">
+          <DataField>SocAdr1</DataField>
+        </Field>
+        <Field Name="SocAdr2">
+          <DataField>SocAdr2</DataField>
+        </Field>
+        <Field Name="SocCPV">
+          <DataField>SocCPV</DataField>
+        </Field>
+        <Field Name="VersionMapping_G">
+          <DataField>VersionMapping_G</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineAgr__Account_No__">
+          <DataField>CMC_Seq__Comp__Journal_LineAgr__Account_No__</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineAgr_Description">
+          <DataField>CMC_Seq__Comp__Journal_LineAgr_Description</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineAgr__Customer_Balance_">
+          <DataField>CMC_Seq__Comp__Journal_LineAgr__Customer_Balance_</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineAgr__Customer_Balance_Format">
+          <DataField>CMC_Seq__Comp__Journal_LineAgr__Customer_Balance_Format</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineAgr__Vendor_Balance_">
+          <DataField>CMC_Seq__Comp__Journal_LineAgr__Vendor_Balance_</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineAgr__Vendor_Balance_Format">
+          <DataField>CMC_Seq__Comp__Journal_LineAgr__Vendor_Balance_Format</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineAgr__Document_Type_">
+          <DataField>CMC_Seq__Comp__Journal_LineAgr__Document_Type_</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineAgr__Farmer_Document_No__">
+          <DataField>CMC_Seq__Comp__Journal_LineAgr__Farmer_Document_No__</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineAgr__OffSet_Amount_">
+          <DataField>CMC_Seq__Comp__Journal_LineAgr__OffSet_Amount_</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineAgr__OffSet_Amount_Format">
+          <DataField>CMC_Seq__Comp__Journal_LineAgr__OffSet_Amount_Format</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineAgr__Line_Type_">
+          <DataField>CMC_Seq__Comp__Journal_LineAgr__Line_Type_</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineAgr_Capital_Journal_Template">
+          <DataField>CMC_Seq__Comp__Journal_LineAgr_Capital_Journal_Template</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineAgr_Capital_Batch_Name">
+          <DataField>CMC_Seq__Comp__Journal_LineAgr_Capital_Batch_Name</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineAgr_Line_No_">
+          <DataField>CMC_Seq__Comp__Journal_LineAgr_Line_No_</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineDoc__OffSet_Amount_">
+          <DataField>CMC_Seq__Comp__Journal_LineDoc__OffSet_Amount_</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineDoc__OffSet_Amount_Format">
+          <DataField>CMC_Seq__Comp__Journal_LineDoc__OffSet_Amount_Format</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineDoc__Vendor_Balance_">
+          <DataField>CMC_Seq__Comp__Journal_LineDoc__Vendor_Balance_</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineDoc__Vendor_Balance_Format">
+          <DataField>CMC_Seq__Comp__Journal_LineDoc__Vendor_Balance_Format</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineDoc__Document_Type_">
+          <DataField>CMC_Seq__Comp__Journal_LineDoc__Document_Type_</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineDoc__Farmer_Document_No__">
+          <DataField>CMC_Seq__Comp__Journal_LineDoc__Farmer_Document_No__</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineDoc__Customer_Balance_">
+          <DataField>CMC_Seq__Comp__Journal_LineDoc__Customer_Balance_</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineDoc__Customer_Balance_Format">
+          <DataField>CMC_Seq__Comp__Journal_LineDoc__Customer_Balance_Format</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineDoc__Account_No__">
+          <DataField>CMC_Seq__Comp__Journal_LineDoc__Account_No__</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineDoc__Line_Type_">
+          <DataField>CMC_Seq__Comp__Journal_LineDoc__Line_Type_</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineDoc_Capital_Journal_Template">
+          <DataField>CMC_Seq__Comp__Journal_LineDoc_Capital_Journal_Template</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineDoc_Capital_Batch_Name">
+          <DataField>CMC_Seq__Comp__Journal_LineDoc_Capital_Batch_Name</DataField>
+        </Field>
+        <Field Name="CMC_Seq__Comp__Journal_LineDoc_Line_No_">
+          <DataField>CMC_Seq__Comp__Journal_LineDoc_Line_No_</DataField>
+        </Field>
+        <Field Name="PostDate">
+          <DataField>PostDate</DataField>
+        </Field>
+        <Field Name="Desciption">
+          <DataField>Desciption</DataField>
+        </Field>
+        <Field Name="Debit_G">
+          <DataField>Debit_G</DataField>
+        </Field>
+        <Field Name="Debit_GFormat">
+          <DataField>Debit_GFormat</DataField>
+        </Field>
+        <Field Name="DateEch">
+          <DataField>DateEch</DataField>
+        </Field>
+        <Field Name="NoPiece">
+          <DataField>NoPiece</DataField>
+        </Field>
+        <Field Name="Credit_G">
+          <DataField>Credit_G</DataField>
+        </Field>
+        <Field Name="Credit_GFormat">
+          <DataField>Credit_GFormat</DataField>
+        </Field>
+        <Field Name="triDateEch">
+          <DataField>triDateEch</DataField>
+        </Field>
+        <Field Name="RetenuDebit_G">
+          <DataField>RetenuDebit_G</DataField>
+        </Field>
+        <Field Name="RetenuDebit_GFormat">
+          <DataField>RetenuDebit_GFormat</DataField>
+        </Field>
+        <Field Name="RetenuCredit_G">
+          <DataField>RetenuCredit_G</DataField>
+        </Field>
+        <Field Name="RetenuCredit_GFormat">
+          <DataField>RetenuCredit_GFormat</DataField>
+        </Field>
+        <Field Name="TotalCredit_G">
+          <DataField>TotalCredit_G</DataField>
+        </Field>
+        <Field Name="TotalCredit_GFormat">
+          <DataField>TotalCredit_GFormat</DataField>
+        </Field>
+        <Field Name="TotalDebit_G">
+          <DataField>TotalDebit_G</DataField>
+        </Field>
+        <Field Name="TotalDebit_GFormat">
+          <DataField>TotalDebit_GFormat</DataField>
+        </Field>
+        <Field Name="ARecevoir_G">
+          <DataField>ARecevoir_G</DataField>
+        </Field>
+        <Field Name="ARecevoir_GFormat">
+          <DataField>ARecevoir_GFormat</DataField>
+        </Field>
+        <Field Name="APayer_G">
+          <DataField>APayer_G</DataField>
+        </Field>
+        <Field Name="APayer_GFormat">
+          <DataField>APayer_GFormat</DataField>
+        </Field>
+        <Field Name="TexteSolde_G">
+          <DataField>TexteSolde_G</DataField>
+        </Field>
+      </Fields>
+      <Query>
+        <CommandText />
+        <DataSourceName>DummyDataSource</DataSourceName>
+      </Query>
+    </DataSet>
+  </DataSets>
+  <DataSources>
+    <DataSource Name="DummyDataSource">
+      <ConnectionProperties>
+        <ConnectString />
+        <DataProvider>SQL</DataProvider>
+      </ConnectionProperties>
+      <rd:DataSourceID>8947b83e-f053-49dc-971e-7c801d193581</rd:DataSourceID>
+    </DataSource>
+  </DataSources>
+  <InteractiveHeight>29.7cm</InteractiveHeight>
+  <InteractiveWidth>19cm</InteractiveWidth>
+  <Language>fr-FR</Language>
+  <LeftMargin>0.5cm</LeftMargin>
+  <PageFooter>
+    <Height>3.33333cm</Height>
+    <PrintOnFirstPage>true</PrintOnFirstPage>
+    <PrintOnLastPage>true</PrintOnLastPage>
+    <ReportItems>
+      <Textbox Name="textbox53">
+        <CanGrow>true</CanGrow>
+        <Height>0.63492cm</Height>
+        <Left>16.42857cm</Left>
+        <Style>
+          <FontSize>9pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+          <TextAlign>Right</TextAlign>
+        </Style>
+        <Top>0.92593cm</Top>
+        <Value>=format(ReportItems!RetenuCredit.Value, "######0.00")</Value>
+        <Visibility>
+          <Hidden>=IIF(ReportItems!Retenu.Value&lt;&gt;0, False, True)</Hidden>
+        </Visibility>
+        <Width>2.85714cm</Width>
+        <ZIndex>11</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox54">
+        <CanGrow>true</CanGrow>
+        <Height>0.63492cm</Height>
+        <Left>13.43915cm</Left>
+        <Style>
+          <FontSize>9pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+          <TextAlign>Right</TextAlign>
+        </Style>
+        <Top>0.92593cm</Top>
+        <Value>=format(Abs(ReportItems!RetenuDebit.Value), "######0.00")</Value>
+        <Visibility>
+          <Hidden>=IIF(ReportItems!Retenu.Value&lt;&gt;0, False, True)</Hidden>
+        </Visibility>
+        <Width>2.85714cm</Width>
+        <ZIndex>10</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox52">
+        <CanGrow>true</CanGrow>
+        <Height>0.63492cm</Height>
+        <Left>10.99339cm</Left>
+        <Style>
+          <FontSize>9pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>0.92593cm</Top>
+        <Value>Retenue :</Value>
+        <Visibility>
+          <Hidden>=IIF(ReportItems!Retenu.Value&lt;&gt;0, False, True)</Hidden>
+        </Visibility>
+        <Width>1.85185cm</Width>
+        <ZIndex>9</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox49">
+        <CanGrow>true</CanGrow>
+        <Height>0.63492cm</Height>
+        <Left>13.43915cm</Left>
+        <Style>
+          <FontSize>9pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+          <TextAlign>Right</TextAlign>
+        </Style>
+        <Top>1.61376cm</Top>
+        <Value>=format(Abs(ReportItems!ARecevoir.Value), "######0.00")</Value>
+        <Visibility>
+          <Hidden>=IIF((ReportItems!ARecevoir.Value = 0), TRUE, FALSE)</Hidden>
+        </Visibility>
+        <Width>2.85714cm</Width>
+        <ZIndex>8</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox48">
+        <CanGrow>true</CanGrow>
+        <Height>0.63492cm</Height>
+        <Style>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+          <TextAlign>Left</TextAlign>
+        </Style>
+        <Top>2.48678cm</Top>
+        <Value>=ReportItems!PaiementTexte.Value</Value>
+        <Width>19.12699cm</Width>
+        <ZIndex>7</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox45">
+        <CanGrow>true</CanGrow>
+        <Height>0.63492cm</Height>
+        <Left>3.1746cm</Left>
+        <Style>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+          <TextAlign>Right</TextAlign>
+        </Style>
+        <Top>0.97884cm</Top>
+        <Value>=ReportItems!DatePaie.Value</Value>
+        <Width>1.90476cm</Width>
+        <ZIndex>6</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox27">
+        <CanGrow>true</CanGrow>
+        <Height>0.63492cm</Height>
+        <Left>10.95239cm</Left>
+        <Style>
+          <FontSize>9pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>1.61376cm</Top>
+        <Value>=ReportItems!TexteSolde.Value</Value>
+        <Width>4.7619cm</Width>
+        <ZIndex>5</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox25">
+        <CanGrow>true</CanGrow>
+        <Height>0.63492cm</Height>
+        <Left>16.42857cm</Left>
+        <Style>
+          <FontSize>9pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+          <TextAlign>Right</TextAlign>
+        </Style>
+        <Top>1.61376cm</Top>
+        <Value>=format(ReportItems!APayer.Value, "######0.00")</Value>
+        <Visibility>
+          <Hidden>=IIF((ReportItems!APayer.Value = 0), TRUE, FALSE)</Hidden>
+        </Visibility>
+        <Width>2.85714cm</Width>
+        <ZIndex>4</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox24">
+        <CanGrow>true</CanGrow>
+        <Height>0.63492cm</Height>
+        <Left>16.42857cm</Left>
+        <Style>
+          <FontSize>9pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+          <TextAlign>Right</TextAlign>
+        </Style>
+        <Top>0.34392cm</Top>
+        <Value>=format(ReportItems!TotalCredit.Value, "######0.00")</Value>
+        <Width>2.85714cm</Width>
+        <ZIndex>3</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox13">
+        <CanGrow>true</CanGrow>
+        <Height>0.63492cm</Height>
+        <Left>13.43915cm</Left>
+        <Style>
+          <FontSize>9pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+          <TextAlign>Right</TextAlign>
+        </Style>
+        <Top>0.34392cm</Top>
+        <Value>=format(ReportItems!TotalDebit.Value, "######0.00")</Value>
+        <Width>2.85714cm</Width>
+        <ZIndex>2</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox18">
+        <CanGrow>true</CanGrow>
+        <Height>0.63492cm</Height>
+        <Left>10.99339cm</Left>
+        <Style>
+          <FontSize>9pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>0.34392cm</Top>
+        <Value>=ReportItems!TotauxCaption.Value</Value>
+        <Width>1.85185cm</Width>
+        <ZIndex>1</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox9">
+        <CanGrow>true</CanGrow>
+        <Height>0.63492cm</Height>
+        <Style>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>0.97884cm</Top>
+        <Value>=ReportItems!DatePaiementCaption.Value</Value>
+        <Width>3.1746cm</Width>
+        <rd:DefaultName>textbox9</rd:DefaultName>
+      </Textbox>
+    </ReportItems>
+  </PageFooter>
+  <PageHeader>
+    <Height>8.88889cm</Height>
+    <PrintOnFirstPage>true</PrintOnFirstPage>
+    <PrintOnLastPage>true</PrintOnLastPage>
+    <ReportItems>
+      <Textbox Name="textbox6">
+        <Height>0.423cm</Height>
+        <Left>2.4992cm</Left>
+        <Style>
+          <FontFamily>Courier New</FontFamily>
+          <FontSize>6pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>1.74617cm</Top>
+        <Value>=iif((Code.GetData(1,3)= "Oui") , Code.GetData(16,3), "")</Value>
+        <Width>1.5cm</Width>
+        <ZIndex>28</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox7">
+        <CanGrow>true</CanGrow>
+        <Height>0.63492cm</Height>
+        <Left>0.63492cm</Left>
+        <Style>
+          <FontWeight>700</FontWeight>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>7.93651cm</Top>
+        <Value>=Code.GetData(4,3)</Value>
+        <Width>2.22222cm</Width>
+        <ZIndex>27</ZIndex>
+      </Textbox>
+      <Textbox Name="MapRecap">
+        <Height>0.423cm</Height>
+        <Left>5.71429cm</Left>
+        <Style>
+          <FontFamily>Courier New</FontFamily>
+          <FontSize>6pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>0.26455cm</Top>
+        <Value>=iif((Code.GetData(1,3)= "Oui") , Code.GetData(13,3) , "")</Value>
+        <Width>0.5cm</Width>
+        <ZIndex>26</ZIndex>
+      </Textbox>
+      <Textbox Name="MapRepertoire">
+        <Height>0.423cm</Height>
+        <Style>
+          <FontFamily>Courier New</FontFamily>
+          <FontSize>6pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>2.16931cm</Top>
+        <Value>=iif((Code.GetData(1,3)= "Oui") , Code.GetData(14,3), "")</Value>
+        <Width>2.44312cm</Width>
+        <ZIndex>25</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox152">
+        <Height>0.31746cm</Height>
+        <Left>1.26984cm</Left>
+        <Style>
+          <Color>#ff0000</Color>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+          <VerticalAlign>Middle</VerticalAlign>
+        </Style>
+        <Value>=code.SetData(ReportItems!Mapping.Value,3)</Value>
+        <Visibility>
+          <Hidden>true</Hidden>
+        </Visibility>
+        <Width>0.31746cm</Width>
+        <ZIndex>24</ZIndex>
+      </Textbox>
+      <Textbox Name="MapBac3">
+        <Height>0.423cm</Height>
+        <Left>1.5cm</Left>
+        <Style>
+          <FontFamily>Courier New</FontFamily>
+          <FontSize>6pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>1.75265cm</Top>
+        <Value>=iif((Code.GetData(1,3)= "Oui") , Code.GetData(12,3), "")</Value>
+        <Width>0.75cm</Width>
+        <ZIndex>23</ZIndex>
+      </Textbox>
+      <Textbox Name="MapBac2">
+        <Height>0.423cm</Height>
+        <Left>0.75cm</Left>
+        <Style>
+          <FontFamily>Courier New</FontFamily>
+          <FontSize>6pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>1.75265cm</Top>
+        <Value>=iif((Code.GetData(1,3)= "Oui") , Code.GetData(11,3), "")</Value>
+        <Width>0.75cm</Width>
+        <ZIndex>22</ZIndex>
+      </Textbox>
+      <Textbox Name="MapBac1">
+        <Height>0.423cm</Height>
+        <Style>
+          <FontFamily>Courier New</FontFamily>
+          <FontSize>6pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>1.75265cm</Top>
+        <Value>=iif((Code.GetData(1,3)= "Oui") , Code.GetData(10,3), "")</Value>
+        <Width>0.75cm</Width>
+        <ZIndex>21</ZIndex>
+      </Textbox>
+      <Textbox Name="MapCodPost">
+        <Height>0.423cm</Height>
+        <Left>2.75cm</Left>
+        <Style>
+          <FontFamily>Courier New</FontFamily>
+          <FontSize>6pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>1.25265cm</Top>
+        <Value>=iif((Code.GetData(1,3)= "Oui") , Code.GetData(8,3), "")</Value>
+        <Width>1.5cm</Width>
+        <ZIndex>20</ZIndex>
+      </Textbox>
+      <Textbox Name="MapRegion">
+        <Height>0.423cm</Height>
+        <Left>2.25cm</Left>
+        <Style>
+          <FontFamily>Courier New</FontFamily>
+          <FontSize>6pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>1.25265cm</Top>
+        <Value>=iif((Code.GetData(1,3)= "Oui") , Code.GetData(7,3), "")</Value>
+        <Width>0.5cm</Width>
+        <ZIndex>19</ZIndex>
+      </Textbox>
+      <Textbox Name="MapTypImp">
+        <Height>0.423cm</Height>
+        <Style>
+          <FontFamily>Courier New</FontFamily>
+          <FontSize>6pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>1.25265cm</Top>
+        <Value>=iif((Code.GetData(1,3)= "Oui") , Code.GetData(6,3), "")</Value>
+        <Width>2.25cm</Width>
+        <ZIndex>18</ZIndex>
+      </Textbox>
+      <Textbox Name="MapImp">
+        <Height>0.423cm</Height>
+        <Style>
+          <FontFamily>Courier New</FontFamily>
+          <FontSize>6pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>0.75265cm</Top>
+        <Value>=iif((Code.GetData(1,3)= "Oui") , Code.GetData(5,3), "")</Value>
+        <Width>5.75cm</Width>
+        <ZIndex>17</ZIndex>
+      </Textbox>
+      <Textbox Name="MapCampagne">
+        <Height>0.423cm</Height>
+        <Left>4.25cm</Left>
+        <Style>
+          <FontFamily>Courier New</FontFamily>
+          <FontSize>6pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>1.25265cm</Top>
+        <Value>=iif((Code.GetData(1,3)= "Oui") , Code.GetData(9,3), "")</Value>
+        <Width>1.25cm</Width>
+        <ZIndex>16</ZIndex>
+      </Textbox>
+      <Textbox Name="MapDate">
+        <Height>0.423cm</Height>
+        <Left>4.25cm</Left>
+        <Style>
+          <FontFamily>Courier New</FontFamily>
+          <FontSize>6pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>0.26455cm</Top>
+        <Value>=iif(Code.GetData(1,3)= "Oui" , Code.GetData(4,3), "")</Value>
+        <Width>1.5cm</Width>
+        <ZIndex>15</ZIndex>
+      </Textbox>
+      <Textbox Name="MapDoc">
+        <Height>0.423cm</Height>
+        <Left>1.25cm</Left>
+        <Style>
+          <FontFamily>Courier New</FontFamily>
+          <FontSize>6pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>0.26455cm</Top>
+        <Value>=iif((Code.GetData(1,3)= "Oui") , Code.GetData(3,3), "")</Value>
+        <Width>3cm</Width>
+        <ZIndex>14</ZIndex>
+      </Textbox>
+      <Textbox Name="MapTiers">
+        <Height>0.423cm</Height>
+        <Style>
+          <FontFamily>Courier New</FontFamily>
+          <FontSize>6pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>0.26455cm</Top>
+        <Value>=iif((Code.GetData(1,3)= "Oui") , Code.GetData(2,3), "")</Value>
+        <Width>1.25cm</Width>
+        <ZIndex>13</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox36">
+        <CanGrow>true</CanGrow>
+        <Height>0.423cm</Height>
+        <Left>0.30556cm</Left>
+        <Style>
+          <FontSize>7pt</FontSize>
+          <PaddingBottom>1pt</PaddingBottom>
+          <PaddingLeft>1pt</PaddingLeft>
+          <PaddingRight>1pt</PaddingRight>
+          <PaddingTop>1pt</PaddingTop>
+          <TextAlign>Left</TextAlign>
+        </Style>
+        <Top>5.9246cm</Top>
+        <Value>=Code.GetData(3,2)</Value>
+        <Width>8cm</Width>
+        <ZIndex>12</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox38">
+        <CanGrow>true</CanGrow>
+        <Height>0.423cm</Height>
+        <Left>0.30556cm</Left>
+        <Style>
+          <FontSize>7pt</FontSize>
+          <PaddingBottom>1pt</PaddingBottom>
+          <PaddingLeft>1pt</PaddingLeft>
+          <PaddingRight>1pt</PaddingRight>
+          <PaddingTop>1pt</PaddingTop>
+          <TextAlign>Left</TextAlign>
+        </Style>
+        <Top>6.3476cm</Top>
+        <Value>=Code.GetData(4,2)</Value>
+        <Width>8cm</Width>
+        <ZIndex>11</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox40">
+        <CanGrow>true</CanGrow>
+        <Height>0.423cm</Height>
+        <Left>0.30556cm</Left>
+        <Style>
+          <FontSize>7pt</FontSize>
+          <PaddingBottom>1pt</PaddingBottom>
+          <PaddingLeft>1pt</PaddingLeft>
+          <PaddingRight>1pt</PaddingRight>
+          <PaddingTop>1pt</PaddingTop>
+          <TextAlign>Left</TextAlign>
+        </Style>
+        <Top>5.5016cm</Top>
+        <Value>=Code.GetData(2,2)</Value>
+        <Width>8cm</Width>
+        <ZIndex>10</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox43">
+        <CanGrow>true</CanGrow>
+        <Height>0.61243cm</Height>
+        <Left>0.31746cm</Left>
+        <Style>
+          <FontSize>9pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+          <TextAlign>Left</TextAlign>
+        </Style>
+        <Top>3.1746cm</Top>
+        <Value>=Code.GetData(1,1)</Value>
+        <Width>8.05291cm</Width>
+        <ZIndex>9</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox47">
+        <Height>0.31746cm</Height>
+        <Style>
+          <Color>#ff0000</Color>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+          <VerticalAlign>Middle</VerticalAlign>
+        </Style>
+        <Value>=code.SetData(ReportItems!CompanyInfo.Value,1)</Value>
+        <Visibility>
+          <Hidden>true</Hidden>
+        </Visibility>
+        <Width>0.31746cm</Width>
+        <ZIndex>8</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox8">
+        <CanGrow>true</CanGrow>
+        <Height>0.63492cm</Height>
+        <Left>14.92063cm</Left>
+        <Style>
+          <FontWeight>700</FontWeight>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>7.93651cm</Top>
+        <Value>AVIS DE PAIEMENT</Value>
+        <Width>3.80952cm</Width>
+        <ZIndex>7</ZIndex>
+        <rd:DefaultName>textbox8</rd:DefaultName>
+      </Textbox>
+      <Textbox Name="textbox5">
+        <CanGrow>true</CanGrow>
+        <Height>0.63492cm</Height>
+        <Left>3.1746cm</Left>
+        <Style>
+          <FontWeight>700</FontWeight>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>7.93651cm</Top>
+        <Value>=Code.GetData(9,2)</Value>
+        <Width>3.80952cm</Width>
+        <ZIndex>6</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox158">
+        <Height>0.31746cm</Height>
+        <Left>0.63492cm</Left>
+        <Style>
+          <Color>#ff0000</Color>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+          <VerticalAlign>Middle</VerticalAlign>
+        </Style>
+        <Value>=code.SetData(ReportItems!ContactAddress.Value,2)</Value>
+        <Visibility>
+          <Hidden>true</Hidden>
+        </Visibility>
+        <Width>0.31746cm</Width>
+        <ZIndex>5</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox2">
+        <Height>0.423cm</Height>
+        <Left>11cm</Left>
+        <Style>
+          <FontSize>9pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>5.89285cm</Top>
+        <Value>=Code.GetData(14,1)</Value>
+        <Width>8.5cm</Width>
+        <ZIndex>4</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox3">
+        <Height>0.423cm</Height>
+        <Left>11cm</Left>
+        <Style>
+          <FontSize>9pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>5.42593cm</Top>
+        <Value>=Code.GetData(13,1)</Value>
+        <Width>8.5cm</Width>
+        <ZIndex>3</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox4">
+        <Height>0.423cm</Height>
+        <Left>11cm</Left>
+        <Style>
+          <FontSize>9pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>4.94313cm</Top>
+        <Value>=Code.GetData(12,1)</Value>
+        <Width>8.5cm</Width>
+        <ZIndex>2</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox14">
+        <Height>0.423cm</Height>
+        <Left>11cm</Left>
+        <Style>
+          <FontSize>9pt</FontSize>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>4.48413cm</Top>
+        <Value>=Code.GetData(11,1)</Value>
+        <Width>8.5cm</Width>
+        <ZIndex>1</ZIndex>
+      </Textbox>
+      <Textbox Name="textbox15">
+        <Height>0.68755cm</Height>
+        <Left>11cm</Left>
+        <Style>
+          <FontWeight>700</FontWeight>
+          <PaddingBottom>2pt</PaddingBottom>
+          <PaddingLeft>2pt</PaddingLeft>
+          <PaddingRight>2pt</PaddingRight>
+          <PaddingTop>2pt</PaddingTop>
+        </Style>
+        <Top>3.75529cm</Top>
+        <Value>=Code.GetData(10,1)</Value>
+        <Width>8.5cm</Width>
+      </Textbox>
+    </ReportItems>
+  </PageHeader>
+  <PageHeight>29.7cm</PageHeight>
+  <PageWidth>21cm</PageWidth>
+  <RightMargin>0.5cm</RightMargin>
+  <TopMargin>0.5cm</TopMargin>
+  <Width>19.51428cm</Width>
+  <rd:DrawGrid>true</rd:DrawGrid>
+  <rd:ReportID>b80ee4fd-7f0c-43f8-99e6-10658dde53bb</rd:ReportID>
+  <rd:SnapToGrid>false</rd:SnapToGrid>
+</Report>
+    END_OF_RDLDatA
+  }
+}
+

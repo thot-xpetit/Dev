@@ -1,0 +1,168 @@
+OBJECT Codeunit 8052992 CMC Log. Tour-Purch. Release
+{
+  OBJECT-PROPERTIES
+  {
+    Date=06/05/15;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      G_recLogTourRqst@8053003 : Record 8053044;
+      G_recPurchLine@8053002 : Record 39;
+      G_recLocation@8053001 : Record 14;
+      G_DocumentType@8053000 : 'Sales Order,Sales Return Order,Purchase Order,Purchase Return Order,Transfert,Delivery';
+
+    PROCEDURE Release@1(P_recPurchHeader@1000 : Record 38);
+    VAR
+      L_LogTourType@1001 : 'Inbound,Outbound';
+      recSetup_L@8053000 : Record 8052982;
+    BEGIN
+      // --> 20150429-Wi00-CMC02.02.00-2961-FHS01
+      recSetup_L.GET();
+      IF recSetup_L."Deactivate Tour-Purch." = TRUE THEN
+        EXIT;
+      // <-- 20150429-Wi00-CMC02.02.00-2961-FHS01
+      WITH P_recPurchHeader DO BEGIN
+        CASE "Document Type" OF
+          "Document Type"::Order:          G_DocumentType := G_recLogTourRqst."Source Document Type"::"Purchase Order";
+          "Document Type"::"Return Order": G_DocumentType := G_recLogTourRqst."Source Document Type"::"Purchase Return Order";
+          ELSE
+            EXIT;
+        END;
+
+        G_recLogTourRqst.RESET;
+        G_recLogTourRqst.SETRANGE("Source Document Type", G_DocumentType);
+        G_recLogTourRqst.SETRANGE("Source Document No.",P_recPurchHeader."No.");
+        G_recLogTourRqst.DELETEALL;
+
+        G_recPurchLine.SETCURRENTKEY("Document Type", "Document No.");
+        G_recPurchLine.SETRANGE("Document Type", "Document Type");
+        G_recPurchLine.SETRANGE("Document No.", "No.");
+        G_recPurchLine.SETRANGE(Type, G_recPurchLine.Type::Item);
+        G_recPurchLine.SETRANGE("Drop Shipment", FALSE);
+        G_recPurchLine.SETRANGE("Job No.", '');
+        IF G_recPurchLine.FINDSET THEN BEGIN
+          REPEAT
+            IF (("Document Type" = "Document Type":: Order) AND (G_recPurchLine.Quantity >= 0)) OR
+               (("Document Type" = "Document Type"::"Return Order") AND (G_recPurchLine.Quantity < 0))
+            THEN
+              // Les enlogements ne sont pas pris en charge pour la gestion de Tourn'e
+              L_LogTourType := L_LogTourType::Inbound
+            ELSE BEGIN
+              L_LogTourType := L_LogTourType::Outbound;
+              CreateLogTourRqst(P_recPurchHeader, L_LogTourType);
+            END;
+          UNTIL G_recPurchLine.NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE Reopen@2(P_recPurchHeader@1000 : Record 38);
+    VAR
+      L_recLogTourRqst@1001 : Record 8053044;
+      L_LogTourType@8053000 : 'Inbound,Outbound';
+      recSetup_L@8053001 : Record 8052982;
+    BEGIN
+      // --> 20150429-Wi00-CMC02.02.00-2961-FHS01
+      recSetup_L.GET();
+      IF recSetup_L."Deactivate Tour-Purch." = TRUE THEN
+        EXIT;
+      // <-- 20150429-Wi00-CMC02.02.00-2961-FHS01
+      WITH P_recPurchHeader DO BEGIN
+        CASE "Document Type" OF
+          "Document Type"::Order:
+            G_DocumentType := G_recLogTourRqst."Source Document Type"::"Purchase Order";
+          "Document Type"::"Return Order":
+            G_DocumentType := G_recLogTourRqst."Source Document Type"::"Purchase Return Order";
+          ELSE
+            EXIT;
+        END;
+
+        G_recLogTourRqst.RESET;
+        G_recLogTourRqst.SETCURRENTKEY("Source Document Type","Source Document No.","Source Document Line No.");
+        G_recLogTourRqst.SETRANGE("Source Document Type", G_DocumentType);
+        G_recLogTourRqst.SETRANGE("Source Document No.", "No.");
+        G_recLogTourRqst.MODIFYALL("Document Status", G_recLogTourRqst."Document Status"::Open, TRUE);
+      END;
+    END;
+
+    LOCAL PROCEDURE CreateLogTourRqst@3(VAR P_recPurchHeader@1000 : Record 38;P_LogTourType@8053000 : 'Inbound,Outbound');
+    VAR
+      L_recPurchLine2@1001 : Record 39;
+      L_recItem@8053001 : Record 27;
+      L_recLocation@8053002 : Record 14;
+      L_recActivityDeliveryArea@8053003 : Record 8053047;
+    BEGIN
+      IF ((P_LogTourType = P_LogTourType::Outbound) AND (G_recLocation.RequireShipment(G_recPurchLine."Location Code") OR
+        G_recLocation.RequirePicking(G_recPurchLine."Location Code"))) OR ((P_LogTourType = P_LogTourType::Inbound) AND
+        (G_recLocation.RequireReceive(G_recPurchLine."Location Code") OR G_recLocation.RequirePutaway(G_recPurchLine."Location Code")))
+      THEN BEGIN
+        L_recPurchLine2.COPY(G_recPurchLine);
+
+        L_recPurchLine2.SETRANGE("Location Code", G_recPurchLine."Location Code");
+
+        L_recItem.GET(L_recPurchLine2."No.");
+
+        G_recLogTourRqst.RESET;
+        G_recLogTourRqst.INIT;
+        G_recLogTourRqst."Source Document Type" := G_DocumentType;
+        G_recLogTourRqst."Source Document No."  := P_recPurchHeader."No.";
+        G_recLogTourRqst."Source Document Line No." := L_recPurchLine2."Line No.";
+        G_recLogTourRqst."External Document No." := P_recPurchHeader."Vendor Order No.";
+        G_recLogTourRqst."Post Code" := P_recPurchHeader."Ship-to Post Code";
+        G_recLogTourRqst.City := P_recPurchHeader."Ship-to City";
+        G_recLogTourRqst."Promised Delivery Date" := L_recPurchLine2."Promised Receipt Date";
+        G_recLogTourRqst."Requested Delivery Date" := L_recPurchLine2."Requested Receipt Date";
+        G_recLogTourRqst."Departure Location Code" := L_recPurchLine2."Location Code";
+        G_recLogTourRqst."Destination Type" := G_recLogTourRqst."Destination Type"::Vendor;
+        G_recLogTourRqst."Destination No." := P_recPurchHeader."Buy-from Vendor No.";
+        G_recLogTourRqst."Destination Name" := P_recPurchHeader."Buy-from Vendor Name";
+        G_recLogTourRqst."Item No." := L_recPurchLine2."No.";
+        G_recLogTourRqst."Variant Code" := L_recPurchLine2."Variant Code";
+        G_recLogTourRqst."Item Description" := L_recPurchLine2.Description;
+        G_recLogTourRqst.Adduction := FALSE;
+        G_recLogTourRqst."Order Quantity" := ABS(L_recPurchLine2.Quantity);
+        G_recLogTourRqst."Outstanding Quantity" := ABS(L_recPurchLine2."Outstanding Quantity");
+        G_recLogTourRqst."Unit of Measure Code" := L_recPurchLine2."Unit of Measure Code";
+        G_recLogTourRqst."Pallet Quantity" := 0;
+        G_recLogTourRqst."Available Quantity" := 0;
+        G_recLogTourRqst."Activity Code" := L_recItem."Activity Code";
+        G_recLogTourRqst.Type := P_LogTourType;
+        G_recLogTourRqst."Document Status" := P_recPurchHeader.Status::Released;
+        G_recLogTourRqst."Logistic Grouping" := L_recItem."Logistic Grouping Code";
+
+        IF L_recLocation.GET(L_recPurchLine2."Location Code") THEN
+          G_recLogTourRqst."Logistic Area Code" := L_recLocation."Logistic Area Code";
+        IF L_recActivityDeliveryArea.GET(L_recItem."Activity Code", P_recPurchHeader."Ship-to Post Code") THEN
+          G_recLogTourRqst."Delivery Area Code" := L_recActivityDeliveryArea."Delivery Area Code";
+
+        IF NOT G_recLogTourRqst.INSERT THEN
+          IF G_recLogTourRqst."Outstanding Quantity" <> 0 THEN
+            G_recLogTourRqst.MODIFY
+          ELSE
+            IF G_recLogTourRqst.FIND('=') THEN
+              G_recLogTourRqst.DELETE(TRUE);
+      END;
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+
+      20110601-Wi00-CMC01.04 : Version RTM 01.04 - NavAgri
+      20150429-Wi00-CMC02.02.00-2961-FHS01 : ADDCODE (Permet de d'sactiver cette fonctionnalit')
+
+      // --> 3LI END
+    }
+    END.
+  }
+}
+

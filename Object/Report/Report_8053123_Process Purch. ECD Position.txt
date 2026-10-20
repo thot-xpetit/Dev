@@ -1,0 +1,267 @@
+OBJECT Report 8053123 Process Purch. ECD Position
+{
+  OBJECT-PROPERTIES
+  {
+    Date=19/01/16;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Process Purch. ECD Position;
+               FRA=Traiter 'criture RFC achat];
+    ProcessingOnly=Oui;
+    OnInitReport=BEGIN
+                   CMCSetup_G.GET;
+                   CMCSetup_G.TESTFIELD("ECD Cr.Memo Item Charge");
+                   ItemCharge_G.GET(CMCSetup_G."ECD Cr.Memo Item Charge");
+                 END;
+
+    OnPreReport=BEGIN
+                  PosMgt_G.CheckProcessPosDate(PositionDate_G);
+                END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table32;
+        DataItemTableView=SORTING(Entry Type,Item No.,Variant Code,Salesperson Code,Campaign No.,Location Code,Posting Date)
+                          WHERE(Entry Type=FILTER(Purchase));
+        OnPreDataItem=BEGIN
+                        PosMgt_G.CreateWindow(COUNT);
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           PosMgt_G.UpdateWindow();
+                         END;
+
+        OnPostDataItem=BEGIN
+                         PosMgt_G.CloseWindow('');
+                       END;
+
+        ReqFilterFields=Posting Date,Entry No.;
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=1;
+        DataItemTable=Table8053088;
+        DataItemTableView=SORTING(Item Ledger Entry No.,Entry Type,Document Type);
+        OnAfterGetRecord=VAR
+                           ExpectedAmnt_L@1000000000 : Decimal;
+                           InvoicedAmnt_L@1000000001 : Decimal;
+                           PurchRcptHead_L@1000000003 : Record 120;
+                           PurchInvLine_L@1000000005 : Record 123;
+                           ReturnShptHead_L@1000000002 : Record 6650;
+                           PurchCrMemoLine_L@1000000006 : Record 125;
+                           OrderNo_L@1000000004 : Code[20];
+                           TmpPurchRcptLine_L@1000000007 : TEMPORARY Record 121;
+                           TmpReturnShptLine_L@1000000008 : TEMPORARY Record 6651;
+                         BEGIN
+                           PosEntry_G.RESET;
+                           PosEntry_G.SETCURRENTKEY("Position Source","G/L Entry No.","Discount Code","Position Date");
+                           PosEntry_G.SETRANGE("Position Source",PosEntry_G."Position Source"::"ECD Entry");
+                           PosEntry_G.SETRANGE("G/L Entry No.","Entry No.");
+                           PosEntry_G.SETRANGE("Discount Code","Discount Code");
+                           PosEntry_G.SETRANGE("Position Date",PositionDate_G);
+                           IF NOT PosEntry_G.ISEMPTY THEN
+                             CurrReport.SKIP;
+
+                           ExpectedAmnt_L := 0;
+                           InvoicedAmnt_L := 0;
+
+                           IF IncludeECDOnReceipt_G THEN
+
+                             IF "Document Type" IN ["Document Type"::"Purchase Receipt",
+                                                    "Document Type"::"Purchase Return Shipment"] THEN BEGIN
+
+                               PurchECDEntry_G.RESET;
+                               PurchECDEntry_G.SETCURRENTKEY("Item Ledger Entry No.","Discount Code");
+                               PurchECDEntry_G.SETRANGE("Item Ledger Entry No.","Item Ledger Entry"."Entry No.");
+                               PurchECDEntry_G.SETRANGE("Discount Code","Discount Code");
+                               PurchECDEntry_G.SETFILTER("Date Filter",'..%1',PositionDate_G);
+                               IF PurchECDEntry_G.FINDSET THEN BEGIN
+                                 ExpectedAmnt_L := 0;
+                                 REPEAT
+                                   PurchECDEntry_G.CALCFIELDS("Det. ECD Amount (Receipt)");
+                                   ExpectedAmnt_L := ExpectedAmnt_L + PurchECDEntry_G."Det. ECD Amount (Receipt)";
+                                 UNTIL PurchECDEntry_G.NEXT = 0;
+
+                                 CLEAR(TransferDatas_G);
+                                 TransferDatas_G[1] := ExpectedAmnt_L;
+
+                                 GenPostSetup_G.GET(PurchECDEntry_G."Gen. Bus. Posting Group",ItemCharge_G."Gen. Prod. Posting Group");
+                                 GenPostSetup_G.TESTFIELD("Purch. Account");
+
+                                 OrderNo_L := '';
+                                 IF "Document Type" = "Document Type"::"Purchase Receipt" THEN BEGIN
+                                   IF PurchRcptHead_L.GET("Document No.") THEN
+                                     OrderNo_L := PurchRcptHead_L."Order No.";
+                                 END ELSE BEGIN
+                                   IF ReturnShptHead_L.GET("Document No.") THEN
+                                     OrderNo_L := ReturnShptHead_L."Return Order No.";
+                                 END;
+
+                                 PosMgt_G.InsertECDPosEntry("CMC Purch. ECD Ledger Entry",PositionDate_G,ExpectedAmnt_L,TransferDatas_G,
+                                             "Discount Code", GenPostSetup_G."Purch. Account",PurchECDEntry_G."ECD Vendor No.",OrderNo_L);
+
+                               END;
+
+                             END;
+
+                           IF "Document Type" IN ["Document Type"::"Purchase Invoice",
+                                                  "Document Type"::"Purchase Credit Memo"] THEN BEGIN
+
+                             SETFILTER("Date Filter",'..%1',PositionDate_G);
+                             CALCFIELDS("Det. ECD Amount (Invoice)","Invoiced ECD Amount");
+
+                             ExpectedAmnt_L := "Det. ECD Amount (Invoice)";
+                             InvoicedAmnt_L := "Invoiced ECD Amount";
+
+                             CLEAR(TransferDatas_G);
+                             TransferDatas_G[1] := ExpectedAmnt_L;
+                             TransferDatas_G[2] := InvoicedAmnt_L;
+
+                             GenPostSetup_G.GET("Gen. Bus. Posting Group",ItemCharge_G."Gen. Prod. Posting Group");
+                             GenPostSetup_G.TESTFIELD("Purch. Account");
+
+                             OrderNo_L := '';
+                             IF "Document Type" = "Document Type"::"Purchase Invoice" THEN BEGIN
+                               IF PurchInvLine_L.GET("Document No.","Document Line No.") THEN BEGIN
+                                 TmpPurchRcptLine_L.RESET;
+                                 TmpPurchRcptLine_L.DELETEALL;
+                                 PurchInvLine_L.GetPurchRcptLines(TmpPurchRcptLine_L);
+                                 IF TmpPurchRcptLine_L.FINDFIRST THEN
+                                   IF PurchRcptHead_L.GET(TmpPurchRcptLine_L."Document No.") THEN
+                                     OrderNo_L := PurchRcptHead_L."Order No.";
+                               END;
+                             END ELSE BEGIN
+                               IF PurchCrMemoLine_L.GET("Document No.","Document Line No.") THEN
+                                 TmpReturnShptLine_L.RESET;
+                                 TmpReturnShptLine_L.DELETEALL;
+                                 PurchCrMemoLine_L.GetReturnShptLines(TmpReturnShptLine_L);
+                                 IF TmpReturnShptLine_L.FINDFIRST THEN
+                                   IF ReturnShptHead_L.GET(TmpReturnShptLine_L."Document No.") THEN
+                                     OrderNo_L := ReturnShptHead_L."Return Order No.";
+                             END;
+                             // --> 20160119-APP33-ADV01.01.00-2615-CJY01
+                             {BEFORE
+                             IF InvoicedAmnt_L < ExpectedAmnt_L THEN // Do not create entry if we have received more ECD than expected.
+                             AFTER}
+                             IF ABS(InvoicedAmnt_L) < ABS(ExpectedAmnt_L) THEN // Do not create entry if we have received more ECD than expected.
+                             // <-- 20160119-APP33-ADV01.01.00-2615-CJY01
+                               PosMgt_G.InsertECDPosEntry("CMC Purch. ECD Ledger Entry",PositionDate_G,ExpectedAmnt_L - InvoicedAmnt_L,TransferDatas_G,
+                                           "Discount Code", GenPostSetup_G."Purch. Account","ECD Vendor No.",OrderNo_L);
+
+                           END;
+                         END;
+
+        DataItemLink=Item Ledger Entry No.=FIELD(Entry No.);
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=9020;
+      Height=3410;
+    }
+    CONTROLS
+    {
+      { 1000000000;TextBox;1650 ;550  ;1700 ;440  ;SourceExpr=PositionDate_G }
+      { 1000000001;CheckBox;1760;1320 ;440  ;440  ;ShowCaption=Non;
+                                                   SourceExpr=IncludeECDOnReceipt_G }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      OnOpenPage=BEGIN
+                   IncludeECDOnReceipt_G := TRUE;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1000000000;;Container;
+                  ContainerType=ContentArea }
+
+      { 1000000001;1;Group  ;
+                  GroupType=Group }
+
+      { 1000000002;2;Field  ;
+                  CaptionML=[ENU=Position Date;
+                             FRA=Date situation];
+                  SourceExpr=PositionDate_G;
+                  Editable=FALSE }
+
+      { 1000000003;2;Field  ;
+                  CaptionML=[ENU=Inclure ECD on Receipt;
+                             FRA=Int'grer RFC sur r'ception];
+                  SourceExpr=IncludeECDOnReceipt_G }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      PosMgt_G@1000000000 : Codeunit 8061932;
+      PositionDate_G@1000000001 : Date;
+      PosEntry_G@1000000002 : Record 8061932;
+      PurchECDEntry_G@1000000003 : Record 8053088;
+      CMCSetup_G@1000000004 : Record 8052982;
+      TransferDatas_G@1000000006 : ARRAY [8] OF Decimal;
+      GenPostSetup_G@1000000007 : Record 252;
+      ItemCharge_G@1000000005 : Record 5800;
+      IncludeECDOnReceipt_G@1000000008 : Boolean;
+
+    PROCEDURE SetPositionDate@8061942(NewPositionDate_P@8061932 : Date);
+    BEGIN
+      PositionDate_G := NewPositionDate_P;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+
+      20140523-APP33-CMC02.02.00-2159-FEC01 : ADDOBJ.
+      20160119-APP33-ADV01.01.00-2615-CJY01 : Correction prise en compte avoir
+      // <-- 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

@@ -1,0 +1,1044 @@
+OBJECT Report 60019 TER-Suggest Customer Refund
+{
+  OBJECT-PROPERTIES
+  {
+    Date=27/10/14;
+    Heure=00:00:00;
+    Liste versions=TER01.01.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 21=rm;
+    CaptionML=[ENU=Suggest Customer Refund;
+               FRA=Proposer remboursement client];
+    ProcessingOnly=Oui;
+    OnPreReport=BEGIN
+                  CustomerLedgEntryTemp.DELETEALL;
+                END;
+
+    OnPostReport=BEGIN
+                   COMMIT;
+                   IF NOT CustomerLedgEntryTemp.ISEMPTY THEN
+                     IF CONFIRM(Text024) THEN
+                       FORM.RUNMODAL(0,CustomerLedgEntryTemp);
+                 END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table18;
+        DataItemTableView=SORTING(No.);
+        OnPreDataItem=VAR
+                        "<-- 3LI Text Constants-->"@1000000002 : TextConst;
+                        Text8053000_L@1000000001 : TextConst 'ENU=You must put a customer posting group filter.;FRA=Vous devez renseigner un filtre groupe compta. client.';
+                        Text8053001_L@1000000000 : TextConst 'ENU=You must put a payment method filter.;FRA=Vous devez renseigner un filtre mode de rSglement.';
+                      BEGIN
+                        IF G_PaymMetFilter='' THEN
+                         ERROR(Text8053001_L);
+                        Customer.SETRANGE(Customer."Customer Posting Group");
+                        IF CustomerPostingFilter_G='' THEN
+                         ERROR(Text8053000_L);
+                        Customer.SETFILTER(Customer."Customer Posting Group",CustomerPostingFilter_G);
+                        IF LastDueDateToPayReq = 0D THEN
+                          ERROR(Text000);
+                        IF PostingDate = 0D THEN
+                          ERROR(Text001);
+
+                        BankPmtType := GenJnlLine2."Bank Payment Type";
+                        BalAccType := GenJnlLine2."Bal. Account Type";
+                        BalAccNo := GenJnlLine2."Bal. Account No.";
+                        GenJnlLineInserted := FALSE;
+                        SeveralCurrencies := FALSE;
+                        MessageText := '';
+
+                        PaymentMethCode:=GenJnlLine2."Payment Method Code";
+
+                        IF ((BankPmtType = BankPmtType::" ") OR
+                            (SummarizePer=SummarizePer::Customer)) AND
+                            (NextDocNo = '')
+                        THEN
+                          ERROR(Text002);
+
+                        IF ((BankPmtType = BankPmtType::"Manual Check") AND
+                            NOT (SummarizePer=SummarizePer::Customer) AND
+                            NOT DocNoPerLine)
+                        THEN
+                          ERROR(
+                            Text017+
+                            Text018,
+                            GenJnlLine2.FIELDCAPTION("Bank Payment Type"),SELECTSTR(BankPmtType + 1,Text023));
+
+                        IF UsePaymentDisc AND (LastDueDateToPayReq < WORKDATE) THEN
+                          IF NOT
+                             CONFIRM(
+                               Text003+
+                               Text004,FALSE,
+                               WORKDATE)
+                          THEN
+                            ERROR(Text005);
+
+                        Cust2.COPYFILTERS(Customer);
+
+                        OriginalAmtAvailable := AmountAvailable;
+                        IF UsePriority THEN BEGIN
+                          SETCURRENTKEY(Priority);
+                          SETRANGE(Priority,1,2147483647);
+                          UsePriority := TRUE;
+                        END;
+
+                        Window.OPEN(Text006);
+
+                        NextEntryNo := 1;
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           IF StopPayments THEN
+                             CurrReport.BREAK;
+
+                           Window.UPDATE(1,"No.");
+                           GetCustLedgEntries(TRUE,FALSE);
+                           GetCustLedgEntries(FALSE,FALSE);
+                           CheckAmounts(FALSE);
+                         END;
+
+        OnPostDataItem=BEGIN
+                         IF UsePriority AND NOT StopPayments THEN BEGIN
+                           RESET;
+                           COPYFILTERS(Cust2);
+                           SETCURRENTKEY(Priority);
+                           SETRANGE(Priority,0);
+                           IF FIND('-') THEN
+                             REPEAT
+                               Window.UPDATE(1,"No.");
+                               GetCustLedgEntries(TRUE,TRUE);
+                               GetCustLedgEntries(FALSE,TRUE);
+                               CheckAmounts(FALSE);
+                             UNTIL (NEXT = 0) OR StopPayments;
+                         END;
+
+                         IF UsePaymentDisc AND NOT StopPayments THEN BEGIN
+                           RESET;
+                           COPYFILTERS(Cust2);
+                           Window.OPEN(Text007);
+                           IF FIND('-') THEN
+                             REPEAT
+                               Window.UPDATE(1,"No.");
+                               PayableCustLedgEntry.SETRANGE("Vendor No.","No.");
+                               GetCustLedgEntries(TRUE,TRUE);
+                               GetCustLedgEntries(FALSE,TRUE);
+                               CheckAmounts(TRUE);
+                             UNTIL NEXT = 0;
+                         END;
+
+                         JnlLineDim.LOCKTABLE;
+                         GenJnlLine.LOCKTABLE;
+                         GenJnlTemplate.GET(GenJnlLine."Journal Template Name");
+                         GenJnlBatch.GET(GenJnlLine."Journal Template Name",GenJnlLine."Journal Batch Name");
+                         GenJnlLine.SETRANGE("Journal Template Name",GenJnlLine."Journal Template Name");
+                         GenJnlLine.SETRANGE("Journal Batch Name",GenJnlLine."Journal Batch Name");
+                         IF GenJnlLine.FIND('+') THEN BEGIN
+                           FirstLineNo := GenJnlLine."Line No.";
+                           LastLineNo := GenJnlLine."Line No.";
+                           GenJnlLine.INIT;
+                         END;
+
+
+                         Window.OPEN(Text008);
+
+                         PayableCustLedgEntry.RESET;
+                         PayableCustLedgEntry.SETRANGE(Priority,1,2147483647);
+                         MakeGenJnlLines;
+                         PayableCustLedgEntry.RESET;
+                         PayableCustLedgEntry.SETRANGE(Priority,0);
+                         MakeGenJnlLines;
+                         PayableCustLedgEntry.RESET;
+                         PayableCustLedgEntry.DELETEALL;
+
+                         Window.CLOSE;
+                         ShowMessage(MessageText);
+                       END;
+
+        ReqFilterFields=No.,Payment Method Code;
+      }
+      SECTIONS
+      {
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=6490;
+      Height=7810;
+      SaveValues=Oui;
+      LookupMode=Oui;
+      UpdateOnActivate=Non;
+    }
+    CONTROLS
+    {
+      { 1120001;TextBox   ;3410 ;0    ;1650 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Last Payment Date;
+                                                              FRA=DerniSre date 'ch'ance];
+                                                   SourceExpr=LastDueDateToPayReq }
+      { 1120021;Label     ;0    ;0    ;3300 ;440  ;ParentControl=1120001 }
+      { 1120002;CheckBox  ;3410 ;1210 ;440  ;440  ;InPage=-1;
+                                                   ShowCaption=Non;
+                                                   CaptionML=[ENU=Find Payment Discounts;
+                                                              FRA=Rechercher les escomptes];
+                                                   SourceExpr=UsePaymentDisc }
+      { 1120022;Label     ;0    ;1210 ;3300 ;440  ;ParentControl=1120002;
+                                                   VertAlign=Bottom;
+                                                   MultiLine=Oui }
+      { 1120000;TextBox   ;3410 ;1760 ;2750 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Summarize per;
+                                                              FRA=Totaliser par];
+                                                   OptionCaptionML=[ENU=" ,Customer,Due date";
+                                                                    FRA=" ,Client,Date d''ch'ance"];
+                                                   SourceExpr=SummarizePer }
+      { 1120006;Label     ;0    ;1760 ;3300 ;440  ;ParentControl=1120000 }
+      { 8061300;TextBox   ;3410 ;660  ;1700 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Minimal Due Date;
+                                                              FRA=Date d''ch'ance minimale];
+                                                   SourceExpr=MinDueDate_G;
+                                                   OnValidate=VAR
+                                                                Text8061300_L@8061300 : TextConst 'ENU=Minimal due date can not exceed the last due date;FRA=La date d'''ch'ance minimale ne peut pas d'passer la derniSre date d'''ch'ance';
+                                                              BEGIN
+                                                                IF MinDueDate_G > LastDueDateToPayReq THEN
+                                                                  ERROR(Text8061300_L);
+                                                              END;
+                                                               }
+      { 8061301;Label     ;0    ;660  ;3300 ;440  ;ParentControl=8061300 }
+      { 1000000000;CheckBox;3410;2420 ;440  ;440  ;ShowCaption=Non;
+                                                   CaptionML=[ENU=Use Vendor Priority;
+                                                              FRA=Utiliser priorit' fournisseur];
+                                                   SourceExpr=UsePriority;
+                                                   OnValidate=BEGIN
+                                                                IF NOT UsePriority AND (AmountAvailable <> 0) THEN
+                                                                  ERROR(Text011);
+                                                              END;
+                                                               }
+      { 1000000001;Label  ;0    ;2420 ;3300 ;440  ;ParentControl=1000000000 }
+      { 1000000002;TextBox;3410 ;2970 ;2750 ;440  ;CaptionML=[ENU=Available Amount (LCY);
+                                                              FRA=Montant disponible DS];
+                                                   SourceExpr=AmountAvailable;
+                                                   OnAfterValidate=BEGIN
+                                                                     IF AmountAvailable <> 0 THEN
+                                                                       UsePriority := TRUE;
+                                                                   END;
+                                                                    }
+      { 1000000003;Label  ;0    ;2970 ;3300 ;440  ;ParentControl=1000000002 }
+      { 1000000004;TextBox;3410 ;3630 ;1650 ;440  ;CaptionML=[ENU=Posting Date;
+                                                              FRA=Date comptabilisation];
+                                                   SourceExpr=PostingDate;
+                                                   OnValidate=BEGIN
+                                                                ValidatePostingDate;
+                                                              END;
+                                                               }
+      { 1000000005;Label  ;0    ;3630 ;3300 ;440  ;ParentControl=1000000004 }
+      { 1000000006;TextBox;3410 ;4180 ;2750 ;440  ;CaptionML=[ENU=Starting Document No.;
+                                                              FRA=N› document d'but];
+                                                   SourceExpr=NextDocNo;
+                                                   OnValidate=BEGIN
+                                                                IF NextDocNo <> '' THEN
+                                                                  IF INCSTR(NextDocNo) = '' THEN
+                                                                    ERROR(Text012);
+                                                              END;
+                                                               }
+      { 1000000007;Label  ;0    ;4180 ;3300 ;440  ;ParentControl=1000000006 }
+      { 1000000008;CheckBox;3410;4730 ;440  ;440  ;ShowCaption=Non;
+                                                   CaptionML=[ENU=New Doc. No. per Line;
+                                                              FRA=Nouveau n› document par ligne];
+                                                   SourceExpr=DocNoPerLine;
+                                                   OnValidate=BEGIN
+                                                                IF NOT UsePriority AND (AmountAvailable <> 0) THEN
+                                                                  ERROR(Text013);
+                                                              END;
+                                                               }
+      { 1000000009;Label  ;0    ;4730 ;3300 ;440  ;ParentControl=1000000008 }
+      { 1000000010;TextBox;3410 ;5390 ;2750 ;440  ;CaptionML=[ENU=Bal. Account Type;
+                                                              FRA=Type compte contrepartie];
+                                                   OptionCaptionML=[ENU=G/L Account,,,Bank Account;
+                                                                    FRA=Compte g'n'ral,,,Compte bancaire];
+                                                   OptionString=G/L Account,,,Bank Account;
+                                                   SourceExpr=GenJnlLine2."Bal. Account Type";
+                                                   OnValidate=BEGIN
+                                                                CASE GenJnlLine2."Bal. Account Type" OF
+                                                                  GenJnlLine2."Bal. Account Type"::"G/L Account":
+                                                                    BEGIN
+                                                                      IF GenJnlLine2."Bal. Account No." <> '' THEN
+                                                                        GLAcc.GET(GenJnlLine2."Bal. Account No.");
+                                                                      GenJnlLine2."Bank Payment Type" := GenJnlLine2."Bank Payment Type"::" ";
+                                                                    END;
+                                                                  GenJnlLine2."Bal. Account Type"::"Bank Account":
+                                                                    IF GenJnlLine2."Bal. Account No." <> '' THEN
+                                                                      BankAcc.GET(GenJnlLine2."Bal. Account No.");
+                                                                END;
+                                                              END;
+                                                               }
+      { 1000000011;Label  ;0    ;5390 ;3300 ;440  ;ParentControl=1000000010 }
+      { 1000000012;TextBox;3410 ;5940 ;2750 ;440  ;CaptionML=[ENU=Bal. Account No.;
+                                                              FRA=N› compte contrepartie];
+                                                   SourceExpr=GenJnlLine2."Bal. Account No.";
+                                                   OnValidate=BEGIN
+                                                                IF GenJnlLine2."Bal. Account No." <> '' THEN
+                                                                  CASE GenJnlLine2."Bal. Account Type" OF
+                                                                    GenJnlLine2."Bal. Account Type"::"G/L Account":
+                                                                      GLAcc.GET(GenJnlLine2."Bal. Account No.");
+                                                                    GenJnlLine2."Bal. Account Type"::Customer,GenJnlLine2."Bal. Account Type"::Vendor:
+                                                                      ERROR(Text009,GenJnlLine2.FIELDCAPTION("Bal. Account Type"));
+                                                                    GenJnlLine2."Bal. Account Type"::"Bank Account":
+                                                                      BankAcc.GET(GenJnlLine2."Bal. Account No.");
+                                                                  END;
+                                                              END;
+
+                                                   OnLookup=BEGIN
+                                                              CASE GenJnlLine2."Bal. Account Type" OF
+                                                                GenJnlLine2."Bal. Account Type"::"G/L Account":
+                                                                  IF FORM.RUNMODAL(0,GLAcc) = ACTION::LookupOK THEN
+                                                                    GenJnlLine2."Bal. Account No." := GLAcc."No.";
+                                                                GenJnlLine2."Bal. Account Type"::Customer,GenJnlLine2."Bal. Account Type"::Vendor:
+                                                                  ERROR(Text009,GenJnlLine2.FIELDCAPTION("Bal. Account Type"));
+                                                                GenJnlLine2."Bal. Account Type"::"Bank Account":
+                                                                  IF FORM.RUNMODAL(0,BankAcc) = ACTION::LookupOK THEN
+                                                                    GenJnlLine2."Bal. Account No." := BankAcc."No.";
+                                                              END;
+                                                            END;
+                                                             }
+      { 1000000013;Label  ;0    ;5940 ;3300 ;440  ;ParentControl=1000000012 }
+      { 1000000014;TextBox;3410 ;6490 ;2750 ;440  ;CaptionML=[ENU=Bank Payment Type;
+                                                              FRA=Mode 'mission paiement];
+                                                   OptionCaptionML=[ENU=" ,Computer Check,Manual Check";
+                                                                    FRA=" ,Informatique,Manuel"];
+                                                   OptionString=[ ,Computer Check,Manual Check];
+                                                   SourceExpr=GenJnlLine2."Bank Payment Type";
+                                                   OnValidate=BEGIN
+                                                                IF (GenJnlLine2."Bal. Account Type" <> GenJnlLine2."Bal. Account Type"::"Bank Account") AND
+                                                                   (GenJnlLine2."Bank Payment Type" > 0)
+                                                                THEN
+                                                                  ERROR(
+                                                                    Text010,
+                                                                    GenJnlLine2.FIELDCAPTION("Bank Payment Type"),
+                                                                    GenJnlLine2.FIELDCAPTION("Bal. Account Type"));
+                                                              END;
+                                                               }
+      { 1000000015;Label  ;0    ;6490 ;3300 ;440  ;ParentControl=1000000014 }
+      { 1000000016;TextBox;3410 ;7040 ;2750 ;440  ;CaptionML=[ENU=Bal. Account No.;
+                                                              FRA=Code mode de rSglement];
+                                                   SourceExpr=GenJnlLine2."Payment Method Code";
+                                                   OnLookup=VAR
+                                                              PaymentMeth_L@1000000002 : Record 289;
+                                                            BEGIN
+                                                                  IF FORM.RUNMODAL(0,PaymentMeth_L) = ACTION::LookupOK THEN
+                                                                    GenJnlLine2."Payment Method Code" := PaymentMeth_L.Code;
+                                                            END;
+                                                             }
+      { 1000000017;Label  ;0    ;7040 ;3300 ;440  ;ParentControl=1000000016 }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Oui;
+      RefreshOnActivate=Non;
+      OnOpenPage=BEGIN
+                   IF PostingDate = 0D THEN
+                     PostingDate := WORKDATE;
+                   ValidatePostingDate;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             FRA=Options] }
+
+      { 1120001;2;Field     ;
+                  CaptionML=[ENU=Last Payment Date;
+                             FRA=DerniSre date 'ch'ance];
+                  SourceExpr=LastDueDateToPayReq }
+
+      { 8061301;2;Field     ;
+                  CaptionML=[ENU=Minimal Due Date;
+                             FRA=Date d''ch'ance minimale];
+                  SourceExpr=MinDueDate_G;
+                  Visible=fALSE;
+                  OnValidate=VAR
+                               Text8061300_L@8061300 : TextConst 'ENU=Minimal due date can not exceed the last due date;FRA=La date d'''ch'ance minimale ne peut pas d'passer la derniSre date d'''ch'ance';
+                             BEGIN
+                               IF MinDueDate_G > LastDueDateToPayReq THEN
+                                 ERROR(Text8061300_L);
+                             END;
+                              }
+
+      { 1120002;2;Field     ;
+                  CaptionML=[ENU=Find Payment Discounts;
+                             FRA=Rechercher les escomptes];
+                  SourceExpr=UsePaymentDisc;
+                  MultiLine=Oui }
+
+      { 1120000;2;Field     ;
+                  CaptionML=[ENU=Summarize per;
+                             FRA=Totaliser par];
+                  OptionCaptionML=[ENU=" ,Customer";
+                                   FRA=" ,Client"];
+                  SourceExpr=SummarizePer }
+
+      { 8053000;2;Field     ;
+                  CaptionML=[ENU=Include Ledger Entries Without Payment Method;
+                             FRA=Inclure 'critures sans mode de rSglement];
+                  SourceExpr=InclLdgEntriesWithoutPayMethod }
+
+      { 8053001;2;Field     ;
+                  CaptionML=[ENU=Payment Method Code;
+                             FRA=Code mode de rSglement];
+                  SourceExpr=G_PaymMetFilter;
+                  OnLookup=VAR
+                             RecPaymentMethod_L@8053001 : Record 289;
+                             PaymentMethodPage_L@8053000 : Page 427;
+                           BEGIN
+                             // --> 20140331-Wi00-CMC02.02.00-1916-WSA01
+                             CLEAR(PaymentMethodPage_L);
+                             PaymentMethodPage_L.LOOKUPMODE := TRUE;
+                             IF PaymentMethodPage_L.RUNMODAL=ACTION::LookupOK THEN BEGIN
+                               PaymentMethodPage_L.GETRECORD(RecPaymentMethod_L);
+                               IF STRLEN(G_PaymMetFilter)>0 THEN
+                                 G_PaymMetFilter += '|'+RecPaymentMethod_L.Code
+                               ELSE
+                                 G_PaymMetFilter :=RecPaymentMethod_L.Code
+                             END;
+                             // <-- 20140331-Wi00-CMC02.02.00-1916-WSA01
+                           END;
+                            }
+
+      { 8053002;2;Field     ;
+                  Name=Groupe compta. client;
+                  CaptionML=[ENU=Customer Posting Group;
+                             FRA=Groupe compta. client];
+                  SourceExpr=CustomerPostingFilter_G;
+                  OnLookup=VAR
+                             CustPostGrpPAGE_L@8053000 : Page 110;
+                             CustomerPostingGroup_L@8053001 : Record 92;
+                           BEGIN
+                             // --> 20140402-Wi00-CMC02.02.00-1916-AKH01
+                             CLEAR(CustPostGrpPAGE_L);
+                             CustPostGrpPAGE_L.LOOKUPMODE := TRUE;
+                             IF CustPostGrpPAGE_L.RUNMODAL=ACTION::LookupOK THEN BEGIN
+                               CustPostGrpPAGE_L.GETRECORD(CustomerPostingGroup_L);
+                               IF STRLEN(CustomerPostingFilter_G)>0 THEN
+                                 CustomerPostingFilter_G += '|'+CustomerPostingGroup_L.Code
+                               ELSE
+                                 CustomerPostingFilter_G :=CustomerPostingGroup_L.Code
+                             END;
+                             // <-- 20140402-Wi00-CMC02.02.00-1916-AKH01
+                           END;
+                            }
+
+      { 1000000007;2;Field  ;
+                  CaptionML=[ENU=Available Amount (LCY);
+                             FRA=Montant disponible DS];
+                  SourceExpr=AmountAvailable;
+                  OnValidate=BEGIN
+                               AmountAvailableOnAfterValidate;
+                             END;
+                              }
+
+      { 1000000006;2;Field  ;
+                  CaptionML=[ENU=Posting Date;
+                             FRA=Date comptabilisation];
+                  SourceExpr=PostingDate;
+                  OnValidate=BEGIN
+                               ValidatePostingDate;
+                             END;
+                              }
+
+      { 1000000005;2;Field  ;
+                  CaptionML=[ENU=Starting Document No.;
+                             FRA=N› document d'but];
+                  SourceExpr=NextDocNo;
+                  OnValidate=BEGIN
+                               IF NextDocNo <> '' THEN
+                                 IF INCSTR(NextDocNo) = '' THEN
+                                   ERROR(Text012);
+                             END;
+                              }
+
+      { 1000000004;2;Field  ;
+                  CaptionML=[ENU=New Doc. No. per Line;
+                             FRA=Nouveau n› document par ligne];
+                  SourceExpr=DocNoPerLine;
+                  OnValidate=BEGIN
+                               IF NOT UsePriority AND (AmountAvailable <> 0) THEN
+                                 ERROR(Text013);
+                             END;
+                              }
+
+      { 1000000003;2;Field  ;
+                  CaptionML=[ENU=Bal. Account Type;
+                             FRA=Type compte contrepartie];
+                  OptionCaptionML=[ENU=G/L Account,,,Bank Account;
+                                   FRA=Compte g'n'ral,,,Compte bancaire];
+                  SourceExpr=GenJnlLine2."Bal. Account Type";
+                  OnValidate=BEGIN
+                               CASE GenJnlLine2."Bal. Account Type" OF
+                                 GenJnlLine2."Bal. Account Type"::"G/L Account":
+                                   BEGIN
+                                     IF GenJnlLine2."Bal. Account No." <> '' THEN
+                                       GLAcc.GET(GenJnlLine2."Bal. Account No.");
+                                     GenJnlLine2."Bank Payment Type" := GenJnlLine2."Bank Payment Type"::" ";
+                                   END;
+                                 GenJnlLine2."Bal. Account Type"::"Bank Account":
+                                   IF GenJnlLine2."Bal. Account No." <> '' THEN
+                                     BankAcc.GET(GenJnlLine2."Bal. Account No.");
+                               END;
+                             END;
+                              }
+
+      { 1000000002;2;Field  ;
+                  CaptionML=[ENU=Bal. Account No.;
+                             FRA=N› compte contrepartie];
+                  SourceExpr=GenJnlLine2."Bal. Account No.";
+                  OnValidate=BEGIN
+                               IF GenJnlLine2."Bal. Account No." <> '' THEN
+                                 CASE GenJnlLine2."Bal. Account Type" OF
+                                   GenJnlLine2."Bal. Account Type"::"G/L Account":
+                                     GLAcc.GET(GenJnlLine2."Bal. Account No.");
+                                   GenJnlLine2."Bal. Account Type"::Customer,GenJnlLine2."Bal. Account Type"::Vendor:
+                                     ERROR(Text009,GenJnlLine2.FIELDCAPTION("Bal. Account Type"));
+                                   GenJnlLine2."Bal. Account Type"::"Bank Account":
+                                     BankAcc.GET(GenJnlLine2."Bal. Account No.");
+                                 END;
+                             END;
+
+                  OnLookup=BEGIN
+                             CASE GenJnlLine2."Bal. Account Type" OF
+                               GenJnlLine2."Bal. Account Type"::"G/L Account":
+                                 IF FORM.RUNMODAL(0,GLAcc) = ACTION::LookupOK THEN
+                                   GenJnlLine2."Bal. Account No." := GLAcc."No.";
+                               GenJnlLine2."Bal. Account Type"::Customer,GenJnlLine2."Bal. Account Type"::Vendor:
+                                 ERROR(Text009,GenJnlLine2.FIELDCAPTION("Bal. Account Type"));
+                               GenJnlLine2."Bal. Account Type"::"Bank Account":
+                                 IF FORM.RUNMODAL(0,BankAcc) = ACTION::LookupOK THEN
+                                   GenJnlLine2."Bal. Account No." := BankAcc."No.";
+                             END;
+                           END;
+                            }
+
+      { 1000000001;2;Field  ;
+                  CaptionML=[ENU=Bank Payment Type;
+                             FRA=Mode 'mission paiement];
+                  OptionCaptionML=[ENU=" ,Computer Check,Manual Check";
+                                   FRA=" ,Informatique,Manuel"];
+                  SourceExpr=GenJnlLine2."Bank Payment Type";
+                  OnValidate=BEGIN
+                               IF (GenJnlLine2."Bal. Account Type" <> GenJnlLine2."Bal. Account Type"::"Bank Account") AND
+                                  (GenJnlLine2."Bank Payment Type" > 0)
+                               THEN
+                                 ERROR(
+                                   Text010,
+                                   GenJnlLine2.FIELDCAPTION("Bank Payment Type"),
+                                   GenJnlLine2.FIELDCAPTION("Bal. Account Type"));
+                             END;
+                              }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      Text000@1120000 : TextConst 'ENU=Please enter the last payment date.;FRA=Veuillez entrer la derniSre date d'''ch'ance.';
+      Text001@1120001 : TextConst 'ENU=Please enter the posting date.;FRA=Veuillez entrer une date de comptabilisation.';
+      Text002@1120002 : TextConst 'ENU=Please enter a Starting Document No.;FRA=Veuillez renseigner le champ N› document d'but.';
+      Text003@1120003 : TextConst 'ENU=The selected last due date is earlier than %1.\\;FRA=La date de derniSre 'ch'ance s'lectionn'e est ant'rieure au %1.\\';
+      Text004@1120004 : TextConst 'ENU=Do you still want to run the batch job?;FRA=Souhaitez-vous tout de m^me ex'cuter ce traitement par lots ?';
+      Text005@1120005 : TextConst 'ENU=The batch job was interrupted.;FRA=Le traitement par lots a 't' interrompu.';
+      Text006@1120006 : TextConst 'ENU=Processing customers     #1##########;FRA=Traitement des clients             #1##########';
+      Text007@1120007 : TextConst 'ENU=Processing customers for payment discounts #1##########;FRA=Traitement des escomptes client    #1##########';
+      Text008@1120008 : TextConst 'ENU=Inserting payment journal lines #1##########;FRA=Insertion des lignes f. paiement        #1##########';
+      Text009@1120009 : TextConst 'ENU=%1 must be G/L Account or Bank Account.;FRA=%1 doit ^tre un compte g'n'ral ou un compte bancaire.';
+      Text010@1120010 : TextConst 'ENU=%1 must be filled only when %2 is Bank Account.;FRA=%1 ne doit ^tre renseign' que lorsque %2 est un compte bancaire.';
+      Text011@1120011 : TextConst 'ENU=Use Customer Priority must be activated when the value in the Amount Available field is not 0.;FRA=Le champ Utiliser priorit' client doit ^tre activ' lorsque la valeur du champ Montant disponible est diff'rente de 0.';
+      Text012@1120012 : TextConst 'ENU=Starting Document No. must contain a number.;FRA=Le champ N› document d'but doit contenir un num'ro.';
+      Text013@1120013 : TextConst 'ENU=Use Customer Priority must be activated when the value in the Amount Available Amount (LCY) field is not 0.;FRA=Le champ Utiliser priorit' client doit ^tre activ' lorsque la valeur du champ Montant disponible DS est diff'rente de 0.';
+      Text014@1120014 : TextConst 'ENU=Refund to customer %1;FRA=Remboursement au client %1';
+      Text015@1120015 : TextConst 'ENU=Refund of %1 %2;FRA=Remboursement de %1 %2';
+      Text016@1120016 : TextConst 'ENU=" is already applied to %1 %2 for customer %3.";FRA=" est d'j. lettr'(e) avec %1 %2 pour le client %3."';
+      Text017@1120017 : TextConst 'ENU="When %1 = %2 and you have not placed a check mark in the Summarize per Customer field,\";FRA="Lorsque %1 = %2 et que vous n''avez pas activ' le champ Totaliser par client,\"';
+      Text018@1120018 : TextConst 'ENU=then you must place a check mark in New Doc. No. per Line.;FRA=vous devez donc activer le champ Nouveau n› document par ligne.';
+      Text019@1120019 : TextConst 'ENU=You have only created suggested customer payment lines for the %1 %2.\;FRA=Vous avez seulement cr'' des lignes proposition paiements client pour %1 %2.\';
+      Text020@1120020 : TextConst 'ENU=There are, however, other open customer ledger entries in currencies other than %2.;FRA=Il existe cependant d''autres 'critures comptables client ouvertes dans d''autres devises que la devise %2.';
+      Text021@1120021 : TextConst 'ENU=There are no other open customer ledger entries in other currencies.;FRA=Il n''existe aucune autre 'criture comptable client ouverte dans une autre devise.';
+      Text022@1120022 : TextConst 'ENU=You have created suggested customer payment lines for all currencies.;FRA=Vous avez cr'' des lignes proposition paiements client pour toutes les devises.';
+      Cust2@1120023 : Record 18;
+      CustLedgEntry@1120026 : Record 21;
+      BankAcc@1120028 : Record 270;
+      GLAcc@1000000012 : Record 15;
+      PayableCustLedgEntry@1120029 : Record 317;
+      TempPaymentBuffer@1120030 : TEMPORARY Record 372;
+      OldTempPaymentBuffer@1120031 : TEMPORARY Record 372;
+      NoSeriesMgt@1120032 : Codeunit 396;
+      CustEntryEdit@1120033 : Codeunit 103;
+      Window@1120035 : Dialog;
+      UsePaymentDisc@1120036 : Boolean;
+      PostingDate@1120037 : Date;
+      LastDueDateToPayReq@1120038 : Date;
+      NextDocNo@1120039 : Code[20];
+      SummarizePer@1120040 : ' ,Customer,Due date';
+      FirstLineNo@1120041 : Integer;
+      LastLineNo@1120042 : Integer;
+      NextEntryNo@1120043 : Integer;
+      MessageText@1120044 : Text[250];
+      SeveralCurrencies@1120046 : Boolean;
+      Text023@1120047 : TextConst 'ENU=" ,Computer Check,Manual Check";FRA=" ,Informatique,Manuel"';
+      CurrencyFilter@1120034 : Code[10];
+      "<< 3LI GLOBALS >>"@1000000000 : Integer;
+      G_PaymMetFilter@1000000001 : Text[250];
+      G_Customer@1000000003 : Record 18;
+      CustomerPostingFilter_G@1000000004 : Text[250];
+      MinDueDate_G@8061300 : Date;
+      InclLdgEntriesWithoutPayMethod@8053000 : Boolean;
+      CustomerLedgEntryTemp@1000000005 : TEMPORARY Record 21;
+      Text024@1000000006 : TextConst 'ENU=There are one or more entries for which no payment suggestions have been made because the posting dates of the entries are later than the posting date in the Suggest Customer Refunds batch job request window. Do you want to see the entries?;FRA=Il existe une ou plusieurs 'critures pour lesquelles aucune suggestion de paiement n''a 't' effectu'e car les dates de comptabilisation de ces 'critures sont post'rieures . celle de la fen^tre de demande de traitement par lots Proposer remboursements client. Voulez-vous visualiser ces 'critures ?';
+      GenJnlLine@1000000008 : Record 81;
+      GenJnlTemplate@1000000010 : Record 80;
+      GenJnlBatch@1000000009 : Record 232;
+      AmountAvailable@1000000011 : Decimal;
+      GenJnlLine2@1000000015 : Record 81;
+      UsePriority@1000000016 : Boolean;
+      DocNoPerLine@1000000017 : Boolean;
+      BankPmtType@1000000020 : ' ,Computer Check,Manual Check';
+      BalAccType@1000000019 : 'G/L Account,Customer,Vendor,Bank Account';
+      BalAccNo@1000000018 : Code[20];
+      PaymentMethCode@1000000021 : Code[10];
+      SelectedDim@1000000022 : Record 369;
+      OriginalAmtAvailable@1000000023 : Decimal;
+      StopPayments@1000000024 : Boolean;
+      JnlLineDim@1000000025 : Record 356;
+      GenJnlPostLine@1000000026 : Codeunit 12;
+      GenJnlLineInserted@1000000027 : Boolean;
+
+    PROCEDURE GetCustLedgEntries@1120004(Positive@1120000 : Boolean;Future@1120001 : Boolean);
+    VAR
+      CustInFilter_L@1000000000 : Boolean;
+      CustLedgerEntry_L@1000000001 : Record 21;
+      EntryInFilter_L@1000000002 : Boolean;
+    BEGIN
+      CustLedgEntry.RESET;
+      CustLedgEntry.SETCURRENTKEY("Customer No.",Open,Positive,"Due Date");
+      CustLedgEntry.SETRANGE("Customer No.",Customer."No.");
+      CustLedgEntry.SETRANGE(Open,TRUE);
+      CustLedgEntry.SETRANGE(Positive,Positive);
+      CustLedgEntry.SETRANGE("Currency Code",CurrencyFilter);
+      CustLedgEntry.SETRANGE("Applies-to ID",'');
+      IF Future THEN BEGIN
+        CustLedgEntry.SETRANGE("Due Date",LastDueDateToPayReq+1,31129999D);
+        CustLedgEntry.SETRANGE("Pmt. Discount Date",PostingDate,LastDueDateToPayReq);
+        CustLedgEntry.SETFILTER("Original Pmt. Disc. Possible",'<0');
+      END ELSE
+        CustLedgEntry.SETRANGE("Due Date",0D,LastDueDateToPayReq);
+      CustLedgEntry.SETRANGE("On Hold",'');
+      IF CustLedgEntry.FIND('-') THEN
+        REPEAT
+          G_Customer.GET(CustLedgEntry."Customer No.");
+          CustInFilter_L := FALSE;
+          EntryInFilter_L := FALSE;
+          G_Customer.SETCURRENTKEY("No.");
+          G_Customer.SETRANGE("No.",CustLedgEntry."Customer No.");
+          G_Customer.SETFILTER("Payment Method Code",G_PaymMetFilter);
+          G_Customer.SETFILTER("Customer Posting Group",CustomerPostingFilter_G);
+          IF G_Customer.FINDFIRST THEN
+             CustInFilter_L := TRUE;
+
+          CustLedgerEntry_L.RESET;
+          CustLedgerEntry_L.SETRANGE("Entry No.",CustLedgEntry."Entry No.");
+          CustLedgerEntry_L.SETFILTER("Payment Method Code",G_PaymMetFilter);
+          CustLedgerEntry_L.SETFILTER("Customer Posting Group",CustomerPostingFilter_G);
+
+          IF CustLedgerEntry_L.FINDFIRST THEN
+            EntryInFilter_L := TRUE;
+          IF ((CustLedgEntry."Payment Method Code" = '') AND (CustInFilter_L) AND InclLdgEntriesWithoutPayMethod) OR
+            (EntryInFilter_L)
+          THEN
+            SaveAmount;
+        UNTIL CustLedgEntry.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE SaveAmount@1120003();
+    BEGIN
+      WITH GenJnlLine DO BEGIN
+        INIT;
+        VALIDATE("Posting Date",PostingDate);
+        "Document Type" := "Document Type"::Refund;
+        "Account Type" := "Account Type"::Customer;
+        Cust2.GET(CustLedgEntry."Customer No.");
+        Cust2.CheckBlockedCustOnJnls(Cust2,"Document Type",FALSE);
+        Description := Cust2.Name;
+        "Posting Group" := Cust2."Customer Posting Group";
+        "Salespers./Purch. Code" := Cust2."Salesperson Code";
+        "Payment Terms Code" := Cust2."Payment Terms Code";
+        VALIDATE("Bill-to/Pay-to No.","Account No.");
+        VALIDATE("Sell-to/Buy-from No.","Account No.");
+        "Gen. Posting Type" := 0;
+        "Gen. Bus. Posting Group" := '';
+        "Gen. Prod. Posting Group" := '';
+        "VAT Bus. Posting Group" := '';
+        "VAT Prod. Posting Group" := '';
+        VALIDATE("Payment Terms Code");
+        CustLedgEntry.CALCFIELDS("Remaining Amount");
+        IF GenJnlPostLine.CheckCalcPmtDiscGenJnlCust(GenJnlLine,CustLedgEntry,0,FALSE)
+        THEN
+          Amount := -(CustLedgEntry."Remaining Amount" - CustLedgEntry."Remaining Pmt. Disc. Possible")
+        ELSE
+          Amount := -CustLedgEntry."Remaining Amount";
+        VALIDATE("Account No.",Cust2."No.");
+        VALIDATE(Amount);
+
+      END;
+
+      IF UsePriority THEN
+        PayableCustLedgEntry.Priority := Customer.Priority
+      ELSE
+        PayableCustLedgEntry.Priority := 0;
+
+      PayableCustLedgEntry."Vendor No." := CustLedgEntry."Customer No.";
+      PayableCustLedgEntry."Entry No." := NextEntryNo;
+      PayableCustLedgEntry."Vendor Ledg. Entry No." := CustLedgEntry."Entry No.";
+      PayableCustLedgEntry.Amount := GenJnlLine.Amount;
+      PayableCustLedgEntry."Amount (LCY)" := GenJnlLine."Amount (LCY)";
+      PayableCustLedgEntry.Positive := (PayableCustLedgEntry.Amount > 0);
+      PayableCustLedgEntry.Future := (CustLedgEntry."Due Date" > LastDueDateToPayReq);
+      PayableCustLedgEntry."Currency Code" := CustLedgEntry."Currency Code";
+      IF (MinDueDate_G <> 0D) AND (MinDueDate_G >  CustLedgEntry."Due Date") THEN
+       PayableCustLedgEntry."Due Date" := MinDueDate_G
+      ELSE
+        PayableCustLedgEntry."Due Date" := CustLedgEntry."Due Date";
+      PayableCustLedgEntry.INSERT;
+      NextEntryNo := NextEntryNo + 1;
+    END;
+
+    PROCEDURE CheckAmounts@1120002(Future@1120000 : Boolean);
+    VAR
+      CurrencyBalance@1120001 : Decimal;
+      PrevCurrency@1120002 : Code[10];
+    BEGIN
+      PayableCustLedgEntry.SETRANGE("Vendor No.",Customer."No.");
+      PayableCustLedgEntry.SETRANGE(Future,Future);
+      IF PayableCustLedgEntry.FIND('-') THEN BEGIN
+        PrevCurrency := PayableCustLedgEntry."Currency Code";
+        REPEAT
+          IF PayableCustLedgEntry."Currency Code" <> PrevCurrency THEN BEGIN
+            IF CurrencyBalance < 0 THEN BEGIN
+              PayableCustLedgEntry.SETRANGE("Currency Code",PrevCurrency);
+              //PayableCustLedgEntry.DELETEALL;
+              PayableCustLedgEntry.SETRANGE("Currency Code");
+            END;
+            CurrencyBalance := 0;
+            PrevCurrency := PayableCustLedgEntry."Currency Code";
+          END;
+          IF (OriginalAmtAvailable = 0) OR
+             (AmountAvailable >= CurrencyBalance + PayableCustLedgEntry."Amount (LCY)")
+          THEN
+           CurrencyBalance := CurrencyBalance + PayableCustLedgEntry."Amount (LCY)"
+          ELSE
+            PayableCustLedgEntry.DELETE;
+
+        UNTIL PayableCustLedgEntry.NEXT = 0;
+        IF OriginalAmtAvailable > 0 THEN
+          AmountAvailable := AmountAvailable - CurrencyBalance;
+        IF (OriginalAmtAvailable > 0) AND (AmountAvailable <= 0) THEN
+          StopPayments := TRUE;
+
+        IF CurrencyBalance > 0 THEN BEGIN
+          PayableCustLedgEntry.SETRANGE("Currency Code",PrevCurrency);
+          //PayableCustLedgEntry.DELETEALL;
+          PayableCustLedgEntry.SETRANGE("Currency Code");
+        END;
+      END;
+      PayableCustLedgEntry.RESET;
+    END;
+
+    LOCAL PROCEDURE MakeGenJnlLines@1120001();
+    VAR
+      SEPADirectDebitMandate@1120002 : Record 1230;
+      GenPayLine3@1120000 : Record 81;
+      EntryNo@1120001 : Integer;
+      L_recCustomer@1000000002 : Record 18;
+      L_recSalesContract@1000000001 : Record 8053012;
+      L_recSalesInvHead@1000000000 : Record 112;
+      CustLedgEntry_L@8053000 : Record 21;
+    BEGIN
+      TempPaymentBuffer.RESET;
+      TempPaymentBuffer.DELETEALL;
+
+      IF PayableCustLedgEntry.FIND('-') THEN
+        REPEAT
+          PayableCustLedgEntry.SETRANGE("Vendor No.",PayableCustLedgEntry."Vendor No.");
+          PayableCustLedgEntry.FIND('-');
+          REPEAT
+            CustLedgEntry.GET(PayableCustLedgEntry."Vendor Ledg. Entry No.");
+            TempPaymentBuffer."Vendor No." := CustLedgEntry."Customer No.";
+            TempPaymentBuffer."Currency Code" := CustLedgEntry."Currency Code";
+
+            IF SummarizePer IN [SummarizePer::Customer,SummarizePer::"Due date"] THEN BEGIN
+              TempPaymentBuffer."Vendor Ledg. Entry No." := 0;
+              IF TempPaymentBuffer.FIND THEN BEGIN
+                TempPaymentBuffer.Amount := TempPaymentBuffer.Amount + PayableCustLedgEntry.Amount;
+                TempPaymentBuffer.MODIFY;
+              END ELSE BEGIN
+                TempPaymentBuffer."Document No." := NextDocNo;
+                NextDocNo := INCSTR(NextDocNo);
+                TempPaymentBuffer.Amount := PayableCustLedgEntry.Amount;
+                Window.UPDATE(1,CustLedgEntry."Customer No.");
+                TempPaymentBuffer.INSERT;
+              END;
+              CustLedgEntry.TESTFIELD("Applies-to ID",'');
+              CustLedgEntry."Applies-to ID" := TempPaymentBuffer."Document No.";
+            END ELSE BEGIN
+              GenPayLine3.RESET;
+              GenPayLine3.SETCURRENTKEY(
+                "Account Type","Account No.","Applies-to Doc. Type","Applies-to Doc. No.");
+              GenPayLine3.SETRANGE("Account Type",GenPayLine3."Account Type"::Customer);
+              GenPayLine3.SETRANGE("Account No.",CustLedgEntry."Customer No.");
+              GenPayLine3.SETRANGE("Applies-to Doc. Type",CustLedgEntry."Document Type");
+              GenPayLine3.SETRANGE("Applies-to Doc. No.",CustLedgEntry."Document No.");
+              IF GenPayLine3.FIND('-') THEN
+                GenPayLine3.FIELDERROR(
+                  "Applies-to Doc. No.",
+                  STRSUBSTNO(
+                    Text016,
+                    CustLedgEntry."Document Type",CustLedgEntry."Document No.",
+                    CustLedgEntry."Customer No."));
+
+              TempPaymentBuffer."Vendor Ledg. Entry Doc. Type" := CustLedgEntry."Document Type";
+              TempPaymentBuffer."Vendor Ledg. Entry Doc. No." := CustLedgEntry."Document No.";
+              TempPaymentBuffer."Global Dimension 1 Code" := CustLedgEntry."Global Dimension 1 Code";
+              TempPaymentBuffer."Global Dimension 2 Code" := CustLedgEntry."Global Dimension 2 Code";
+              TempPaymentBuffer."Vendor Ledg. Entry No." := CustLedgEntry."Entry No.";
+              TempPaymentBuffer.Amount := PayableCustLedgEntry.Amount;
+
+              Window.UPDATE(1,CustLedgEntry."Customer No.");
+              TempPaymentBuffer.INSERT;
+            END;
+            CustLedgEntry.CALCFIELDS(CustLedgEntry."Remaining Amount");
+            CustLedgEntry."Amount to Apply":=CustLedgEntry."Remaining Amount";
+            CustEntryEdit.RUN(CustLedgEntry);
+
+          UNTIL PayableCustLedgEntry.NEXT = 0;
+          //PayableCustLedgEntry.SETFILTER("Vendor No.",'>%1',PayableCustLedgEntry."Vendor No.");
+          PayableCustLedgEntry.DELETEALL;
+          PayableCustLedgEntry.SETRANGE("Vendor No.");
+
+        UNTIL NOT PayableCustLedgEntry.FIND('-');
+
+      CLEAR(OldTempPaymentBuffer);
+      TempPaymentBuffer.SETCURRENTKEY("Document No.");
+      IF TempPaymentBuffer.FIND('-') THEN
+        REPEAT
+          WITH GenJnlLine DO BEGIN
+            INIT;
+            Window.UPDATE(1,TempPaymentBuffer."Vendor No.");
+            LastLineNo := LastLineNo + 10000;
+            "Line No." := LastLineNo;
+            VALIDATE("Posting Date",PostingDate);
+            "Document Type" := "Document Type"::Refund;
+            "Posting No. Series" := GenJnlBatch."Posting No. Series";
+
+            IF SummarizePer=SummarizePer::Customer THEN
+              "Document No." := TempPaymentBuffer."Document No."
+            ELSE
+              IF DocNoPerLine THEN BEGIN
+                IF TempPaymentBuffer.Amount < 0 THEN
+                  "Document Type" := "Document Type"::Refund;
+
+                "Document No." := NextDocNo;
+                NextDocNo := INCSTR(NextDocNo);
+              END ELSE BEGIN
+                IF (TempPaymentBuffer."Vendor No." = OldTempPaymentBuffer."Vendor No.") AND
+                  (TempPaymentBuffer."Currency Code" = OldTempPaymentBuffer."Currency Code")
+                THEN
+                  "Document No." := OldTempPaymentBuffer."Document No."
+                ELSE BEGIN
+                  "Document No." := NextDocNo;
+                  NextDocNo := INCSTR(NextDocNo);
+                  OldTempPaymentBuffer := TempPaymentBuffer;
+                  OldTempPaymentBuffer."Document No." := "Document No.";
+                END;
+              END;
+
+            "Account Type" := "Account Type"::Customer;
+            VALIDATE("Account No.",TempPaymentBuffer."Vendor No.");
+            "Bal. Account Type" := BalAccType;
+            VALIDATE("Bal. Account No.",BalAccNo);
+            VALIDATE("Currency Code",TempPaymentBuffer."Currency Code");
+            "Bank Payment Type" := BankPmtType;
+
+            VALIDATE("Payment Method Code",PaymentMethCode);
+
+            IF SummarizePer=SummarizePer::Customer THEN BEGIN
+              "Applies-to ID" := "Document No.";
+              Description := STRSUBSTNO(Text014,TempPaymentBuffer."Vendor No.");
+            END ELSE
+              Description :=
+                STRSUBSTNO(
+                  Text015,
+                  TempPaymentBuffer."Vendor Ledg. Entry Doc. Type",
+                  TempPaymentBuffer."Vendor Ledg. Entry Doc. No.");
+            "Shortcut Dimension 1 Code" := TempPaymentBuffer."Global Dimension 1 Code";
+            "Shortcut Dimension 2 Code" := TempPaymentBuffer."Global Dimension 2 Code";
+            "Source Code" := GenJnlTemplate."Source Code";
+            "Reason Code" := GenJnlBatch."Reason Code";
+            VALIDATE(Amount,TempPaymentBuffer.Amount);
+            "Applies-to Doc. Type" := TempPaymentBuffer."Vendor Ledg. Entry Doc. Type";
+            "Applies-to Doc. No." := TempPaymentBuffer."Vendor Ledg. Entry Doc. No.";
+            VALIDATE("Payment Method Code",Cust2."Payment Method Code");
+
+            IF SummarizePer=SummarizePer::Customer THEN BEGIN
+              IF Amount >0 THEN BEGIN
+                INSERT;
+                GenJnlLineInserted := TRUE;
+              END ELSE BEGIN
+                CustLedgEntry_L.RESET;
+                CustLedgEntry_L.SETRANGE(CustLedgEntry_L.Open,TRUE);
+                CustLedgEntry_L.SETRANGE("Applies-to ID" ,"Document No.");
+                IF CustLedgEntry_L.FINDSET THEN
+                 REPEAT
+                   CustLedgEntry_L."Applies-to ID" := '';
+                   CustEntryEdit.RUN(CustLedgEntry_L)
+                 UNTIL CustLedgEntry_L.NEXT=0;
+              END;
+            END ELSE BEGIN
+              IF Amount >0 THEN BEGIN
+                INSERT;
+                GenJnlLineInserted := TRUE;
+              END ELSE BEGIN
+                CustLedgEntry_L.RESET;
+                CustLedgEntry_L.SETRANGE(CustLedgEntry_L.Open,TRUE);
+                CustLedgEntry_L.SETRANGE("Applies-to ID" ,"Document No.");
+                IF CustLedgEntry_L.FINDSET THEN
+                 REPEAT
+                   CustLedgEntry_L."Applies-to ID" := '';
+                   CustEntryEdit.RUN(CustLedgEntry_L)
+                 UNTIL CustLedgEntry_L.NEXT=0;
+              END;
+            END;
+
+          END;
+        UNTIL TempPaymentBuffer.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE ShowMessage@1120000(VAR Text@1120000 : Text[250]);
+    BEGIN
+      IF (Text <> '') AND GenJnlLineInserted THEN
+        MESSAGE(Text);
+    END;
+
+    PROCEDURE SetGenJnlLine@1(NewGenJnlLine@1000 : Record 81);
+    BEGIN
+      GenJnlLine := NewGenJnlLine;
+    END;
+
+    LOCAL PROCEDURE ValidatePostingDate@7();
+    BEGIN
+      GenJnlBatch.GET(GenJnlLine."Journal Template Name",GenJnlLine."Journal Batch Name");
+      IF GenJnlBatch."No. Series" = '' THEN
+        NextDocNo := ''
+      ELSE BEGIN
+        NextDocNo := NoSeriesMgt.GetNextNo(GenJnlBatch."No. Series",PostingDate,FALSE);
+        CLEAR(NoSeriesMgt);
+      END;
+    END;
+
+    PROCEDURE InitializeRequest@3(LastPmtDate@1000 : Date;FindPmtDisc@1001 : Boolean;NewAvailableAmount@1002 : Decimal;NewPostingDate@1003 : Date;NewStartDocNo@1004 : Code[20];NewSummarizePerVend@1005 : Boolean;BalAccType@1006 : 'G/L Account,Customer,Vendor,Bank Account';BalAccNo@1007 : Code[20];BankPmtType@1008 : ' ,Computer Check,Manual Check');
+    BEGIN
+
+      LastDueDateToPayReq := LastPmtDate;
+      UsePaymentDisc := FindPmtDisc;
+      AmountAvailable := NewAvailableAmount;
+      PostingDate := NewPostingDate;
+      NextDocNo := NewStartDocNo;
+      IF NewSummarizePerVend THEN
+        SummarizePer:=SummarizePer::Customer
+      ELSE
+        SummarizePer:=SummarizePer::" ";
+      GenJnlLine2."Bal. Account Type" := BalAccType;
+      GenJnlLine2."Bal. Account No." := BalAccNo;
+      GenJnlLine2."Bank Payment Type" := BankPmtType;
+    END;
+
+    LOCAL PROCEDURE AmountAvailableOnAfterValidate@19035272();
+    BEGIN
+      IF AmountAvailable <> 0 THEN
+        UsePriority := TRUE;
+    END;
+
+    LOCAL PROCEDURE CheckCurrencies@4(BalAccType@1000 : 'G/L Account,Customer,Vendor,Bank Account';BalAccNo@1001 : Code[20];VAR TmpPayableVendLedgEntry@1002 : Record 317);
+    VAR
+      BankAcc@1003 : Record 270;
+      TmpPayableVendLedgEntry2@1004 : TEMPORARY Record 317;
+    BEGIN
+      IF BalAccType = BalAccType::"Bank Account" THEN
+        IF BalAccNo <> '' THEN BEGIN
+          BankAcc.GET(BalAccNo);
+          IF BankAcc."Currency Code" <> '' THEN BEGIN
+            TmpPayableVendLedgEntry2.RESET;
+            TmpPayableVendLedgEntry2.DELETEALL;
+            IF TmpPayableVendLedgEntry.FIND('-') THEN
+              REPEAT
+                TmpPayableVendLedgEntry2 := TmpPayableVendLedgEntry;
+                TmpPayableVendLedgEntry2.INSERT;
+              UNTIL TmpPayableVendLedgEntry.NEXT = 0;
+
+            TmpPayableVendLedgEntry2.SETFILTER("Currency Code",'<>%1',BankAcc."Currency Code");
+            SeveralCurrencies := SeveralCurrencies OR TmpPayableVendLedgEntry2.FIND('-');
+
+            IF SeveralCurrencies THEN
+              MessageText :=
+                STRSUBSTNO(
+                   Text019+
+                   Text020,
+                    BankAcc.FIELDCAPTION("Currency Code"),BankAcc."Currency Code")
+            ELSE
+              MessageText :=
+                STRSUBSTNO(
+                  Text019+
+                  Text021,
+                   BankAcc.FIELDCAPTION("Currency Code"),BankAcc."Currency Code");
+          END ELSE
+            MessageText := Text022;
+        END;
+    END;
+
+    LOCAL PROCEDURE SetBankAccCurrencyFilter@11(BalAccType@1000 : 'G/L Account,Customer,Vendor,Bank Account';BalAccNo@1001 : Code[20];VAR TmpPayableVendLedgEntry@1002 : Record 317);
+    VAR
+      BankAcc@1003 : Record 270;
+    BEGIN
+      IF BalAccType = BalAccType::"Bank Account" THEN
+        IF BalAccNo <> '' THEN BEGIN
+          BankAcc.GET(BalAccNo);
+          IF BankAcc."Currency Code" <> '' THEN
+            TmpPayableVendLedgEntry.SETRANGE("Currency Code",BankAcc."Currency Code");
+        END;
+    END;
+
+    BEGIN
+    {
+      // -->3LI BEGIN
+
+      20141023-FIN03-TER01.01.00-BRA01 : CREATEOBJECT
+
+      // <--3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

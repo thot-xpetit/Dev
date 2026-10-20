@@ -1,0 +1,343 @@
+OBJECT Codeunit 8087800 CMC SICAPA Import Valid Ord Na
+{
+  OBJECT-PROPERTIES
+  {
+    Date=25/02/21;
+    Heure=11:13:18;
+    Modifi'=Oui;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    TableNo=8053457;
+    OnRun=VAR
+            "<-- 3LI LOCALS -->"@1000000001 : Integer;
+            TableSetup_L@1000000000 : Record 8053408;
+            TableSicapaOrder_L@1000000003 : Record 8053457;
+            TablePurchaseHead_L@1000000009 : Record 38;
+            TablePurchaseLine_L@1000000015 : Record 39;
+            TableItem_L@1000000007 : Record 27;
+            RelPurchDoc_L@1000000008 : Codeunit 415;
+            UniteEdi_L@1000000002 : Text[30];
+            UniteSicapa_L@1000000005 : Text[30];
+            Result_L@1000000004 : Text[250];
+            ConvUnite_L@1000000006 : Decimal;
+            DejaOuvert_L@1000000010 : Boolean;
+          BEGIN
+            IF TableSetup_L.FINDFIRST AND TableSetup_L."Import Order Validate" THEN BEGIN
+              MoteurInterface_G.GetParameter(TableSetup_L.CodeUnitOrderValidConn, ConnectorName_G, ImpExpFolder_G,
+                LogFolder_G, ExtensionFile_G, PrefixFile_G);
+              MoteurInterface_G.GetTemplatesCode(ConnectorName_G, ItemTemplateCode_G, CustomerTemplateCode_G, VendorTemplateCode_G,
+                ContactTemplateCode_G, AccountTemplateCode_G, GlobalTemplateCode_G);
+
+              TableSicapaOrder_L.SETRANGE("Document Type", "Document Type");
+              TableSicapaOrder_L.SETRANGE("Location Code", "Location Code");
+              TableSicapaOrder_L.SETRANGE("Document No.", "Document No.");
+              TableSicapaOrder_L.SETRANGE("Line No.", "Line No.");
+              TableSicapaOrder_L.SETFILTER(TableSicapaOrder_L.ValidateOrderSicapa, '<> %1', '');
+              TableSicapaOrder_L.SETRANGE(ValidateOrderHoroIntegration, 0DT);
+              IF NOT TableSicapaOrder_L.FINDFIRST THEN BEGIN
+                ERROR(Text0004, "Document Type", "Location Code", "Document No.", TableSicapaOrder_L.TABLECAPTION);
+              END ELSE BEGIN
+                IF NOT TablePurchaseHead_L.GET(TableSicapaOrder_L."Document Type", TableSicapaOrder_L."Document No.") THEN BEGIN
+                  ERROR(Text0004, TableSicapaOrder_L."Document No.", TablePurchaseHead_L.TABLECAPTION, '');
+                END;
+
+                IF NOT TablePurchaseLine_L.GET(TableSicapaOrder_L."Document Type", TableSicapaOrder_L."Document No.",
+                  TableSicapaOrder_L."Line No.") THEN BEGIN
+                  ERROR(Text0004, TableSicapaOrder_L."Document No." + '-' + FORMAT(TableSicapaOrder_L."Line No."),
+                    TablePurchaseLine_L.TABLECAPTION, '');
+                END ELSE BEGIN
+                  IF NOT TableItem_L.GET(TablePurchaseLine_L."No.") THEN BEGIN
+                    ERROR(Text0019, TablePurchaseLine_L."No.", TableItem_L.TABLECAPTION,
+                      TablePurchaseLine_L."Document Type", TablePurchaseLine_L."Document No.", TablePurchaseLine_L."Line No.");
+                  END;
+
+                  // Correspondance unit' SICAPA
+                  //-->20210110-ADV-003-CDL
+                  // BEFORE
+                  {
+                  IF ((TableSicapaOrder_L.ValidateOrderSicapa <> '27') AND (TableSicapaOrder_L.ValidateOrderSicapa <> '29')) THEN BEGIN
+                  }
+                  // AFTER
+            //MessageDebug(STRSUBSTNO('TableSicapaOrder_L.ValidateOrderSicapa?:%1', COPYSTR(TableSicapaOrder_L.ValidateOrderSicapa, 1, 100)));
+                  IF ((TableSicapaOrder_L.ValidateOrderSicapa <> '27')) THEN BEGIN
+                  //<--20210110-ADV-003-CDL
+                    UniteEdi_L := MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G, 'Unit of Measure', 'Code',
+                      TablePurchaseLine_L."Unit of Measure Code", FALSE, TRUE);
+                    IF UniteEdi_L = '' THEN BEGIN
+                      ERROR(Text0005, TablePurchaseLine_L.FIELDCAPTION("Unit of Measure Code"),
+                        TablePurchaseLine_L."Unit of Measure Code", TablePurchaseLine_L."Document Type",
+                        TablePurchaseLine_L."Document No.", TablePurchaseLine_L."Line No.");
+                    END;
+                    // Unit' chez Sicapa.
+                    UniteSicapa_L := TableSicapaOrder_L.ValidateOrderQuantityUnit;
+                    //-->20151110-INT08-CMC02.02.00-ADVITAM-CDL007
+                    // BEFORE
+                    {
+                    // Correction de certaines unit' transmise par Sicapa.
+                    CASE UniteSicapa_L OF
+                      'L': UniteSicapa_L := 'LTR';
+                      'KG': UniteSicapa_L := 'KGM';
+                      //-->20150710-INT08-CMC02.02.00-ADVITAM-CDL003
+                      'UN': UniteSicapa_L := 'PCE';
+                      //<--20150710-INT08-CMC02.02.00-ADVITAM-CDL003
+                      //-->20150718-INT08-CMC02.02.00-ADVITAM-CDL005
+                      'DOS': UniteSicapa_L := 'DOSE';
+                      //<--20150718-INT08-CMC02.02.00-ADVITAM-CDL005
+                      //-->20151012-INT08-CMC02.02.00-ADVITAM-CDL006
+                      'TNE': UniteSicapa_L := 'T';
+                      //<--20151012-INT08-CMC02.02.00-ADVITAM-CDL006
+                    END;
+                    //-->20150718-INT08-CMC02.02.00-ADVITAM-CDL005
+                    CASE UniteEdi_L OF
+                      'DOS': UniteEdi_L := 'DOSE';
+                    END;
+                    //<--20150718-INT08-CMC02.02.00-ADVITAM-CDL005
+
+                    // Test Unit' convertible (uS = UNav (ConvUnite = 0, 1 si idem
+                    CASE TRUE OF
+                      UniteEdi_L = UniteSicapa_L: BEGIN
+                        ConvUnite_L := 1 ;
+                      END;
+                      ((UniteEdi_L = 'KGM') AND (UniteSicapa_L = 'T')): BEGIN
+                        ConvUnite_L := 0.001;
+                      END;
+                      ((UniteEdi_L = 'T') AND (UniteSicapa_L = 'KGM')): BEGIN
+                        ConvUnite_L := 1000;
+                      END;
+                      //-->20150713-INT08-CMC02.02.00-ADVITAM-CDL004
+                      // BEFORE
+                      {
+                      (((UPPERCASE(UniteEdi_L) = 'UN') AND (UPPERCASE(UniteSicapa_L) = 'DOSE')) OR
+                      ((UPPERCASE(UniteEdi_L) = 'DOSE') AND (UPPERCASE(UniteSicapa_L) = 'UN'))): BEGIN
+                      }
+                      // AFTER
+                      (((UPPERCASE(UniteEdi_L) = 'PCE') AND (UPPERCASE(UniteSicapa_L) = 'DOSE')) OR
+                      ((UPPERCASE(UniteEdi_L) = 'DOSE') AND (UPPERCASE(UniteSicapa_L) = 'PCE'))): BEGIN
+                      //<--20150713-INT08-CMC02.02.00-ADVITAM-CDL004
+                        ConvUnite_L := 1;
+                      END;
+                      //-->20150709-INT08-CMC02.02.00-ADVITAM-CDL002
+                      // BEFORE
+                      {
+                      (((UPPERCASE(UniteSicapa_L) = 'UN') AND (UPPERCASE(UniteEdi_L) = 'L')) OR
+                      ((UPPERCASE(UniteSicapa_L) = 'UN') AND (UPPERCASE(UniteEdi_L) = 'KGM'))): BEGIN
+                      }
+                      // AFTER
+                      //-->20150713-INT08-CMC02.02.00-ADVITAM-CDL004
+                      // BEFORE
+                      {
+                      (((UPPERCASE(UniteSicapa_L) = 'UN') AND (UPPERCASE(UniteEdi_L) = 'LTR')) OR
+                      ((UPPERCASE(UniteSicapa_L) = 'UN') AND (UPPERCASE(UniteEdi_L) = 'KGM'))): BEGIN
+                      }
+                      // AFTER
+                      (((UPPERCASE(UniteSicapa_L) = 'PCE') AND (UPPERCASE(UniteEdi_L) = 'LTR')) OR
+                      ((UPPERCASE(UniteSicapa_L) = 'PCE') AND (UPPERCASE(UniteEdi_L) = 'KGM'))): BEGIN
+                      //<--20150713-INT08-CMC02.02.00-ADVITAM-CDL004
+                      //<--20150709-INT08-CMC02.02.00-ADVITAM-CDL002
+                        IF TableItem_L.Capacity <> 0 THEN BEGIN
+                          ConvUnite_L := 1 / TableItem_L.Capacity;
+                        END;
+                      END;
+                      //-->20150709-INT08-CMC02.02.00-ADVITAM-CDL002
+                      // BEFORE
+                      {
+                      (((UPPERCASE(UniteSicapa_L) = 'L') AND (UPPERCASE(UniteEdi_L) = 'UN')) OR
+                      ((UPPERCASE(UniteSicapa_L) = 'KGM') AND (UPPERCASE(UniteEdi_L) = 'UN'))): BEGIN
+                      }
+                      // AFTER
+                      //-->20150713-INT08-CMC02.02.00-ADVITAM-CDL004
+                      // BEFORE
+                      {
+                      (((UPPERCASE(UniteSicapa_L) = 'LTR') AND (UPPERCASE(UniteEdi_L) = 'UN')) OR
+                      ((UPPERCASE(UniteSicapa_L) = 'KGM') AND (UPPERCASE(UniteEdi_L) = 'UN'))): BEGIN
+                      }
+                      // AFTER
+                      (((UPPERCASE(UniteSicapa_L) = 'LTR') AND (UPPERCASE(UniteEdi_L) = 'PCE')) OR
+                      ((UPPERCASE(UniteSicapa_L) = 'KGM') AND (UPPERCASE(UniteEdi_L) = 'PCE'))): BEGIN
+                      //<--20150713-INT08-CMC02.02.00-ADVITAM-CDL004
+                      //<--20150709-INT08-CMC02.02.00-ADVITAM-CDL002
+                        IF TableItem_L.Capacity <> 0 THEN BEGIN
+                          ConvUnite_L := TableItem_L.Capacity;
+                        END;
+                      END;
+                      ELSE BEGIN
+                        ConvUnite_L := 0;
+                        ERROR(Text0016, TablePurchaseLine_L."No.", TablePurchaseLine_L."Variant Code", UniteSicapa_L, UniteEdi_L,
+                          TablePurchaseLine_L."Document Type", TablePurchaseLine_L."Document No.", TablePurchaseLine_L."Line No.");
+                      END;
+                    END;
+                    }
+                    // AFTER
+                    // --> 20180323-ADV-44904
+                    //BEFORE
+                    //ConvUnite_L := ToolsFile_G.CoefConvUnite(UniteSicapa_L, UniteEdi_L, TableItem_L.Capacity, TRUE);
+                    //AFTER
+                    ConvUnite_L := ToolsFile_G.CoefConvUniteItem(UniteSicapa_L, UniteEdi_L,
+                        TableItem_L.Capacity, TRUE,TablePurchaseLine_L."No.");
+                    // <-- 20180323-ADV-44904
+                    IF ConvUnite_L = 0 THEN BEGIN
+                      ERROR(Text0016+'-val1', TablePurchaseLine_L."No.", TablePurchaseLine_L."Variant Code", UniteSicapa_L, UniteEdi_L,
+                        TablePurchaseLine_L."Document Type", TablePurchaseLine_L."Document No.", TablePurchaseLine_L."Line No.");
+                    END;
+                    //<--20151110-INT08-CMC02.02.00-ADVITAM-CDL007
+                  END;
+
+                  // Modification ?
+                  //-->20151012-INT08-CMC02.02.00-ADVITAM-CDL006
+                  // BEFORE
+                  {
+                  IF ((NOT TablePurchaseLine_L."EDI AR Received") OR
+                    (TablePurchaseLine_L.Quantity <> TableSicapaOrder_L.ValidateOrderQuantity * ConvUnite_L) OR
+                    ((TableSicapaOrder_L.ValidateOrderSicapa = '27') AND (TablePurchaseLine_L.Quantity <> 0)) OR
+                    (TablePurchaseLine_L."Location Code" <> TableSicapaOrder_L.ValidateOrderLocationCode)) THEN BEGIN
+                  }
+                  // AFTER
+                  //-->20151110-INT08-CMC02.02.00-ADVITAM-CDL007
+                  // BEFORE
+                  {
+                  IF ((NOT TablePurchaseLine_L."EDI AR Received") OR
+                    (TablePurchaseLine_L.Quantity <> TableSicapaOrder_L.ValidateOrderQuantity / ConvUnite_L) OR
+                    ((TableSicapaOrder_L.ValidateOrderSicapa = '27') AND (TablePurchaseLine_L.Quantity <> 0)) OR
+                    (TablePurchaseLine_L."Location Code" <> TableSicapaOrder_L.ValidateOrderLocationCode)) THEN BEGIN
+                  }
+                  // AFTER
+                  IF ((NOT TablePurchaseLine_L."EDI AR Received") OR
+                    (TablePurchaseLine_L.Quantity <> TableSicapaOrder_L.ValidateOrderQuantity * ConvUnite_L) OR
+                    ((TableSicapaOrder_L.ValidateOrderSicapa = '27') AND (TablePurchaseLine_L.Quantity <> 0)) OR
+                    (TablePurchaseLine_L."Location Code" <> TableSicapaOrder_L.ValidateOrderLocationCode)) THEN BEGIN
+                  //<--20151110-INT08-CMC02.02.00-ADVITAM-CDL007
+                  //<--20151012-INT08-CMC02.02.00-ADVITAM-CDL006
+
+                    // R'ouvrir la commande
+                    IF TablePurchaseHead_L.Status = TablePurchaseHead_L.Status::Open THEN BEGIN
+                      DejaOuvert_L := TRUE;
+                    END ELSE BEGIN
+                      DejaOuvert_L := FALSE;
+                    END;
+
+                    IF NOT DejaOuvert_L THEN BEGIN
+                      RelPurchDoc_L.Reopen(TablePurchaseHead_L);
+
+                      IF TablePurchaseLine_L.GET(TableSicapaOrder_L."Document Type", TableSicapaOrder_L."Document No.",
+                        TableSicapaOrder_L."Line No.") THEN BEGIN
+                      END;
+                    END;
+
+                    TablePurchaseLine_L."EDI AR Received" := TRUE;
+                    //-->20210218-ADV-004-CDL
+                    IF TablePurchaseLine_L."Sales Order No." = '' THEN BEGIN
+                      //<--20210218-ADV-004-CDL
+                      CASE TableSicapaOrder_L.ValidateOrderSicapa OF
+                        '27': BEGIN
+                          TablePurchaseLine_L.VALIDATE(Quantity, 0);
+                        END;
+                        //-->20210110-ADV-003-CDL
+                        // BEFORE
+                        {
+                        '29': BEGIN
+                        END;
+                        }
+                        //<--20210110-ADV-003-CDL
+                        ELSE BEGIN
+                        //-->20151012-INT08-CMC02.02.00-ADVITAM-CDL006
+                        // BEFORE
+                        {
+                          TablePurchaseLine_L.VALIDATE(Quantity, TableSicapaOrder_L.ValidateOrderQuantity * ConvUnite_L);
+                        }
+                        // AFTER
+                          //-->20151110-INT08-CMC02.02.00-ADVITAM-CDL007
+                          // BEFORE
+                          {
+                          TablePurchaseLine_L.VALIDATE(Quantity, TableSicapaOrder_L.ValidateOrderQuantity / ConvUnite_L);
+                          }
+                          // AFTER
+                          TablePurchaseLine_L.VALIDATE(Quantity, TableSicapaOrder_L.ValidateOrderQuantity * ConvUnite_L);
+                          //<--20151110-INT08-CMC02.02.00-ADVITAM-CDL007
+                        //<--20151012-INT08-CMC02.02.00-ADVITAM-CDL006
+
+                        END;
+                      END;
+                      TablePurchaseLine_L.VALIDATE("Location Code", TableSicapaOrder_L.ValidateOrderLocationCode);
+                      //-->20210218-ADV-004-CDL
+                    END;
+                    //<--20210218-ADV-004-CDL
+
+                    IF NOT TablePurchaseLine_L.MODIFY(TRUE) THEN BEGIN
+                      ERROR(Text0014, TablePurchaseLine_L.TABLECAPTION, FORMAT(TablePurchaseLine_L."Document Type") + '-' +
+                        TablePurchaseLine_L."Document No." + '-' + FORMAT(TablePurchaseLine_L."Line No."));
+                    END;
+                    IF NOT DejaOuvert_L THEN BEGIN
+                      RelPurchDoc_L.RUN(TablePurchaseHead_L);
+                    END;
+                  END;
+
+                  TableSicapaOrder_L.ValidateOrderHoroIntegration := CURRENTDATETIME;
+                  IF NOT TableSicapaOrder_L.MODIFY(TRUE) THEN BEGIN
+                    ERROR(Text0014, TableSicapaOrder_L.TABLECAPTION, FORMAT(TableSicapaOrder_L."Document Type") + '-' +
+                      TableSicapaOrder_L."Document No." + '-' + FORMAT(TableSicapaOrder_L."Line No."));
+                  END;
+                END;
+              END;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      "<-- 3LI TEXT GLOBALS -->"@1000000002 : TextConst;
+      Text0004@1000000000 : TextConst 'FRA=Erreur "%1" inexistant dans table "%2" : Enregistrement "%3-%4".';
+      "<-- 3LI GLOBALS -->"@1000000001 : Integer;
+      MoteurInterface_G@1000000021 : Codeunit 8061230;
+      ToolsFile_G@1000000020 : Codeunit 8053405;
+      ConnectorName_G@1000000019 : Code[20];
+      ImpExpFolder_G@1000000018 : Text[256];
+      LogFolder_G@1000000017 : Text[256];
+      ExtensionFile_G@1000000016 : Text[10];
+      PrefixFile_G@1000000015 : Text[30];
+      ItemTemplateCode_G@1000000009 : Code[20];
+      CustomerTemplateCode_G@1000000008 : Code[20];
+      VendorTemplateCode_G@1000000007 : Code[20];
+      ContactTemplateCode_G@1000000006 : Code[20];
+      AccountTemplateCode_G@1000000005 : Code[20];
+      GlobalTemplateCode_G@1000000004 : Code[20];
+      Text0005@1000000011 : TextConst 'ENU=Error Corresponding "%1" : "%2" Doesn''t exist for Order : "%3", Line : "%4";FRA=Erreur correspondance "%1" : "%2" non param'tr'e pour : "%3-%4-%5".';
+      Text0014@1000000003 : TextConst 'FRA=Erreur MODIFY table "%1" : "%2-%3"';
+      Text0016@1000000012 : TextConst 'FRA=Produit "%1-%2" unit' sicapa "%3" non convertible unit' Nav "%4" pour "%5-%6-%7".';
+      Text0019@1000000010 : TextConst 'FRA="""%1"" inexistant dans table ""%2"". Enregistrement ""%3-%4""."';
+
+    PROCEDURE MessageDebug@1000000019(Message_P@1000000000 : Text[250]);
+    VAR
+      MessageDebugNb_G@1000000001 : Integer;
+    BEGIN
+      IF ((USERID = 'ERIC SAINT-LEGER') OR (USERID = 'CHRISTOPHE DAL')) THEN BEGIN
+        IF MessageDebugNb_G < 20 THEN BEGIN
+          MessageDebugNb_G += 1;
+          MESSAGE(Message_P);
+        END;
+      END;
+    END;
+
+    BEGIN
+    {
+      //--> 3LI BEGIN
+      20141118-Int08-CMC02.02.00-ADVITAM-CDL : - Importation d'une facture Sicapa dans NavAgri.
+      20150709-INT08-CMC02.02.00-ADVITAM-CDL002 : - Erreur Test unit' 'L' en 'LTR'
+      20150710-INT08-CMC02.02.00-ADVITAM-CDL003 : - Erreur Test unit' 'UN' en 'PCE'
+      20150713-INT08-CMC02.02.00-ADVITAM-CDL004 : - Erreur Test unit' 'UN' en 'PCE'
+      20150718-INT08-CMC02.02.00-ADVITAM-CDL005 : - Sicapa utilise 'DOS' ou 'DOSE' ! ==> Conversion
+      20151012-INT08-CMC02.02.00-ADVITAM-CDL006 : - Sicapa utilise 'TNE' . la place de 'T' comme il nous le demande
+                                                  - Et mauvaise conversion
+      20151110-INT08-CMC02.02.00-ADVITAM-CDL007 : - Modification Conversion unit' : utilisation fonction
+      20180323-ADV-44904-OFT : fonction CoefConvUniteItem
+      20210110-ADV-003-CDL : Validation globale "29" (Accept') : Faire le traitement de validation.
+      20210218-ADV-004-CDL : Erreur modification commande achat si une commande de vente y est associ'e ==> Ne pas modifier les quantit's
+                             magasin.
+      //<-- 3LI END
+    }
+    END.
+  }
+}
+

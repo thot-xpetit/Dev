@@ -1,0 +1,505 @@
+OBJECT Codeunit 60087 NewEdge - Post Cotation
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02/12/19;
+    Heure=00:00:00;
+    Liste versions=SP3444;
+  }
+  PROPERTIES
+  {
+    TableNo=8061230;
+    OnRun=BEGIN
+            MsgError_G := '';
+
+            CodeUnit_G := Processing;
+            MoteurInterface_G.GetParameter(CodeUnit_G, ConnectorName_G, ImpExpFolder_G, LogFolder_G, ExtensionFile_G, PrefixFile_G);
+            MoteurInterface_G.GetTemplatesCode(ConnectorName_G, ItemTemplateCode_G, CustomerTemplateCode_G, VendorTemplateCode_G,
+              ContactTemplateCode_G, AccountTemplateCode_G, GlobalTemplateCode_G);
+
+            NewEdgeSetup_G.GET;
+
+            //V'rification que le fichier n'a jamais 't' int'gr'
+            CheckFileName("File in use");
+
+            //Insertion des donn'es dans la Table de SAS
+            ReadFileToWrkTable("File in use", COMPANYNAME, FALSE);
+
+            // --> 20191202-WI00-ADV01.01.00-3444-MRU01
+            //R'initialisation des montants des espSces dans le modSle de correspondance
+            InitCotation("File in use");
+            // <-- 20191202-WI00-ADV01.01.00-3444-MRU01
+
+            //Insertion des lignes de cotation
+            InsertCotation("File in use");
+
+            IF MsgError_G <> '' THEN
+              ERROR(MsgError_G);
+
+            //Validation des lignes de cotation
+            PostCotation;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      MoteurInterface_G@100000005 : Codeunit 8061230;
+      GlobalTemplateCode_G@100000004 : Code[20];
+      NoSeriesMgt_G@100000003 : Codeunit 396;
+      Text8053600@100000030 : TextConst 'ENU=OK;FRA=OK';
+      Text8053601@100000018 : TextConst 'ENU=Issue Read;FRA=ProblSme de lecture';
+      Text8053603@100000000 : TextConst 'ENU=File doesn''t exist;FRA=Le fichier n''existe pas';
+      CodeUnit_G@100000029 : Integer;
+      ConnectorName_G@100000028 : Code[20];
+      ImpExpFolder_G@100000027 : Text[256];
+      LogFolder_G@100000026 : Text[256];
+      ExtensionFile_G@100000025 : Text[10];
+      PrefixFile_G@100000024 : Text[30];
+      ItemTemplateCode_G@100000023 : Code[20];
+      CustomerTemplateCode_G@100000022 : Code[20];
+      VendorTemplateCode_G@100000021 : Code[20];
+      ContactTemplateCode_G@100000020 : Code[20];
+      AccountTemplateCode_G@100000019 : Code[20];
+      SetupAlreadyRead_G@100000031 : Boolean;
+      NewEdgeSetup_G@100000032 : Record 60112;
+      Text60000@100000014 : TextConst 'FRA=Le fichier ''%1'' a d'j. 't' int'gr'';
+      Text60001@100000001 : TextConst 'ENU=%1 contracts as been updated;FRA=%1 contrat(s) mis . jour';
+      MsgError_G@100000002 : Text[1024];
+      Text60002@100000006 : TextConst 'FRA=Code espSce Matif %1 - Code 'ch'ance Matif %2 : Ligne pr'par'e non trouv'e';
+
+    PROCEDURE CheckFileName@100000000(FileName_P@100000000 : Text[1024]);
+    VAR
+      NewEdgeSAS_L@100000001 : Record 60111;
+      Pos_L@100000002 : Integer;
+      Found_L@100000003 : Boolean;
+      FileName_L@100000004 : Text[1024];
+    BEGIN
+      NewEdgeSAS_L.RESET;
+      NewEdgeSAS_L.SETRANGE(FileName, FileName_P);
+      IF NewEdgeSAS_L.FINDFIRST THEN BEGIN
+        FileName_P := DELCHR(FileName_P, '<>');
+        IF (FileName_P <> '') THEN BEGIN
+          Pos_L := STRLEN(FileName_P);
+          REPEAT
+            Found_L := (COPYSTR(FileName_P, Pos_L, 1) = '\');
+            IF NOT Found_L THEN
+              Pos_L := Pos_L - 1;
+          UNTIL (Pos_L = 0) OR Found_L;
+          IF Found_L THEN BEGIN
+            FileName_L := COPYSTR(FileName_P, Pos_L+1);
+          END ELSE BEGIN
+            FileName_L := FileName_P;
+          END;
+        END;
+        ERROR(STRSUBSTNO(Text60000, FileName_L));
+      END;
+    END;
+
+    PROCEDURE ReadFileToWrkTable@1000000014(Filename_P@1000000000 : Text[1000];CompanyNo_P@1000000001 : Code[10];ArchiveFile_P@1000000002 : Boolean) Result_L : Text[30];
+    VAR
+      File_L@1000000003 : File;
+      FileStream_L@1000000004 : InStream;
+      Line_L@1000000006 : Text[1000];
+      CharLF_L@1000000007 : Char;
+      CharRC_L@1000000008 : Char;
+      EndLine_L@1000000009 : Text[2];
+      cduFormatFieldsMgt_L@8053601 : Codeunit 8060985;
+      LineToCut_L@1000000005 : Text[1000];
+      Position_L@1000000010 : Integer;
+      LineNo_L@1000000011 : Integer;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Lit et lance l'action de d'coupage du fichier
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - Filename_P : adresse et nom du fichier
+      //    - CompanyNo_P : N› de soci't' . qui appartient le fichier
+      //    - DeleteFile_P : Indique si le fichier doit ^tre supprim'
+      //----------------------------------------------------------------------------------------------------------------------------------
+
+      GetSetup();
+
+      //Initialisation des variables locales
+      Result_L := Text8053600;
+      CharLF_L := 10;
+      CharRC_L := 13;
+      EndLine_L := FORMAT(CharLF_L) + FORMAT(CharRC_L);
+
+      //V'rification si le fichier exist
+      IF NOT(EXISTS(Filename_P)) THEN
+        Result_L := Text8053603;
+
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //Ouverture du fichier pour lire du texte en lecture seule
+      //----------------------------------------------------------------------------------------------------------------------------------
+        IF Result_L = Text8053600 THEN BEGIN
+          File_L.WRITEMODE(FALSE);
+          File_L.TEXTMODE(TRUE);
+          IF NOT(File_L.OPEN(Filename_P)) THEN
+            Result_L := Text8053601;
+        END;
+
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //D'coupage du fichier pour r'cup'rer chaque ligne
+      //----------------------------------------------------------------------------------------------------------------------------------
+        IF Result_L = Text8053600 THEN BEGIN
+          LineNo_L := 1;
+
+          File_L.CREATEINSTREAM(FileStream_L);
+            REPEAT
+              IF FileStream_L.READTEXT(Line_L) > 0 THEN BEGIN
+                //On ne tient pas compte de la premiSre ligne comportant le nom des colonnes
+                IF LineNo_L > 1 THEN BEGIN
+                  //conversion de ANSI vers ASCII
+                  Line_L := cduFormatFieldsMgt_L.Ansi2Ascii(Line_L);
+                  Line_L := DELCHR(Line_L, '=', EndLine_L);
+                  LineToCut_L := Line_L;
+
+                  ReadLine(Filename_P, LineToCut_L);
+                END;
+
+                LineNo_L += 1;
+              END;
+            UNTIL FileStream_L.EOS = TRUE;
+
+            //Fermeture du fichier aprSs traitement
+            File_L.CLOSE;
+        END;
+
+      EXIT(Result_L);
+    END;
+
+    PROCEDURE GetSetup@8053683();
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Permet de r'cup'rer le param'trage de l'interface en faisant le moins possible de lecture dans la BDD
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //  Sorties
+      //----------------------------------------------------------------------------------------------------------------------------------
+      IF SetupAlreadyRead_G = FALSE THEN BEGIN
+        SetupAlreadyRead_G := TRUE;
+      END;
+    END;
+
+    PROCEDURE ReadLine@1000000017(Filename_P@8053602 : Text[1000];Line_P@1000000000 : Text[1000]);
+    VAR
+      BufferLine_L@8053606 : Text[1000];
+      Position_L@8053607 : Integer;
+      i_L@8053608 : Integer;
+      TestError_L@1000000068 : Text[250];
+      "-----------------------"@1000000002 : Integer;
+      NewEdgeSAS_L@1000000003 : Record 60111;
+      Quantity_L@100000000 : Decimal;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // D'coupe la ligne pass'e en paramStre pour la traiter
+      // Attention, COMMIT dans cette fonction
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - Filename_P : adresse et nom du fichier
+      //    - Line_P : Ligne . traiter
+      //  Sorties
+      //----------------------------------------------------------------------------------------------------------------------------------
+      BufferLine_L := Line_P;
+
+      //Ecriture dans la table 60111
+      NewEdgeSAS_L.LOCKTABLE;
+      NewEdgeSAS_L.INIT;
+
+      NewEdgeSAS_L.FileName := Filename_P;
+      NewEdgeSAS_L.PRECID := ReadNextItem(BufferLine_L);   //PRECID
+      ReadNextItem(BufferLine_L);                          //PFIRM
+      ReadNextItem(BufferLine_L);                          //POFFIC
+      ReadNextItem(BufferLine_L);                          //PACCT
+      ReadNextItem(BufferLine_L);                          //PATYPE
+      ReadNextItem(BufferLine_L);                          //PCUSIP
+      NewEdgeSAS_L.PCTYM := ReadNextItem(BufferLine_L);    //PCTYM
+      // --> 20191122-WI00-ADV01.01.00-3444-MRU01
+      NewEdgeSAS_L.PCTYM := DELCHR(NewEdgeSAS_L.PCTYM, '=', '-');
+      // <-- 20191122-WI00-ADV01.01.00-3444-MRU01
+      NewEdgeSAS_L.PSTYPE := ReadNextItem(BufferLine_L);   //PSTYPE
+      NewEdgeSAS_L.PSUBTY := ReadNextItem(BufferLine_L);   //PSUBTY
+      ReadNextItem(BufferLine_L);                          //PSTRIK
+      ReadNextItem(BufferLine_L);                          //PEXPDT
+      ReadNextItem(BufferLine_L);                          //PTDATE
+      ReadNextItem(BufferLine_L);                          //PBS
+      ReadNextItem(BufferLine_L);                          //PSPRED
+      ReadNextItem(BufferLine_L);                          //PCLASS
+      ReadNextItem(BufferLine_L);                          //PSUBCL
+      ReadNextItem(BufferLine_L);                          //PRR
+      ReadNextItem(BufferLine_L);                          //PQTY
+      ReadNextItem(BufferLine_L);                          //PSDSC1
+      ReadNextItem(BufferLine_L);                          //PMKVAL
+      ReadNextItem(BufferLine_L);                          //PSDATE
+      ReadNextItem(BufferLine_L);                          //PLTDAT
+      ReadNextItem(BufferLine_L);                          //PEXCH
+      NewEdgeSAS_L.PFC := ReadNextItem(BufferLine_L);      //PFC
+      ReadNextItem(BufferLine_L);                          //PSYMBL
+      ReadNextItem(BufferLine_L);                          //PPTYPE
+      ReadNextItem(BufferLine_L);                          //PTPRIC
+      NewEdgeSAS_L.PCLOSE := ReadNextItem(BufferLine_L);   //PCLOSE
+      ReadNextItem(BufferLine_L);                          //PPRTCP
+      ReadNextItem(BufferLine_L);                          //PCURSY
+      ReadNextItem(BufferLine_L);                          //PCALC
+      ReadNextItem(BufferLine_L);                          //PCMNT1
+      ReadNextItem(BufferLine_L);                          //POC
+      ReadNextItem(BufferLine_L);                          //PEXBKR
+      ReadNextItem(BufferLine_L);                          //POPBKR
+      ReadNextItem(BufferLine_L);                          //PGIVIO
+      ReadNextItem(BufferLine_L);                          //PGIVF#
+      ReadNextItem(BufferLine_L);                          //PCOMM
+      ReadNextItem(BufferLine_L);                          //PFEE1
+      ReadNextItem(BufferLine_L);                          //PFEE2
+      ReadNextItem(BufferLine_L);                          //PFEE3
+      ReadNextItem(BufferLine_L);                          //PFEE4
+      ReadNextItem(BufferLine_L);                          //PGICHG
+      ReadNextItem(BufferLine_L);                          //PBKCHG
+      ReadNextItem(BufferLine_L);                          //POTHER
+      ReadNextItem(BufferLine_L);                          //PGROSS
+      ReadNextItem(BufferLine_L);                          //PNET
+      ReadNextItem(BufferLine_L);                          //PTRACE
+      ReadNextItem(BufferLine_L);                          //PRODCT
+      ReadNextItem(BufferLine_L);                          //ENV
+      ReadNextItem(BufferLine_L);                          //PTIME
+      ReadNextItem(BufferLine_L);                          //PRTHT
+      ReadNextItem(BufferLine_L);                          //PUCUSP
+      ReadNextItem(BufferLine_L);                          //PUNDCP
+      ReadNextItem(BufferLine_L);                          //PMVARN
+      ReadNextItem(BufferLine_L);                          //PATCOM
+      ReadNextItem(BufferLine_L);                          //PATFE1
+      ReadNextItem(BufferLine_L);                          //PATFE2
+      ReadNextItem(BufferLine_L);                          //PATFE3
+      ReadNextItem(BufferLine_L);                          //PATFE4
+      ReadNextItem(BufferLine_L);                          //PATFE5
+      ReadNextItem(BufferLine_L);                          //PATFE6
+      ReadNextItem(BufferLine_L);                          //PATFE7
+      ReadNextItem(BufferLine_L);                          //PATFE8
+      ReadNextItem(BufferLine_L);                          //PATFE9
+      ReadNextItem(BufferLine_L);                          //PATGIV
+      ReadNextItem(BufferLine_L);                          //PATBKG
+      ReadNextItem(BufferLine_L);                          //PATOTH
+      ReadNextItem(BufferLine_L);                          //PATBKO
+      ReadNextItem(BufferLine_L);                          //PATFLR
+      ReadNextItem(BufferLine_L);                          //PATORD
+      ReadNextItem(BufferLine_L);                          //PATWIR
+      ReadNextItem(BufferLine_L);                          //PATALO
+      ReadNextItem(BufferLine_L);                          //PFUFE1
+      ReadNextItem(BufferLine_L);                          //PFUFE2
+      ReadNextItem(BufferLine_L);                          //PFUFE3
+      ReadNextItem(BufferLine_L);                          //PFUFE4
+      ReadNextItem(BufferLine_L);                          //PFUFE5
+      ReadNextItem(BufferLine_L);                          //PFUFE6
+      ReadNextItem(BufferLine_L);                          //PFUFE7
+      ReadNextItem(BufferLine_L);                          //PFUFE8
+      ReadNextItem(BufferLine_L);                          //PFUFE9
+      ReadNextItem(BufferLine_L);                          //PFUGIV
+      ReadNextItem(BufferLine_L);                          //PFUBKG
+      ReadNextItem(BufferLine_L);                          //PFUOTH
+      ReadNextItem(BufferLine_L);                          //PFUBKO
+      ReadNextItem(BufferLine_L);                          //PFUFLR
+      ReadNextItem(BufferLine_L);                          //PFUORD
+      ReadNextItem(BufferLine_L);                          //PFUWIR
+      ReadNextItem(BufferLine_L);                          //PFUALO
+      ReadNextItem(BufferLine_L);                          //FUSER
+      ReadNextItem(BufferLine_L);                          //FQACT
+      ReadNextItem(BufferLine_L);                          //PORDOR
+      ReadNextItem(BufferLine_L);                          //PFEE5
+      ReadNextItem(BufferLine_L);                          //PFEE6
+      ReadNextItem(BufferLine_L);                          //PFEE7
+      ReadNextItem(BufferLine_L);                          //PFEE8
+      ReadNextItem(BufferLine_L);                          //PFEE9
+      NewEdgeSAS_L.INSERT;
+    END;
+
+    PROCEDURE ReadNextItem@8053600(VAR Var_Line_P@8053600 : Text[1000]) Result_L : Text[50];
+    VAR
+      Position_L@8053601 : Integer;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // R'cupSre le prochain 'l'ment de la liste 'tant s'par' par des ; et l'enlSve de la liste
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - Var_Line_P : Ligne . traiter
+      //  Sorties
+      //    - Result_L : la prochain 'l'ment de la liste
+      //----------------------------------------------------------------------------------------------------------------------------------
+
+      Position_L := STRPOS(Var_Line_P, ',');
+      IF Position_L > 0 THEN BEGIN
+        Result_L := COPYSTR(Var_Line_P, 1, Position_L - 1);
+        Var_Line_P := COPYSTR(Var_Line_P, Position_L + 1, STRLEN(Var_Line_P));
+      END ELSE BEGIN
+      //Dernier 'l'ment de la liste
+        Result_L := Var_Line_P;
+        Var_Line_P := '';
+      END;
+      // --> 20191122-WI00-ADV01.01.00-3444-MRU01
+      //Suppression des "
+      Result_L := DELCHR(Result_L, '=', '"');
+      // <-- 20191122-WI00-ADV01.01.00-3444-MRU01
+      EXIT(Result_L);
+    END;
+
+    PROCEDURE InsertCotation@100000008(Filename_P@100000000 : Text[1000]);
+    VAR
+      NewEdgeSAS_L@100000001 : Record 60111;
+      OldPFC_L@100000003 : Text[50];
+      OldPCTYM_L@100000002 : Text[50];
+      NewCotation_L@100000004 : Boolean;
+      UpdateMatifPriceContracts_L@100000005 : Record 60054;
+      DateText_L@100000006 : Text[30];
+      DueDate_L@100000007 : Date;
+      CMCMatifTerms_L@100000008 : Record 8053102;
+      Amount_L@100000009 : Decimal;
+    BEGIN
+      //Insertion des cotations
+      OldPCTYM_L := '';
+      OldPFC_L := '';
+
+      WITH NewEdgeSAS_L DO BEGIN
+        RESET;
+        SETCURRENTKEY(PFC, PCTYM);
+        SETRANGE(FileName, Filename_P);
+        SETRANGE(PRECID, 'P');
+        SETRANGE(PSUBTY, '');
+        SETRANGE(PSTYPE, 'F');
+        IF FINDFIRST THEN REPEAT
+          NewCotation_L := (PCTYM <> OldPCTYM_L) OR (PFC <> OldPFC_L);
+          IF NewCotation_L THEN BEGIN
+            // --> 20191125-WI00-ADV01.01.00-3444-MRU01
+            {BEFORE
+            UpdateMatifPriceContracts_L.RESET;
+            AFTER}
+            CLEAR(UpdateMatifPriceContracts_L);
+            // <-- 20191125-WI00-ADV01.01.00-3444-MRU01
+
+            //Code espSce Matif : g'r' par la table de correspondance
+            UpdateMatifPriceContracts_L.VALIDATE("Matif Species Code", MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G
+                                                                , 'CMC MATIF Species', 'Species Code', PFC, TRUE, TRUE));
+
+            //Pour la date d''ch'ance dans le fichier le jour n'est pas renseign' : premier jour du mois par d'faut
+            DateText_L := PCTYM;
+            DateText_L := '01' + COPYSTR(DateText_L,5,2) + COPYSTR(DateText_L,1,4);
+            EVALUATE(DueDate_L, DateText_L);
+
+            //Code 'ch'ance MATIF : d'termin' par les p'riodes d'finies dans la table CMC MATIF Terms
+            CMCMatifTerms_L.SETFILTER("Period Start", '<=%1', DueDate_L);
+            CMCMatifTerms_L.SETFILTER("Period End", '>=%1', DueDate_L);
+            CMCMatifTerms_L.FINDFIRST;
+            UpdateMatifPriceContracts_L.VALIDATE("MATIF Terms Code", CMCMatifTerms_L."MATIF Terms");
+
+            EVALUATE(Amount_L, CONVERTSTR(PCLOSE, '.', ','));
+            UpdateMatifPriceContracts_L.VALIDATE("Amount Daily Prices to Update", Amount_L);
+            UpdateMatifPriceContracts_L."To Update" := TRUE;
+
+            IF NOT UpdateMatifPriceContracts_L.MODIFY THEN BEGIN
+              IF MsgError_G <> '' THEN
+                MsgError_G += '\';
+              MsgError_G += STRSUBSTNO(Text60002, UpdateMatifPriceContracts_L."Matif Species Code"
+                                      , UpdateMatifPriceContracts_L."MATIF Terms Code");
+            END;
+          END;
+
+          OldPCTYM_L := PCTYM;
+          OldPFC_L := PFC;
+        UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE PostCotation@100000011();
+    VAR
+      UpdateMatifPriceContracts_L@100000000 : Record 60054;
+      CounterFarmer_L@100000002 : Integer;
+      MatifContractArbFarmer_L@100000001 : Record 60037;
+      CMCMatifContract_L@100000003 : Record 8053065;
+      ToLock_L@100000004 : Boolean;
+    BEGIN
+      WITH UpdateMatifPriceContracts_L DO BEGIN
+        RESET;
+        SETRANGE("INCOGRAIN Code", '');
+        SETRANGE("Commercial Region Code", '');
+        SETRANGE("To Update",TRUE);
+        IF FINDFIRST THEN BEGIN
+          CounterFarmer_L := 0;
+          REPEAT
+            MatifContractArbFarmer_L.RESET;
+            MatifContractArbFarmer_L.SETRANGE("Referency Market", "Matif Species Code");
+            MatifContractArbFarmer_L.SETRANGE("MATIF Terms Code", "MATIF Terms Code");
+            MatifContractArbFarmer_L.SETFILTER(Status,'%1|%2',MatifContractArbFarmer_L.Status::Open,
+                    MatifContractArbFarmer_L.Status::Locked);
+            IF MatifContractArbFarmer_L.FINDFIRST THEN REPEAT
+              ToLock_L := FALSE;
+              IF MatifContractArbFarmer_L.Status = MatifContractArbFarmer_L.Status::Locked THEN BEGIN
+                ToLock_L := TRUE;
+                MatifContractArbFarmer_L.VALIDATE(Status,MatifContractArbFarmer_L.Status::Open);
+                MatifContractArbFarmer_L.MODIFY;
+              END;
+              MatifContractArbFarmer_L.VALIDATE("Daily Price", "Amount Daily Prices to Update");
+              IF ToLock_L THEN BEGIN
+                MatifContractArbFarmer_L.VALIDATE(Status,MatifContractArbFarmer_L.Status::Locked);
+              END;
+              MatifContractArbFarmer_L.MODIFY;
+              CounterFarmer_L := CounterFarmer_L + 1;
+            UNTIL MatifContractArbFarmer_L.NEXT = 0;
+
+            "To Update" := FALSE;
+            "Updated Contract Number" := CounterFarmer_L;
+            MODIFY;
+          UNTIL NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE InitCotation@100000002(Filename_P@100000000 : Text[1000]);
+    VAR
+      NewEdgeSAS_L@100000001 : Record 60111;
+      OldPFC_L@100000003 : Text[50];
+      NewCotation_L@100000004 : Boolean;
+      UpdateMatifPriceContracts_L@100000005 : Record 60054;
+    BEGIN
+      // --> 20191202-WI00-ADV01.01.00-3444-MRU01
+      //R'initialisation des cotations
+      OldPFC_L := '';
+
+      WITH NewEdgeSAS_L DO BEGIN
+        RESET;
+        SETCURRENTKEY(PFC, PCTYM);
+        SETRANGE(FileName, Filename_P);
+        SETRANGE(PRECID, 'P');
+        SETRANGE(PSUBTY, '');
+        SETRANGE(PSTYPE, 'F');
+        IF FINDFIRST THEN REPEAT
+          NewCotation_L := PFC <> OldPFC_L;
+          IF NewCotation_L THEN BEGIN
+            //Code espSce Matif : g'r' par la table de correspondance
+            UpdateMatifPriceContracts_L.RESET;
+            UpdateMatifPriceContracts_L.SETRANGE("Matif Species Code", MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G
+                                                                , 'CMC MATIF Species', 'Species Code', PFC, TRUE, TRUE));
+            UpdateMatifPriceContracts_L.SETRANGE("INCOGRAIN Code", '');
+            IF UpdateMatifPriceContracts_L.FINDSET THEN REPEAT
+              UpdateMatifPriceContracts_L.VALIDATE("Amount Daily Prices to Update", 0);
+              UpdateMatifPriceContracts_L.MODIFY;
+            UNTIL UpdateMatifPriceContracts_L.NEXT = 0;
+          END;
+
+          OldPFC_L := PFC;
+        UNTIL NEXT = 0;
+      END;
+      // <-- 20191202-WI00-ADV01.01.00-3444-MRU01
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20191009-WI00-ADV01.01.00-3444-MRU01 : CREATE Object
+      20191122-WI00-ADV01.01.00-3444-MRU01 : Changement de format du fichier (on doit supprimer les " et les -)
+      20191125-WI00-ADV01.01.00-3444-MRU01 : Correctif V3
+      20191202-WI00-ADV01.01.00-3444-MRU01 : Compl'ment V4 (R'initialisation des montants des espSces dans le modSle de correspondance)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

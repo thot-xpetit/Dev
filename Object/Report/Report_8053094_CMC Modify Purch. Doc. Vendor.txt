@@ -1,0 +1,647 @@
+OBJECT Report 8053094 CMC Modify Purch. Doc. Vendor
+{
+  OBJECT-PROPERTIES
+  {
+    Date=20/01/20;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,TER01.01.00,ADV01.01.00,3459;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 32=rm,
+                TableData 120=rm,
+                TableData 121=rm,
+                TableData 5802=rm,
+                TableData 6650=rm,
+                TableData 6651=rm;
+    CaptionML=[ENU=Modify Purch. Doc. Vendor;
+               FRA=Modifier fournisseur doc. achat];
+    ProcessingOnly=Oui;
+    OnPostReport=BEGIN
+                   // V'rification pr'alables
+
+                   IF DocNo_G = '' THEN
+                     ERROR(Text1000000021);
+
+                   GetPurchHeader;
+
+                   IF (BuyFromVendorNo_G = '') OR (PayToVendorNo_G = '') THEN
+                     ERROR(Text1000000015);
+
+                   CheckVendors(0);
+
+                   // Identification des fournisseurs anciens et nouveaux
+                   xBuyFromVendor_G.GET(PurchHeader_G."Buy-from Vendor No.");
+                   BuyFromVendor_G.GET(BuyFromVendorNo_G);
+                   xPayToVendor_G.GET(PurchHeader_G."Pay-to Vendor No.");
+                   PayToVendor_G.GET(PayToVendorNo_G);
+
+                   // V'rification si une modification est demand'e.
+                   UpdateBuyFrom_G := xBuyFromVendor_G."No." <> BuyFromVendor_G."No.";
+                   UpdatePayTo_G := xPayToVendor_G."No." <> PayToVendor_G."No.";
+
+                   IF (UpdateBuyFrom_G = FALSE) AND (UpdatePayTo_G = FALSE) THEN
+                     ERROR(Text1000000022);
+
+                   // Recherche des num'ros de contact correspondant aux fournisseurs
+                   BuyFromContactNo_G := GetVendContactNo(BuyFromVendor_G);
+                   PayToContactNo_G := GetVendContactNo(PayToVendor_G);
+
+                   // V'rification si le document peut ^tre trait'
+                   CheckPurchDoc(PurchHeader_G);
+
+                   // --> 20150616-APP21-CMC02.02.00-3065-FEC03
+                   // V'rification de l'int'grit' des fournisseurs
+                   CheckBlanketOrderVendor(PurchHeader_G);
+                   // <-- 20150616-APP21-CMC02.02.00-3065-FEC03
+
+                   // Mise . jour du document
+                   UpdatePurchHeader(PurchHeader_G);
+
+                   // Traitement des documents de r'ception ou d'exp'dition
+                   CASE DocType_G OF
+
+                     DocType_G::Order : BEGIN
+                       PurchRcptHeader_G.RESET;
+                       PurchRcptHeader_G.SETRANGE("Order No.",PurchHeader_G."No.");
+                       IF PurchRcptHeader_G.FINDSET THEN
+                         REPEAT
+                           UpdatePurchReceipt(PurchRcptHeader_G);
+                         UNTIL PurchRcptHeader_G.NEXT = 0;
+                     END;
+
+                     DocType_G::"Return Order" : BEGIN
+                       ReturnShipHeader_G.RESET;
+                       ReturnShipHeader_G.SETRANGE("Return Order No.",PurchHeader_G."No.");
+                       IF ReturnShipHeader_G.FINDSET THEN
+                         REPEAT
+                           UpdateReturnShipment(ReturnShipHeader_G);
+                         UNTIL ReturnShipHeader_G.NEXT = 0;
+                     END;
+
+                   END;
+
+                   // Insertion du traitement dans l'historique
+                   InsertVendorChangeLog;
+
+                   // Message de fin de traitement
+                   // --> 20150129-APP27-TER01.01.00-99-BSI01
+                   IF NOT HideMessage_G THEN
+                   // <-- 20150129-APP27-TER01.01.00-99-BSI01
+                     MESSAGE(Text1000000023);
+                 END;
+
+  }
+  DATAITEMS
+  {
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=9020;
+      Height=3410;
+    }
+    CONTROLS
+    {
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1000000000;;Container;
+                  ContainerType=ContentArea }
+
+      { 1000000001;1;Group  ;
+                  GroupType=Group }
+
+      { 1000000002;2;Field  ;
+                  CaptionML=[ENU=Document Type;
+                             FRA=Type document];
+                  OptionCaptionML=[ENU=Order,Return Order;
+                                   FRA=Commande,Retour];
+                  SourceExpr=DocType_G;
+                  OnValidate=BEGIN
+                               DocNo_G := '';
+                               ClearVendorInfo;
+                             END;
+                              }
+
+      { 1000000003;2;Field  ;
+                  CaptionML=[ENU=Document No.;
+                             FRA=N› document];
+                  SourceExpr=DocNo_G;
+                  OnValidate=BEGIN
+                               ValidateDocNo;
+                             END;
+
+                  OnLookup=VAR
+                             PurchHeader_L@1000000000 : Record 38;
+                           BEGIN
+                             PurchHeader_L.RESET;
+                             CASE DocType_G OF
+                               DocType_G::Order : PurchHeader_L.SETRANGE("Document Type",PurchHeader_L."Document Type"::Order);
+                               DocType_G::"Return Order" : PurchHeader_L.SETRANGE("Document Type",PurchHeader_L."Document Type"::"Return Order");
+                             END;
+                             IF PAGE.RUNMODAL(0,PurchHeader_L) = ACTION::LookupOK THEN
+                               DocNo_G := PurchHeader_L."No.";
+
+                             ValidateDocNo;
+                           END;
+                            }
+
+      { 1000000004;2;Field  ;
+                  CaptionML=[ENU=Vendor No.;
+                             FRA=N› fournisseur];
+                  SourceExpr=BuyFromVendorNo_G;
+                  TableRelation=Vendor;
+                  OnValidate=BEGIN
+                               GetVendorNames;
+                               CheckVendors(1);
+                             END;
+                              }
+
+      { 1000000006;2;Field  ;
+                  CaptionML=FRA=Nom fournisseur;
+                  SourceExpr=BuyFromVendorName_G;
+                  Editable=FALSE }
+
+      { 1000000005;2;Field  ;
+                  CaptionML=[ENU=Pay-to Vendor No.;
+                             FRA=N› fournisseur . payer];
+                  SourceExpr=PayToVendorNo_G;
+                  TableRelation=Vendor;
+                  OnValidate=BEGIN
+                               GetVendorNames;
+                               CheckVendors(2);
+                             END;
+                              }
+
+      { 1000000007;2;Field  ;
+                  CaptionML=FRA=Nom fournisseur . payer;
+                  SourceExpr=PayToVendorName_G;
+                  Editable=FALSE }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      BuyFromVendorNo_G@1000000011 : Code[20];
+      BuyFromVendorName_G@1000000018 : Text[50];
+      xBuyFromVendor_G@1000000008 : Record 23;
+      BuyFromVendor_G@1000000001 : Record 23;
+      BuyFromContactNo_G@1000000000 : Code[20];
+      PayToVendorNo_G@1000000012 : Code[20];
+      PayToVendorName_G@1000000019 : Text[50];
+      xPayToVendor_G@1000000009 : Record 23;
+      PayToVendor_G@1000000002 : Record 23;
+      PayToContactNo_G@1000000010 : Code[20];
+      DocType_G@1000000003 : 'Order,Return Order';
+      DocNo_G@1000000004 : Code[20];
+      PurchHeader_G@1000000006 : Record 38;
+      PurchRcptHeader_G@1000000005 : Record 120;
+      ReturnShipHeader_G@1000000007 : Record 6650;
+      UpdateBuyFrom_G@1000000013 : Boolean;
+      UpdatePayTo_G@1000000014 : Boolean;
+      Text1000000021@1000000021 : TextConst 'FRA=Vous devez renseigner un num'ro de document.';
+      Text1000000015@1000000015 : TextConst 'FRA=Vous devez renseigner les fournisseurs . appliquer.';
+      UndoPostingMgt_G@1000000016 : Codeunit 5817;
+      TempItemLedgEntry_G@1000000017 : TEMPORARY Record 32;
+      Text1000000020@1000000020 : TextConst 'FRA=La commande s'lectionn'e a d'j. 't' factur'e.';
+      Text1000000022@1000000022 : TextConst 'FRA=Aucune modification n''a 't' apport'e au document d''achat.';
+      Text1000000023@1000000023 : TextConst 'FRA=Le document d''achat a 't' trait' avec succSs.';
+      Text1000000024@1000000024 : TextConst 'FRA=La commande s'lectionn'e est li'e . une commande ouverte.';
+      Text1000000025@1000000025 : TextConst 'FRA=Il existe une r'ception entrep"t pour la commande.';
+      Text1000000026@1000000026 : TextConst 'FRA=La ligne %1 de la commande est li'e . la commande ouverte %2 et les nouveaux fournisseurs ne correspondent pas . ceux de cette commande ouverte.';
+      HideMessage_G@60000 : Boolean;
+      ItemChargeSkipControl_G@100000000 : Boolean;
+
+    PROCEDURE CheckPurchDoc@1000000000(PurchHeader_P@1000000001 : Record 38);
+    VAR
+      PurchLine_L@1000000000 : Record 39;
+      WhseRcptLine_L@1000000002 : Record 7317;
+    BEGIN
+      WhseRcptLine_L.RESET;
+      WhseRcptLine_L.SETRANGE("Source Type",39);
+      WhseRcptLine_L.SETRANGE("Source Subtype",PurchHeader_P."Document Type");
+      WhseRcptLine_L.SETRANGE("Source No.",PurchHeader_P."No.");
+      IF WhseRcptLine_L.FINDSET THEN
+        ERROR(Text1000000025);
+
+      PurchLine_L.RESET;
+      PurchLine_L.SETRANGE("Document Type",PurchHeader_P."Document Type");
+      PurchLine_L.SETRANGE("Document No.",PurchHeader_P."No.");
+      IF PurchLine_L.FINDSET THEN
+        REPEAT
+
+          IF PurchLine_L."Quantity Invoiced" <> 0 THEN
+            ERROR(Text1000000020);
+          // --> 20150616-APP21-CMC02.02.00-3065-FEC01
+          {BEFORE
+          IF PurchLine_L."Blanket Order No." <> '' THEN
+            ERROR(Text1000000024);
+          }
+          // <-- 20150616-APP21-CMC02.02.00-3065-FEC01
+
+        UNTIL PurchLine_L.NEXT = 0;
+    END;
+
+    PROCEDURE UpdatePurchHeader@1000000002(VAR PurchHeader_P@1000000000 : Record 38);
+    VAR
+      PurchLine_L@1000000001 : Record 39;
+    BEGIN
+      WITH PurchHeader_P DO BEGIN
+
+        IF UpdateBuyFrom_G THEN BEGIN
+          "Buy-from Vendor No." := BuyFromVendor_G."No.";
+          "Buy-from Contact No." := BuyFromContactNo_G;
+          "Buy-from Vendor Name" := BuyFromVendor_G.Name;
+          "Buy-from Vendor Name 2" := BuyFromVendor_G."Name 2";
+          "Buy-from Address" := BuyFromVendor_G.Address;
+          "Buy-from Address 2" := BuyFromVendor_G."Address 2";
+          "Buy-from City" := BuyFromVendor_G.City;
+          "Buy-from Post Code" := BuyFromVendor_G."Post Code";
+          "Buy-from County" := BuyFromVendor_G.County;
+          "Buy-from Country/Region Code" := BuyFromVendor_G."Country/Region Code";
+          "Buy-from Contact" := BuyFromVendor_G.Contact;
+        END;
+
+        IF UpdatePayTo_G THEN BEGIN
+          "Pay-to Vendor No." := PayToVendor_G."No.";
+          "Pay-to Contact No." := PayToContactNo_G;
+          "Pay-to Name" := PayToVendor_G.Name;
+          "Pay-to Name 2" := PayToVendor_G."Name 2";
+          "Pay-to Address" := PayToVendor_G.Address;
+          "Pay-to Address 2" := PayToVendor_G."Address 2";
+          "Pay-to City" := PayToVendor_G.City;
+          "Pay-to Post Code" := PayToVendor_G."Post Code";
+          "Pay-to County" := PayToVendor_G.County;
+          "Pay-to Country/Region Code" := PayToVendor_G."Country/Region Code";
+          "Pay-to Contact" := PayToVendor_G.Contact;
+        END;
+
+        MODIFY;
+
+        PurchLine_L.RESET;
+        PurchLine_L.SETRANGE("Document No.",PurchHeader_P."No.");
+        IF PurchLine_L.FINDSET THEN
+          REPEAT
+
+            PurchLine_L."Buy-from Vendor No." := BuyFromVendor_G."No.";
+            PurchLine_L."Pay-to Vendor No." := PayToVendor_G."No.";
+            PurchLine_L.MODIFY;
+
+          UNTIL PurchLine_L.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE UpdatePurchReceipt@1000000001(VAR PurchRcptHeader_P@1000000000 : Record 120);
+    VAR
+      PurchRcptLine_L@1000000001 : Record 121;
+    BEGIN
+      WITH PurchRcptHeader_P DO BEGIN
+
+        IF UpdateBuyFrom_G THEN BEGIN
+          "Buy-from Vendor No." := BuyFromVendor_G."No.";
+          "Buy-from Contact No." := BuyFromContactNo_G;
+          "Buy-from Vendor Name" := BuyFromVendor_G.Name;
+          "Buy-from Vendor Name 2" := BuyFromVendor_G."Name 2";
+          "Buy-from Address" := BuyFromVendor_G.Address;
+          "Buy-from Address 2" := BuyFromVendor_G."Address 2";
+          "Buy-from City" := BuyFromVendor_G.City;
+          "Buy-from Post Code" := BuyFromVendor_G."Post Code";
+          "Buy-from County" := BuyFromVendor_G.County;
+          "Buy-from Country/Region Code" := BuyFromVendor_G."Country/Region Code";
+          "Buy-from Contact" := BuyFromVendor_G.Contact;
+        END;
+
+        IF UpdatePayTo_G THEN BEGIN
+          "Pay-to Vendor No." := PayToVendor_G."No.";
+          "Pay-to Contact no." := PayToContactNo_G;
+          "Pay-to Name" := PayToVendor_G.Name;
+          "Pay-to Name 2" := PayToVendor_G."Name 2";
+          "Pay-to Address" := PayToVendor_G.Address;
+          "Pay-to Address 2" := PayToVendor_G."Address 2";
+          "Pay-to City" := PayToVendor_G.City;
+          "Pay-to Post Code" := PayToVendor_G."Post Code";
+          "Pay-to County" := PayToVendor_G.County;
+          "Pay-to Country/Region Code" := PayToVendor_G."Country/Region Code";
+          "Pay-to Contact" := PayToVendor_G.Contact;
+        END;
+
+        MODIFY;
+
+        PurchRcptLine_L.RESET;
+        PurchRcptLine_L.SETRANGE("Document No.",PurchRcptHeader_P."No.");
+        IF PurchRcptLine_L.FINDSET THEN
+          REPEAT
+
+            PurchRcptLine_L."Buy-from Vendor No." := BuyFromVendor_G."No.";
+            PurchRcptLine_L."Pay-to Vendor No." := PayToVendor_G."No.";
+            PurchRcptLine_L.MODIFY;
+
+            // --> 20200120-APP21-ADV01.01.00-3459-MRU01
+            {BEFORE
+            UndoPostingMgt_G.CollectItemLedgEntries(TempItemLedgEntry_G,DATABASE::"Purch. Rcpt. Line",
+              PurchRcptLine_L."Document No.",PurchRcptLine_L."Line No.",PurchRcptLine_L."Quantity (Base)",
+              PurchRcptLine_L."Item Rcpt. Entry No.");
+            AFTER}
+            IF ItemChargeSkipControl_G THEN BEGIN
+              TempItemLedgEntry_G.RESET;
+              IF NOT TempItemLedgEntry_G.ISEMPTY THEN
+                TempItemLedgEntry_G.DELETEALL;
+            END ELSE BEGIN
+            UndoPostingMgt_G.CollectItemLedgEntries(TempItemLedgEntry_G,DATABASE::"Purch. Rcpt. Line",
+              PurchRcptLine_L."Document No.",PurchRcptLine_L."Line No.",PurchRcptLine_L."Quantity (Base)",
+              PurchRcptLine_L."Item Rcpt. Entry No.");
+            END;
+            // <-- 20200120-APP21-ADV01.01.00-3459-MRU01
+
+            UpdateItemLedgerEntry(TempItemLedgEntry_G);
+
+          UNTIL PurchRcptLine_L.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE UpdateReturnShipment@1000000004(VAR ReturnShipHeader_P@1000000000 : Record 6650);
+    VAR
+      ReturnShipLine_L@1000000001 : Record 6651;
+      TempItemLedgEntry_L@1000000002 : TEMPORARY Record 32;
+    BEGIN
+      WITH ReturnShipHeader_P DO BEGIN
+
+        IF UpdateBuyFrom_G THEN BEGIN
+          "Buy-from Vendor No." := BuyFromVendor_G."No.";
+          "Buy-from Contact No." := BuyFromContactNo_G;
+          "Buy-from Vendor Name" := BuyFromVendor_G.Name;
+          "Buy-from Vendor Name 2" := BuyFromVendor_G."Name 2";
+          "Buy-from Address" := BuyFromVendor_G.Address;
+          "Buy-from Address 2" := BuyFromVendor_G."Address 2";
+          "Buy-from City" := BuyFromVendor_G.City;
+          "Buy-from Post Code" := BuyFromVendor_G."Post Code";
+          "Buy-from County" := BuyFromVendor_G.County;
+          "Buy-from Country/Region Code" := BuyFromVendor_G."Country/Region Code";
+          "Buy-from Contact" := BuyFromVendor_G.Contact;
+        END;
+
+        IF UpdatePayTo_G THEN BEGIN
+          "Pay-to Vendor No." := PayToVendor_G."No.";
+          "Pay-to Contact No." := PayToContactNo_G;
+          "Pay-to Name" := PayToVendor_G.Name;
+          "Pay-to Name 2" := PayToVendor_G."Name 2";
+          "Pay-to Address" := PayToVendor_G.Address;
+          "Pay-to Address 2" := PayToVendor_G."Address 2";
+          "Pay-to City" := PayToVendor_G.City;
+          "Pay-to Post Code" := PayToVendor_G."Post Code";
+          "Pay-to County" := PayToVendor_G.County;
+          "Pay-to Country/Region Code" := PayToVendor_G."Country/Region Code";
+          "Pay-to Contact" := PayToVendor_G.Contact;
+        END;
+
+        MODIFY;
+
+        ReturnShipLine_L.RESET;
+        ReturnShipLine_L.SETRANGE("Document No.",ReturnShipHeader_P."No.");
+        IF ReturnShipLine_L.FINDSET THEN
+          REPEAT
+
+            ReturnShipLine_L."Buy-from Vendor No." := BuyFromVendor_G."No.";
+            ReturnShipLine_L."Pay-to Vendor No." := PayToVendor_G."No.";
+            ReturnShipLine_L.MODIFY;
+
+            // --> 20200120-APP21-ADV01.01.00-3459-MRU01
+            {BEFORE
+            UndoPostingMgt_G.CollectItemLedgEntries(TempItemLedgEntry_G,DATABASE::"Return Shipment Line",
+              ReturnShipLine_L."Document No.",ReturnShipLine_L."Line No.",ReturnShipLine_L."Quantity (Base)",
+              ReturnShipLine_L."Item Shpt. Entry No.");
+
+            UpdateItemLedgerEntry(TempItemLedgEntry_L);
+            AFTER}
+            IF ItemChargeSkipControl_G THEN BEGIN
+              TempItemLedgEntry_G.RESET;
+              IF NOT TempItemLedgEntry_G.ISEMPTY THEN
+                TempItemLedgEntry_G.DELETEALL;
+            END ELSE BEGIN
+              UndoPostingMgt_G.CollectItemLedgEntries(TempItemLedgEntry_G,DATABASE::"Return Shipment Line",
+                ReturnShipLine_L."Document No.",ReturnShipLine_L."Line No.",ReturnShipLine_L."Quantity (Base)",
+                ReturnShipLine_L."Item Shpt. Entry No.");
+            END;
+
+            UpdateItemLedgerEntry(TempItemLedgEntry_G);
+            // <-- 20200120-APP21-ADV01.01.00-3459-MRU01
+
+          UNTIL ReturnShipLine_L.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE UpdateItemLedgerEntry@1000000003(VAR TmpItemLedgerEntry_P@1000000001 : Record 32);
+    VAR
+      ItemLedgerEntry_L@1000000000 : Record 32;
+      ValueEntry_L@1000000002 : Record 5802;
+    BEGIN
+      IF TmpItemLedgerEntry_P.FINDSET THEN
+        REPEAT
+
+          IF ItemLedgerEntry_L.GET(TmpItemLedgerEntry_P."Entry No.") THEN BEGIN
+
+            ItemLedgerEntry_L."Source No." := BuyFromVendor_G."No.";
+            ItemLedgerEntry_L.MODIFY;
+
+            ValueEntry_L.RESET;
+            ValueEntry_L.SETCURRENTKEY("Item Ledger Entry No.");
+            ValueEntry_L.SETRANGE("Item Ledger Entry No.",ItemLedgerEntry_L."Entry No.");
+            IF ValueEntry_L.FINDSET THEN
+              REPEAT
+
+                ValueEntry_L."Source No." := PayToVendor_G."No.";
+                ValueEntry_L.MODIFY;
+
+              UNTIL ValueEntry_L.NEXT = 0;
+
+          END;
+
+        UNTIL TmpItemLedgerEntry_P.NEXT = 0;
+    END;
+
+    PROCEDURE InsertVendorChangeLog@1000000005();
+    VAR
+      NextEntryNo_L@1000000000 : Integer;
+      VendorChangeLog_L@1000000001 : Record 8053284;
+    BEGIN
+      WITH VendorChangeLog_L DO BEGIN
+
+        RESET;
+        IF NOT FINDLAST THEN
+          NextEntryNo_L := 1
+        ELSE
+          NextEntryNo_L := "Entry No." + 1;
+
+        INIT;
+        "Entry No." := NextEntryNo_L;
+        "Document Type" := DocType_G;
+        "Document No." := DocNo_G;
+        "From Buy-From Vendor No." := xBuyFromVendor_G."No.";
+        "From Buy-From Vendor Name" := xBuyFromVendor_G.Name;
+        "From Pay-To Vendor No." := xPayToVendor_G."No.";
+        "From Pay-To Vendor Name" := xPayToVendor_G.Name;
+        "To Buy-From Vendor No." := BuyFromVendor_G."No.";
+        "To Buy-From Vendor Name" := BuyFromVendor_G.Name;
+        "To Pay-To Vendor No." := PayToVendor_G."No.";
+        "To Pay-To Vendor Name" := PayToVendor_G.Name;
+        "Creation Date" := TODAY;
+        "User ID" := USERID;
+        INSERT;
+
+      END;
+    END;
+
+    PROCEDURE GetVendContactNo@24(Vendor_P@1000 : Record 23) : Code[20];
+    VAR
+      ContBusRel_L@1003 : Record 5054;
+    BEGIN
+      IF Vendor_P."Primary Contact No." <> '' THEN
+        EXIT(Vendor_P."Primary Contact No.")
+      ELSE BEGIN
+        ContBusRel_L.RESET;
+        ContBusRel_L.SETCURRENTKEY("Link to Table","No.");
+        ContBusRel_L.SETRANGE("Link to Table",ContBusRel_L."Link to Table"::Vendor);
+        ContBusRel_L.SETRANGE("No.",Vendor_P."No.");
+        IF ContBusRel_L.FINDFIRST THEN
+          EXIT(ContBusRel_L."Contact No.")
+        ELSE
+          EXIT('');
+      END;
+    END;
+
+    PROCEDURE GetPurchHeader@1000000006();
+    BEGIN
+      CASE DocType_G OF
+        DocType_G::Order :
+          PurchHeader_G.GET(PurchHeader_G."Document Type"::Order,DocNo_G);
+        DocType_G::"Return Order" :
+          PurchHeader_G.GET(PurchHeader_G."Document Type"::"Return Order",DocNo_G);
+      END;
+    END;
+
+    PROCEDURE ValidateDocNo@1000000007();
+    BEGIN
+      IF DocNo_G <> '' THEN BEGIN
+        GetPurchHeader;
+        CheckPurchDoc(PurchHeader_G);
+        BuyFromVendorNo_G := PurchHeader_G."Buy-from Vendor No.";
+        PayToVendorNo_G := PurchHeader_G."Pay-to Vendor No.";
+        GetVendorNames;
+      END ELSE
+        ClearVendorInfo;
+    END;
+
+    PROCEDURE GetVendorNames@1000000009();
+    VAR
+      Vendor_L@1000000000 : Record 23;
+    BEGIN
+      IF BuyFromVendorNo_G <> '' THEN BEGIN
+        Vendor_L.GET(BuyFromVendorNo_G);
+        BuyFromVendorName_G := Vendor_L.Name;
+      END ELSE
+        BuyFromVendorName_G := '';
+
+      IF PayToVendorNo_G <> '' THEN BEGIN
+        Vendor_L.GET(PayToVendorNo_G);
+        PayToVendorName_G := Vendor_L.Name;
+      END ELSE
+        PayToVendorName_G := '';
+    END;
+
+    PROCEDURE ClearVendorInfo@1000000008();
+    BEGIN
+      BuyFromVendorNo_G := '';
+      BuyFromVendorName_G := '';
+      PayToVendorNo_G := '';
+      PayToVendorName_G := '';
+    END;
+
+    PROCEDURE CheckVendors@1000000010(Which_P@1000000001 : 'Both,Buy-from,Pay-to');
+    VAR
+      Vendor_L@1000000000 : Record 23;
+    BEGIN
+      IF (BuyFromVendorNo_G <> '') AND (Which_P IN [0,1]) THEN BEGIN
+        Vendor_L.GET(BuyFromVendorNo_G);
+        Vendor_L.CheckBlockedVendOnDocs(Vendor_L,FALSE);
+      END;
+
+      IF (PayToVendorNo_G <> '') AND (Which_P IN [0,2]) THEN BEGIN
+        Vendor_L.GET(PayToVendorNo_G);
+        Vendor_L.CheckBlockedVendOnDocs(Vendor_L,FALSE);
+      END;
+    END;
+
+    PROCEDURE CheckBlanketOrderVendor@1000000011(VAR PurchHeader_P@1000000000 : Record 38);
+    VAR
+      PurchLine_L@1000000001 : Record 39;
+      PurchHeader_L@1000000002 : Record 38;
+    BEGIN
+      // --> 20150616-APP21-CMC02.02.00-3065-FEC02
+      WITH PurchHeader_P DO BEGIN
+
+        PurchLine_L.RESET;
+        PurchLine_L.SETRANGE("Document No.",PurchHeader_P."No.");
+        IF PurchLine_L.FINDSET THEN
+          REPEAT
+
+            IF PurchLine_L."Blanket Order No." <> '' THEN BEGIN
+              PurchHeader_L.GET(PurchHeader_L."Document Type"::"Blanket Order",PurchLine_L."Blanket Order No.");
+              IF (PurchHeader_L."Buy-from Vendor No." <> BuyFromVendorNo_G) OR (PurchHeader_L."Pay-to Vendor No." <> PayToVendorNo_G)
+      THEN
+                ERROR(Text1000000026,PurchLine_L."Line No.",PurchLine_L."Blanket Order No.");
+
+            END;
+
+          UNTIL PurchLine_L.NEXT = 0;
+      END;
+
+      // <-- 20150616-APP21-CMC02.02.00-3065-FEC02
+    END;
+
+    PROCEDURE SetParameters@60000(OrderNo_P@60000 : Code[20];BuyFromVendorNo_P@60002 : Code[20];PaytoVendorNo_P@60001 : Code[20];HideMessage_P@60003 : Boolean);
+    BEGIN
+      // --> 20150129-APP27-TER01.01.00-99-BSI01
+      DocNo_G := OrderNo_P;
+      BuyFromVendorNo_G := BuyFromVendorNo_P;
+      PayToVendorNo_G := PaytoVendorNo_P;
+      HideMessage_G := HideMessage_P;
+      // <-- 20150129-APP27-TER01.01.00-99-BSI01
+    END;
+
+    PROCEDURE SetItemChargeSkipControl@100000000(ItemChargeSkipControl_P@100000000 : Boolean);
+    BEGIN
+      // --> 20200120-APP21-ADV01.01.00-3459-MRU01
+      ItemChargeSkipControl_G := ItemChargeSkipControl_P;
+      // <-- 20200120-APP21-ADV01.01.00-3459-MRU01
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+
+      20131028-APP21-CMC02.02.00-FEC01 : ADDOBJ (Cr'ation de l'objet).
+      20150129-APP27-TER01.01.00-99-BSI01 : ADDFunc(SetParameters)
+      20150616-APP21-CMC02.02.00-3065-FEC01 : DELCODE (Suppression du test).
+      20150616-APP21-CMC02.02.00-3065-FEC02 : ADDFUNC (CheckBlanketOrderVendor).
+      20150616-APP21-CMC02.02.00-3065-FEC03 : ADDCODE (Ajout d'un contr"le compl'mentaire).
+      20151127-APP21-ADV01.01.00-2568-CJY01 : ADDPERMISSION (Ajout permission lecture/modification sur Table 6650 et 6651)
+      20200120-APP21-ADV01.01.00-3459-MRU01 : ADDFUNC (SetItemChargeSkipControl)
+      20200120-APP21-ADV01.01.00-3459-MRU01 : MODCODE (Suppression contr"le si modification fournisseur . payer pour ligne frais annexe)
+      // --> 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

@@ -1,0 +1,440 @@
+OBJECT Dataport 8060982 Payroll Import
+{
+  OBJECT-PROPERTIES
+  {
+    Date=04/02/11;
+    Heure=00:00:00;
+    Liste versions=CMB6.00.01;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Payroll Import;
+               FRA=Import OD paye];
+    FieldStartDelimiter=<None>;
+    FieldEndDelimiter=<None>;
+    FieldSeparator=[;];
+    DataItemSeparator=<<NewLine>>;
+    OnPreDataport=BEGIN
+                    CurrDataport.FILENAME := txtFilename_G;
+                    txtLogFilename_G := 'c:\logfile.txt';
+                  END;
+
+    OnPostDataport=BEGIN
+                     IF NOT IsError_G THEN BEGIN
+                       LogFile_G.CLOSE;
+                       MESSAGE(ProcessEndingOK);
+                       ERASE(txtLogFilename_G);
+                     END ELSE BEGIN
+                       IF CONFIRM(ProcessEndingNotOK,TRUE,txtLogFilename_G) THEN
+                         HYPERLINK(LogFile_G.NAME);
+                       LogFile_G.CLOSE;
+
+                       GenJnlLine_G.RESET;
+                       GenJnlLine_G.SETRANGE("Journal Template Name",JnlTemplName_G);
+                       GenJnlLine_G.SETRANGE("Journal Batch Name",JnlBatchName_G);
+                       IF GenJnlLine_G.FIND('-') THEN
+                         GenJnlLine_G.DELETEALL(TRUE);
+                     END;
+                   END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table2000000026;
+        AutoSave=Non;
+        AutoUpdate=Non;
+        AutoReplace=Non;
+        DataItemTableView=SORTING(Num'ro);
+        OnPreDataItem=BEGIN
+                        // --> Controle que les donn'es de base sont renseign'es
+                        IF (JnlTemplName_G = '') OR
+                           (JnlBatchName_G = '') OR
+                           (DocNum_G = '') THEN
+                           InsertError(BaseDatasOKErr,TRUE);
+
+                        // --> Controle que la feuille compta est vide
+                        GenJnlLine_G.RESET;
+                        GenJnlLine_G.SETRANGE("Journal Template Name",JnlTemplName_G);
+                        GenJnlLine_G.SETRANGE("Journal Batch Name",JnlBatchName_G);
+                        IF GenJnlLine_G.FIND('-') THEN
+                          InsertError(STRSUBSTNO(GenJnlLineExistErr,JnlTemplName_G,JnlBatchName_G),TRUE);
+
+                        // --> Initialisation des variables
+                        NextLineNo_G := 0;
+                        FileLineNo_G := 0;
+                        IsError_G := FALSE;
+
+                        // --> Ouverture du fichier de log
+                        LogFile_G.CREATE('c:\logfile.txt');
+                        LogFile_G.WRITEMODE := TRUE;
+                        LogFile_G.TEXTMODE := TRUE;
+
+                        // --> Application des paramStres
+                        SetBasicSetup;
+                      END;
+
+        OnBeforeImportRecord=BEGIN
+                               FileLineNo_G += 1;
+                             END;
+
+        OnAfterImportRecord=BEGIN
+                              // --> On ne traite pas la premiSre ligne
+                              IF SetupUseHeaderLine_G THEN
+                                IF FileLineNo_G = 1 THEN
+                                  CurrDataport.SKIP;
+
+                              // --> D'coupage de la ligne en entr'e
+                              CASE SetupImportTemplate_G OF
+                                SetupImportTemplate_G::Generic:          GenericDataSplit;
+                                SetupImportTemplate_G::"SAGE L100":      SAGEDataSplit;
+                                SetupImportTemplate_G::"CCMX RH Place" : CCMXRHPDataSplit;
+                              END;
+
+                              // --> V'rifications
+                              CheckValues;
+
+                              // --> Insertion dans les lignes feuilles compta.
+                              InsertJnlLine;
+                            END;
+
+      }
+      FIELDS
+      {
+        {      ;     ;BigInputText_G       }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=9130;
+      Height=3740;
+      SaveControlInfo=Oui;
+      SaveValues=Oui;
+      OnOpenForm=BEGIN
+                   SetBasicSetup;
+
+                   RequestOptionsForm.DocNum.EDITABLE(NOT SetupDocNumFromTemplate_G);
+
+                   IF JnlBatchName_G <> '' THEN BEGIN
+                     GenJnlBatch_G.GET(JnlTemplName_G,JnlBatchName_G);
+                     GetDocNumFromBatch;
+                   END;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1   ;TextBox      ;3520 ;3080 ;5610 ;440  ;InPage=-1;
+                                                   AssistEdit=Oui;
+                                                   CaptionML=[ENU=File name;
+                                                              FRA=Nom du fichier];
+                                                   SourceExpr=txtFilename_G }
+      { 60001;Label       ;110  ;3080 ;3300 ;440  ;ParentControl=1;
+                                                   InPage=-1 }
+      { 60000;TextBox     ;3520 ;110  ;2750 ;440  ;InPage=-1;
+                                                   CaptionML=[DEU=Fibu Buch.-Blatt Vorlage;
+                                                              ENU=Gen. Journal Template;
+                                                              FRA=ModSle feuille comptabilit'];
+                                                   SourceExpr=JnlTemplName_G;
+                                                   TableRelation="Gen. Journal Template";
+                                                   OnValidate=BEGIN
+                                                                JnlBatchName_G := '';
+                                                              END;
+                                                               }
+      { 60002;TextBox     ;3520 ;660  ;2750 ;440  ;InPage=-1;
+                                                   Lookup=Oui;
+                                                   CaptionML=[DEU=Fibu Buch.-Blatt Name;
+                                                              ENU=Gen. Journal Batch;
+                                                              FRA=Nom feuille comptabilit'];
+                                                   SourceExpr=JnlBatchName_G;
+                                                   OnValidate=BEGIN
+                                                                IF JnlBatchName_G <> '' THEN
+                                                                  GenJnlBatch_G.GET(JnlTemplName_G,JnlBatchName_G);
+
+                                                                GetDocNumFromBatch;
+                                                              END;
+
+                                                   OnLookup=BEGIN
+                                                              IF JnlTemplName_G <> '' THEN BEGIN
+                                                                GenJnlTemplate_G.GET(JnlTemplName_G);
+                                                                GenJnlBatch_G.SETRANGE("Journal Template Name",JnlTemplName_G);
+                                                                IF FORM.RUNMODAL(0,GenJnlBatch_G) = ACTION::LookupOK THEN
+                                                                  JnlBatchName_G := GenJnlBatch_G.Name;
+
+                                                                GetDocNumFromBatch;
+
+                                                              END;
+                                                            END;
+
+                                                   OnAfterValidate=BEGIN
+                                                                     RequestOptionsForm.UPDATE(TRUE);
+                                                                   END;
+                                                                    }
+      { 60003;Label       ;110  ;110  ;3300 ;440  ;ParentControl=60000;
+                                                   InPage=-1 }
+      { 60004;Label       ;110  ;660  ;3300 ;440  ;ParentControl=60002;
+                                                   InPage=-1 }
+      { 60005;TextBox     ;3520 ;1210 ;2750 ;440  ;Name=DocNum;
+                                                   InPage=-1;
+                                                   CaptionML=[DEU=Fibu Buch.-Blatt Name;
+                                                              ENU=Gen. Journal Batch;
+                                                              FRA=Nom feuille comptabilit'];
+                                                   SourceExpr=DocNum_G }
+      { 60006;Label       ;110  ;1210 ;3300 ;440  ;ParentControl=60005;
+                                                   InPage=-1;
+                                                   CaptionML=FRA=N› document }
+      { 60007;TextBox     ;3520 ;1870 ;2750 ;440  ;Editable=Non;
+                                                   InPage=-1;
+                                                   CaptionML=[ENU=Dimension Code 1;
+                                                              FRA=Axe analytique 1];
+                                                   SourceExpr=DimCode_G[1];
+                                                   TableRelation=Dimension }
+      { 60008;TextBox     ;3520 ;2420 ;2750 ;440  ;Editable=Non;
+                                                   InPage=-1;
+                                                   CaptionML=[ENU=Dimension Code 2;
+                                                              FRA=Axe analytique 2];
+                                                   SourceExpr=DimCode_G[2];
+                                                   TableRelation=Dimension }
+      { 60009;Label       ;110  ;1870 ;3300 ;440  ;ParentControl=60007;
+                                                   InPage=-1 }
+      { 60010;Label       ;110  ;2420 ;3300 ;440  ;ParentControl=60008;
+                                                   InPage=-1 }
+    }
+  }
+  CODE
+  {
+    VAR
+      BaseDatasOKErr@60031 : TextConst 'FRA=Les donn'es de base doivent ^tre renseign'es.';
+      GenJnlLineExistErr@60018 : TextConst 'FRA=Des lignes existent pour le modSle %1 feuille %2, vous devez les supprimer pour continuer l''import.';
+      GLAccNotExistErr@60021 : TextConst 'FRA=Le compte g'n'ral %1 n''existe pas, erreur ligne %2';
+      NextLineNo_G@60012 : Integer;
+      GenJnlLine_G@60025 : Record 81;
+      FileLineNo_G@60034 : Integer;
+      txtFilename_G@60001 : Text[250];
+      txtLogFilename_G@60027 : Text[250];
+      GenJnlTemplate_G@60004 : Record 80;
+      GenJnlBatch_G@60003 : Record 232;
+      JnlTemplName_G@60002 : Code[20];
+      JnlBatchName_G@60005 : Code[20];
+      DocNum_G@60006 : Code[20];
+      SourceCodeNotOKErr@60008 : TextConst 'FRA=La code journal de la feuille %1 diffSre de celui du fichier %2, erreur ligne %3.';
+      ProcessEndingOK@60011 : TextConst 'FRA=Le traitement s''est d'roul' avec succSs.';
+      ProcessEndingNotOK@60023 : TextConst 'FRA=Le traitement a rencontr' des erreurs. \Un fichier log a 't' g'n'r' . cet emplacement : \%1\Voulez-vous le consulter ?';
+      DimValueNotExistErr@60014 : TextConst 'FRA=L''axe analytique %1 %2 n''existe pas, erreur ligne %3.';
+      DimCode_G@60016 : ARRAY [10] OF Code[20];
+      LogFile_G@60013 : File;
+      IsError_G@60020 : Boolean;
+      DimValue_G@60024 : Record 349;
+      i_G@60017 : Integer;
+      BigInputText_G@1000000000 : Text[1000];
+      InputText_G@1000000015 : ARRAY [100] OF Text[250];
+      SetupUseHeaderLine_G@1000000001 : Boolean;
+      SetupImportTemplate_G@1000000014 : 'Generic,SAGE L100,CCMX RH Place';
+      SetupDimOnBalanceAccOnly_G@1000000011 : Boolean;
+      SetupDocNumFromTemplate_G@1000000012 : Boolean;
+      LineAccountNo_G@1000000009 : Code[20];
+      LineDebitAmount_G@1000000008 : Decimal;
+      LineCreditAmount_G@1000000007 : Decimal;
+      LinePostingDate_G@1000000006 : Date;
+      LineDescription_G@1000000005 : Text[50];
+      LineDimValue_G@1000000004 : ARRAY [10] OF Code[10];
+      LineAccountType_G@1000000003 : 'G/L Account,Customer,Vendor,Bank Account,Fixed Asset,IC Partner';
+      FormatFieldsMgt_G@1000000002 : Codeunit 8060985;
+      DimCodeMissingErr@1000000010 : TextConst 'FRA=L''axe analytique %1 doit ^tre renseign', erreur ligne %2.';
+      NoSeriesMgt_G@1000000013 : Codeunit 396;
+
+    PROCEDURE SetBasicSetup@1000000000();
+    BEGIN
+      SetupUseHeaderLine_G := FALSE;
+      SetupDimOnBalanceAccOnly_G := TRUE;
+      SetupDocNumFromTemplate_G := TRUE;
+      SetupImportTemplate_G := SetupImportTemplate_G::"SAGE L100";
+
+      DimCode_G[1] := 'CODE MAGASIN';
+    END;
+
+    PROCEDURE GenericDataSplit@1000000001();
+    BEGIN
+    END;
+
+    PROCEDURE SAGEDataSplit@1000000008();
+    BEGIN
+      FormatFieldsMgt_G.Text2Date(LinePostingDate_G,COPYSTR(BigInputText_G,4,6));
+      LineAccountType_G := 0;
+      LineAccountNo_G := COPYSTR(BigInputText_G,12,8);
+
+      LineDebitAmount_G := 0;
+      LineCreditAmount_G := 0;
+
+      IF COPYSTR(BigInputText_G,86,1) = 'D' THEN BEGIN
+        FormatFieldsMgt_G.Text2Decimal(LineDebitAmount_G,COPYSTR(BigInputText_G,87,20));
+        FormatFieldsMgt_G.Text2Decimal(LineCreditAmount_G,'');
+      END ELSE BEGIN
+        FormatFieldsMgt_G.Text2Decimal(LineDebitAmount_G,'');
+        FormatFieldsMgt_G.Text2Decimal(LineCreditAmount_G,COPYSTR(BigInputText_G,87,20));
+      END;
+      LineDescription_G := FormatFieldsMgt_G.Ansi2Ascii(COPYSTR(BigInputText_G,41,12));
+      LineDimValue_G[1] := COPYSTR(BigInputText_G,28,4);
+    END;
+
+    PROCEDURE CCMXRHPDataSplit@1000000010();
+    BEGIN
+      SplitBigInput(BigInputText_G,';',14);
+
+      FOR i_G := 1 TO 20 DO
+        DeleteEndBlank(InputText_G[i_G]);
+
+      FormatFieldsMgt_G.Text2Date(LinePostingDate_G,InputText_G[1]);
+      FormatFieldsMgt_G.Text2Option(LineAccountType_G,ConvertLineAccountType(InputText_G[2]));
+      LineAccountNo_G := InputText_G[3];
+      FormatFieldsMgt_G.Text2Decimal(LineDebitAmount_G,InputText_G[4]);
+      FormatFieldsMgt_G.Text2Decimal(LineCreditAmount_G,InputText_G[5]);
+      LineDescription_G := FormatFieldsMgt_G.Ansi2Ascii(COPYSTR(InputText_G[6],1,50));
+      FOR i_G := 1 TO 8 DO
+        IF InputText_G[i_G+6] <> '' THEN BEGIN
+          DeleteChar(InputText_G[i_G+6],'/');
+          DeleteChar(InputText_G[i_G+6],'-');
+          LineDimValue_G[i_G] := InputText_G[i_G+6];
+        END;
+    END;
+
+    PROCEDURE CheckValues@1000000003();
+    VAR
+      GLAccount_L@1000000000 : Record 15;
+    BEGIN
+      // --> V'rification de l'existence du compte g'n'ral.
+      IF NOT GLAccount_L.GET(LineAccountNo_G) THEN
+        InsertError(STRSUBSTNO(GLAccNotExistErr,LineAccountNo_G,FileLineNo_G),FALSE);
+
+      // --> V'rification de l'analytique
+
+      IF ((GLAccount_L."Income/Balance" = GLAccount_L."Income/Balance"::"Income Statement") AND
+           SetupDimOnBalanceAccOnly_G) OR ( NOT SetupDimOnBalanceAccOnly_G) THEN BEGIN
+
+        FOR i_G := 1 TO 8 DO
+          IF LineDimValue_G[i_G] <> '' THEN
+            IF NOT DimValue_G.GET(DimCode_G[i_G],LineDimValue_G[i_G]) THEN
+              InsertError(STRSUBSTNO(DimValueNotExistErr,DimCode_G[i_G],LineDimValue_G[i_G],FileLineNo_G),FALSE);
+
+      END;
+    END;
+
+    PROCEDURE InsertJnlLine@1000000002();
+    BEGIN
+      IF (LineDebitAmount_G - LineCreditAmount_G) <> 0 THEN BEGIN
+
+        // Insertion de la ligne comptabilit'
+        NextLineNo_G += 10000;
+
+        WITH GenJnlLine_G DO BEGIN
+
+          INIT;
+          "Journal Template Name" := JnlTemplName_G;
+          "Journal Batch Name" := JnlBatchName_G;
+          "Line No." := NextLineNo_G;
+          "Document No." := DocNum_G;
+          "Source Code" := GenJnlTemplate_G."Source Code";
+          VALIDATE("Account Type",LineAccountType_G);
+          VALIDATE("Account No.",LineAccountNo_G);
+          VALIDATE("Gen. Bus. Posting Group",'');
+          VALIDATE("Gen. Prod. Posting Group",'');
+          VALIDATE("Gen. Posting Type","Gen. Posting Type"::" ");
+          VALIDATE("VAT Bus. Posting Group",'');
+          VALIDATE("VAT Prod. Posting Group",'');
+          VALIDATE("Posting Date",LinePostingDate_G);
+          Description := LineDescription_G;
+          VALIDATE(Amount,LineDebitAmount_G - LineCreditAmount_G);
+          INSERT(TRUE);
+
+          // Insertion de l'analytique.
+          FOR i_G := 1 TO 8 DO
+            IF LineDimValue_G[i_G] <> '' THEN
+              InsertJnlLineDim(GenJnlLine_G,DimCode_G[i_G],LineDimValue_G[i_G]);
+
+        END;
+
+      END;
+    END;
+
+    PROCEDURE InsertJnlLineDim@60000(GenJnlLine2_P@60003 : Record 81;DimCode_P@60001 : Code[20];DimValueCode_P@60002 : Code[20]);
+    VAR
+      JnlLineDim_L@60000 : Record 356;
+    BEGIN
+      JnlLineDim_L.INIT;
+      JnlLineDim_L."Table ID" := DATABASE::"Gen. Journal Line";
+      JnlLineDim_L."Journal Template Name" := GenJnlLine2_P."Journal Template Name";
+      JnlLineDim_L."Journal Batch Name" := GenJnlLine2_P."Journal Batch Name";
+      JnlLineDim_L."Journal Line No." := GenJnlLine2_P."Line No.";
+      JnlLineDim_L."Allocation Line No." := 0;
+      JnlLineDim_L."Dimension Code" := DimCode_P;
+      JnlLineDim_L."Dimension Value Code" := DimValueCode_P;
+      JnlLineDim_L.INSERT(TRUE);
+    END;
+
+    PROCEDURE InsertError@60001(ErrorText_P@60000 : Text[250];StopProcess_P@60001 : Boolean);
+    BEGIN
+      IF StopProcess_P THEN
+        ERROR(ErrorText_P)
+      ELSE BEGIN
+        IsError_G := TRUE;
+        LogFile_G.WRITE(ErrorText_P);
+        CurrDataport.SKIP;
+      END;
+    END;
+
+    PROCEDURE GetDocNumFromBatch@1000000004();
+    BEGIN
+      IF SetupDocNumFromTemplate_G THEN BEGIN
+        CLEAR(NoSeriesMgt_G);
+        DocNum_G := NoSeriesMgt_G.TryGetNextNo(GenJnlBatch_G."No. Series",WORKDATE);
+      END;
+    END;
+
+    PROCEDURE DeleteEndBlank@1120000(VAR Input_P@1120001 : Text[30]);
+    BEGIN
+      IF Input_P <> '' THEN
+        WHILE COPYSTR(Input_P,STRLEN(Input_P),1) = ' ' DO
+          Input_P := DELSTR(Input_P,STRLEN(Input_P));
+    END;
+
+    PROCEDURE DeleteChar@1000000005(VAR Input_P@1000000001 : Text[30];CharToDelete_P@1000000000 : Text[1]);
+    BEGIN
+      IF Input_P <> '' THEN
+        Input_P := DELCHR(Input_P,'=',CharToDelete_P);
+    END;
+
+    PROCEDURE SplitBigInput@1000000012(Input_P@1000000000 : Text[1000];FieldSeparator_P@1000000001 : Text[1];FieldNo_P@1000000002 : Integer);
+    BEGIN
+      FOR i_G := 1 TO FieldNo_P DO
+        IF STRPOS(Input_P,FieldSeparator_P) <> 0 THEN BEGIN
+          InputText_G[i_G] := COPYSTR(Input_P,1,STRPOS(Input_P,FieldSeparator_P) - 1);
+          Input_P := DELSTR(Input_P,1,STRPOS(Input_P,FieldSeparator_P));
+        END;
+    END;
+
+    PROCEDURE ConvertLineAccountType@1000000013(Input_P@1000000000 : Text[30]) : Text[30];
+    BEGIN
+      CASE Input_P OF
+        'G'n'ral'        : EXIT('0');
+        'Client'         : EXIT('1');
+        'Fournisseur'    : EXIT('2');
+        'Banque'         : EXIT('3');
+        'Immobilisation' : EXIT('4');
+        'Partenaire IC'  : EXIT('5');
+      END;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20101213-8060990/044-CMB6.00.01-FEC01 : ADDOBJ (Nouvel objet).
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

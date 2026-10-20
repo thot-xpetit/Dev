@@ -1,0 +1,487 @@
+OBJECT Codeunit 60021 TMP Transfer Line
+{
+  OBJECT-PROPERTIES
+  {
+    Date=11/09/15;
+    Heure=00:00:00;
+    Liste versions=ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            TransferLine@1000000000 : Record 60063;
+          BEGIN
+            TransferLine.SETRANGE("Document No.",'OT55002003');
+            RunTransferLineUpdate(TransferLine);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      BooSimulation_G@1000000000 : Boolean;
+
+    PROCEDURE ResetData@1000000010(CodDocumentNo_P@1000000001 : Code[20]);
+    VAR
+      TMPTransferLine_L@1000000000 : Record 60063;
+    BEGIN
+      IF CodDocumentNo_P <> '' THEN
+        TMPTransferLine_L.SETRANGE("Document No.",CodDocumentNo_P);
+      TMPTransferLine_L.SETRANGE(LineProcessed,FALSE);
+      IF TMPTransferLine_L.FINDSET THEN REPEAT
+        TMPTransferLine_L.Simulation := FALSE;
+        TMPTransferLine_L."Update Whse rec" := FALSE;
+        TMPTransferLine_L."Update quantities" := FALSE;
+        TMPTransferLine_L."Run Receipt" := FALSE;
+        TMPTransferLine_L."New Qty." := 0;
+        TMPTransferLine_L."New Qty. to Receive" := 0;
+        TMPTransferLine_L.MODIFY;
+      UNTIL TMPTransferLine_L.NEXT = 0;
+    END;
+
+    PROCEDURE SetSimulation@1000000005(BooSimulation_P@1000000000 : Boolean);
+    BEGIN
+      BooSimulation_G := BooSimulation_P;
+    END;
+
+    PROCEDURE HasSimulation@1000000007(CodDocumentNo_P@1000000000 : Code[20]) BooResult_L : Boolean;
+    VAR
+      TMPTransferLine_L@1000000001 : Record 60063;
+    BEGIN
+      TMPTransferLine_L.SETRANGE("Document No.",CodDocumentNo_P);
+      TMPTransferLine_L.SETRANGE(Simulation,TRUE);
+      BooResult_L:= NOT (TMPTransferLine_L.ISEMPTY);
+    END;
+
+    PROCEDURE RunTransferLineUpdate@1000000006(VAR TMPTransferLine_P@1000000006 : Record 60063);
+    VAR
+      IntSelection_L@1000000000 : Integer;
+      TextLAction@1000000001 : TextConst 'ENU="Simulate;Update";FRA=Simulation,Mise . jour';
+      TextL001@1000000002 : TextConst 'ENU=Are you sure to run the update ?;FRA=ãtes-vous s-r de vouloir lancer la mise . jour ?';
+      TextL002@1000000003 : TextConst 'ENU=Operation cancelled;FRA=Op'ration annul'e';
+      TextL003@1000000004 : TextConst 'ENU=Simulation done;FRA=Simulation termin'e';
+      TextL004@1000000005 : TextConst 'ENU=Update done;FRA=Mise . jour termin'e';
+      TMPTransferLine2_L@1000000007 : Record 60063;
+    BEGIN
+      IntSelection_L := STRMENU(TextLAction,0);
+
+      CASE IntSelection_L OF
+        0: BEGIN
+          MESSAGE(TextL002);
+          EXIT;
+        END;
+
+        1: BEGIN
+          SetSimulation(TRUE);
+          IF TMPTransferLine_P.FINDSET THEN REPEAT
+            IF TMPTransferLine_P.Header THEN BEGIN
+              ResetData(TMPTransferLine_P."Document No.");
+              CheckTMPLines(TMPTransferLine_P."Document No.");
+            END;
+          UNTIL TMPTransferLine_P.NEXT = 0;
+          MESSAGE(TextL003);
+        END;
+
+        2:BEGIN
+          IF CONFIRM(TextL001) THEN BEGIN
+            SetSimulation(FALSE);
+            IF TMPTransferLine_P.FINDSET THEN REPEAT
+              IF (NOT TMPTransferLine_P.LineProcessed) AND HasSimulation(TMPTransferLine_P."Document No.") THEN BEGIN
+               IF TMPTransferLine_P.Header THEN BEGIN
+                 CleanWhseLine(TMPTransferLine_P."Document No.");
+                 RunUpdate(TMPTransferLine_P."Document No.");
+               END;
+               TMPTransferLine_P.LineProcessed := TRUE;
+               TMPTransferLine_P.MODIFY;
+              END;
+            UNTIL TMPTransferLine_P.NEXT = 0;
+            MESSAGE(TextL004);
+          END
+          ELSE
+            MESSAGE(TextL002);
+        END;
+      END;
+    END;
+
+    PROCEDURE CheckHeaders@1000000004(CodDocumentNo_P@1000000001 : Code[20]);
+    VAR
+      TransferHeader_L@1000000000 : Record 5740;
+      TMPTransferLine_L@1000000002 : Record 60063;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //
+      // V'rifie les en-t^te d'ordre de transfert . traiter & g'nSre les lignes concern'es dans la table TMP Transfer Line
+      //
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - CodDocumentNo_P             : N› Ordre de transfert . v'rifier (optionnel)
+      // Sorties:
+      //
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //
+
+      IF CodDocumentNo_P <> '' THEN BEGIN
+        TransferHeader_L.SETRANGE("No.",CodDocumentNo_P);
+        TMPTransferLine_L.SETRANGE("Document No.",CodDocumentNo_P);
+        TMPTransferLine_L.SETRANGE(LineProcessed,FALSE);
+        IF NOT TMPTransferLine_L.ISEMPTY THEN
+          TMPTransferLine_L.DELETEALL;
+      END
+      ELSE BEGIN
+        TMPTransferLine_L.SETRANGE(LineProcessed,FALSE);
+        IF NOT TMPTransferLine_L.ISEMPTY THEN
+          TMPTransferLine_L.DELETEALL;
+      END;
+      IF TransferHeader_L.FINDSET THEN REPEAT
+        IF ToBeProcessed(TransferHeader_L."No.") THEN BEGIN
+          CreateTmpTransferLine(TransferHeader_L."No.");
+        END;
+      UNTIL TransferHeader_L.NEXT = 0;
+    END;
+
+    PROCEDURE ToBeProcessed@1000000003(CodDocumentNo_P@1000000000 : Code[20]) BooResult_L : Boolean;
+    VAR
+      TransferLine_L@1000000001 : Record 5741;
+      Item_L@1000000002 : Record 27;
+    BEGIN
+      TransferLine_L.SETRANGE("Document No.",CodDocumentNo_P);
+      IF TransferLine_L.FINDSET THEN REPEAT
+        IF Item_L.GET(TransferLine_L."Item No.") THEN
+          BooResult_L := BooResult_L OR (Item_L."Species Code" IN ['BLETON','ESCTON']);
+      UNTIL TransferLine_L.NEXT = 0
+      ELSE
+        BooResult_L := FALSE;
+
+      EXIT(BooResult_L);
+    END;
+
+    PROCEDURE CreateTmpTransferLine@1000000000(CodDocumentNo_P@1000000002 : Code[20]);
+    VAR
+      TMPTransferLine_L@1000000000 : Record 60063;
+      TransferLine_L@1000000001 : Record 5741;
+      Item_L@1000000004 : Record 27;
+      CodCurrDocNo_L@1000000003 : Code[20];
+      BooUpdate_L@1000000005 : Boolean;
+    BEGIN
+      IF CodDocumentNo_P <> '' THEN
+        TransferLine_L.SETRANGE("Document No.",CodDocumentNo_P);
+      TransferLine_L.SETRANGE("Derived From Line No.",0);
+      IF TransferLine_L.FINDSET THEN REPEAT
+        IF NOT TMPTransferLine_L.GET(TransferLine_L."Document No.",TransferLine_L."Line No.") THEN BEGIN
+          TMPTransferLine_L.INIT;
+          TMPTransferLine_L."Document No." := TransferLine_L."Document No.";
+          TMPTransferLine_L."Line No." := TransferLine_L."Line No.";
+          TMPTransferLine_L.TRANSFERFIELDS(TransferLine_L);
+          TMPTransferLine_L.INSERT;
+        END;
+
+        IF Item_L.GET(TransferLine_L."Item No.") THEN BEGIN
+          TMPTransferLine_L.Include := (Item_L."Species Code" IN ['BLETON','ESCTON'])
+                                      AND((TransferLine_L.Quantity <> TransferLine_L."Quantity Shipped")
+                                          OR (TransferLine_L."Qty. in Transit" <> 0)
+                                          OR (TransferLine_L."Quantity Received" <> TransferLine_L."Quantity Shipped")
+                                          OR (TransferLine_L."CMC Qty. Difference" <> 0));
+          BooUpdate_L := TRUE;
+        END;
+
+        IF TransferLine_L."Document No." <> CodCurrDocNo_L THEN BEGIN
+          TMPTransferLine_L.Header :=  TRUE;
+          BooUpdate_L := TRUE;
+          CodCurrDocNo_L := TransferLine_L."Document No.";
+        END
+        ELSE BEGIN
+          IF TMPTransferLine_L.Header THEN BEGIN
+            TMPTransferLine_L.Header :=  FALSE;
+            BooUpdate_L := TRUE;
+          END;
+        END;
+
+        IF BooUpdate_L THEN TMPTransferLine_L.MODIFY;
+
+      UNTIL TransferLine_L.NEXT = 0;
+    END;
+
+    PROCEDURE CheckTMPLines@1000000017(CodDocumentNo_P@1000000001 : Code[20]);
+    VAR
+      TMPTransferLine_L@1000000000 : Record 60063;
+      BooResult_L@1000000002 : Boolean;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //
+      //
+      //
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - CodDocumentNo_P             : N› Ordre de transfert . v'rifier (optionnel)
+      // Sorties:
+      //
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //
+
+      IF CodDocumentNo_P <> '' THEN
+        TMPTransferLine_L.SETRANGE("Document No.",CodDocumentNo_P);
+
+      IF TMPTransferLine_L.FINDSET THEN REPEAT
+        IF TMPTransferLine_L.Include THEN BEGIN
+          BooResult_L := CleanWhseLine(TMPTransferLine_L."Document No.");
+          TMPTransferLine_L."Update Whse rec" := BooResult_L;
+
+          BooResult_L := CalcUpdateQuantities(TMPTransferLine_L);
+          TMPTransferLine_L."Update quantities" := BooResult_L;
+          TMPTransferLine_L."Update Qty Diff" := (TMPTransferLine_L."CMC Qty. Difference" <> 0);
+          TMPTransferLine_L.Simulation := BooSimulation_G;
+          TMPTransferLine_L.MODIFY;
+        END;
+      UNTIL TMPTransferLine_L.NEXT = 0;
+    END;
+
+    PROCEDURE CleanWhseLine@1000000001(CodDocumentNo_P@1000000000 : Code[20]) BooResult_L : Boolean;
+    VAR
+      WhseShipmentLine_L@1000000001 : Record 7321;
+      WhseReceiptLine_L@1000000002 : Record 7317;
+      CodWhseDocNo_L@1000000004 : Code[20];
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //
+      // Suppression des enregistrements lignes entrep"ts (exp'ditions & r'ceptions) de transfert non valid'es
+      //
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - CodDocumentNo_P            : N› Ordre de transfert . v'rifier
+      // Sorties:
+      //
+      //----------------------------------------------------------------------------------------------------------------------------------
+      WhseShipmentLine_L.SETRANGE("Source Type",5741);
+      WhseShipmentLine_L.SETRANGE("Source Subtype",0);
+      WhseShipmentLine_L.SETRANGE("Source No.",CodDocumentNo_P);
+      IF WhseShipmentLine_L.FINDSET THEN REPEAT
+        CodWhseDocNo_L := WhseShipmentLine_L."No.";
+        IF NOT BooSimulation_G THEN WhseShipmentLine_L.DELETE;
+        CleanWhseDoc(1,CodWhseDocNo_L);
+        BooResult_L := TRUE;
+      UNTIL WhseShipmentLine_L.NEXT = 0;
+
+      WhseReceiptLine_L.SETRANGE("Source Type",5741);
+      WhseReceiptLine_L.SETRANGE("Source Subtype",1);
+      WhseReceiptLine_L.SETRANGE("Source No.",CodDocumentNo_P);
+      IF WhseReceiptLine_L.FINDSET THEN REPEAT
+        CodWhseDocNo_L := WhseReceiptLine_L."No.";
+        IF NOT BooSimulation_G THEN WhseReceiptLine_L.DELETE;
+        CleanWhseDoc(2,CodWhseDocNo_L);
+        BooResult_L := TRUE;
+      UNTIL WhseReceiptLine_L.NEXT = 0;
+    END;
+
+    PROCEDURE CleanWhseDoc@1000000002(IntType_P@1000000001 : Integer;CodDocumentNo_P@1000000000 : Code[20]) BooResult_L : Boolean;
+    VAR
+      WhseShipmentHeader_L@1000000002 : Record 7320;
+      WhseShipmentLine_L@1000000005 : Record 7321;
+      WhseReceiptHeader_L@1000000003 : Record 7316;
+      WhseReceiptLine_L@1000000004 : Record 7317;
+    BEGIN
+      CASE IntType_P OF
+        1: BEGIN
+          WhseShipmentLine_L.SETRANGE("No.",CodDocumentNo_P);
+          IF WhseShipmentLine_L.ISEMPTY THEN BEGIN
+            IF WhseShipmentHeader_L.GET(CodDocumentNo_P) THEN BEGIN
+              IF NOT BooSimulation_G THEN WhseShipmentHeader_L.DELETE;
+              BooResult_L := TRUE;
+            END;
+          END;
+        END;
+
+        2: BEGIN
+          WhseReceiptLine_L.SETRANGE("No.",CodDocumentNo_P);
+          IF WhseReceiptLine_L.ISEMPTY THEN BEGIN
+            IF WhseReceiptHeader_L.GET(CodDocumentNo_P) THEN BEGIN
+              IF NOT BooSimulation_G THEN WhseReceiptHeader_L.DELETE;
+                BooResult_L := TRUE;
+            END;
+          END;
+        END;
+      END;
+
+      EXIT(BooResult_L);
+    END;
+
+    PROCEDURE CalcUpdateQuantities@1000000013(VAR TMPTransferLine_P@1000000000 : Record 60063) BooResult_L : Boolean;
+    VAR
+      TMPTransferLine2_L@1000000001 : Record 60063;
+    BEGIN
+      IF TMPTransferLine_P.Quantity > TMPTransferLine_P."Quantity Shipped" THEN BEGIN
+      //On r'ajuste la Quantit' du transfert . la quantit' exp'di'e si > => Plus d'exp'dition . effectuer
+        TMPTransferLine_P."New Qty." := TMPTransferLine_P."Quantity Shipped";
+        BooResult_L := TRUE;
+      END;
+
+      IF TMPTransferLine_P."Qty. in Transit" <> 0 THEN BEGIN
+      // Il reste des quantit' en transit => On lancera la r'ception
+        TMPTransferLine_P."New Qty. to Receive" := TMPTransferLine_P."Qty. in Transit";
+        TMPTransferLine_P."Run Receipt" := TRUE;
+        TMPTransferLine2_L.RESET;
+
+        //Mise . jour de la ligne type en-t^te ayant le m^me n› de document
+        TMPTransferLine2_L.SETRANGE(Header,TRUE);
+        TMPTransferLine2_L.SETRANGE("Document No.",TMPTransferLine_P."Document No.");
+        IF TMPTransferLine2_L.FINDFIRST THEN BEGIN
+          TMPTransferLine2_L."Run Receipt" := TRUE;
+          TMPTransferLine2_L.MODIFY;
+        END;
+        BooResult_L := TRUE;
+      END;
+
+      EXIT(BooResult_L);
+    END;
+
+    PROCEDURE RunUpdate@1000000019(CodDocumentNo_P@1000000001 : Code[20]);
+    VAR
+      TMPTransferLine_L@1000000002 : Record 60063;
+      TransferHeader_L@1000000003 : Record 5740;
+      CunReleaseTransfertDoc_L@1000000000 : Codeunit 5708;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //
+      // Mise . jour des Lignes de transfert
+      //
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - CodDocumentNo_P             : N› Ordre de transfert . v'rifier (optionnel)
+      // Sorties:
+      //
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //
+
+      IF CodDocumentNo_P <> '' THEN TMPTransferLine_L.SETRANGE("Document No.",CodDocumentNo_P);
+
+      TMPTransferLine_L.SETRANGE(Header,TRUE);
+      IF TMPTransferLine_L.FINDSET THEN REPEAT
+        TransferHeader_L.GET(TMPTransferLine_L."Document No.");
+        TransferHeader_L."Posting Date" := TODAY;
+        TransferHeader_L.MODIFY;
+        IF TMPTransferLine_L.Status = TMPTransferLine_L.Status::Released THEN CunReleaseTransfertDoc_L.Reopen(TransferHeader_L);
+        UpdateTransferNotInclude(TMPTransferLine_L."Document No.");
+      UNTIL TMPTransferLine_L.NEXT = 0;
+
+      TMPTransferLine_L.RESET;
+      IF CodDocumentNo_P <> '' THEN TMPTransferLine_L.SETRANGE("Document No.",CodDocumentNo_P);
+      TMPTransferLine_L.SETRANGE(Include,TRUE);
+      IF TMPTransferLine_L.FINDSET THEN REPEAT
+        IF (TMPTransferLine_L."Update quantities" OR TMPTransferLine_L."Update Qty Diff") THEN
+          UpdateTransferLine(TMPTransferLine_L."Document No.",TMPTransferLine_L."Line No."
+                            ,TMPTransferLine_L."New Qty.",TMPTransferLine_L."New Qty. to Receive"
+                            ,TMPTransferLine_L."Update Qty Diff");
+      UNTIL TMPTransferLine_L.NEXT = 0;
+
+      TMPTransferLine_L.RESET;
+      IF CodDocumentNo_P <> '' THEN TMPTransferLine_L.SETRANGE("Document No.",CodDocumentNo_P);
+      TMPTransferLine_L.SETRANGE(Header,TRUE);
+      TMPTransferLine_L.SETRANGE("Run Receipt",TRUE);
+      IF TMPTransferLine_L.FINDSET THEN REPEAT
+        RunReceipt(TMPTransferLine_L."Document No.");
+      UNTIL TMPTransferLine_L.NEXT = 0;
+    END;
+
+    PROCEDURE UpdateTransferLine@1000000016(CodDocumentNo_P@1000000000 : Code[20];IntLineNo_P@1000000001 : Integer;DecQuantity_P@1000000003 : Decimal;DecQtyToReceive_P@1000000004 : Decimal;BooUpdateQtyDiff_P@1000000005 : Boolean) BooResult_L : Boolean;
+    VAR
+      TransferLine_L@1000000002 : Record 5741;
+    BEGIN
+      TransferLine_L.GET(CodDocumentNo_P,IntLineNo_P);
+      IF DecQuantity_P <> 0 THEN
+        TransferLine_L.VALIDATE(Quantity,DecQuantity_P);
+
+      IF DecQtyToReceive_P <> 0 THEN BEGIN
+      //Pas de Validate car message d'information
+        TransferLine_L."Qty. to Receive" := DecQtyToReceive_P;
+        TransferLine_L."Qty. to Receive (Base)" := ROUND(DecQtyToReceive_P * TransferLine_L."Qty. per Unit of Measure",0.00001);
+      END;
+
+      IF BooUpdateQtyDiff_P THEN BEGIN
+        TransferLine_L."CMC Actual Qty. to Receive" := TransferLine_L."CMC Actual Qty. to Receive" - TransferLine_L."CMC Qty. Difference";
+        TransferLine_L."CMC Actual Qty. to Rec. (Base)" := TransferLine_L."CMC Actual Qty. to Rec. (Base)"
+                                                           - TransferLine_L."CMC Qty. Difference (Base)";
+        TransferLine_L."CMC Qty. Difference" := 0;
+        TransferLine_L."CMC Qty. Difference (Base)" := 0;
+      END;
+
+      IF TransferLine_L."Actual Shipping Agent Code" = '' THEN
+        TransferLine_L.VALIDATE("Actual Shipping Agent Code",'1000');
+
+      IF TransferLine_L.MODIFY THEN;
+    END;
+
+    PROCEDURE UpdateTransferNotInclude@1000000008(CodDocumentNo_P@1000000000 : Code[20]) BooResult_L : Boolean;
+    VAR
+      TransferLine_L@1000000001 : Record 5741;
+      TMPTransferLine_L@1000000002 : Record 60063;
+    BEGIN
+      TMPTransferLine_L.SETRANGE("Document No.",CodDocumentNo_P);
+      TMPTransferLine_L.SETRANGE(Include,FALSE);
+      IF TMPTransferLine_L.FINDSET THEN REPEAT
+        IF TMPTransferLine_L."Qty. to Receive"<>0 THEN BEGIN
+          TransferLine_L.GET(TMPTransferLine_L."Document No.",TMPTransferLine_L."Line No.");
+          //Pas de Validate car message d'information
+          TransferLine_L."Qty. to Receive" := 0;
+          TransferLine_L."Qty. to Receive (Base)" := 0;
+          TransferLine_L."CMC Qty. Difference" := 0;
+          TransferLine_L."CMC Qty. Difference (Base)" := 0;
+        END;
+
+        IF TransferLine_L."Actual Shipping Agent Code" = '' THEN
+          TransferLine_L.VALIDATE("Actual Shipping Agent Code",'1000');
+        IF TransferLine_L.MODIFY THEN;
+
+      UNTIL TMPTransferLine_L.NEXT = 0;
+    END;
+
+    PROCEDURE RunReceipt@1000000023(CodDocumentNo_P@1000000000 : Code[20]) BooResult_L : Boolean;
+    VAR
+      TransferHeader_L@1000000002 : Record 5740;
+      CunReleaseTransfertDoc_L@1000000001 : Codeunit 5708;
+      CunPostReceipt_L@1000000003 : Codeunit 5705;
+    BEGIN
+      TransferHeader_L.GET(CodDocumentNo_P);
+      CunReleaseTransfertDoc_L.RUN(TransferHeader_L);
+      CunPostReceipt_L.SetHideValidationDialog(TRUE);
+      CunPostReceipt_L.RUN(TransferHeader_L);
+    END;
+
+    PROCEDURE CheckEndProcess@1000000011(VAR TMPTransferLine_P@1000000000 : Record 60063) : Boolean;
+    VAR
+      TransferHeader_L@1000000001 : Record 5740;
+      TransferLine_L@1000000002 : Record 5741;
+      Item_L@1000000004 : Record 27;
+      CunReleaseTransfertDoc_L@1000000003 : Codeunit 5708;
+    BEGIN
+      IF TMPTransferLine_P.FINDSET THEN REPEAT
+        IF TMPTransferLine_P.LineProcessed
+         AND TransferLine_L.GET(TMPTransferLine_P."Document No.",TMPTransferLine_P."Line No.")
+         AND (TransferLine_L."Species Code" IN ['BLETON','ESCTON']) THEN BEGIN
+          TransferHeader_L.GET(TMPTransferLine_P."Document No.");
+          CunReleaseTransfertDoc_L.Reopen(TransferHeader_L);
+          TransferLine_L.GET(TMPTransferLine_P."Document No.",TMPTransferLine_P."Line No.");
+          IF TransferLine_L.DELETE(TRUE) THEN BEGIN
+            TransferLine_L.RESET;
+            TransferLine_L.SETRANGE("Document No.",TMPTransferLine_P."Document No.");
+            IF TransferLine_L.COUNT = 0 THEN BEGIN
+              TransferHeader_L.SetHideValidationDialog(TRUE);
+              IF TransferHeader_L.DELETE(TRUE) THEN;
+            END
+            ELSE
+              CunReleaseTransfertDoc_L.RUN(TransferHeader_L);
+          END;
+        END;
+        TMPTransferLine_P.Deleted := NOT TransferLine_L.GET(TMPTransferLine_P."Document No.",TMPTransferLine_P."Line No.");
+        TMPTransferLine_P.MODIFY;
+      UNTIL TMPTransferLine_P.NEXT = 0;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20150910-WI00-ADV01.01.00-2235-DGL : ADDOBJECT (CU de lancement des correctifs OT)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

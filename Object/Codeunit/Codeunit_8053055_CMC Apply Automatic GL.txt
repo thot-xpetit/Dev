@@ -1,0 +1,400 @@
+OBJECT Codeunit 8053055 CMC Apply Automatic GL
+{
+  OBJECT-PROPERTIES
+  {
+    Date=21/03/16;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 17=rm;
+    OnRun=BEGIN
+            //Options has to be set before NAS launch
+
+            // --> 20151013-ADV01.01.00-2195-BDN01
+            IF TableADV_G.GET THEN BEGIN
+              PostApply_G := TableADV_G.AutAppGLPost;
+              Mode_G := TableADV_G.AutAppGLMode;
+              DatePostDue_G := TableADV_G.AutAppGLDate;
+            END
+            ELSE BEGIN
+            // <-- 20151013-ADV01.01.00-2195-BDN01
+
+            PostApply_G := TRUE;
+            // --> 20150908-ADV01.01.00-2195-BDN01
+            // BEFORE
+            //Mode_G := Mode_G::Balance;
+            // AFTER
+            Mode_G := Mode_G::Amount;
+            // <-- 20150908-ADV01.01.00-2195-BDN01
+            DatePostDue_G := DatePostDue_G::"Posting Date";
+            // --> 20151013-ADV01.01.00-2195-BDN01
+            END;
+            // <-- 20151013-ADV01.01.00-2195-BDN01
+
+            GLAcc_G.RESET;
+            // --> 20151013-ADV01.01.00-2195-BDN01
+            IF TableADV_G.AutAppGLAccountNoFilter <> '' THEN
+              GLAcc_G.SETFILTER("No.",TableADV_G.AutAppGLAccountNoFilter);
+            // <-- 20151013-ADV01.01.00-2195-BDN01
+            IF GLAcc_G.FINDFIRST THEN
+              REPEAT
+                ApplyGL(GLAcc_G,PostApply_G,Mode_G,DatePostDue_G);
+              UNTIL GLAcc_G.NEXT=0;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      PostApply_G@1000000002 : Boolean;
+      Mode_G@1000000004 : 'Amount,Balance';
+      DatePostDue_G@1000000005 : 'Posting Date,Due Date';
+      GLAcc_G@1000000003 : Record 15;
+      GLEntryTMP_G@1000000000 : TEMPORARY Record 17;
+      GLEntriesApplication_G@1000000001 : Codeunit 10842;
+      TableADV_G@1000000006 : Record 8053450;
+
+    PROCEDURE ApplyGL@1000000000(GLAcc_P@1000000000 : Record 15;PostApply_P@1000000003 : Boolean;Mode_P@1000000006 : 'Amount,Balance,BalanceSource,VAT';DatePostDue_P@1000000007 : 'Posting Date,Due Date');
+    VAR
+      Cust_L@1000000004 : Record 18;
+      Vend_L@1000000005 : Record 23;
+    BEGIN
+      IF NOT GLAcc_P.Blocked THEN
+        CASE Mode_P OF
+          Mode_P::Amount : ApplyAutoGLLedgEntryAmt(GLAcc_P."No.",PostApply_P,DatePostDue_P);
+          Mode_P::Balance : ApplyAutoGLLedgEntryBal(GLAcc_P."No.",PostApply_P,DatePostDue_P);
+          //--> 20160118-wi00-ADV01.01.00-2623-JLT01
+          Mode_P::BalanceSource: ApplyAutoGLLedgEntryBalSource(GLAcc_P."No.",PostApply_P,DatePostDue_P);
+          // --> 20160129-wi00-ADV01.01.00-2623-JCD01
+          {BEFORE
+          Mode_P::VAT     : ApplyAutoGLLedgEntryVAT(GLAcc_P."No.",PostApply_P,DatePostDue_P);
+          AFTER}
+          Mode_P::VAT     : BEGIN
+                              ApplyAutoGLLedgEntryVAT(GLAcc_P."No.",PostApply_P,DatePostDue_P,10);
+                              // --> 20160318-wi00-ADV01.01.00-2873-JCD01
+                              COMMIT;
+                              // <-- 20160318-wi00-ADV01.01.00-2873-JCD01
+                              ApplyAutoGLLedgEntryVAT(GLAcc_P."No.",PostApply_P,DatePostDue_P,1);
+                            END;
+          //<-- 20160129-wi00-ADV01.01.00-2623-JCD01
+          //<-- 20160118-wi00-ADV01.01.00-2623-JLT01
+
+        END;
+    END;
+
+    PROCEDURE ApplyAutoGLLedgEntryAmt@1000000002(GLAccNo_P@1000000000 : Code[20];PostApply_P@1000000001 : Boolean;DatePostDue_P@1000000002 : 'Posting Date,Due Date');
+    VAR
+      GLEntry_L@1000000003 : Record 17;
+      GLEntryTA_L@1000000004 : Record 17;
+    BEGIN
+      GLEntry_L.RESET;
+      GLEntry_L.SETCURRENTKEY("G/L Account No.",Applied,Amount,"Due Date");
+      GLEntry_L.SETRANGE("G/L Account No.",GLAccNo_P);
+      GLEntry_L.SETRANGE(Applied,FALSE);
+      GLEntry_L.SETFILTER(Amount,'<0');
+      GLEntry_L.SETRANGE("Applies-to ID",'');
+      IF GLEntry_L.FINDFIRST THEN BEGIN
+        REPEAT
+          //Search only one document to apply
+          GLEntryTA_L.RESET;
+          GLEntryTA_L.SETCURRENTKEY("G/L Account No.",Applied,Amount,"Due Date");
+          GLEntryTA_L.SETRANGE("G/L Account No.",GLAccNo_P);
+          GLEntryTA_L.SETRANGE(Applied,FALSE);
+          GLEntryTA_L.SETRANGE(Amount,-GLEntry_L.Amount);
+          GLEntryTA_L.SETRANGE("Applies-to ID",'');
+          IF GLEntryTA_L.FINDFIRST AND (GLEntryTA_L.COUNT = 1) THEN BEGIN
+            //Save values on entry and entry to apply
+            GLEntry_L."Applies-to ID":=FORMAT(GLEntry_L."Entry No.");
+            GLEntry_L.MODIFY;
+
+            GLEntryTA_L."Applies-to ID" := FORMAT(GLEntry_L."Entry No.");
+            GLEntryTA_L.MODIFY;
+
+            // --> 20140903-FINA23/CMC02.02.00-2478-BDN01
+            IF PostApply_P THEN BEGIN
+              CreateAppliedEntriesHist(0,GLEntry_L."Entry No.");
+              CreateAppliedEntriesHist(0,GLEntryTA_L."Entry No.");
+            END;
+            // <-- 20140903-FINA23/CMC02.02.00-2478-BDN01
+
+            //To post ?
+            IF PostApply_P THEN
+              GLEntriesApplication_G.Validate(GLEntryTA_L,FALSE);
+
+          END;
+        UNTIL GLEntry_L.NEXT=0;
+      END;
+    END;
+
+    PROCEDURE ApplyAutoGLLedgEntryBal@1000000003(GLAccNo_P@1000000002 : Code[20];PostApply_P@1000000001 : Boolean;DatePostDue_P@1000000000 : 'Posting Date,Due Date');
+    VAR
+      GLEntry_L@1000000003 : Record 17;
+      Balance_L@1000000005 : Decimal;
+      EntryQty_L@1000000004 : Integer;
+    BEGIN
+      GLEntry_L.RESET;
+      CASE DatePostDue_P OF
+        DatePostDue_P::"Posting Date" : GLEntry_L.SETCURRENTKEY("G/L Account No.",Applied,"Posting Date");
+        DatePostDue_P::"Due Date" : GLEntry_L.SETCURRENTKEY("G/L Account No.",Applied,"Due Date");
+      END;
+      GLEntry_L.SETRANGE("G/L Account No.",GLAccNo_P);
+      GLEntry_L.SETRANGE(Applied,FALSE);
+      GLEntry_L.SETRANGE("Applies-to ID",'');
+      IF GLEntry_L.FINDFIRST THEN BEGIN
+        Balance_L := 0;
+        EntryQty_L := 0;
+        GLEntryTMP_G.DELETEALL;
+        REPEAT
+          Balance_L := Balance_L + GLEntry_L.Amount;
+          EntryQty_L := EntryQty_L + 1;
+          GLEntryTMP_G.INIT;
+          GLEntryTMP_G.TRANSFERFIELDS(GLEntry_L);
+          GLEntryTMP_G.INSERT;
+          IF (Balance_L = 0) AND (EntryQty_L > 1) THEN BEGIN
+            ApplyGroup(PostApply_P);
+            EntryQty_L := 0;
+            GLEntryTMP_G.DELETEALL;
+          END;
+        UNTIL GLEntry_L.NEXT=0;
+      END;
+    END;
+
+    PROCEDURE ApplyGroup@1000000004(PostApply_P@1000000007 : Boolean);
+    VAR
+      GLEntryTA_L@1000000003 : Record 17;
+      ApplyID_L@1000000004 : Code[20];
+      FirstRecord_L@1000000001 : Boolean;
+    BEGIN
+      GLEntryTMP_G.RESET;
+      GLEntryTMP_G.FINDFIRST;
+      FirstRecord_L := TRUE;
+      REPEAT
+        GLEntryTA_L.GET(GLEntryTMP_G."Entry No.");
+        IF FirstRecord_L THEN BEGIN
+          FirstRecord_L := FALSE;
+          ApplyID_L := FORMAT(GLEntryTA_L."Entry No.");
+        END;
+        GLEntryTA_L."Applies-to ID" := ApplyID_L;
+        GLEntryTA_L.MODIFY;
+
+        // --> 20140903-FINA23/CMC02.02.00-2478-BDN01
+        IF PostApply_P THEN
+          CreateAppliedEntriesHist(0,GLEntryTA_L."Entry No.");
+        // <-- 20140903-FINA23/CMC02.02.00-2478-BDN01
+
+      UNTIL GLEntryTMP_G.NEXT=0;
+      GLEntryTMP_G.RESET;
+      GLEntryTMP_G.FINDFIRST;
+      GLEntryTA_L.GET(GLEntryTMP_G."Entry No.");
+
+      //To post ?
+      IF PostApply_P THEN
+        GLEntriesApplication_G.Validate(GLEntryTA_L,FALSE);
+    END;
+
+    PROCEDURE CreateAppliedEntriesHist@1000000001(Type_P@1000000000 : 'G/L Entry,Customer Ledger Entry,Vendor Ledger Entry';EntryNo_P@1000000001 : Integer);
+    VAR
+      AutoApplied_L@1000000002 : Record 8053514;
+      GLEntry_L@1000000003 : Record 17;
+      CustLedgEntry_L@1000000004 : Record 21;
+      VendLedgEntry_L@1000000005 : Record 25;
+    BEGIN
+      //Add history record for auto applied G/L Entry, Cust&Vend Ledger Entry
+      CASE Type_P OF
+        Type_P::"G/L Entry" : BEGIN
+          GLEntry_L.GET(EntryNo_P);
+          AutoApplied_L.INIT;
+          AutoApplied_L.Type := Type_P;
+          AutoApplied_L."GL/C/V Entry No." := EntryNo_P;
+          AutoApplied_L."Posting Date" := TODAY;
+          //AutoApplied_L."Account No." := GLEntry_L."G/L Account No.";
+          AutoApplied_L."No." := GLEntry_L."G/L Account No.";
+          AutoApplied_L.Description := GLEntry_L.Description;
+          // --> 20160318-wi00-ADV01.01.00-2873-JCD01
+          AutoApplied_L."Due Date" :=  GLEntry_L."Due Date";
+          AutoApplied_L."Account No." := GLEntry_L."Source No.";
+          // <-- 20160318-wi00-ADV01.01.00-2873-JCD01
+          AutoApplied_L."Debit Amount (LCY)" := GLEntry_L."Debit Amount";
+          AutoApplied_L."Credit Amount (LCY)" := GLEntry_L."Credit Amount";
+          AutoApplied_L."Applies-to ID" := GLEntry_L."Applies-to ID";
+          AutoApplied_L.INSERT(TRUE);
+        END;
+        Type_P::"Customer Ledger Entry" : BEGIN
+          CustLedgEntry_L.GET(EntryNo_P);
+          CustLedgEntry_L.CALCFIELDS("Debit Amount (LCY)","Credit Amount (LCY)");
+          AutoApplied_L.INIT;
+          AutoApplied_L.Type := Type_P;
+          AutoApplied_L."GL/C/V Entry No." := EntryNo_P;
+          AutoApplied_L."Posting Date" := TODAY;
+          AutoApplied_L."Account No." := CustLedgEntry_L."GLAccountNo.";
+          AutoApplied_L."No." := CustLedgEntry_L."Customer No.";
+          AutoApplied_L.Description := CustLedgEntry_L.Description;
+          AutoApplied_L."Due Date" := CustLedgEntry_L."Due Date";
+          AutoApplied_L."Debit Amount (LCY)" := CustLedgEntry_L."Debit Amount (LCY)";
+          AutoApplied_L."Credit Amount (LCY)" := CustLedgEntry_L."Credit Amount (LCY)";
+          AutoApplied_L."Applies-to ID" := CustLedgEntry_L."Applies-to ID";
+          AutoApplied_L.INSERT(TRUE);
+        END;
+        Type_P::"Vendor Ledger Entry" : BEGIN
+          VendLedgEntry_L.GET(EntryNo_P);
+          VendLedgEntry_L.CALCFIELDS("Debit Amount (LCY)","Credit Amount (LCY)");
+          AutoApplied_L.INIT;
+          AutoApplied_L.Type := Type_P;
+          AutoApplied_L."GL/C/V Entry No." := EntryNo_P;
+          AutoApplied_L."Posting Date" := TODAY;
+          AutoApplied_L."Account No." := VendLedgEntry_L."GLAccountNo.";
+          AutoApplied_L."No." := VendLedgEntry_L."Vendor No.";
+          AutoApplied_L.Description := VendLedgEntry_L.Description;
+          AutoApplied_L."Due Date" := VendLedgEntry_L."Due Date";
+          AutoApplied_L."Debit Amount (LCY)" := VendLedgEntry_L."Debit Amount (LCY)";
+          AutoApplied_L."Credit Amount (LCY)" := VendLedgEntry_L."Credit Amount (LCY)";
+          AutoApplied_L."Applies-to ID" := VendLedgEntry_L."Applies-to ID";
+          AutoApplied_L.INSERT(TRUE);
+        END;
+      END;
+    END;
+
+    PROCEDURE ApplyAutoGLLedgEntryBalSource@1000000008(GLAccNo_P@1000000002 : Code[20];PostApply_P@1000000001 : Boolean;DatePostDue_P@1000000000 : 'Posting Date,Due Date');
+    VAR
+      GLEntry_L@1000000003 : Record 17;
+      Balance_L@1000000005 : Decimal;
+      EntryQty_L@1000000004 : Integer;
+      Source_L@1000000006 : Code[30];
+    BEGIN
+      //20160118-wi00-ADV01.01.00-2623-JLT01 : ADDCODE Ajout option lettrage sur Solde progressif par N› Origine
+
+      CASE DatePostDue_P OF
+        DatePostDue_P::"Posting Date" : GLEntry_L.SETCURRENTKEY("G/L Account No.",Applied,"Source No.","Posting Date");
+        DatePostDue_P::"Due Date" :     GLEntry_L.SETCURRENTKEY("G/L Account No.",Applied,"Source No.","Due Date");
+      END;
+
+      GLEntry_L.SETRANGE("G/L Account No.",GLAccNo_P);
+      GLEntry_L.SETRANGE(Applied,FALSE);
+      GLEntry_L.SETRANGE("Applies-to ID",'');
+      IF GLEntry_L.FINDFIRST THEN BEGIN
+        Source_L:=GLEntry_L."Source No.";
+        GLEntryTMP_G.DELETEALL;
+        REPEAT
+          IF Source_L<>GLEntry_L."Source No." THEN BEGIN
+            Balance_L := 0;
+            EntryQty_L := 0;
+            // --> 20160129-wi00-ADV01.01.00-2623-JCD01
+            Source_L := GLEntry_L."Source No.";
+            GLEntryTMP_G.DELETEALL;
+            // <-- 20160129-wi00-ADV01.01.00-2623-JCD01
+          END;
+          Balance_L := Balance_L + GLEntry_L.Amount;
+          EntryQty_L := EntryQty_L + 1;
+          GLEntryTMP_G.INIT;
+          GLEntryTMP_G.TRANSFERFIELDS(GLEntry_L);
+          GLEntryTMP_G.INSERT;
+          IF (Balance_L = 0) AND (EntryQty_L > 1) THEN BEGIN
+            ApplyGroup(PostApply_P);
+            EntryQty_L := 0;
+            GLEntryTMP_G.DELETEALL;
+          END;
+        UNTIL GLEntry_L.NEXT=0 ;
+      END;
+    END;
+
+    PROCEDURE ApplyAutoGLLedgEntryVAT@1000000009(GLAccNo_P@1000000002 : Code[20];PostApply_P@1000000001 : Boolean;DatePostDue_P@1000000000 : 'Posting Date,Due Date';Number_P@1000000009 : Integer);
+    VAR
+      GLEntry_L@1000000003 : Record 17;
+      GLEntryVat_L@1000000007 : Record 17;
+      Balance_L@1000000005 : Decimal;
+      EntryQty_L@1000000004 : Integer;
+      VATEntry_L@1000000006 : Record 254;
+      Int_L@1000000008 : Integer;
+      Number_L@1000000010 : Integer;
+      VATPostingSetup_L@1000000011 : Record 325;
+    BEGIN
+      // 20160129-wi00-ADV01.01.00-2623-JCD01 ADDCODE ajout de la gestion du nombre de boucle avant lettrage
+      //20160118-wi00-ADV01.01.00-2623-JLT01 : ADDCODE Ajout option lettrage sur Compte de TVA
+      // Dans la table des 'critures de TVA, lettrer les 'critures communes via le champ  Base G/L Entry No
+      // --> 20160318-wi00-ADV01.01.00-2873-JCD01
+      VATPostingSetup_L.SETRANGE("Purch. VAT Unreal. Account",GLAccNo_P);
+      IF VATPostingSetup_L.ISEMPTY THEN
+        EXIT;
+      // <-- 20160318-wi00-ADV01.01.00-2873-JCD01
+
+      CASE DatePostDue_P OF
+        // --> 20160318-wi00-ADV01.01.00-2873-JCD01
+        {BEFORE
+        DatePostDue_P::"Posting Date" : GLEntry_L.SETCURRENTKEY("G/L Account No.",Applied,"Posting Date");
+        DatePostDue_P::"Due Date" :     GLEntry_L.SETCURRENTKEY("G/L Account No.",Applied,"Due Date");
+        AFTER}
+        // <-- 20160318-wi00-ADV01.01.00-2873-JCD01
+        DatePostDue_P::"Posting Date" : GLEntry_L.SETCURRENTKEY("G/L Account No.",Applied,"Source No.","Posting Date");
+        DatePostDue_P::"Due Date" :     GLEntry_L.SETCURRENTKEY("G/L Account No.",Applied,"Source No.","Due Date");
+      END;
+
+      GLEntryTMP_G.DELETEALL;
+      GLEntry_L.SETRANGE("G/L Account No.",GLAccNo_P);
+      GLEntry_L.SETRANGE(Applied,FALSE);
+      IF GLEntry_L.FIND('-') THEN
+      REPEAT
+        // --> 20160318-wi00-ADV01.01.00-2873-JCD01
+        Number_L += 1;
+        IF Number_L > 1000 THEN BEGIN
+          COMMIT;
+          Number_L := 0;
+        END;
+        {BEFORE
+        IF EntryQty_L >= Number_P THEN BEGIN
+        AFTER}
+        IF (EntryQty_L >= Number_P * 2) OR (Number_P = 1) THEN BEGIN
+        // <-- 20160318-wi00-ADV01.01.00-2873-JCD01
+          Balance_L  := 0;
+          EntryQty_L := 0;
+          GLEntryTMP_G.DELETEALL;
+        END;
+        VATEntry_L.RESET;
+        VATEntry_L.SETCURRENTKEY("Unreal. VAT G/L Entry No.");
+        VATEntry_L.SETRANGE("Unreal. VAT G/L Entry No.",GLEntry_L."Entry No.");
+        IF VATEntry_L.FIND('-') THEN BEGIN
+          Int_L := VATEntry_L."Base G/L Entry No.";
+          VATEntry_L.RESET;
+          VATEntry_L.SETCURRENTKEY("Base G/L Entry No.");
+          VATEntry_L.SETRANGE("Base G/L Entry No.",Int_L);
+          IF VATEntry_L.FIND('-') THEN
+          REPEAT
+            IF GLEntryVat_L.GET(VATEntry_L."Unreal. VAT G/L Entry No.") THEN BEGIN
+              IF (GLEntryVat_L.Applied=FALSE) THEN BEGIN
+                GLEntryTMP_G.TRANSFERFIELDS(GLEntryVat_L);
+                IF GLEntryTMP_G.INSERT THEN BEGIN
+                  Balance_L := Balance_L + GLEntryVat_L.Amount;
+                  EntryQty_L := EntryQty_L + 1;
+                  IF (Balance_L = 0) AND (EntryQty_L > Number_P) THEN BEGIN
+                    ApplyGroup(PostApply_P);
+                    EntryQty_L := 0;
+                    GLEntryTMP_G.DELETEALL;
+                  END;
+                END;
+              END;
+            END;
+          UNTIL VATEntry_L.NEXT=0;
+        END;
+
+      UNTIL GLEntry_L.NEXT=0;
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+      20140630-Wi00-CMC02.02.00-2288-BDN01 : Creation
+      20140708-Wi00-CMC02.02.00-2288-BDN01 : MODPROP (Modify permissions on "G/L entry")
+      20140903-FINA23-CMC02.02.00-2478-BDN01 : ADDFUNC (CreateAppliedEntriesHist)
+                                               ADDCODE (Call CreateAppliedEntriesHist when apply and post)
+      20150908-ADV01.01.00-2195-BDN01 : MODCODE : parametre defaut pour usage batch
+      20151013-ADV01.01.00-2195-BDN01 : ADDCODE : parametre defaut dans table parametre adv
+      20160118-wi00-ADV01.01.00-2623-JLT01 : ADDCODE Ajout option lettrage sur Solde progressif par N› Origine et Compte de TVA
+      20160129-wi00-ADV01.01.00-2623-JCD01 : MODCODE Beaucoup de modification function ApplyAutoGLLedgEntryVAT, ajout paramStre.
+      20160318-wi00-ADV01.01.00-2873-JCD01 : ADDCODE (Ajout d'un COMMIT pour prendre en compte les lignes d'j. lettr'es)
+      // --> 3LI END
+    }
+    END.
+  }
+}
+

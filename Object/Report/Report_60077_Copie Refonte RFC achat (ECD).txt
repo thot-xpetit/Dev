@@ -1,0 +1,1221 @@
+OBJECT Report 60077 Copie Refonte RFC achat (ECD)
+{
+  OBJECT-PROPERTIES
+  {
+    Date=26/04/17;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,TER01.01.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 123=rimd,
+                TableData 125=rimd,
+                TableData 5802=rimd;
+    CaptionML=[ENU=Update Purchase ECD;
+               FRA=Mise . jour achat RFC journalis'];
+    UseReqForm=Oui;
+    ProcessingOnly=Oui;
+    OnInitReport=BEGIN
+                   // --> 20160111-APP33-ADV01.01.00-2634-DGL01
+                   CMCSetup_G.GET;
+                   BooUseOriginalPostingDate_G := CMCSetup_G."Apply orig. date Purch ECD upd";
+                   // <-- 20160111-APP33-ADV01.01.00-2634-DGL01
+
+                   //IF ((USERID <> 'CYRIL JOLLY') AND (USERID <> '3LIADMIN')) THEN
+                     //ERROR('Ce report est en cours de dev, ne pas utiliser pour le moment svp');
+                 END;
+
+    OnPreReport=BEGIN
+                  IF PrintToExcel_G THEN
+                    MakeExcelInfo;
+
+                  // --> 20160713-Wi00-ADV01.01.00-3151-VMR01
+                  CMCSetup_G.GET;
+                  IF NOT (UpdateType_G IN [UpdateType_G::"Cancel ECD",UpdateType_G::"Unapply Budgeted Unit Cost"]) THEN
+                    IF ValuationType_G <> ValuationType_G::"Apply Purch. Discount" THEN
+                      IF ModificationValue_G = 0 THEN
+                        ERROR(Text002);
+
+                  IF NOT BooNoMessage_G THEN  BEGIN
+                    IF BooUseOriginalPostingDate_G THEN BEGIN
+                      IF NOT CONFIRM(Text60001) THEN
+                        ERROR('')
+                    END ELSE IF NOT CONFIRM(Text8053017,FALSE,WORKDATE) THEN
+                      ERROR('');
+                  END;
+                  // <-- 20160713-Wi00-ADV01.01.00-3151-VMR01
+
+                  // --> 20161110-Wi00-ADV01.01.00-2684-CJY01
+                  //On vide nos tables de travail si nous sommes en mode Test
+                  FctVideTables;
+                  FctRemplissageTables;
+                  //PurchECDExternalProcessTest_G.FctRemplissageTables("Value Entry");
+
+
+                  COMMIT;
+                  CLEAR(PurchECDExternalProcessTest_G);
+                END;
+
+    OnPostReport=BEGIN
+                   COMMIT;
+
+
+                   IF PrintToExcel_G THEN
+                     CreateExcelbook;
+
+                   //on vide nos tables de travail avant de terminer et de sortir
+                   //FctVideTables;
+
+                   // --> 20160701-Wi00-ADV01.01.00-3134-CJY01
+                   IF NOT BooNoMessage_G THEN
+                   // <-- 20160701-Wi00-ADV01.01.00-3134-CJY01
+                     MESSAGE(Text005);
+                 END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table5802;
+        DataItemTableView=SORTING(Item No.,Item Ledger Entry Type,Location Code,Variant Code,Global Dimension 1 Code,Global Dimension 2 Code,Posting Date)
+                          WHERE(Item Ledger Entry Type=FILTER(=Purchase),
+                                Entry Type=FILTER(=Direct Cost),
+                                Item Charge No.=FILTER(=''),
+                                ECD Invoice Entry No=FILTER(=0),
+                                Document Type=FILTER(<>' '),
+                                Adjustment=FILTER(Non),
+                                Cost per Unit=FILTER(>0),
+                                Valued Quantity=FILTER(<>0));
+        OnPreDataItem=BEGIN
+                        // --> 20161110-Wi00-ADV01.01.00-2684-CJY01
+                        IF Test_G THEN
+                          CurrReport.BREAK;
+                        // <-- 20161110-Wi00-ADV01.01.00-2684-CJY01
+
+                        CASE UpdateType_G OF UpdateType_G::"Cancel ECD":
+                          SETRANGE("Value Entry"."Document Type");
+                        END;
+
+
+                        NbEnregCopie_G := 0;
+                        CompteurCopie_G := 0;
+
+                        NbEnregCopie_G := "Value Entry".COUNT;
+                        IF ((NbEnregCopie_G > 0) AND (Test_G = FALSE)) THEN BEGIN
+                          DialogBox_G.OPEN(Text60009);
+                          DialogBox_G.UPDATE(1,Text60008);
+                          DialogBox_G.UPDATE(2,0);
+                          DialogBox_G.UPDATE(3,NbEnregCopie_G);
+                        END;
+                      END;
+
+        OnAfterGetRecord=VAR
+                           ValueEntryDisc_L@8053000 : Record 8053252;
+                           PurchDiscount_L@8053001 : Record 8053247;
+                           PrevFinalPrice_L@8053002 : Decimal;
+                           NextFinalPrice_L@8053003 : Decimal;
+                           ECDLedgerEntry_L@1000000001 : Record 8053088;
+                           ECDLedgerEntryComplementaire_L@1000000002 : Record 8053088;
+                         BEGIN
+
+
+
+                           DetailedECDExist_G := TRUE;
+                           PurchDiscount_L.RESET;
+                           PurchDiscount_L.SETRANGE(Type,PurchDiscount_L.Type::ECD);
+                           IF PurchDiscount_L.ISEMPTY THEN
+                             DetailedECDExist_G := FALSE;
+
+                           IF DetailedECDExist_G AND (DiscountCode_G = '') THEN
+                             IF NOT (UpdateType_G IN [UpdateType_G::"Apply Budgeted Unit Cost",UpdateType_G::"Unapply Budgeted Unit Cost"]) THEN
+                               CurrReport.SKIP;
+
+                           IF NOT DetailedECDExist_G AND (DiscountCode_G <> '') THEN
+                             CurrReport.SKIP;
+
+                           // --> 20170426-Wi00-ADV01.01.00-26642-CJY01
+                           IF ("Document Type" = "Document Type"::"Purchase Receipt") OR ("Document Type" = "Document Type"::"Purchase Return Shipment") THEN
+                             IF "Item Ledger Entry Quantity" = 0 THEN
+                               CurrReport.SKIP;
+                           // <-- 20170426-Wi00-ADV01.01.00-26642-CJY01
+
+
+                           IF NbEnregCopie_G > 0 THEN BEGIN
+
+                             CompteurCopie_G := CompteurCopie_G +1 ;
+                             DialogBox_G.UPDATE(2,CompteurCopie_G);
+                           END;
+
+                           //ICI INSERTION DE L'EXTERNALISATION
+                           // --> 20161110-Wi00-ADV01.01.00-2684-CJY01
+                           // L'utilisation du COMMIT est obligatoire pour r'gler les problSme de lock en production
+                           // le mode test original 'tait bas' sur un rollback g'ant en fin d'ex'cution ce qi devient donc impossible
+                           // le mode test va donc est trSs diff'rent du mode r'el
+                           //de ce fait, on va s'parer clairement l''x'cution en 2 cat'gories = r'elle ou test
+                           CLEAR(PurchECDExternalProcess_G);
+
+                           PurchECDExternalProcess_G.FctSetValue(DetailedECDExist_G,UpdateType_G,VendorNo_G,DiscountCode_G,
+                             ValuationType_G,ModificationValue_G,Test_G,PrintToExcel_G);
+                           PurchECDExternalProcess_G.FctSetDateMethod(BooUseOriginalPostingDate_G);
+
+                           IF NOT Test_G THEN BEGIN
+                             //MODE REEL
+                             IF NOT PurchECDExternalProcess_G.RUN("Value Entry") THEN BEGIN
+                                 RecBatchLog_G.CreateLog(RecBatchLog_G."Source Type"::Vendor,VendorNo_G,
+                                   STRSUBSTNO(Text60002,"Value Entry"."Entry No.",GETLASTERRORTEXT),
+                                   RecBatchLog_G."Process Type"::"Purchase ECD");
+                                 CountError_G += 1;
+                                 COMMIT;
+                                 CLEARLASTERROR;
+                             END
+                             ELSE BEGIN
+                                 PurchECDExternalProcess_G.FctGetBooCurrReportSkip(BooCurrReportSkip_G);
+                                 IF BooCurrReportSkip_G THEN BEGIN
+                                   {//Insertion du log juste pour tester
+                                   RecBatchLog_G.CreateLog(RecBatchLog_G."Source Type"::Vendor,VendorNo_G,
+                                     STRSUBSTNO(Text60002,"Value Entry"."Entry No.",'Skip'),
+                                     RecBatchLog_G."Process Type"::"Purchase ECD");}
+                                   COMMIT;
+                                   CurrReport.SKIP;
+                                 END
+                                 ELSE BEGIN
+                                   //Insertion du log juste pour tester
+                                   {RecBatchLog_G.CreateLog(RecBatchLog_G."Source Type"::Vendor,VendorNo_G,
+                                     STRSUBSTNO(Text60002,"Value Entry"."Entry No.",'No error'),
+                                     RecBatchLog_G."Process Type"::"Purchase ECD");
+                                   }
+                                   //On r'cupSre du code unit le temporaire necessaire . la gestion excel
+                                   PurchECDLedgEntryTmp_G.RESET;
+                                   PurchECDLedgEntryTmp_G.DELETEALL;
+                                   TempValueEntryDiscNewEcd_G.RESET;
+                                   TempValueEntryDiscNewEcd_G.DELETEALL;
+                                   PurchECDExternalProcess_G.FctGetTempPurchEcd(PurchECDLedgEntryTmp_G);
+                                   PurchECDExternalProcess_G.FctGetTempValueEntryDisc(TempValueEntryDiscNewEcd_G);
+                                   COMMIT;
+                                 END;
+                             END;
+
+                           END;
+                           // <-- 20161110-Wi00-ADV01.01.00-2684-CJY01
+                         END;
+
+        OnPostDataItem=BEGIN
+                         IF ((NbEnregCopie_G > 0) AND (Test_G = FALSE)) THEN BEGIN
+                           DialogBox_G.CLOSE;
+                         END;
+                       END;
+
+        ReqFilterFields=Source No.,Buy-from Vendor No.,Entry No.;
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=1;
+        DataItemTable=Table8053088;
+        DataItemTableView=SORTING(Value Entry No.);
+        OnPreDataItem=BEGIN
+                        // --> 20161110-Wi00-ADV01.01.00-2684-CJY01
+                        IF Test_G THEN
+                          CurrReport.BREAK;
+                        // <-- 20161110-Wi00-ADV01.01.00-2684-CJY01
+
+
+                        IF VendorNo_G <> '' THEN
+                          SETRANGE("ECD Vendor No.",VendorNo_G);
+                      END;
+
+        OnAfterGetRecord=VAR
+                           CMCPurchDiscValue_L@8053000 : Record 8053248;
+                         BEGIN
+
+                           IF PrintToExcel_G THEN BEGIN
+                             //ICI on traite les nouvelles RFC
+                             TempValueEntryDiscNewEcd_G.RESET;
+                             TempValueEntryDiscNewEcd_G.SETRANGE("Value Entry No.","CMC Purch. ECD Ledger Entry"."Value Entry No.");
+                             TempValueEntryDiscNewEcd_G.SETRANGE("Discount Code","CMC Purch. ECD Ledger Entry"."Discount Code");
+                             IF TempValueEntryDiscNewEcd_G.FINDSET THEN REPEAT
+                               MakeExcelDataBodyNewEcd;
+                             UNTIL TempValueEntryDiscNewEcd_G.NEXT = 0;
+
+                             //ICI on traite les RFC pr' existantes modifi'es
+                             IF PurchECDLedgEntryTmp_G.GET("Entry No.") THEN BEGIN
+                               IF ("ECD Amount (Receipt)" <> PurchECDLedgEntryTmp_G."ECD Amount (Receipt)") OR
+                                  ("ECD Amount (Invoice)" <> PurchECDLedgEntryTmp_G."ECD Amount (Invoice)") THEN BEGIN
+                                 MakeExcelDataBody(PurchECDLedgEntryTmp_G);
+                                 MakeExcelDataBody2("CMC Purch. ECD Ledger Entry");
+                               END;
+                             END;
+
+                           END;
+                         END;
+
+        OnPostDataItem=BEGIN
+                         PurchECDLedgEntryTmp_G.RESET;
+                         PurchECDLedgEntryTmp_G.DELETEALL;
+                       END;
+
+        DataItemLink=Value Entry No.=FIELD(Entry No.);
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemTable=Table60083;
+        DataItemTableView=SORTING(Unique Id,Item No.,Item Ledger Entry Type,Location Code,Variant Code,Global Dimension 1 Code,Global Dimension 2 Code,Posting Date)
+                          WHERE(Item Ledger Entry Type=FILTER(=Purchase),
+                                Entry Type=FILTER(=Direct Cost),
+                                Item Charge No.=FILTER(=''),
+                                ECD Invoice Entry No=FILTER(=0),
+                                Document Type=FILTER(<>' '),
+                                Adjustment=FILTER(Non),
+                                Cost per Unit=FILTER(>0),
+                                Valued Quantity=FILTER(<>0));
+        OnPreDataItem=BEGIN
+                        // --> 20161110-Wi00-ADV01.01.00-2684-CJY01
+                        IF NOT Test_G THEN
+                          CurrReport.BREAK;
+                        SETRANGE("Unique Id",UniqueId_G);
+                        // <-- 20161110-Wi00-ADV01.01.00-2684-CJY01
+
+
+                        CASE UpdateType_G OF UpdateType_G::"Cancel ECD":
+                          SETRANGE("Document Type");
+                        END;
+
+                        //MESSAGE('%1',"Value Entry Test Test Mode".COUNT);
+                        // --> 20161110-Wi00-ADV01.01.00-2684-CJY01
+                        NbEnregCopie_G := 0;
+                        CompteurCopie_G := 0;
+
+                        NbEnregCopie_G := "Value Entry Test Test Mode".COUNT;
+                        IF ((NbEnregCopie_G > 0) AND (Test_G = TRUE)) THEN BEGIN
+                          DialogBox_G.OPEN(Text60006);
+                          DialogBox_G.UPDATE(1,Text60007);
+                          DialogBox_G.UPDATE(2,0);
+                          DialogBox_G.UPDATE(3,NbEnregCopie_G);
+                        END;
+                        // <-- 20161110-Wi00-ADV01.01.00-2684-CJY01
+                      END;
+
+        OnAfterGetRecord=VAR
+                           ValueEntryDisc_L@1000000003 : Record 8053252;
+                           PurchDiscount_L@1000000002 : Record 8053247;
+                           PrevFinalPrice_L@1000000001 : Decimal;
+                           NextFinalPrice_L@1000000000 : Decimal;
+                         BEGIN
+                           // --> 20161110-Wi00-ADV01.01.00-2684-CJY01
+
+
+
+                           DetailedECDExist_G := TRUE;
+                           PurchDiscount_L.RESET;
+                           PurchDiscount_L.SETRANGE(Type,PurchDiscount_L.Type::ECD);
+                           IF PurchDiscount_L.ISEMPTY THEN
+                             DetailedECDExist_G := FALSE;
+
+                           IF DetailedECDExist_G AND (DiscountCode_G = '') THEN
+                             IF NOT (UpdateType_G IN [UpdateType_G::"Apply Budgeted Unit Cost",UpdateType_G::"Unapply Budgeted Unit Cost"]) THEN
+                               CurrReport.SKIP;
+
+                           IF NOT DetailedECDExist_G AND (DiscountCode_G <> '') THEN
+                             CurrReport.SKIP;
+
+                           // --> 20170426-Wi00-ADV01.01.00-26642-CJY01
+                           IF ("Document Type" = "Document Type"::"Purchase Receipt") OR ("Document Type" = "Document Type"::"Purchase Return Shipment") THEN
+                             IF "Item Ledger Entry Quantity" = 0 THEN
+                               CurrReport.SKIP;
+                           // <-- 20170426-Wi00-ADV01.01.00-26642-CJY01
+
+
+                           //ICI INSERTION DE L'EXTERNALISATION
+                           // --> 20161110-Wi00-ADV01.01.00-2684-CJY01
+                           // L'utilisation du COMMIT est obligatoire pour r'gler les problSme de lock en production
+                           // le mode test original 'tait bas' sur un rollback g'ant en fin d'ex'cution ce qi devient donc impossible
+                           // le mode test va donc est trSs diff'rent du mode r'el
+                           //de ce fait, on va s'parer clairement l''x'cution en 2 cat'gories = r'elle ou test
+
+                           IF NbEnregCopie_G > 0 THEN BEGIN
+
+                             CompteurCopie_G := CompteurCopie_G +1 ;
+                             DialogBox_G.UPDATE(2,CompteurCopie_G);
+                           END;
+
+                           CLEAR(PurchECDExternalProcessTest_G);
+
+                           PurchECDExternalProcessTest_G.FctSetValue(DetailedECDExist_G,UpdateType_G,VendorNo_G,DiscountCode_G,
+                             ValuationType_G,ModificationValue_G,Test_G,PrintToExcel_G);
+                           PurchECDExternalProcessTest_G.FctSetDateMethod(BooUseOriginalPostingDate_G);
+
+                           IF Test_G THEN BEGIN
+                             //MODE TEST
+                             IF NOT PurchECDExternalProcessTest_G.RUN("Value Entry Test Test Mode") THEN BEGIN
+                                 RecBatchLog_G.CreateLog(RecBatchLog_G."Source Type"::Vendor,VendorNo_G,
+                                   STRSUBSTNO(Text60002,"Value Entry Test Test Mode"."Entry No.",GETLASTERRORTEXT),
+                                   RecBatchLog_G."Process Type"::"Purchase ECD");
+                                 CountError_G += 1;
+                                 COMMIT;
+                                 CLEARLASTERROR;
+                             END
+                             ELSE BEGIN
+                                 PurchECDExternalProcessTest_G.FctGetBooCurrReportSkip(BooCurrReportSkip_G);
+                                 IF BooCurrReportSkip_G THEN BEGIN
+                                   //Insertion du log juste pour tester
+                                   {RecBatchLog_G.CreateLog(RecBatchLog_G."Source Type"::Vendor,VendorNo_G,
+                                     STRSUBSTNO(Text60002,"Value Entry Test Test Mode"."Entry No.",'Skip'),
+                                     RecBatchLog_G."Process Type"::"Purchase ECD"); }
+                                   COMMIT;
+                                   CurrReport.SKIP;
+                                 END
+                                 ELSE BEGIN
+                                   //Insertion du log juste pour tester
+                                   {RecBatchLog_G.CreateLog(RecBatchLog_G."Source Type"::Vendor,VendorNo_G,
+                                     STRSUBSTNO(Text60002,"Value Entry Test Test Mode"."Entry No.",'No error'),
+                                     RecBatchLog_G."Process Type"::"Purchase ECD");
+                                   }
+                                   //On r'cupSre du code unit le temporaire necessaire . la gestion excel
+                                   TempPurchEcdEntryCopie_G.RESET;
+                                   TempPurchEcdEntryCopie_G.DELETEALL;
+                                   TempValueEntryDisNewEcdCopie_G.RESET;
+                                   TempValueEntryDisNewEcdCopie_G.DELETEALL;
+                                   PurchECDExternalProcessTest_G.FctGetTempPurchEcd(TempPurchEcdEntryCopie_G);
+                                   PurchECDExternalProcessTest_G.FctGetTempValueEntryDisc(TempValueEntryDisNewEcdCopie_G);
+                                   COMMIT;
+                                 END;
+                             END;
+
+                           END;
+
+                           // <-- 20161110-Wi00-ADV01.01.00-2684-CJY01
+                         END;
+
+        OnPostDataItem=BEGIN
+                         IF ((NbEnregCopie_G > 0) AND (Test_G = TRUE)) THEN BEGIN
+                           DialogBox_G.CLOSE;
+                         END;
+                       END;
+
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=1;
+        DataItemTable=Table60084;
+        DataItemTableView=SORTING(Unique Id,Value Entry No.);
+        OnPreDataItem=BEGIN
+                        // --> 20161110-Wi00-ADV01.01.00-2684-CJY01
+                        IF NOT Test_G THEN
+                          CurrReport.BREAK;
+                        SETRANGE("Unique Id",UniqueId_G);
+
+                        // <-- 20161110-Wi00-ADV01.01.00-2684-CJY01
+
+
+                        IF VendorNo_G <> '' THEN
+                          SETRANGE("ECD Vendor No.",VendorNo_G);
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           IF PrintToExcel_G THEN BEGIN
+                             //ICI on traite les nouvelles RFC
+                             TempValueEntryDisNewEcdCopie_G.RESET;
+                             TempValueEntryDisNewEcdCopie_G.SETRANGE("Unique Id",UniqueId_G);
+                             TempValueEntryDisNewEcdCopie_G.SETRANGE("Value Entry No.","Purch Ecd Entry Test Mode"."Value Entry No.");
+                             TempValueEntryDisNewEcdCopie_G.SETRANGE("Discount Code","Purch Ecd Entry Test Mode"."Discount Code");
+                             IF TempValueEntryDisNewEcdCopie_G.FINDSET THEN REPEAT
+                               MakeExcelDataBodyNewEcdTest;
+                             UNTIL TempValueEntryDisNewEcdCopie_G.NEXT = 0;
+
+                             //ICI on traite les RFC pr' existantes modifi'es
+                             IF TempPurchEcdEntryCopie_G.GET(UniqueId_G,"Entry No.") THEN BEGIN
+                               IF ("ECD Amount (Receipt)" <> TempPurchEcdEntryCopie_G."ECD Amount (Receipt)") OR
+                                  ("ECD Amount (Invoice)" <> TempPurchEcdEntryCopie_G."ECD Amount (Invoice)") THEN BEGIN
+                                 MakeExcelDataBodyTest(TempPurchEcdEntryCopie_G);
+                                 MakeExcelDataBodyTest2("Purch Ecd Entry Test Mode");
+                               END;
+                             END;
+
+                           END;
+                         END;
+
+        DataItemLink=Value Entry No.=FIELD(Entry No.);
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=9020;
+      Height=4180;
+    }
+    CONTROLS
+    {
+      { 8053002;TextBox   ;3630 ;330  ;2530 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Vendor No.;
+                                                              FRA=N› du fournisseur];
+                                                   SourceExpr=VendorNo_G;
+                                                   TableRelation=Vendor }
+      { 8053003;Label     ;220  ;330  ;3300 ;440  ;ParentControl=8053002 }
+      { 8053004;TextBox   ;3630 ;880  ;2530 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Discount Code;
+                                                              FRA=Code remise];
+                                                   SourceExpr=DiscountCode_G;
+                                                   TableRelation="CMC Purch. Discount" WHERE (Type=CONST(ECD)) }
+      { 8053005;Label     ;220  ;880  ;3300 ;440  ;ParentControl=8053004 }
+      { 8053006;TextBox   ;3630 ;1430 ;2530 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Modification Type;
+                                                              FRA=Type de modification];
+                                                   SourceExpr=UpdateType_G }
+      { 8053007;Label     ;220  ;1430 ;3300 ;440  ;ParentControl=8053006 }
+      { 8053008;TextBox   ;3630 ;2530 ;2530 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Value;
+                                                              FRA=Valeur];
+                                                   DecimalPlaces=3:3;
+                                                   SourceExpr=ModificationValue_G }
+      { 8053009;Label     ;220  ;2530 ;3300 ;440  ;ParentControl=8053008 }
+      { 8053012;CheckBox  ;3630 ;3630 ;440  ;440  ;InPage=-1;
+                                                   ShowCaption=Non;
+                                                   CaptionML=[ENU=Test;
+                                                              FRA=Test];
+                                                   SourceExpr=Test_G;
+                                                   OnValidate=BEGIN
+                                                                // --> 20140114-APP33-CMC02.02.00-1412-FDA01
+                                                                IF (PrintToExcel_G = FALSE) AND (Test_G = TRUE) THEN
+                                                                  ERROR(Text006);
+                                                                // <-- 20140114-APP33-CMC02.02.00-1412-FDA01
+                                                              END;
+                                                               }
+      { 8053013;Label     ;220  ;3630 ;3300 ;440  ;ParentControl=8053012;
+                                                   InPage=-1 }
+      { 8053000;TextBox   ;3630 ;1980 ;2530 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Modification Type;
+                                                              FRA=Type de modification];
+                                                   SourceExpr=ValuationType_G }
+      { 8053011;CheckBox  ;3630 ;3080 ;440  ;440  ;ShowCaption=Non;
+                                                   CaptionML=ENU=Print to Excel;
+                                                   SourceExpr=PrintToExcel_G }
+      { 8053014;Label     ;220  ;3080 ;3300 ;440  ;ParentControl=8053011;
+                                                   InPage=-1 }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      OnOpenPage=BEGIN
+                   // --> 20140812-APP33-CMC02.02.00-FDA01
+                   SetEnable;
+                   // <-- 20140812-APP33-CMC02.02.00-FDA01
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 8053005;0;Container ;
+                  CaptionML=ENU=<Control8053005>;
+                  ContainerType=ContentArea }
+
+      { 8053001;1;Group     ;
+                  CaptionML=[ENU=Options;
+                             FRA=Options];
+                  GroupType=Group }
+
+      { 8053000;2;Field     ;
+                  CaptionML=[ENU=Vendor No.;
+                             FRA=N› du fournisseur];
+                  SourceExpr=VendorNo_G;
+                  TableRelation=Vendor }
+
+      { 8053002;2;Field     ;
+                  CaptionML=[ENU=Discount Code;
+                             FRA=Code remise];
+                  SourceExpr=DiscountCode_G;
+                  TableRelation="CMC Purch. Discount" WHERE (Type=CONST(ECD)) }
+
+      { 8053003;2;Field     ;
+                  CaptionML=[ENU=Modification Type;
+                             FRA=Type mise . jour];
+                  OptionCaptionML=[ENU=ECD Update,Cancel ECD,Apply Budgeted Unit Cost,Unapply Budgeted Unit Cost;
+                                   FRA=MAJ RFC,Solde RFC,Appliquer co-t unitaire pr'visionnel,Enlever co-t unitaire pr'visionnel];
+                  SourceExpr=UpdateType_G;
+                  OnValidate=BEGIN
+                               // --> 20140812-APP33-CMC02.02.00-FDA01
+                               SetEnable;
+                               // <-- 20140812-APP33-CMC02.02.00-FDA01
+                             END;
+                              }
+
+      { 8053006;2;Field     ;
+                  CaptionML=[ENU=Valuation Type;
+                             FRA=Type valorisation];
+                  OptionCaptionML=[ENU=New ECD Amount,New ECD Percentage,Change ECD amount,Apply Purch. Discount;
+                                   FRA=Nouveau montant RFC,Nouveau pourcentage RFC,Modifier montant RFC,Appliquer remises achat];
+                  SourceExpr=ValuationType_G;
+                  Enabled=EnableValuationType_G }
+
+      { 8053004;2;Field     ;
+                  CaptionML=[ENU=Value;
+                             FRA=Valeur];
+                  DecimalPlaces=3:3;
+                  SourceExpr=ModificationValue_G;
+                  Enabled=EnableValue_G }
+
+      { 8053008;2;Field     ;
+                  CaptionML=[ENU=Send to Excel;
+                             FRA=Envoyer vers Excel];
+                  SourceExpr=PrintToExcel_G;
+                  OnValidate=BEGIN
+                               // --> 20140114-APP33-CMC02.02.00-1412-FDA01
+                               IF (PrintToExcel_G = FALSE) AND (Test_G = TRUE) THEN
+                                 ERROR(Text006);
+                               // <-- 20140114-APP33-CMC02.02.00-1412-FDA01
+                             END;
+                              }
+
+      { 8053007;2;Field     ;
+                  CaptionML=[ENU=Test;
+                             FRA=Test];
+                  SourceExpr=Test_G;
+                  OnValidate=BEGIN
+                               // --> 20140114-APP33-CMC02.02.00-1412-FDA01
+                               IF (PrintToExcel_G = FALSE) AND (Test_G = TRUE) THEN
+                                 ERROR(Text006);
+                               // <-- 20140114-APP33-CMC02.02.00-1412-FDA01
+                             END;
+                              }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      VendorNo_G@8053000 : Code[20];
+      DiscountCode_G@8053001 : Code[20];
+      ModificationType_G@8053002 : 'Create discount,New amount,Modify amount,Modify percentage,Apply Purch. Discount';
+      ModificationValue_G@8053003 : Decimal;
+      ValueEntryDisc_G@8053004 : Record 8053252;
+      Text001@8053005 : TextConst 'ENU="Discount already exists for Discount Code=%1, Value Entry No. =%2 !";FRA="Remise existe d'j. pour le code de remise =%1, 'criture valeur =%2!"';
+      ValueEntryDiscForUpdate_G@8053007 : Record 8053252;
+      PurchDiscount_G@8053008 : Record 8053247;
+      PurchLedgEntry_G@8053009 : Record 8053088;
+      Text002@8053011 : TextConst 'ENU=Field "Value" must be filled!;FRA=Champ "Valeur" doit ^tre rempli!';
+      Text003@8053012 : TextConst 'ENU=Field "Discount Code" must be filled!;FRA=Champ "Code remise" doit ^tre rempli!';
+      Text004@8053014 : TextConst 'ENU=Discount is greater than Base Value for Value Entry No. %1!;FRA=La remise est sup'rieure . la valeur de base pour l''ecriture valeur n› %1!';
+      Text005@8053006 : TextConst 'ENU=Report successfully run!;FRA=Rapport ex'cute avec succSs!';
+      TempValueEntryDisc_G@8053013 : TEMPORARY Record 8053252;
+      PrintToExcel_G@8053015 : Boolean;
+      Test_G@8053016 : Boolean;
+      Text006@8053017 : TextConst 'ENU="In order to test you need Send To Excel = Yes";FRA="Pour tester vous devez mettre Envoyer . Excel = Oui"';
+      ExcelBuf_G@8053018 : TEMPORARY Record 370;
+      Text007@8053019 : TextConst 'ENU=Period: %1;FRA=P'riode : %1';
+      Text008@8053026 : TextConst 'ENU=Company Name;FRA=Nom de la soci't'';
+      Text009@8053025 : TextConst 'ENU=Report No.;FRA=N› 'tat';
+      Text010@8053024 : TextConst 'ENU=Report Name;FRA=Nom 'tat';
+      Text011@8053023 : TextConst 'ENU=User ID;FRA=Code utilisateur';
+      Text012@8053022 : TextConst 'ENU=Date;FRA=Date';
+      Text013@8053021 : TextConst 'ENU=Item No. Filter;FRA=Filtre article';
+      Text014@8053020 : TextConst 'ENU=Period Filter;FRA=Filtre p'riode';
+      Text015@8053027 : TextConst 'ENU=Quantity;FRA=Quantit'';
+      Text016@8053029 : TextConst 'ENU=ECD Unit Amount (before);FRA=Montant unitaire RFC r'ception (avant)';
+      Text017@8053028 : TextConst 'ENU=ECD Amount (before);FRA=Montant RFC r'ception (avant)';
+      Text018@8053030 : TextConst 'ENU=ECD Unit Amount (after);FRA=Montant unitaire RFC r'ception (aprSs)';
+      Text019@8053031 : TextConst 'ENU=ECD Amount (after);FRA=Montant RFC r'ception (aprSs)';
+      Text020@8053032 : TextConst 'ENU=Data;FRA=Donn'es';
+      Text021@8053033 : TextConst 'ENU=Update Purchase ECD;FRA=Mise . jour achat RFC';
+      Text022@8053034 : TextConst 'ENU=Vendor No.;FRA=N› du fournisseur';
+      Text023@8053035 : TextConst 'ENU=Discount Code;FRA=Code remise';
+      Text024@8053036 : TextConst 'ENU=Modification Type;FRA=Type de modification';
+      Text025@8053037 : TextConst 'ENU=Value;FRA=Valeur';
+      Text026@8053038 : TextConst 'ENU=Send to Excel;FRA=Envoyer . Excel';
+      Text027@8053039 : TextConst 'ENU=Test;FRA=Test';
+      Text028@8053040 : TextConst 'ENU='';FRA=''';
+      VarInteger_G@8053041 : Integer;
+      Text029@8053042 : TextConst 'ENU=Purchase ECD Ledger Entry Filter;FRA=Filtre Ecritures RFC achat';
+      UpdateType_G@8053044 : 'ECD Update,Cancel ECD,Apply Budgeted Unit Cost,Unapply Budgeted Unit Cost';
+      ValuationType_G@8053043 : 'New ECD Amount,New ECD Percentage,Change ECD amount,Apply Purch. Discount';
+      Text030@8053045 : TextConst 'ENU=It is not possible to add an ECD amount when the ECD is created for the first time.;FRA=Il n''est pas possible d''ajouter un montant de RFC quand la RFC est cr'e pour la premiSre fois.';
+      WasCreated_G@1000000000 : Boolean;
+      ECDMgt_G@1000000001 : Codeunit 8053038;
+      Text8053017@1000000003 : TextConst 'ENU=The changes will be posted on %1. Do you want to continue?;FRA=Les modifications vont ^tre comptabilis'es en date du %1. Voulez-vous continuer ?';
+      EnableValuationType_G@8053010 : Boolean INDATASET;
+      EnableValue_G@8053046 : Boolean INDATASET;
+      Text8053018@8053048 : TextConst 'ENU=Final Price is greater than Base Value for Value Entry No. %1!;FRA=Le prix final est sup'rieure . la valeur de base pour l''ecriture valeur n› %1!';
+      Text8053019@8053047 : TextConst 'ENU="%1 not found for %2 = %3 ";FRA="%1 pas trouv' de %2 = %3"';
+      PurchECDLedgEntryTmp_G@8053049 : TEMPORARY Record 8053088;
+      CMCSetup_G@8053050 : Record 8052982;
+      DetailedECDExist_G@8053051 : Boolean;
+      Text8053020@8053052 : TextConst 'ENU=Incorrect Valuation Type;FRA=Type valorisation incorrect';
+      Text8053021@8053053 : TextConst 'ENU="%1 < 0 for %2, %3 = %4.";FRA="%1 < 0 pour %2, %3 = %4."';
+      Text031@8053057 : TextConst 'ENU=ECD Unit Amount (before);FRA=Montant unitaire RFC facture (avant)';
+      Text032@8053056 : TextConst 'ENU=ECD Amount (before);FRA=Montant RFC facture (avant)';
+      Text033@8053055 : TextConst 'ENU=ECD Unit Amount (after);FRA=Montant unitaire RFC facture (aprSs)';
+      Text034@8053054 : TextConst 'ENU=ECD Amount (after);FRA=Montant RFC facture (aprSs)';
+      Text60000@1000000004 : TextConst 'ENU=Discount is greater than Base Value for Value Entry No. %1!;FRA=La remise est sup'rieure . la valeur de base pour l''ecriture valeur n› %1 (Type document : %2, N› document : %3, ligne document : %4)!';
+      BooUseOriginalPostingDate_G@1000000002 : Boolean INDATASET;
+      Text60001@1000000006 : TextConst 'ENU=The changes will be posted original transaction posting date. Do you want to continue?;FRA=Les modifications vont ^tre comptabilis'es en date de compta de l'''criture d''origine. Voulez-vous continuer ?';
+      BooNoMessage_G@1000000005 : Boolean;
+      PurchECDExternalProcess_G@1000000007 : Codeunit 60052;
+      RecBatchLog_G@1000000009 : Record 8053505;
+      CountError_G@1000000008 : Integer;
+      Text60002@1000000010 : TextConst 'FRA=Ecriture valeur %1, erreur %2';
+      BooCurrReportSkip_G@1000000011 : Boolean;
+      Text60003@1000000012 : TextConst 'FRA=Ecriture valeur %1, pas d''erreur';
+      ValueEntryCopie_G@1000000013 : Record 60083;
+      PurchEcdEntryCopie_G@1000000014 : Record 60084;
+      ValueEntryDiscCopie_G@1000000015 : Record 60085;
+      DetailedEcdEntryCopie_G@1000000016 : Record 60086;
+      Test60004@1000000017 : TextConst 'FRA=Erreur, impossible de d'terminer un identifiant unique pour le mode test.';
+      UniqueId_G@1000000018 : Code[100];
+      Text60005@1000000019 : TextConst 'ENU=Company : #1####################\\Progress : @2@@@@@@@@@@@@@@@@@@@@\\No. Of Update : #3####################;FRA=Pr'paration des donn'es de test \\Table :     #1####################\\Enreg. :      #2####################\\Total : #3####################';
+      DialogBox_G@1000000020 : Dialog;
+      NbEnregCopie_G@1000000021 : Integer;
+      CompteurCopie_G@1000000022 : Integer;
+      PurchECDExternalProcessTest_G@1000000023 : Codeunit 60053;
+      TempValueEntryDiscNewEcd_G@1000000024 : TEMPORARY Record 8053252;
+      TempPurchEcdEntryCopie_G@1000000025 : TEMPORARY Record 60084;
+      TempValueEntryDisNewEcdCopie_G@1000000026 : TEMPORARY Record 60085;
+      Text60006@1000000027 : TextConst 'ENU=Company : #1####################\\Progress : @2@@@@@@@@@@@@@@@@@@@@\\No. Of Update : #3####################;FRA=Traitement des donn'es de test \\Table :     #1####################\\Enreg. :      #2####################\\Total : #3####################';
+      Text60007@1000000028 : TextConst 'FRA=Ecritures valeurs Test';
+      Text60008@1000000029 : TextConst 'FRA=Ecritures valeurs';
+      Text60009@1000000030 : TextConst 'ENU=Company : #1####################\\Progress : @2@@@@@@@@@@@@@@@@@@@@\\No. Of Update : #3####################;FRA=Traitement des donn'es \\Table :     #1####################\\Enreg. :      #2####################\\Total : #3####################';
+
+    PROCEDURE MakeExcelInfo@3();
+    BEGIN
+      ExcelBuf_G.SetUseInfoSheed;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text008),FALSE,'',TRUE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn(COMPANYNAME,FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text010),FALSE,'',TRUE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text021),FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text009),FALSE,'',TRUE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn(REPORT::"CMC Update Purch. ECD",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text011),FALSE,'',TRUE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn(USERID,FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text012),FALSE,'',TRUE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn(TODAY,FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text029),FALSE,'',TRUE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn("CMC Purch. ECD Ledger Entry".GETFILTERS,FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text022),FALSE,'',TRUE,FALSE,FALSE,'');
+      IF EVALUATE(VarInteger_G,VendorNo_G) THEN
+        ExcelBuf_G.AddInfoColumn(FORMAT(Text028 + VendorNo_G,0,'<Text>'),FALSE,'',FALSE,FALSE,FALSE,'')
+      ELSE
+        ExcelBuf_G.AddInfoColumn(FORMAT(VendorNo_G,0,'<Text>'),FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text023),FALSE,'',TRUE,FALSE,FALSE,'');
+      IF EVALUATE(VarInteger_G,VendorNo_G) THEN
+        ExcelBuf_G.AddInfoColumn(FORMAT(Text028 + DiscountCode_G,0,'<Text>'),FALSE,'',FALSE,FALSE,FALSE,'')
+      ELSE
+        ExcelBuf_G.AddInfoColumn(FORMAT(DiscountCode_G,0,'<Text>'),FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text024),FALSE,'',TRUE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn(FORMAT(UpdateType_G,0,1),FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn(FORMAT(ValuationType_G,0,1),FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text025),FALSE,'',TRUE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn(FORMAT(ModificationValue_G,0,2),FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text026),FALSE,'',TRUE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn(FORMAT(PrintToExcel_G,0,1),FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.NewRow;
+      ExcelBuf_G.AddInfoColumn(FORMAT(Text027),FALSE,'',TRUE,FALSE,FALSE,'');
+      ExcelBuf_G.AddInfoColumn(FORMAT(Test_G,0,1),FALSE,'',FALSE,FALSE,FALSE,'');
+
+      ExcelBuf_G.ClearNewRow;
+
+      MakeExcelDataHeader;
+    END;
+
+    LOCAL PROCEDURE MakeExcelDataHeader@2();
+    BEGIN
+      ExcelBuf_G.AddColumn("CMC Purch. ECD Ledger Entry".FIELDCAPTION("Item Ledger Entry No."),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn("CMC Purch. ECD Ledger Entry".FIELDCAPTION("Document No."),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn("CMC Purch. ECD Ledger Entry".FIELDCAPTION("Posting Date"),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn("CMC Purch. ECD Ledger Entry".FIELDCAPTION("Item No."),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn("CMC Purch. ECD Ledger Entry".FIELDCAPTION("Variant Code"),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn("CMC Purch. ECD Ledger Entry".FIELDCAPTION("Discount Code"),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn("CMC Purch. ECD Ledger Entry".FIELDCAPTION(Description),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn(FORMAT(Text015),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn(FORMAT(Text016),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn(FORMAT(Text017),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn(FORMAT(Text031),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn(FORMAT(Text032),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn(FORMAT(Text018),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn(FORMAT(Text019),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn(FORMAT(Text033),FALSE,'',TRUE,FALSE,TRUE,'');
+      ExcelBuf_G.AddColumn(FORMAT(Text034),FALSE,'',TRUE,FALSE,TRUE,'');
+    END;
+
+    PROCEDURE MakeExcelDataBody@4(PurchECDLedgerEntry_P@8053000 : Record 8053088);
+    VAR
+      BlankFiller@1000 : Text[250];
+    BEGIN
+      ExcelBuf_G.NewRow;
+
+      ExcelBuf_G.AddColumn(PurchECDLedgerEntry_P."Item Ledger Entry No.",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchECDLedgerEntry_P."Document No.",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchECDLedgerEntry_P."Posting Date",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchECDLedgerEntry_P."Item No.",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchECDLedgerEntry_P."Variant Code",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchECDLedgerEntry_P."Discount Code",FALSE,'',FALSE,FALSE,FALSE,'');
+
+      ExcelBuf_G.AddColumn(GetItemDescription(PurchECDLedgerEntry_P."Item No.",
+                                              PurchECDLedgerEntry_P."Variant Code"),FALSE,'',TRUE,FALSE,TRUE,'');
+
+      ExcelBuf_G.AddColumn(PurchECDLedgerEntry_P."Valued Quantity",FALSE,'',FALSE,FALSE,FALSE,'');
+
+
+      ExcelBuf_G.AddColumn(PurchECDLedgerEntry_P."ECD Unit Amount (Receipt)",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchECDLedgerEntry_P."ECD Amount (Receipt)",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchECDLedgerEntry_P."ECD Unit Amount (Invoice)",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchECDLedgerEntry_P."ECD Amount (Invoice)",FALSE,'',FALSE,FALSE,FALSE,'');
+    END;
+
+    PROCEDURE MakeExcelDataBody2@8053001(PurchECDLedgerEntry_P@8053000 : Record 8053088);
+    VAR
+      BlankFiller@1000 : Text[250];
+    BEGIN
+
+      ExcelBuf_G.AddColumn(PurchECDLedgerEntry_P."ECD Unit Amount (Receipt)",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchECDLedgerEntry_P."ECD Amount (Receipt)",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchECDLedgerEntry_P."ECD Unit Amount (Invoice)",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchECDLedgerEntry_P."ECD Amount (Invoice)",FALSE,'',FALSE,FALSE,FALSE,'');
+    END;
+
+    PROCEDURE CreateExcelbook@1();
+    BEGIN
+      ExcelBuf_G.CreateBook;
+      ExcelBuf_G.CreateSheet(Text020,Text021,COMPANYNAME,USERID);
+      ExcelBuf_G.GiveUserControl;
+      //IF Test_G = TRUE THEN
+        //ERROR('');
+    END;
+
+    PROCEDURE MakeExcelDataBody3@8053000();
+    VAR
+      BlankFiller@1000 : Text[250];
+    BEGIN
+      ExcelBuf_G.NewRow;
+
+      ExcelBuf_G.AddColumn("Value Entry"."Item Ledger Entry No.",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn("Value Entry"."Document No.",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn("Value Entry"."Posting Date",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn("Value Entry"."Item No.",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn("Value Entry"."Variant Code",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(DiscountCode_G,FALSE,'',FALSE,FALSE,FALSE,'');
+
+      ExcelBuf_G.AddColumn(GetItemDescription("Value Entry"."Item No.",
+                                              "Value Entry"."Variant Code"),FALSE,'',TRUE,FALSE,TRUE,'');
+
+      ExcelBuf_G.AddColumn("Value Entry"."Valued Quantity",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(0,FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(0,FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(0,FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(0,FALSE,'',FALSE,FALSE,FALSE,'');
+
+      CASE "Value Entry"."Document Type" OF
+        "Value Entry"."Document Type"::"Purchase Receipt","Value Entry"."Document Type"::"Purchase Return Shipment":
+          BEGIN
+            ExcelBuf_G.AddColumn(ValueEntryDiscForUpdate_G."Discount Amount",FALSE,'',FALSE,FALSE,FALSE,'');
+            ExcelBuf_G.AddColumn(ValueEntryDiscForUpdate_G."Discount Amount" * "Value Entry"."Valued Quantity",
+                                 FALSE,'',FALSE,FALSE,FALSE,'');
+            ExcelBuf_G.AddColumn(0,FALSE,'',FALSE,FALSE,FALSE,'');
+            ExcelBuf_G.AddColumn(0,FALSE,'',FALSE,FALSE,FALSE,'');
+          END;
+        "Value Entry"."Document Type"::"Purchase Invoice","Value Entry"."Document Type"::"Purchase Credit Memo":
+          BEGIN
+            ExcelBuf_G.AddColumn(ValueEntryDiscForUpdate_G."Discount Amount",FALSE,'',FALSE,FALSE,FALSE,'');
+            ExcelBuf_G.AddColumn(ValueEntryDiscForUpdate_G."Discount Amount" * -"Value Entry"."Valued Quantity",
+                                 FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(ValueEntryDiscForUpdate_G."Discount Amount",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(ValueEntryDiscForUpdate_G."Discount Amount" * "Value Entry"."Valued Quantity",
+                           FALSE,'',FALSE,FALSE,FALSE,'');
+      END;
+
+      END;
+    END;
+
+    PROCEDURE GetItemDescription@8053002(ItemCode_P@8053000 : Code[20];ItemVariantCode_P@8053001 : Code[20]) : Text[50];
+    VAR
+      Item_L@8053002 : Record 27;
+      ItemVariant_L@8053003 : Record 5401;
+      Description_L@8053004 : Text[50];
+    BEGIN
+      Description_L := '';
+
+      IF ItemVariantCode_P <> '' THEN BEGIN
+        IF ItemVariant_L.GET(ItemCode_P,ItemVariantCode_P) THEN
+          Description_L := ItemVariant_L.Description;
+      END;
+
+      IF (Description_L = '') AND Item_L.GET(ItemCode_P) THEN
+        Description_L := Item_L.Description;
+
+      EXIT(Description_L);
+    END;
+
+    PROCEDURE SetEnable@8053003();
+    BEGIN
+      CASE UpdateType_G OF
+        UpdateType_G::"ECD Update" : BEGIN
+          EnableValuationType_G := TRUE;
+          EnableValue_G := TRUE;
+        END;
+        UpdateType_G::"Cancel ECD" : BEGIN
+          EnableValuationType_G := FALSE;
+          EnableValue_G := FALSE;
+        END;
+        UpdateType_G::"Apply Budgeted Unit Cost" : BEGIN
+          EnableValuationType_G := FALSE;
+          EnableValue_G := TRUE;
+        END;
+        UpdateType_G::"Unapply Budgeted Unit Cost" : BEGIN
+          EnableValuationType_G := FALSE;
+          EnableValue_G := FALSE;
+        END;
+      END;
+    END;
+
+    PROCEDURE FctInitNoMessage@1000000005(BooNoMessage_P@1000000000 : Boolean);
+    BEGIN
+
+      // --> 20160701-Wi00-ADV01.01.00-3134-CJY01
+      BooNoMessage_G := BooNoMessage_P;
+      // <-- 20160701-Wi00-ADV01.01.00-3134-CJY01
+    END;
+
+    PROCEDURE FctInitLaunch@1000000002(VendorNo_P@1000000002 : Code[20];DiscountCode_P@1000000001 : Code[20]);
+    BEGIN
+      VendorNo_G := VendorNo_P;
+      DiscountCode_G := DiscountCode_P;
+      ModificationType_G := 0;
+      ValuationType_G := 3;
+    END;
+
+    PROCEDURE FctReturnUniqueId@1000000012() : Code[100];
+    VAR
+      Session_L@1000000000 : Record 2000000009;
+    BEGIN
+      Session_L.RESET;
+      Session_L.SETRANGE("Ma session",TRUE);
+      IF Session_L.FINDSET THEN
+        EXIT(COPYSTR(STRSUBSTNO('%1',Session_L."ID connexion") + Session_L."Code utilisateur",1,250))
+      ELSE
+        ERROR(Test60004);
+    END;
+
+    PROCEDURE MakeExcelDataBodyNewEcd@1000000006();
+    VAR
+      BlankFiller@1000 : Text[250];
+    BEGIN
+      ExcelBuf_G.NewRow;
+
+      ExcelBuf_G.AddColumn("Value Entry"."Item Ledger Entry No.",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn("Value Entry"."Document No.",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn("Value Entry"."Posting Date",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn("Value Entry"."Item No.",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn("Value Entry"."Variant Code",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(DiscountCode_G,FALSE,'',FALSE,FALSE,FALSE,'');
+
+      ExcelBuf_G.AddColumn(GetItemDescription("Value Entry"."Item No.",
+                                              "Value Entry"."Variant Code"),FALSE,'',TRUE,FALSE,TRUE,'');
+
+      ExcelBuf_G.AddColumn("Value Entry"."Valued Quantity",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(0,FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(0,FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(0,FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(0,FALSE,'',FALSE,FALSE,FALSE,'');
+
+      CASE "Value Entry"."Document Type" OF
+        "Value Entry"."Document Type"::"Purchase Receipt","Value Entry"."Document Type"::"Purchase Return Shipment":
+          BEGIN
+            ExcelBuf_G.AddColumn(TempValueEntryDiscNewEcd_G."Discount Amount",FALSE,'',FALSE,FALSE,FALSE,'');
+            ExcelBuf_G.AddColumn(TempValueEntryDiscNewEcd_G."Discount Amount" * "Value Entry"."Valued Quantity",
+                                 FALSE,'',FALSE,FALSE,FALSE,'');
+            ExcelBuf_G.AddColumn(0,FALSE,'',FALSE,FALSE,FALSE,'');
+            ExcelBuf_G.AddColumn(0,FALSE,'',FALSE,FALSE,FALSE,'');
+          END;
+        "Value Entry"."Document Type"::"Purchase Invoice","Value Entry"."Document Type"::"Purchase Credit Memo":
+          BEGIN
+            ExcelBuf_G.AddColumn(TempValueEntryDiscNewEcd_G."Discount Amount",FALSE,'',FALSE,FALSE,FALSE,'');
+            ExcelBuf_G.AddColumn(TempValueEntryDiscNewEcd_G."Discount Amount" * -"Value Entry"."Valued Quantity",
+                                 FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(TempValueEntryDiscNewEcd_G."Discount Amount",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(TempValueEntryDiscNewEcd_G."Discount Amount" * "Value Entry"."Valued Quantity",
+                           FALSE,'',FALSE,FALSE,FALSE,'');
+      END;
+
+      END;
+    END;
+
+    PROCEDURE MakeExcelDataBodyNewEcdTest@1000000014();
+    VAR
+      BlankFiller@1000 : Text[250];
+    BEGIN
+      ExcelBuf_G.NewRow;
+
+      ExcelBuf_G.AddColumn("Value Entry Test Test Mode"."Item Ledger Entry No.",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn("Value Entry Test Test Mode"."Document No.",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn("Value Entry Test Test Mode"."Posting Date",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn("Value Entry Test Test Mode"."Item No.",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn("Value Entry Test Test Mode"."Variant Code",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(DiscountCode_G,FALSE,'',FALSE,FALSE,FALSE,'');
+
+      ExcelBuf_G.AddColumn(GetItemDescription("Value Entry Test Test Mode"."Item No.",
+                                              "Value Entry Test Test Mode"."Variant Code"),FALSE,'',TRUE,FALSE,TRUE,'');
+
+      ExcelBuf_G.AddColumn("Value Entry Test Test Mode"."Valued Quantity",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(0,FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(0,FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(0,FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(0,FALSE,'',FALSE,FALSE,FALSE,'');
+
+      CASE "Value Entry Test Test Mode"."Document Type" OF
+        "Value Entry Test Test Mode"."Document Type"::"Purchase Receipt",
+          "Value Entry Test Test Mode"."Document Type"::"Purchase Return Shipment":
+          BEGIN
+            ExcelBuf_G.AddColumn(TempValueEntryDisNewEcdCopie_G."Discount Amount",FALSE,'',FALSE,FALSE,FALSE,'');
+            ExcelBuf_G.AddColumn(TempValueEntryDisNewEcdCopie_G."Discount Amount" * "Value Entry Test Test Mode"."Valued Quantity",
+                                 FALSE,'',FALSE,FALSE,FALSE,'');
+            ExcelBuf_G.AddColumn(0,FALSE,'',FALSE,FALSE,FALSE,'');
+            ExcelBuf_G.AddColumn(0,FALSE,'',FALSE,FALSE,FALSE,'');
+          END;
+        "Value Entry Test Test Mode"."Document Type"::"Purchase Invoice",
+          "Value Entry Test Test Mode"."Document Type"::"Purchase Credit Memo":
+          BEGIN
+            ExcelBuf_G.AddColumn(TempValueEntryDisNewEcdCopie_G."Discount Amount",FALSE,'',FALSE,FALSE,FALSE,'');
+            ExcelBuf_G.AddColumn(TempValueEntryDisNewEcdCopie_G."Discount Amount" * -"Value Entry Test Test Mode"."Valued Quantity",
+                                 FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(TempValueEntryDisNewEcdCopie_G."Discount Amount",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(TempValueEntryDisNewEcdCopie_G."Discount Amount" * "Value Entry Test Test Mode"."Valued Quantity",
+                           FALSE,'',FALSE,FALSE,FALSE,'');
+      END;
+
+      END;
+    END;
+
+    PROCEDURE MakeExcelDataBodyTest@1000000019(PurchEcdEntryCopie_G@8053000 : Record 60084);
+    VAR
+      BlankFiller@1000 : Text[250];
+    BEGIN
+      ExcelBuf_G.NewRow;
+
+      ExcelBuf_G.AddColumn(PurchEcdEntryCopie_G."Item Ledger Entry No.",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchEcdEntryCopie_G."Document No.",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchEcdEntryCopie_G."Posting Date",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchEcdEntryCopie_G."Item No.",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchEcdEntryCopie_G."Variant Code",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchEcdEntryCopie_G."Discount Code",FALSE,'',FALSE,FALSE,FALSE,'');
+
+      ExcelBuf_G.AddColumn(GetItemDescription(PurchEcdEntryCopie_G."Item No.",
+                                              PurchEcdEntryCopie_G."Variant Code"),FALSE,'',TRUE,FALSE,TRUE,'');
+
+      ExcelBuf_G.AddColumn(PurchEcdEntryCopie_G."Valued Quantity",FALSE,'',FALSE,FALSE,FALSE,'');
+
+
+      ExcelBuf_G.AddColumn(PurchEcdEntryCopie_G."ECD Unit Amount (Receipt)",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchEcdEntryCopie_G."ECD Amount (Receipt)",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchEcdEntryCopie_G."ECD Unit Amount (Invoice)",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchEcdEntryCopie_G."ECD Amount (Invoice)",FALSE,'',FALSE,FALSE,FALSE,'');
+    END;
+
+    PROCEDURE MakeExcelDataBodyTest2@1000000018(PurchEcdEntryCopie_P@1000000000 : Record 60084);
+    VAR
+      BlankFiller@1000 : Text[250];
+    BEGIN
+
+      ExcelBuf_G.AddColumn(PurchEcdEntryCopie_P."ECD Unit Amount (Receipt)",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchEcdEntryCopie_P."ECD Amount (Receipt)",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchEcdEntryCopie_P."ECD Unit Amount (Invoice)",FALSE,'',FALSE,FALSE,FALSE,'');
+      ExcelBuf_G.AddColumn(PurchEcdEntryCopie_P."ECD Amount (Invoice)",FALSE,'',FALSE,FALSE,FALSE,'');
+    END;
+
+    PROCEDURE FctVideTables@1000000007();
+    VAR
+      ValueEntry_L@1000000000 : Record 5802;
+      PurchEcd_L@1000000003 : Record 8053088;
+      DetailedEcdEntry_L@1000000002 : Record 8053334;
+      ValueEntryDiscount_L@1000000001 : Record 8053252;
+    BEGIN
+      // --> 20161110-Wi00-ADV01.01.00-2684-CJY01
+      IF Test_G THEN BEGIN
+
+        UniqueId_G := FctReturnUniqueId;
+        ValueEntryCopie_G.RESET;
+        ValueEntryCopie_G.SETRANGE("Unique Id",UniqueId_G);
+        ValueEntryCopie_G.DELETEALL;
+
+        PurchEcdEntryCopie_G.RESET;
+        PurchEcdEntryCopie_G.SETRANGE("Unique Id",UniqueId_G);
+        PurchEcdEntryCopie_G.DELETEALL;
+
+        ValueEntryDiscCopie_G.RESET;
+        ValueEntryDiscCopie_G.SETRANGE("Unique Id",UniqueId_G);
+        ValueEntryDiscCopie_G.DELETEALL;
+
+        DetailedEcdEntryCopie_G.RESET;
+        DetailedEcdEntryCopie_G.SETRANGE("Unique Id",UniqueId_G);
+        DetailedEcdEntryCopie_G.DELETEALL;
+
+      END;
+
+      // <-- 20161110-Wi00-ADV01.01.00-2684-CJY01
+    END;
+
+    PROCEDURE FctRemplissageTables@1000000004();
+    VAR
+      ValueEntry_L@1000000000 : Record 5802;
+      PurchEcd_L@1000000003 : Record 8053088;
+      DetailedEcdEntry_L@1000000002 : Record 8053334;
+      ValueEntryDiscount_L@1000000001 : Record 8053252;
+    BEGIN
+      // --> 20161110-Wi00-ADV01.01.00-2684-CJY01
+      IF Test_G THEN BEGIN
+
+        NbEnregCopie_G := 0;
+        CompteurCopie_G := 0;
+
+
+        //Remplissage des tables
+        ValueEntry_L.COPYFILTERS("Value Entry");
+        NbEnregCopie_G := ValueEntry_L.COUNT;
+        DialogBox_G.OPEN(Text60005);
+        DialogBox_G.UPDATE(1,Text60008);
+        DialogBox_G.UPDATE(2,0);
+        DialogBox_G.UPDATE(3,NbEnregCopie_G);
+        IF ValueEntry_L.FINDSET THEN REPEAT
+          ValueEntryCopie_G.TRANSFERFIELDS(ValueEntry_L);
+          ValueEntryCopie_G."Unique Id" := UniqueId_G;
+          ValueEntryCopie_G.INSERT;
+          //Value entry discount
+          ValueEntryDiscount_L.RESET;
+          ValueEntryDiscount_L.SETRANGE("Value Entry No.",ValueEntry_L."Entry No.");
+          IF ValueEntryDiscount_L.FINDSET THEN REPEAT
+            ValueEntryDiscCopie_G.TRANSFERFIELDS(ValueEntryDiscount_L);
+            ValueEntryDiscCopie_G."Unique Id" := UniqueId_G;
+            ValueEntryDiscCopie_G.INSERT(TRUE);
+
+          UNTIL ValueEntryDiscount_L.NEXT = 0;
+
+          //Ecritures RFC achat
+          PurchEcd_L.RESET;
+          //PurchEcd_L.SETRANGE("Value Entry No.",ValueEntry_L."Entry No.");
+          PurchEcd_L.SETRANGE("Item Ledger Entry No.",ValueEntry_L."Item Ledger Entry No.");
+          //PurchEcd_L.SETFILTER("Discount Code",'%1|%2',DiscountCode_G,'');
+          IF PurchEcd_L.FINDSET THEN REPEAT
+            PurchEcdEntryCopie_G.TRANSFERFIELDS(PurchEcd_L);
+            PurchEcdEntryCopie_G."Unique Id" := UniqueId_G;
+            IF PurchEcdEntryCopie_G.INSERT(TRUE) THEN BEGIN
+              //Ecriture d'taill'es
+              DetailedEcdEntry_L.RESET;
+              DetailedEcdEntry_L.SETRANGE("Sales / Purchase",DetailedEcdEntry_L."Sales / Purchase"::Purchase);
+              DetailedEcdEntry_L.SETRANGE("ECD Entry No.",PurchEcd_L."Entry No.");
+              IF DetailedEcdEntry_L.FINDSET THEN REPEAT
+                DetailedEcdEntryCopie_G.TRANSFERFIELDS(DetailedEcdEntry_L);
+                DetailedEcdEntryCopie_G."Unique Id" := UniqueId_G;
+                DetailedEcdEntryCopie_G.INSERT;
+              UNTIL DetailedEcdEntry_L.NEXT = 0;
+            END;
+          UNTIL PurchEcd_L.NEXT = 0;
+          CompteurCopie_G := CompteurCopie_G +1 ;
+          DialogBox_G.UPDATE(2,CompteurCopie_G);
+          //COMMIT;
+        UNTIL  ValueEntry_L.NEXT = 0;
+        //MESSAGE('Fin remplissage table');
+        //COMMIT;
+        DialogBox_G.CLOSE;
+        SLEEP(1000);
+      END;
+      SLEEP(1000);
+      CLEAR(DialogBox_G);
+      //COMMIT;
+      // <-- 20161110-Wi00-ADV01.01.00-2684-CJY01
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+
+      20161110-Wi00-ADV01.01.00-2684-CJY01 : NEWOBJ
+      20161110-Wi00-ADV01.01.00-2684-CJY01 : Bas' sur la copie du report 8053082 au 10/11/2016
+      20161110-Wi00-ADV01.01.00-2684-CJY01 : MODCODE (NE PAS MERGER : NETTOYAGE DE CODE)
+      20161110-Wi00-ADV01.01.00-2684-CJY01 : MODCODE (NE PAS MERGER : REFONTE => EXTERNALISATION POUR JOURNALISATION)
+      20161110-Wi00-ADV01.01.00-2684-CJY01 : MODDATAITEM (retrait du Dataitem "Item")
+      20161110-Wi00-ADV01.01.00-2684-CJY01 : MODCODE (d'placement dans le Cu 60052 dans fonctions ci-dessous :)
+      20161110-Wi00-ADV01.01.00-2684-CJY01 : MODCODE (retrait des fonctions : InsertNewDiscount, ModifDiscount, GetPurchDiscount)
+      20161110-Wi00-ADV01.01.00-2684-CJY01 : MODCODE (retrait des fonctions : UpdateDiscount, UpdateRemainingValueEntryDisc)
+      20161110-Wi00-ADV01.01.00-2684-CJY01 : MODCODE (retrait des fonctions : SetFinalPrice, StoreBeforeECDLedgerEntry)
+      20161110-Wi00-ADV01.01.00-2684-CJY01 : MODCODE (retrait des fonctions : UpdatePurchDocDiscount, UpdateDocumentLine, UpdatePurchLine)
+      20161110-Wi00-ADV01.01.00-2684-CJY01 : MODCODE (retrait des fonctions : GetDiscountBaseValue, FctRFCExist, GetDiscountPreviousPrice)
+      20161110-Wi00-ADV01.01.00-2684-CJY01 : MODCODE (refonte de la structure du code dans le dataitem "value entry"
+      20161110-Wi00-ADV01.01.00-2684-CJY01 : MODDATAITEM (ajout DataItem : "Value Entry Test Test Mode")
+      20161110-Wi00-ADV01.01.00-2684-CJY01 : MODDATAITEM (ajout DataItem : "Purch Ecd Entry Test Mode")
+      20170426-Wi00-ADV01.01.00-26642-CJY01 : ATTENTION : NE PRENDRE LE 26642 QUE S'IL EST EN PROD SUR LE REPORT ORIGINAL 8053082
+      20170426-Wi00-ADV01.01.00-26642-CJY01 : AU MOMENT OU CE NOVEAU REPORT 60077 EST LUI MEME MIS EN PROD
+      20170426-Wi00-ADV01.01.00-26642-CJY01 : MODCODE (ne pas cr'er de RFC pour recep/retour si ecr valeur : "qt' 'criture article" = 0 )
+
+      // <-- 3LI BEGIN
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

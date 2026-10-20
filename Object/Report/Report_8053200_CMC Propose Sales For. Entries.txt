@@ -1,0 +1,1667 @@
+OBJECT Report 8053200 CMC Propose Sales For. Entries
+{
+  OBJECT-PROPERTIES
+  {
+    Date=21/09/17;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,TER01.01.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Propose Sales Forecast Entries;
+               FRA=Proposer 'critures pr'vision ventes];
+    ProcessingOnly=Oui;
+    OnPreReport=BEGIN
+                  IF GUIALLOWED THEN
+                   ProgressWindow_G.OPEN(Text8053200_L);
+
+                  IF SalesForecastEntry_G.FINDLAST THEN
+                    EntryNo := SalesForecastEntry_G."Entry No."+1
+                  ELSE
+                    EntryNo := 1;
+                END;
+
+    OnPostReport=BEGIN
+                   IF GUIALLOWED THEN
+                     ProgressWindow_G.CLOSE;
+                 END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table8053200;
+        OnPreDataItem=VAR
+                        SFRecipients_G@1180250002 : Record 8053203;
+                        UserSetup_L@1180250003 : Record 91;
+                      BEGIN
+                        IF SalesForecastFilter_G <> '' THEN
+                          SETFILTER(Code,SalesForecastFilter_G);
+
+                        UserSetup_L.GET(USERID);
+                        CASE UserSetup_L."Sales Forecast Entry Type" OF
+                          UserSetup_L."Sales Forecast Entry Type"::None : ERROR('');
+                          UserSetup_L."Sales Forecast Entry Type"::Salesperson : EntryType_G := EntryType_G::Detailed;
+                          UserSetup_L."Sales Forecast Entry Type"::Company : EntryType_G := EntryType_G::Compressed;
+                        END;
+                      END;
+
+        ReqFilterFields=Code;
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=1;
+        DataItemTable=Table8053201;
+        DataItemTableView=SORTING(Sales Forecast Code,Item No.,Item Variant Code);
+        OnPreDataItem=BEGIN
+                        // V'rification du param'trage
+
+                        WITH "CMC Sales Forecast" DO BEGIN
+                          IF "Level Entry" <> "Level Entry"::Item THEN BEGIN
+                            CASE "Level Entry" OF
+                              "Level Entry"::"Level 1" : CheckItemSetup("Level Break 1");
+                              "Level Entry"::"Level 2" : CheckItemSetup("Level Break 2");
+                              "Level Entry"::"Level 3" : CheckItemSetup("Level Break 3");
+                              "Level Entry"::"Level 4" : CheckItemSetup("Level Break 4");
+                            END;
+                          END;
+                        END;
+                      END;
+
+        OnAfterGetRecord=VAR
+                           SalesPerson_L@8053000 : Record 13;
+                           MCItem_L@8053001 : Record 8053079;
+                           ItemVariant_L@8053002 : Record 8053081;
+                           Item_L@8053003 : Record 27;
+                           SalesForecastEntry_L@8053004 : Record 8053204;
+                           Location_l@8053005 : Record 14;
+                           ItemLedgerEntry_L@8053006 : Record 32;
+                           CMCForceLocation_L@1000000000 : Record 8053333;
+                           ItemTransEntry_L@1000000001 : Record 8053336;
+                         BEGIN
+                           IF NOT Item_L.GET("CMC Sales Forecast Item"."Item No.") THEN
+                            CurrReport.SKIP;
+
+                           // Si l''criture exist d'j., on skip l''criture.
+                           SalesForecastEntry_L.RESET;
+                           SalesForecastEntry_L.SETCURRENTKEY("Recipient Company Code", "Salesperson Code", "Campaing No.",
+                                                              "Item No.", "Variant No.", "Location Code");
+                           SalesForecastEntry_L.SETFILTER(SalesForecastEntry_L."Sales Forecast Code","CMC Sales Forecast".Code);
+                           SalesForecastEntry_L.SETFILTER(SalesForecastEntry_L."Recipient Company Code",CompanyFilter_G);
+                           SalesForecastEntry_L.SETRANGE(SalesForecastEntry_L."Salesperson Code",SalespersonFilter_G);
+                           SalesForecastEntry_L.SETFILTER("Campaing No.", "CMC Sales Forecast"."Campaign No.");
+                           SalesForecastEntry_L.SETRANGE(SalesForecastEntry_L."Item No.","CMC Sales Forecast Item"."Item No.");
+                           SalesForecastEntry_L.SETRANGE(SalesForecastEntry_L."Variant No.","CMC Sales Forecast Item"."Item Variant Code");
+                           IF SalesForecastEntry_L.FINDFIRST THEN
+                             CurrReport.SKIP;
+
+                           // Gestion de l'exclusion
+                           SalesForecastExclusion_G.RESET;
+                           SalesForecastExclusion_G.SETFILTER(SalesForecastExclusion_G."Sales Forecast Code","CMC Sales Forecast".Code);
+                           SalesForecastExclusion_G.SETFILTER(SalesForecastExclusion_G."Item No.","CMC Sales Forecast Item"."Item No.");
+                           SalesForecastExclusion_G.SETFILTER(SalesForecastExclusion_G."Item Variant Code","CMC Sales Forecast Item"."Item Variant Code");
+                           SalesForecastExclusion_G.SETRANGE(SalesForecastExclusion_G."Exclusion Type",SalesForecastExclusion_G."Exclusion Type"::TC);
+                           SalesForecastExclusion_G.SETRANGE(SalesForecastExclusion_G."Exclusion Code",SalespersonFilter_G);
+                           IF SalesForecastExclusion_G.FINDFIRST THEN
+                             CurrReport.SKIP;
+                           IF SalesPerson_L.GET(SalespersonFilter_G) AND (SalesPerson_L."Team Code"<>'')THEN BEGIN
+                             SalesForecastExclusion_G.SETRANGE(SalesForecastExclusion_G."Exclusion Type",SalesForecastExclusion_G."Exclusion Type"::Team);
+                             SalesForecastExclusion_G.SETRANGE(SalesForecastExclusion_G."Exclusion Code",SalesPerson_L."Team Code");
+                             IF SalesForecastExclusion_G.FINDFIRST THEN
+                               CurrReport.SKIP;
+                           END;
+
+                           // Insertion des 'critures pr'visions
+                           IF "CMC Sales Forecast"."Use Location" THEN BEGIN
+                             Location_l.FINDFIRST;
+                             REPEAT
+                               // --> 20150604-APP02-CMC02.02.00-3034-FEC01
+                               {BEFORE
+                               ItemLedgerEntry_L.SETRANGE("Entry Type", ItemLedgerEntry_L."Entry Type"::Sale);
+                               ItemLedgerEntry_L.SETRANGE("Item No.", "CMC Sales Forecast Item"."Item No.");
+                               ItemLedgerEntry_L.SETRANGE("Salesperson Code", SalespersonFilter_G);
+                               ItemLedgerEntry_L.SETRANGE("Location Code", Location_l.Code);
+                               ItemLedgerEntry_L.SETFILTER("Posting Date", '>=%1', "CMC Sales Forecast"."Location Incl. Starting Date");
+                               ItemLedgerEntry_L.SETFILTER("Posting Date", '<=%1', "CMC Sales Forecast"."Location Incl. Ending Date");
+                               IF ItemLedgerEntry_L.FINDFIRST THEN
+                               AFTER}
+                               ItemTransEntry_L.RESET;
+                               ItemTransEntry_L.SETCURRENTKEY("Entry Type","Item No.","Variant Code","Salesperson Code","Campaign No.","Location Code");
+                               ItemTransEntry_L.SETRANGE("Entry Type", ItemTransEntry_L."Entry Type"::Sale);
+                               ItemTransEntry_L.SETRANGE("Item No.", "CMC Sales Forecast Item"."Item No.");
+
+                               // --> 20170919-WI00-ADV01.01.00-3289-CJY01
+                               {BEFORE
+                               ItemTransEntry_L.SETRANGE("Salesperson Code", SalespersonFilter_G);
+                               AFTER}
+                               IF COMPANYNAME ='UNEAL' THEN BEGIN
+                                 ItemTransEntry_L.SETFILTER("Filter Prod Activity",'PV');
+                                 ItemTransEntry_L.SETFILTER("Filter Commercial Network",'PV');
+                                 ItemTransEntry_L.CALCFIELDS("Lookup PV Vendor");
+                                 ItemTransEntry_L.SETRANGE("Lookup PV Vendor", SalespersonFilter_G);
+                               END
+                               ELSE BEGIN
+                                 IF COMPANYNAME ='TERNOVEO' THEN BEGIN
+                                   ItemTransEntry_L.SETFILTER("Filter Prod Activity",'PV');
+                                   ItemTransEntry_L.SETFILTER("Filter Commercial Network",'APPRO');
+                                   ItemTransEntry_L.CALCFIELDS("Lookup PV Vendor");
+                                   ItemTransEntry_L.SETRANGE("Lookup PV Vendor", SalespersonFilter_G);
+                                 END
+                                 ELSE BEGIN
+                               ItemTransEntry_L.SETRANGE("Salesperson Code", SalespersonFilter_G);
+                                 END;
+                               END;
+                               // <-- 20170919-WI00-ADV01.01.00-3289-CJY01
+                               ItemTransEntry_L.SETRANGE("Location Code", Location_l.Code);
+                               ItemTransEntry_L.SETFILTER("Posting Date", '>=%1', "CMC Sales Forecast"."Location Incl. Starting Date");
+                               ItemTransEntry_L.SETFILTER("Posting Date", '<=%1', "CMC Sales Forecast"."Location Incl. Ending Date");
+                               IF ItemTransEntry_L.FINDFIRST THEN
+                               // <-- 20150604-APP02-CMC02.02.00-3034-FEC01
+                                 InsertSalesForecastEntry(Location_l.Code)
+                               ELSE BEGIN
+                                 CMCForceLocation_L.SETRANGE("Sales Forecast Code", "CMC Sales Forecast".Code);
+                                 CMCForceLocation_L.SETRANGE("Salesperson Code", SalespersonFilter_G);
+                                 CMCForceLocation_L.SETRANGE("Location Code", Location_l.Code);
+                                 CMCForceLocation_L.SETFILTER("Item No.", '%1|%2', "CMC Sales Forecast Item"."Item No.", '');
+                                 IF CMCForceLocation_L.FINDFIRST THEN
+                                   InsertSalesForecastEntry(Location_l.Code);
+                               END;
+                             UNTIL Location_l.NEXT = 0;
+                           END ELSE
+                             InsertSalesForecastEntry('');
+                         END;
+
+        OnPostDataItem=VAR
+                         SalesForecastEntry_L@8053000 : Record 8053204;
+                         Location_L@8053001 : Record 14;
+                       BEGIN
+                         IF MarketSubmarketLevelBreakExist("CMC Sales Forecast") THEN BEGIN
+                           SalesForecastEntry_L.RESET;
+                           SalesForecastEntry_L.SETCURRENTKEY("Recipient Company Code", "Salesperson Code", "Campaing No.",
+                                                              "Item No.", "Variant No.", "Location Code");
+                           SalesForecastEntry_L.SETRANGE("Recipient Company Code",CompanyFilter_G);
+                           SalesForecastEntry_L.SETRANGE("Salesperson Code",SalespersonFilter_G);
+                           SalesForecastEntry_L.SETRANGE("Campaing No.", "CMC Sales Forecast"."Campaign No.");
+                           SalesForecastEntry_L.SETRANGE("Sales Forecast Code","CMC Sales Forecast".Code);
+
+                           IF "CMC Sales Forecast"."Use Location" THEN BEGIN
+                             IF Location_L.FINDSET THEN
+                               REPEAT
+                                 SalesForecastEntry_L.SETRANGE("Location Code",Location_L.Code);
+                                 IF SalesForecastEntry_L.FINDSET THEN BEGIN
+                                   AddSumPlantingQuantity(SalesForecastEntry_L);
+                                 END;
+                               UNTIL Location_L.NEXT = 0;
+                           END ELSE BEGIN
+                             IF SalesForecastEntry_L.FINDSET THEN BEGIN
+                               AddSumPlantingQuantity(SalesForecastEntry_L);
+                             END;
+                           END;
+                         END;
+                       END;
+
+        DataItemLinkReference=CMC Sales Forecast;
+        DataItemLink=Sales Forecast Code=FIELD(Code);
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=9020;
+      Height=3410;
+    }
+    CONTROLS
+    {
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  CODE
+  {
+    VAR
+      SalesForecastExclusion_G@8053000 : Record 8053202;
+      SalesForecastEntry_G@8053001 : Record 8053204;
+      EntryNo@8053002 : Integer;
+      SalesForecastFilter_G@8053005 : Code[20];
+      CompanyFilter_G@8053004 : Code[20];
+      SalespersonFilter_G@8053003 : Code[20];
+      ProgressWindow_G@8053006 : Dialog;
+      Text8053200_L@8053007 : TextConst 'ENU=Sales forecast entries creation...;FRA=Cr'ation des 'critures pr'vision...';
+      EntryType_G@1180250002 : 'Detailed,Compressed';
+      Text8053201@8053008 : TextConst 'ENU=%1 < %2;FRA=%1 < %2';
+      Text8053202@8053009 : TextConst 'FRA=N/A';
+      UpdateFertilizationQty_G@1000000000 : Boolean;
+      Text8053203@8053010 : TextConst 'ENU=The field %1 has no value filled in for item no. %2. Fill in the field and try again.;FRA=La valeur du champ %1 n''est pas renseign'e pour l''article %2. Veuillez la renseigner et relancer la suggestion  - OK.';
+      VarietyHectareDose_G@8053011 : Decimal;
+      NextHectareToAdd_G@8053012 : Decimal;
+      PrevCampaignHectToAdd_G@8053013 : Decimal;
+      CurrCampaignHectToAdd_G@8053014 : Decimal;
+      Text8053204@1000000001 : TextConst 'ENU=Item ''%1'' Variant ''%2'' have %3 to 0.;FRA=L''article ''%1'' variante ''%2'' . une %3 . 0.';
+      Text8053205@8053015 : TextConst 'ENU=Item ''%1'' Variant ''%2'' have %3 to 0.;FRA=Le ''%1'' %2 pour l''article %3 . une %4 . 0.';
+
+    PROCEDURE SetCurrentFilter@8053000(SalesForecastFilter_P@8053000 : Code[20];CompanyFilter_P@8053001 : Code[20];SalespersonFilter_P@8053002 : Code[20]);
+    BEGIN
+      SalesForecastFilter_G := SalesForecastFilter_P;
+      CompanyFilter_G := CompanyFilter_P;
+      SalespersonFilter_G := SalespersonFilter_P;
+    END;
+
+    PROCEDURE GetPrevCampainSF@1180250002() : Decimal;
+    VAR
+      SFEntry_L@1180250002 : Record 8053204;
+      CMCCampaign_L@1180250003 : Record 8052991;
+    BEGIN
+      CMCCampaign_L.RESET;
+      CMCCampaign_L.GET("CMC Sales Forecast"."Campaign No.");
+      IF CMCCampaign_L.NEXT(-1)=0 THEN
+        EXIT(0);
+
+      SFEntry_L.RESET;
+      SFEntry_L.SETCURRENTKEY("Recipient Company Code","Salesperson Code","Campaing No.","Item No.");
+      SFEntry_L.SETRANGE("Recipient Company Code",SalesForecastEntry_G."Recipient Company Code");
+      SFEntry_L.SETRANGE("Salesperson Code",SalesForecastEntry_G."Salesperson Code");
+      SFEntry_L.SETRANGE("Campaing No.",CMCCampaign_L."No.");
+      SFEntry_L.SETRANGE("Item No.",SalesForecastEntry_G."Item No.");
+      SFEntry_L.SETRANGE("Variant No.",SalesForecastEntry_G."Variant No.");
+      SFEntry_L.CALCSUMS(Quantity);
+      EXIT(SFEntry_L.Quantity);
+    END;
+
+    PROCEDURE InsertSalesForecastEntry@8053004(LocationCode_P@8053000 : Code[10]);
+    VAR
+      SalesPerson_L@8053005 : Record 13;
+      MCItem_L@8053004 : Record 8053079;
+      ItemVariant_L@8053003 : Record 5401;
+      Item_L@8053002 : Record 27;
+      SalesForecastEntry_L@8053001 : Record 8053204;
+      ValueEntry_L@8053006 : Record 5802;
+      SalesAmountActual_L@8053007 : Decimal;
+      InvoicedQuantity_L@8053008 : Decimal;
+      CMCPlanting_L@8053009 : Record 8053258;
+      StopSearch_L@1000000000 : Boolean;
+      ProductStrategy_L@8053010 : Record 8053184;
+      Authorized_L@8053011 : Boolean;
+      ItemDescription_L@8053012 : Text[50];
+    BEGIN
+      // Fonction d'insertion de l''criture pr'vision
+
+      Item_L.GET("CMC Sales Forecast Item"."Item No.");
+
+      SalesForecastEntry_G.INIT;
+      SalesForecastEntry_G."Entry No." := EntryNo;
+      EntryNo+=1;
+      SalesForecastEntry_G."Sales Forecast Code" := "CMC Sales Forecast".Code;
+      SalesForecastEntry_G."Campaing No." := "CMC Sales Forecast"."Campaign No.";
+      SalesForecastEntry_G."Recipient Company Code" := CompanyFilter_G;
+      SalesForecastEntry_G."Salesperson Code" := SalespersonFilter_G;
+      SalesForecastEntry_G."Item No." := "CMC Sales Forecast Item"."Item No.";
+      SalesForecastEntry_G."Variant No." := "CMC Sales Forecast Item"."Item Variant Code";
+      MCItem_L.GET("CMC Sales Forecast Item"."Item No.");
+      SalesForecastEntry_G.Description := MCItem_L.Description;
+
+      ItemDescription_L := SalesForecastEntry_G.Description;
+
+      IF "CMC Sales Forecast Item"."Item Variant Code" <> '' THEN BEGIN
+        ItemVariant_L.GET("CMC Sales Forecast Item"."Item No.","CMC Sales Forecast Item"."Item Variant Code");
+        SalesForecastEntry_G.Description := ItemVariant_L.Description;
+        SalesForecastEntry_G."Hectare Dose" := ItemVariant_L."Hectare Dose";
+      END ELSE
+        SalesForecastEntry_G."Hectare Dose" := Item_L."Hectare Dose";
+
+      SalesForecastEntry_G."Unit Of Measure Code" := MCItem_L."Sales Unit of Measure";
+      SalesForecastEntry_G."Prev. Campain Item Qty" := SalesForecastEntry_G.GetPreviousCampaignForecast(
+                                                       "CMC Sales Forecast Item"."Item No.",
+                                                       SalespersonFilter_G,
+                                                       "CMC Sales Forecast"."Campaign No.",
+                                                       "CMC Sales Forecast Item"."Item Variant Code",
+                                                       LocationCode_P,
+                                                       // --> 20150428-APP02-CMC02.02.00-2927-FHS01
+                                                       "CMC Sales Forecast"."Not Compute Variant On Item"
+                                                       // <-- 20150428-APP02-CMC02.02.00-2927-FHS01
+                                                       );
+
+      SalesForecastEntry_G."Cur. Campaign Item Qty" :=
+                  SalesForecastEntry_G.GetCurrCampaignForecast("CMC Sales Forecast Item"."Item No.",
+                                                               SalespersonFilter_G,
+                                                               "CMC Sales Forecast"."Campaign No.",
+                                                               "CMC Sales Forecast Item"."Item Variant Code",
+                                                               LocationCode_P,
+                                                               "CMC Sales Forecast"."Location Incl. Starting Date",
+                                                               "CMC Sales Forecast"."Location Incl. Ending Date"
+                                                               );
+
+      // Gestion de l'insertion ou non de la pr'vision selon la strat'gie ou des mouvements historiques.
+      Authorized_L := TRUE;
+      IF "CMC Sales Forecast Item"."Item Variant Code" = '' THEN BEGIN
+        IF Item_L."Product Strategy Code" <> '' THEN BEGIN
+          ProductStrategy_L.GET(Item_L."Product Strategy Code");
+          Authorized_L := ProductStrategy_L."Authorized Input Forecast";
+        END;
+      END ELSE BEGIN
+        ItemVariant_L.GET("CMC Sales Forecast Item"."Item No.","CMC Sales Forecast Item"."Item Variant Code");
+        IF ItemVariant_L."Product Strategy Code" <> '' THEN BEGIN
+          ProductStrategy_L.GET(ItemVariant_L."Product Strategy Code");
+          Authorized_L := ProductStrategy_L."Authorized Input Forecast";
+        END;
+      END;
+
+      IF (SalesForecastEntry_G."Prev. Campain Item Qty" = 0) AND
+            (SalesForecastEntry_G."Cur. Campaign Item Qty" = 0) THEN
+        IF NOT Authorized_L THEN BEGIN
+          EntryNo -= 1;
+          EXIT;
+       END;
+      IF SalesForecastEntry_G."Hectare Dose" <> 0 THEN
+        SalesForecastEntry_G."Prev. Campain Item Hect." := SalesForecastEntry_G."Prev. Campain Item Qty" /
+                                                           SalesForecastEntry_G."Hectare Dose"
+      ELSE
+        SalesForecastEntry_G."Prev. Campain Item Hect." := 0;
+      SalesForecastEntry_G."Prev. Campain Prev. Qty" := GetPrevCampainSF;
+
+      // Alimentation des informations commerciales
+      IF SalesPerson_L.GET(SalespersonFilter_G) THEN BEGIN
+        IF (SalesPerson_L."Team Code" <> '') THEN
+          SalesForecastEntry_G."Team Code" := SalesPerson_L."Team Code";
+         SalesForecastEntry_G."Activity Production Code" := SalesPerson_L."Activity Production Code";
+         SalesForecastEntry_G."Sales Network Code"       := SalesPerson_L."Sales Network Code";
+         SalesForecastEntry_G."Sales Area Code"          := SalesPerson_L."Sales Area Code";
+         SalesForecastEntry_G."Sales Zone Code"          := SalesPerson_L."Sales Zone Code"
+      END;
+
+      SalesForecastEntry_G."Variety Code" := Item_L."Variety Code";
+      SalesForecastEntry_G."Species Code" := Item_L."Species Code";
+      SalesForecastEntry_G."Entry Type" := EntryType_G;
+      SalesForecastEntry_G."Location Code" := LocationCode_P;
+
+      // Alimentation du prix moyen
+      ValueEntry_L.SETCURRENTKEY("Item No.","Posting Date","Item Ledger Entry Type","Entry Type",
+                                 "Variance Type","Item Charge No.","Location Code","Variant Code");
+      ValueEntry_L.SETRANGE("Item No.", "CMC Sales Forecast Item"."Item No.");
+      ValueEntry_L.SETRANGE("Campaign No.", "CMC Sales Forecast"."Campaign No.");
+      SalesAmountActual_L := 0;
+      InvoicedQuantity_L := 0;
+      IF ValueEntry_L.FINDFIRST THEN
+        REPEAT
+          ValueEntry_L.CALCSUMS("Sales Amount (Actual)", "Invoiced Quantity");
+          SalesAmountActual_L += ValueEntry_L."Sales Amount (Actual)";
+          InvoicedQuantity_L += ValueEntry_L."Invoiced Quantity";
+        UNTIL ValueEntry_L.NEXT=0;
+      IF InvoicedQuantity_L <> 0 THEN
+        SalesForecastEntry_G."Average Unit Price" := ABS(ROUND(SalesAmountActual_L / InvoicedQuantity_L, 0.01, '='));
+
+      // Par d'faut, la quantit' en pr'vision est 'gale . la quantit' sur la campagne en cours.
+      IF (SalesForecastEntry_G."Cur. Campaign Item Qty" <> 0) THEN
+        SalesForecastEntry_G.Quantity := SalesForecastEntry_G."Cur. Campaign Item Qty";
+
+      // Conversion par la dose hectare.
+      IF SalesForecastEntry_G."Hectare Dose" <> 0 THEN BEGIN
+        SalesForecastEntry_G."Qty (Hectare)" := SalesForecastEntry_G.Quantity / SalesForecastEntry_G."Hectare Dose";
+        SalesForecastEntry_G."Cur. Campaign Hectare" := SalesForecastEntry_G."Cur. Campaign Item Qty" /
+                                                        SalesForecastEntry_G."Hectare Dose";
+      END;
+
+      // Calcul de divers taux
+      IF SalesForecastEntry_G.Quantity <> 0 THEN
+        SalesForecastEntry_G."Actual Qty / Forec. Qty %"   := ROUND(SalesForecastEntry_G."Cur. Campaign Item Qty"*100 /
+                                                                    SalesForecastEntry_G.Quantity, 0.01, '=');
+      IF SalesForecastEntry_G."Prev. Campain Item Qty" <> 0 THEN
+        SalesForecastEntry_G."ForecQty/PrevCampActualQty%" := ROUND(SalesForecastEntry_G.Quantity*100 /
+                                                                    SalesForecastEntry_G."Prev. Campain Item Qty", 0.01, '=');
+      IF SalesForecastEntry_G."Prev. Campain Item Hect." <> 0 THEN
+        SalesForecastEntry_G."ForecHec/PrevCampActualHec%" := ROUND(SalesForecastEntry_G."Qty (Hectare)"*100 /
+                                                                    SalesForecastEntry_G."Prev. Campain Item Hect.", 0.01, '=');
+
+      SalesForecastEntry_G."Prev. Campaign Sales Amount" := SalesForecastEntry_G."Prev. Campain Item Qty" *
+                                                            SalesForecastEntry_G."Average Unit Price";
+
+      SalesForecastEntry_G."Forecasted Amount"           := SalesForecastEntry_G.Quantity * SalesForecastEntry_G."Average Unit Price";
+
+      // Alimentation des mises en terre
+      CMCPlanting_L.SETRANGE("Campaign No.", "CMC Sales Forecast"."Campaign No.");
+      CMCPlanting_L.SETRANGE("Activity Production Code", SalesForecastEntry_G."Activity Production Code");
+      CMCPlanting_L.SETRANGE(Type, CMCPlanting_L.Type::Item);
+      CMCPlanting_L.SETRANGE("No.", SalesForecastEntry_G."Item No.");
+      StopSearch_L := FALSE;
+
+      IF SalesForecastEntry_G."Salesperson Code" <> '' THEN BEGIN
+        CMCPlanting_L.SETRANGE("Salesperson Code", SalesForecastEntry_G."Salesperson Code");
+        IF CMCPlanting_L.FINDFIRST THEN
+        BEGIN
+          REPEAT
+            SalesForecastEntry_G."Planting Quantity" += CMCPlanting_L.Quantity;
+          UNTIL CMCPlanting_L.NEXT=0;
+          StopSearch_L := TRUE;
+        END;
+      END;
+
+      IF (NOT StopSearch_L) AND (SalesForecastEntry_G."Sales Zone Code" <> '') THEN BEGIN
+        CMCPlanting_L.SETFILTER("Salesperson Code",'%1','');
+        CMCPlanting_L.SETRANGE("Sales Zone Code", SalesForecastEntry_G."Sales Zone Code");
+        IF CMCPlanting_L.FINDFIRST THEN
+        BEGIN
+          REPEAT
+            SalesForecastEntry_G."Planting Quantity" += CMCPlanting_L.Quantity;
+          UNTIL CMCPlanting_L.NEXT=0;
+          StopSearch_L := TRUE;
+        END;
+      END;
+
+      IF (NOT StopSearch_L) AND (SalesForecastEntry_G."Sales Area Code" <> '') THEN BEGIN
+        CMCPlanting_L.SETFILTER("Salesperson Code",'%1','');
+        CMCPlanting_L.SETFILTER("Sales Zone Code",'%1','');
+        CMCPlanting_L.SETRANGE("Sales Area Code", SalesForecastEntry_G."Sales Area Code");
+        IF CMCPlanting_L.FINDFIRST THEN
+          REPEAT
+            SalesForecastEntry_G."Planting Quantity" += CMCPlanting_L.Quantity;
+          UNTIL CMCPlanting_L.NEXT=0;
+      END;
+      // --> 20140725-APP20-TER01.01.00-FHS01
+      SalesForecastEntry_G."Tarif N-1" := GetTarifN1(SalesForecastEntry_G, SalesForecastFilter_G);
+      // <-- 20140725-APP20-TER01.01.00-FHS01
+
+      // Alimentation des niveaux dans l''criture
+      SalesForecastEntry_G."Level 1 Value" := SetLevelValue(Item_L, "CMC Sales Forecast"."Level Break 1");
+      SalesForecastEntry_G."Level 2 Value" := SetLevelValue(Item_L, "CMC Sales Forecast"."Level Break 2");
+      SalesForecastEntry_G."Level 3 Value" := SetLevelValue(Item_L, "CMC Sales Forecast"."Level Break 3");
+      SalesForecastEntry_G."Level 4 Value" := SetLevelValue(Item_L, "CMC Sales Forecast"."Level Break 4");
+      SalesForecastEntry_G."Line Level" := 0;
+      SalesForecastEntry_G."Level Type" := SalesForecastEntry_G."Level Type"::Item;
+      SalesForecastEntry_G."Level No."  := SalesForecastEntry_G."Item No.";
+      SalesForecastEntry_G.Indent := 0;
+
+      // Calcul du rang
+      IF "CMC Sales Forecast"."Use Location" THEN
+        SalesForecastEntry_G.Ranking := CalculateRanking2(LocationCode_P,
+                                                       SalesForecastEntry_G."Level 1 Value", SalesForecastEntry_G."Level 2 Value",
+                                                       SalesForecastEntry_G."Level 3 Value", SalesForecastEntry_G."Level 4 Value",
+                                                       ItemDescription_L,SalesForecastEntry_G.Description,SalesForecastEntry_G.Indent)
+      ELSE
+        SalesForecastEntry_G.Ranking := CalculateRanking(LocationCode_P,
+                                                       SalesForecastEntry_G."Level 1 Value", SalesForecastEntry_G."Level 2 Value",
+                                                       SalesForecastEntry_G."Level 3 Value", SalesForecastEntry_G."Level 4 Value",
+                                                       SalesForecastEntry_G.Description) ;
+
+      // Insertion
+      SalesForecastEntry_G.INSERT(TRUE);
+
+      // Mise . jour de la table des unit's fertilisantes
+      UpdateFertilQtySFEntryLine(SalesForecastEntry_G);
+
+      // Gestion des totalisations
+      MaintainTotalLines(SalesForecastEntry_G, "CMC Sales Forecast", SalesForecastEntry_G.Quantity, FALSE,ItemDescription_L);
+    END;
+
+    PROCEDURE MaintainTotalLines@8053019(CMCSalesForecastEntry_P@8053001 : Record 8053204;CMCSalesForecast_P@8053006 : Record 8053200;Quantity_P@8053007 : Decimal;QuantitytUpdated_P@8053008 : Boolean;ItemDesc_P@8053009 : Text[50]);
+    VAR
+      CMCMCItem_L@8053000 : Record 8053079;
+      CMCSalesForecast_L@8053005 : Record 8053200;
+      LevelValue_L@8053002 : ARRAY [3] OF Code[20];
+      LevelBreak_L@8053003 : ARRAY [3] OF 'Market,Species,Variety';
+      i_L@8053004 : Integer;
+    BEGIN
+      IF QuantitytUpdated_P AND (CMCSalesForecastEntry_P."Line Level" <> 0) THEN
+        UpdateFertilizationQty_G := FALSE
+      ELSE
+        UpdateFertilizationQty_G := TRUE;
+
+      VarietyHectareDose_G := 0;
+      // TEMP
+      NextHectareToAdd_G := 0;
+      PrevCampaignHectToAdd_G := 0;
+      CurrCampaignHectToAdd_G :=0;
+      // TEMP
+
+      IF  CMCSalesForecast_P."Level Break 4" <>  CMCSalesForecast_P."Level Break 4"::" " THEN
+        IF (NOT QuantitytUpdated_P) OR
+           (QuantitytUpdated_P AND (CMCSalesForecastEntry_P."Line Level" > 4)) OR
+           (QuantitytUpdated_P AND (CMCSalesForecastEntry_P."Line Level" = 0))
+        THEN
+          MaintainTotal(CMCSalesForecastEntry_P."Level 1 Value",
+                        CMCSalesForecastEntry_P."Level 2 Value",
+                        CMCSalesForecastEntry_P."Level 3 Value",
+                        CMCSalesForecastEntry_P."Level 4 Value",
+                        CMCSalesForecast_P."Level Break 4", CMCSalesForecastEntry_P, 4,
+                        CMCSalesForecastEntry_P."Entry No.", Quantity_P, QuantitytUpdated_P);
+
+      IF  CMCSalesForecast_P."Level Break 3" <>  CMCSalesForecast_P."Level Break 3"::" " THEN
+        IF (NOT QuantitytUpdated_P) OR
+           (QuantitytUpdated_P AND (CMCSalesForecastEntry_P."Line Level" > 3)) OR
+           (QuantitytUpdated_P AND (CMCSalesForecastEntry_P."Line Level" = 0))
+        THEN
+          MaintainTotal(CMCSalesForecastEntry_P."Level 1 Value",
+                        CMCSalesForecastEntry_P."Level 2 Value",
+                        CMCSalesForecastEntry_P."Level 3 Value", '',
+                        CMCSalesForecast_P."Level Break 3", CMCSalesForecastEntry_P, 3,
+                        CMCSalesForecastEntry_P."Entry No.", Quantity_P, QuantitytUpdated_P);
+
+      IF  CMCSalesForecast_P."Level Break 2" <>  CMCSalesForecast_P."Level Break 2"::" " THEN
+        IF (NOT QuantitytUpdated_P) OR
+           (QuantitytUpdated_P AND (CMCSalesForecastEntry_P."Line Level" > 2)) OR
+           (QuantitytUpdated_P AND (CMCSalesForecastEntry_P."Line Level" = 0))
+        THEN
+          MaintainTotal(CMCSalesForecastEntry_P."Level 1 Value",
+                        CMCSalesForecastEntry_P."Level 2 Value", '', '',
+                        CMCSalesForecast_P."Level Break 2", CMCSalesForecastEntry_P, 2,
+                        CMCSalesForecastEntry_P."Entry No.", Quantity_P, QuantitytUpdated_P);
+
+      IF  CMCSalesForecast_P."Level Break 1" <>  CMCSalesForecast_P."Level Break 1"::" " THEN
+        IF (NOT QuantitytUpdated_P) OR
+           (QuantitytUpdated_P AND (CMCSalesForecastEntry_P."Line Level" > 1)) OR
+           (QuantitytUpdated_P AND (CMCSalesForecastEntry_P."Line Level" = 0))
+        THEN
+          MaintainTotal(CMCSalesForecastEntry_P."Level 1 Value", '', '', '',
+                        CMCSalesForecast_P."Level Break 1", CMCSalesForecastEntry_P, 1,
+                        CMCSalesForecastEntry_P."Entry No.", Quantity_P, QuantitytUpdated_P);
+      IF CMCSalesForecast_P."Use Location" AND
+         (CMCSalesForecastEntry_P."Level Type" = CMCSalesForecastEntry_P."Level Type"::Item) THEN BEGIN
+        MaintainItemTotal(CMCSalesForecastEntry_P,CMCSalesForecastEntry_P."Entry No.",Quantity_P,QuantitytUpdated_P,ItemDesc_P);
+        MaintainLocationTotal(CMCSalesForecastEntry_P,CMCSalesForecastEntry_P."Entry No.",Quantity_P,QuantitytUpdated_P);
+      END;
+    END;
+
+    PROCEDURE MaintainTotal@8053001(Level1Value_P@8053000 : Code[20];Level2Value_P@8053001 : Code[20];Level3Value_P@8053003 : Code[20];Level4Value_P@1000000002 : Code[20];LevelBreak_P@8053004 : ' ,Market,Species,Variety,Submarket';CMCSalesForecastEntry_P@8053005 : Record 8053204;LineLevel_P@8053006 : Integer;EntryNo_P@8053009 : Integer;Quantity_P@8053010 : Decimal;QuantityUpdated_P@8053011 : Boolean);
+    VAR
+      CMCSalesForecastEntry_L@8053002 : Record 8053204;
+      CMCItemFertilizerUnit_L@8053008 : Record 8053224;
+      FertilQtySalesFrecastEntry_L@8053007 : Record 8053259;
+      CMCPlanting_L@1000000000 : Record 8053258;
+      StopSearch_L@1000000001 : Boolean;
+      Variety_L@1000000003 : Record 8053070;
+      Market_L@1000000005 : Record 8053212;
+      SubMarket_L@8053012 : Record 8053213;
+      Species_L@8053016 : Record 8052988;
+      CMCSalesForecast_L@1000000004 : Record 8053200;
+      Item_L@8053014 : Record 27;
+      UOMConversionRate_L@8053013 : Decimal;
+    BEGIN
+      CMCSalesForecastEntry_L.RESET;
+      CMCSalesForecastEntry_L.SETCURRENTKEY("Level 1 Value", "Level 2 Value", "Level 3 Value", "Level 4 Value", "Line Level",
+                                            "Sales Forecast Code", "Campaing No.", "Recipient Company Code", "Salesperson Code");
+      CMCSalesForecastEntry_L.SETFILTER("Level 1 Value", '%1', Level1Value_P);
+      CMCSalesForecastEntry_L.SETFILTER("Level 2 Value", '%1', Level2Value_P);
+      CMCSalesForecastEntry_L.SETFILTER("Level 3 Value", '%1', Level3Value_P);
+      CMCSalesForecastEntry_L.SETFILTER("Level 4 Value", '%1', Level4Value_P);
+      CMCSalesForecastEntry_L.SETRANGE("Line Level", LineLevel_P);
+      CMCSalesForecastEntry_L.SETRANGE("Sales Forecast Code", CMCSalesForecastEntry_P."Sales Forecast Code");
+      CMCSalesForecastEntry_L.SETRANGE("Campaing No.", CMCSalesForecastEntry_P."Campaing No.");
+      CMCSalesForecastEntry_L.SETRANGE("Recipient Company Code", CMCSalesForecastEntry_P."Recipient Company Code");
+      CMCSalesForecastEntry_L.SETRANGE("Salesperson Code", CMCSalesForecastEntry_P."Salesperson Code");
+      CMCSalesForecast_L.GET(CMCSalesForecastEntry_P."Sales Forecast Code");
+
+      IF NOT CMCSalesForecastEntry_L.FINDFIRST THEN BEGIN
+        CMCSalesForecastEntry_L.INIT;
+        CMCSalesForecastEntry_L."Entry No." := EntryNo;
+        EntryNo+=1;
+        CMCSalesForecastEntry_L."Sales Forecast Code" := CMCSalesForecastEntry_P."Sales Forecast Code";
+        CMCSalesForecastEntry_L."Campaing No." := CMCSalesForecastEntry_P."Campaing No.";
+        CMCSalesForecastEntry_L."Recipient Company Code" := CMCSalesForecastEntry_P."Recipient Company Code";
+        CMCSalesForecastEntry_L."Salesperson Code" := CMCSalesForecastEntry_P."Salesperson Code";
+        CMCSalesForecastEntry_L."Level 1 Value" := Level1Value_P;
+        CMCSalesForecastEntry_L."Level 2 Value" := Level2Value_P;
+        CMCSalesForecastEntry_L."Level 3 Value" := Level3Value_P;
+        CMCSalesForecastEntry_L."Level 4 Value" := Level4Value_P;
+        CMCSalesForecastEntry_L."Line Level" := LineLevel_P;
+        CASE LevelBreak_P OF
+          LevelBreak_P::Market:
+            CMCSalesForecastEntry_L."Level Type" := CMCSalesForecastEntry_L."Level Type"::Market;
+          LevelBreak_P::Species:
+            CMCSalesForecastEntry_L."Level Type" := CMCSalesForecastEntry_L."Level Type"::Species;
+          LevelBreak_P::Variety:
+            CMCSalesForecastEntry_L."Level Type" := CMCSalesForecastEntry_L."Level Type"::Variety;
+          LevelBreak_P::Submarket:
+            CMCSalesForecastEntry_L."Level Type" := CMCSalesForecastEntry_L."Level Type"::Submarket;
+        END;
+        CASE LineLevel_P OF
+          1: CMCSalesForecastEntry_L."Level No."  := CMCSalesForecastEntry_P."Level 1 Value";
+          2: CMCSalesForecastEntry_L."Level No."  := CMCSalesForecastEntry_P."Level 2 Value";
+          3: CMCSalesForecastEntry_L."Level No."  := CMCSalesForecastEntry_P."Level 3 Value";
+          4: CMCSalesForecastEntry_L."Level No."  := CMCSalesForecastEntry_P."Level 4 Value";
+        END;
+        CMCSalesForecastEntry_L.Description := FORMAT(CMCSalesForecastEntry_L."Level Type")+ ' - ' +
+                                               CMCSalesForecastEntry_L."Level No.";
+
+        CMCSalesForecastEntry_L."Activity Production Code" := CMCSalesForecastEntry_P."Activity Production Code";
+        CMCSalesForecastEntry_L."Sales Area Code" := CMCSalesForecastEntry_P."Sales Area Code";
+        CMCSalesForecastEntry_L."Sales Zone Code" := CMCSalesForecastEntry_P."Sales Zone Code";
+
+        IF CMCSalesForecastEntry_L."Level Type" = CMCSalesForecastEntry_L."Level Type"::Variety THEN BEGIN
+          Variety_L.SETRANGE("Variety Code", CMCSalesForecastEntry_L."Level No.");
+          IF Variety_L.FINDFIRST THEN
+            CMCSalesForecastEntry_L."Hectare Dose" := Variety_L."Hectare Dose";
+        END;
+
+        CMCSalesForecastEntry_L.Indent := 5 - LineLevel_P;
+        IF "CMC Sales Forecast"."Use Location" THEN
+          CMCSalesForecastEntry_L.Ranking := CalculateRanking2(CMCSalesForecastEntry_L."Location Code",
+                                                CMCSalesForecastEntry_L."Level 1 Value", CMCSalesForecastEntry_L."Level 2 Value",
+                                                CMCSalesForecastEntry_L."Level 3 Value", CMCSalesForecastEntry_L."Level 4 Value",
+                                                '','',CMCSalesForecastEntry_L.Indent)
+        ELSE
+          CMCSalesForecastEntry_L.Ranking := CalculateRanking(CMCSalesForecastEntry_L."Location Code",
+                                                CMCSalesForecastEntry_L."Level 1 Value", CMCSalesForecastEntry_L."Level 2 Value",
+                                                CMCSalesForecastEntry_L."Level 3 Value", CMCSalesForecastEntry_L."Level 4 Value", '');
+
+        CMCSalesForecastEntry_L.INSERT;
+      END;
+
+      {BEFORE
+      IF (CMCSalesForecastEntry_L."Level Type" = CMCSalesForecastEntry_L."Level Type"::Variety) AND
+                    VarietyExists(CMCSalesForecastEntry_L,CMCSalesForecastEntry_P,CMCVariety_L,Item_L) THEN BEGIN
+        UOMConversionRate_L := cduSalesPriceDiscMgt_L.ConvertUnitofMeasure(Item_L."Base Unit of Measure",
+                               CMCVariety_L."Sales Forecast Unit Of Measure",CMCSalesForecastEntry_P."Item No.");
+        CMCSalesForecastEntry_L.Quantity += Quantity_P / UOMConversionRate_L;
+        CMCSalesForecastEntry_L."Unit Of Measure Code" := CMCVariety_L."Sales Forecast Unit Of Measure";
+        VarietyHectareDose_G := CMCVariety_L."Hectare Dose";
+      END ELSE BEGIN
+        UOMConversionRate_L := 1;
+        CMCSalesForecastEntry_L.Quantity += Quantity_P;
+      END;
+      AFTER}
+      CASE TRUE OF
+        (CMCSalesForecastEntry_L."Level Type" = CMCSalesForecastEntry_L."Level Type"::Variety) : BEGIN
+          IF NOT Variety_L.GET(CMCSalesForecastEntry_L."Level No.") THEN
+            Variety_L.INIT;
+          UOMConversionRate_L := ConvertUnitofMeasure(CMCSalesForecastEntry_P."Unit Of Measure Code",
+                                 Variety_L."Sales Forecast Unit Of Measure",CMCSalesForecastEntry_P."Item No.");
+          CMCSalesForecastEntry_L.Quantity += Quantity_P / UOMConversionRate_L;
+          CMCSalesForecastEntry_L."Unit Of Measure Code" := Variety_L."Sales Forecast Unit Of Measure";
+          VarietyHectareDose_G := Variety_L."Hectare Dose";
+        END;
+        (CMCSalesForecastEntry_L."Level Type" = CMCSalesForecastEntry_L."Level Type"::Market) : BEGIN
+          IF NOT Market_L.GET(CMCSalesForecastEntry_L."Level No.") THEN
+            Market_L.INIT;
+          UOMConversionRate_L := ConvertUnitofMeasure(CMCSalesForecastEntry_P."Unit Of Measure Code",
+                                 Market_L."Sales Forecast Unit Of Measure",CMCSalesForecastEntry_P."Item No.");
+          CMCSalesForecastEntry_L.Quantity += Quantity_P / UOMConversionRate_L;
+          CMCSalesForecastEntry_L."Unit Of Measure Code" := Market_L."Sales Forecast Unit Of Measure";
+        END;
+        (CMCSalesForecastEntry_L."Level Type" = CMCSalesForecastEntry_L."Level Type"::Submarket) : BEGIN
+          SubMarket_L.RESET;
+          SubMarket_L.SETRANGE(Code,CMCSalesForecastEntry_L."Level No.");
+          IF NOT SubMarket_L.FINDFIRST THEN
+            SubMarket_L.INIT;
+          UOMConversionRate_L := ConvertUnitofMeasure(CMCSalesForecastEntry_P."Unit Of Measure Code",
+                                 SubMarket_L."Sales Forecast Unit Of Measure",CMCSalesForecastEntry_P."Item No.");
+          CMCSalesForecastEntry_L.Quantity += Quantity_P / UOMConversionRate_L;
+          CMCSalesForecastEntry_L."Unit Of Measure Code" := SubMarket_L."Sales Forecast Unit Of Measure";
+        END;
+        (CMCSalesForecastEntry_L."Level Type" = CMCSalesForecastEntry_L."Level Type"::Species) : BEGIN
+          IF NOT Species_L.GET(CMCSalesForecastEntry_L."Level No.") THEN
+            Species_L.INIT;
+          UOMConversionRate_L := ConvertUnitofMeasure(CMCSalesForecastEntry_P."Unit Of Measure Code",
+                                 Species_L."Sales Forecast Unit Of Measure",CMCSalesForecastEntry_P."Item No.");
+          CMCSalesForecastEntry_L.Quantity += Quantity_P / UOMConversionRate_L;
+          CMCSalesForecastEntry_L."Unit Of Measure Code" := Species_L."Sales Forecast Unit Of Measure";
+        END;
+        ELSE BEGIN
+          UOMConversionRate_L := 1;
+          CMCSalesForecastEntry_L.Quantity += Quantity_P;
+        END;
+      END;
+
+      {
+      IF (CMCSalesForecastEntry_L."Level Type" = CMCSalesForecastEntry_L."Level Type"::Variety) THEN BEGIN
+        IF CMCSalesForecastEntry_L."Hectare Dose" <> 0 THEN
+          CMCSalesForecastEntry_L."Qty (Hectare)" += CMCSalesForecastEntry_L.Quantity / CMCSalesForecastEntry_L."Hectare Dose"
+        ELSE
+          IF CMCSalesForecastEntry_P."Hectare Dose" <> 0 THEN
+            CMCSalesForecastEntry_L."Qty (Hectare)" += Quantity_P / CMCSalesForecastEntry_P."Hectare Dose";
+      END ELSE BEGIN
+        IF CMCSalesForecastEntry_L."Hectare Dose" <> 0 THEN
+          CMCSalesForecastEntry_L."Qty (Hectare)" += Quantity_P / CMCSalesForecastEntry_L."Hectare Dose"
+        ELSE
+          IF VarietyHectareDose_G <> 0 THEN
+            CMCSalesForecastEntry_L."Qty (Hectare)" += Quantity_P / VarietyHectareDose_G
+          ELSE
+            IF CMCSalesForecastEntry_P."Hectare Dose" <> 0 THEN
+              CMCSalesForecastEntry_L."Qty (Hectare)" += Quantity_P / CMCSalesForecastEntry_P."Hectare Dose";
+      END;
+      }
+      IF CMCSalesForecastEntry_L."Hectare Dose" <> 0 THEN BEGIN
+        NextHectareToAdd_G := (CMCSalesForecastEntry_L.Quantity / CMCSalesForecastEntry_L."Hectare Dose") -
+                             CMCSalesForecastEntry_L."Qty (Hectare)";
+        CMCSalesForecastEntry_L."Qty (Hectare)" := CMCSalesForecastEntry_L.Quantity / CMCSalesForecastEntry_L."Hectare Dose"
+      END ELSE BEGIN
+        IF NextHectareToAdd_G <> 0 THEN
+          CMCSalesForecastEntry_L."Qty (Hectare)" += NextHectareToAdd_G
+        ELSE BEGIN
+          // --> 20150420-APP02-CMC02.02.00-2928-FEC01
+          {BEFORE
+          IF CMCSalesForecastEntry_P."Qty (Hectare)" <> 0 THEN
+            CMCSalesForecastEntry_L."Qty (Hectare)" += Quantity_P / CMCSalesForecastEntry_P."Hectare Dose";
+          AFTER}
+          // --> 20150507-APP02-CMC02.02.00-2959-FHS01
+          IF CMCSalesForecastEntry_P."Hectare Dose" <> 0 THEN
+          // <-- 20150507-APP02-CMC02.02.00-2959-FHS01
+            CMCSalesForecastEntry_L."Qty (Hectare)" += Quantity_P / CMCSalesForecastEntry_P."Hectare Dose";
+          // <-- 20150420-APP02-CMC02.02.00-2928-FEC01
+        END;
+      END;
+      // TEMP3LI
+      {IF (CMCSalesForecastEntry_L."Level Type" = CMCSalesForecastEntry_L."Level Type"::Submarket) AND
+         (CMCSalesForecastEntry_L."Level No." = 'HYB') THEN BEGIN
+
+        MESSAGE('%1',CMCSalesForecastEntry_L."Qty (Hectare)");
+
+        IF (CMCSalesForecastEntry_L."Level Type" = CMCSalesForecastEntry_L."Level Type"::Variety) THEN BEGIN
+          IF CMCSalesForecastEntry_L."Hectare Dose" <> 0 THEN
+            MESSAGE('1')
+          ELSE
+            IF CMCSalesForecastEntry_P."Hectare Dose" <> 0 THEN
+              MESSAGE('2');
+        END ELSE BEGIN
+          IF CMCSalesForecastEntry_L."Hectare Dose" <> 0 THEN
+            MESSAGE('3')
+          ELSE
+            IF VarietyHectareDose_G <> 0 THEN
+              MESSAGE('5')
+            ELSE
+              IF CMCSalesForecastEntry_P."Hectare Dose" <> 0 THEN
+                MESSAGE('6');
+        END;
+      END;}
+      // TEMP3LI
+
+      IF NOT QuantityUpdated_P THEN BEGIN
+
+        CMCSalesForecastEntry_L."Prev. Campain Item Qty"  += CMCSalesForecastEntry_P."Prev. Campain Item Qty" /
+                                                                          UOMConversionRate_L;
+        CMCSalesForecastEntry_L."Prev. Campain Prev. Qty" += CMCSalesForecastEntry_P."Prev. Campain Prev. Qty" /
+                                                                          UOMConversionRate_L;
+        CMCSalesForecastEntry_L."Quota Quantity"          += CMCSalesForecastEntry_P."Quota Quantity" /
+                                                                          UOMConversionRate_L;
+        CMCSalesForecastEntry_L."Cur. Campaign Item Qty"  += CMCSalesForecastEntry_P."Cur. Campaign Item Qty" /
+                                                                          UOMConversionRate_L;
+
+        IF CMCSalesForecastEntry_L."Hectare Dose" <> 0 THEN BEGIN
+          PrevCampaignHectToAdd_G := (CMCSalesForecastEntry_L."Prev. Campain Item Qty" / CMCSalesForecastEntry_L."Hectare Dose") -
+                                     CMCSalesForecastEntry_L."Prev. Campain Item Hect.";
+          CurrCampaignHectToAdd_G := (CMCSalesForecastEntry_L."Cur. Campaign Item Qty" / CMCSalesForecastEntry_L."Hectare Dose") -
+                                     CMCSalesForecastEntry_L."Cur. Campaign Hectare";
+          CMCSalesForecastEntry_L."Prev. Campain Item Hect." := CMCSalesForecastEntry_L."Prev. Campain Item Qty" /
+                                                                CMCSalesForecastEntry_L."Hectare Dose";
+          CMCSalesForecastEntry_L."Cur. Campaign Hectare" := CMCSalesForecastEntry_L."Cur. Campaign Item Qty" /
+                                                             CMCSalesForecastEntry_L."Hectare Dose";
+        END ELSE BEGIN
+          IF PrevCampaignHectToAdd_G <> 0 THEN
+            CMCSalesForecastEntry_L."Prev. Campain Item Hect." += PrevCampaignHectToAdd_G
+          ELSE BEGIN
+            // --> 20150420-APP02-CMC02.02.00-2928-FEC01
+            {BEFORE
+            IF CMCSalesForecastEntry_P."Qty (Hectare)" <> 0 THEN
+              CMCSalesForecastEntry_L."Prev. Campain Item Hect." += CMCSalesForecastEntry_P."Prev. Campain Item Qty"
+                                                                    / CMCSalesForecastEntry_P."Hectare Dose";
+            AFTER}
+            CMCSalesForecastEntry_L."Prev. Campain Item Hect." += CMCSalesForecastEntry_P."Prev. Campain Item Hect.";
+            // <-- 20150420-APP02-CMC02.02.00-2928-FEC01
+
+          END;
+          IF CurrCampaignHectToAdd_G <> 0 THEN
+            CMCSalesForecastEntry_L."Cur. Campaign Hectare" += CurrCampaignHectToAdd_G
+          ELSE BEGIN
+            // --> 20150420-APP02-CMC02.02.00-2928-FEC01
+            {BEFORE
+            IF CMCSalesForecastEntry_P."Qty (Hectare)" <> 0 THEN
+              CMCSalesForecastEntry_L."Cur. Campaign Hectare" += CMCSalesForecastEntry_P."Cur. Campaign Item Qty"
+                                                                    / CMCSalesForecastEntry_P."Hectare Dose";
+            AFTER}
+            CMCSalesForecastEntry_L."Cur. Campaign Hectare" += CMCSalesForecastEntry_P."Cur. Campaign Hectare";
+            // <-- 20150420-APP02-CMC02.02.00-2928-FEC01
+          END;
+
+        END;
+
+        {TEMP3LI
+        IF (CMCSalesForecastEntry_L."Level Type" = CMCSalesForecastEntry_L."Level Type"::Variety) THEN BEGIN
+          IF CMCSalesForecastEntry_L."Hectare Dose" <> 0 THEN BEGIN
+            CMCSalesForecastEntry_L."Prev. Campain Item Hect." := CMCSalesForecastEntry_L."Prev. Campain Item Qty" /
+                                                                  CMCSalesForecastEntry_L."Hectare Dose";
+            CMCSalesForecastEntry_L."Cur. Campaign Hectare" := CMCSalesForecastEntry_L."Cur. Campaign Item Qty" /
+                                                               CMCSalesForecastEntry_L."Hectare Dose";
+          END ELSE
+            IF CMCSalesForecastEntry_P."Hectare Dose" <> 0 THEN BEGIN
+              CMCSalesForecastEntry_L."Prev. Campain Item Hect." += CMCSalesForecastEntry_P."Prev. Campain Item Qty" /
+                                                                    CMCSalesForecastEntry_P."Hectare Dose";
+              CMCSalesForecastEntry_L."Cur. Campaign Hectare" += CMCSalesForecastEntry_P."Cur. Campaign Item Qty" /
+                                                                 CMCSalesForecastEntry_P."Hectare Dose";
+            END;
+        END ELSE BEGIN
+          IF VarietyHectareDose_G <> 0 THEN BEGIN
+            CMCSalesForecastEntry_L."Prev. Campain Item Hect." += CMCSalesForecastEntry_P."Prev. Campain Item Qty" /
+                                                                  VarietyHectareDose_G;
+            CMCSalesForecastEntry_L."Cur. Campaign Hectare" += CMCSalesForecastEntry_P."Cur. Campaign Item Qty" /
+                                                               VarietyHectareDose_G;
+          END ELSE
+            IF CMCSalesForecastEntry_P."Hectare Dose" <> 0 THEN BEGIN
+              CMCSalesForecastEntry_L."Prev. Campain Item Hect." += CMCSalesForecastEntry_P."Prev. Campain Item Qty" /
+                                                                    CMCSalesForecastEntry_P."Hectare Dose";
+              CMCSalesForecastEntry_L."Cur. Campaign Hectare" += CMCSalesForecastEntry_P."Cur. Campaign Item Qty" /
+                                                                 CMCSalesForecastEntry_P."Hectare Dose";
+            END;
+        END;
+        TEMP3LI}
+
+        // MAJ des mises en terre
+        IF (LevelBreak_P = LevelBreak_P::Species) OR (LevelBreak_P = LevelBreak_P::Variety) THEN BEGIN
+          CMCSalesForecastEntry_L."Planting Quantity" := 0;
+          CMCPlanting_L.SETRANGE("Campaign No.", CMCSalesForecastEntry_L."Campaing No.");
+          CMCPlanting_L.SETRANGE("Activity Production Code",  CMCSalesForecastEntry_L."Activity Production Code");
+          CASE LevelBreak_P OF
+            LevelBreak_P::Species: CMCPlanting_L.SETRANGE(Type, CMCPlanting_L.Type::Species);
+            LevelBreak_P::Variety: CMCPlanting_L.SETRANGE(Type, CMCPlanting_L.Type::Variety);
+          END;
+          CMCPlanting_L.SETRANGE("No.", CMCSalesForecastEntry_L."Level No.");
+          StopSearch_L := FALSE;
+
+          IF CMCSalesForecastEntry_L."Salesperson Code" <> '' THEN BEGIN
+            CMCPlanting_L.SETRANGE("Salesperson Code", CMCSalesForecastEntry_L."Salesperson Code");
+            IF CMCPlanting_L.FINDFIRST THEN BEGIN
+              REPEAT
+                IF (CMCSalesForecastEntry_L."Level Type" = CMCSalesForecastEntry_L."Level Type"::Variety) THEN
+                  CMCSalesForecastEntry_L."Planting Quantity" += CMCPlanting_L.Quantity /
+                                      ConvertUnitofMeasure(CMCPlanting_L."Unit of Measure Code",
+                                      Variety_L."Sales Forecast Unit Of Measure",CMCSalesForecastEntry_P."Item No.")
+                ELSE
+                  CMCSalesForecastEntry_L."Planting Quantity" += CMCPlanting_L.Quantity;
+              UNTIL CMCPlanting_L.NEXT=0;
+              StopSearch_L := TRUE;
+            END;
+          END;
+
+          IF (NOT StopSearch_L) AND (CMCSalesForecastEntry_L."Sales Zone Code" <> '') THEN BEGIN
+            CMCPlanting_L.SETFILTER("Salesperson Code", '%1', '');
+            CMCPlanting_L.SETRANGE("Sales Zone Code", CMCSalesForecastEntry_L."Sales Zone Code");
+            IF CMCPlanting_L.FINDFIRST THEN BEGIN
+              REPEAT
+                IF (CMCSalesForecastEntry_L."Level Type" = CMCSalesForecastEntry_L."Level Type"::Variety) THEN
+                  CMCSalesForecastEntry_L."Planting Quantity" += CMCPlanting_L.Quantity /
+                                      ConvertUnitofMeasure(CMCPlanting_L."Unit of Measure Code",
+                                      Variety_L."Sales Forecast Unit Of Measure",CMCSalesForecastEntry_P."Item No.")
+                ELSE
+                  CMCSalesForecastEntry_L."Planting Quantity" += CMCPlanting_L.Quantity;
+              UNTIL CMCPlanting_L.NEXT=0;
+              StopSearch_L := TRUE;
+            END;
+          END;
+
+          IF (NOT StopSearch_L) AND (CMCSalesForecastEntry_L."Sales Area Code" <> '') THEN BEGIN
+            CMCPlanting_L.SETFILTER("Salesperson Code", '%1', '');
+            CMCPlanting_L.SETFILTER("Sales Zone Code", '%1', '');
+            CMCPlanting_L.SETRANGE("Sales Area Code", CMCSalesForecastEntry_L."Sales Area Code");
+            IF CMCPlanting_L.FINDFIRST THEN
+              REPEAT
+                IF (CMCSalesForecastEntry_L."Level Type" = CMCSalesForecastEntry_L."Level Type"::Variety) THEN
+                  CMCSalesForecastEntry_L."Planting Quantity" += CMCPlanting_L.Quantity /
+                                   ConvertUnitofMeasure(CMCPlanting_L."Unit of Measure Code",
+                                   Variety_L."Sales Forecast Unit Of Measure",CMCSalesForecastEntry_P."Item No.")
+                ELSE
+                  CMCSalesForecastEntry_L."Planting Quantity" += CMCPlanting_L.Quantity;
+              UNTIL CMCPlanting_L.NEXT=0;
+          END;
+        END;
+
+      END;
+
+      IF CMCSalesForecastEntry_L.Quantity <> 0 THEN
+        CMCSalesForecastEntry_L."Actual Qty / Forec. Qty %" := ROUND(CMCSalesForecastEntry_L."Cur. Campaign Item Qty"*100 /
+                                                                     CMCSalesForecastEntry_L.Quantity, 0.01, '=');
+      IF CMCSalesForecastEntry_L."Prev. Campain Item Qty" <> 0  THEN
+        CMCSalesForecastEntry_L."ForecQty/PrevCampActualQty%" := ROUND(CMCSalesForecastEntry_L.Quantity*100 /
+                                                                       CMCSalesForecastEntry_L."Prev. Campain Item Qty", 0.01, '=');
+      IF CMCSalesForecastEntry_L."Prev. Campain Item Hect." <> 0 THEN
+        CMCSalesForecastEntry_L."ForecHec/PrevCampActualHec%" := ROUND(CMCSalesForecastEntry_L."Qty (Hectare)"*100 /
+                                                                       CMCSalesForecastEntry_L."Prev. Campain Item Hect.", 0.01, '=');
+      CMCSalesForecastEntry_L."Prev. Campaign Sales Amount" := CMCSalesForecastEntry_L."Prev. Campain Item Qty" *
+                                                               CMCSalesForecastEntry_L."Average Unit Price";
+      CMCSalesForecastEntry_L."Forecasted Amount" := CMCSalesForecastEntry_L.Quantity * CMCSalesForecastEntry_L."Average Unit Price";
+      CMCSalesForecastEntry_L.MODIFY;
+
+      MaintainFertilQtySFEntryTotal(CMCSalesForecastEntry_L, EntryNo_P, Quantity_P, QuantityUpdated_P);
+    END;
+
+    PROCEDURE SetLevelValue@8053017(CMCMCItem_P@8053001 : Record 27;LevelBreak_P@8053000 : ' ,Market,Species,Variety,Submarket') : Code[20];
+    BEGIN
+      CASE LevelBreak_P OF
+        LevelBreak_P::" ": EXIT('');
+        LevelBreak_P::Market:
+          IF CMCMCItem_P."Market Code" <> '' THEN
+            EXIT(CMCMCItem_P."Market Code")
+          ELSE
+            EXIT(Text8053202);
+        LevelBreak_P::Species:
+          IF CMCMCItem_P."Species Code" <> '' THEN
+            EXIT(CMCMCItem_P."Species Code")
+          ELSE
+            EXIT(Text8053202);
+        LevelBreak_P::Variety:
+          IF CMCMCItem_P."Variety Code" <> '' THEN
+            EXIT(CMCMCItem_P."Variety Code")
+          ELSE
+            EXIT(Text8053202);
+        LevelBreak_P::Submarket:
+          IF CMCMCItem_P."Submarket Code" <> '' THEN
+            EXIT(CMCMCItem_P."Submarket Code")
+          ELSE
+            EXIT(Text8053202);
+      END;
+    END;
+
+    PROCEDURE UpdateFertilQtySFEntryLine@8053002(SalesForecastEntry_P@8053000 : Record 8053204);
+    VAR
+      CMCItemFertilizerUnit_L@8053002 : Record 8053224;
+      FertilQtySalesFrecastEntry_L@8053001 : Record 8053259;
+      FertilizerUnit_L@8053003 : Record 8053223;
+    BEGIN
+      CMCItemFertilizerUnit_L.RESET;
+      CMCItemFertilizerUnit_L.SETRANGE("Item No.", SalesForecastEntry_P."Item No.");
+      IF SalesForecastEntry_P."Variant No." <> '' THEN
+        CMCItemFertilizerUnit_L.SETRANGE("Item Variant", SalesForecastEntry_P."Variant No.");
+      IF CMCItemFertilizerUnit_L.FINDFIRST THEN
+      REPEAT
+        FertilQtySalesFrecastEntry_L.RESET;
+        FertilQtySalesFrecastEntry_L.SETRANGE("SalesForecast Entry No.", SalesForecastEntry_P."Entry No.");
+        FertilQtySalesFrecastEntry_L.SETRANGE("Level Type", FertilQtySalesFrecastEntry_L."Level Type"::Item);
+        FertilQtySalesFrecastEntry_L.SETRANGE("Fertilizer Unit Code", CMCItemFertilizerUnit_L."Fertilizer Unit");
+        IF NOT FertilQtySalesFrecastEntry_L.FINDFIRST THEN
+        BEGIN
+          FertilQtySalesFrecastEntry_L.INIT;
+          FertilQtySalesFrecastEntry_L."SalesForecast Entry No." := SalesForecastEntry_P."Entry No.";
+          FertilQtySalesFrecastEntry_L."Fertilizer Unit Code" := CMCItemFertilizerUnit_L."Fertilizer Unit";
+          FertilQtySalesFrecastEntry_L."Level 1 Value" := SalesForecastEntry_P."Level 1 Value";
+          FertilQtySalesFrecastEntry_L."Level 2 Value" := SalesForecastEntry_P."Level 2 Value";
+          FertilQtySalesFrecastEntry_L."Level 3 Value" := SalesForecastEntry_P."Level 3 Value";
+          FertilQtySalesFrecastEntry_L."Level 4 Value" := SalesForecastEntry_P."Level 4 Value";
+          FertilQtySalesFrecastEntry_L."Level Type"    := SalesForecastEntry_P."Level Type";
+
+          IF FertilizerUnit_L.GET(FertilQtySalesFrecastEntry_L."Fertilizer Unit Code") THEN
+            FertilQtySalesFrecastEntry_L.Index := FertilizerUnit_L.Index;
+
+          FertilQtySalesFrecastEntry_L.INSERT;
+        END;
+        FertilQtySalesFrecastEntry_L.Quantity := SalesForecastEntry_P.Quantity *
+                                                 CMCItemFertilizerUnit_L."FU per Unit";
+        FertilQtySalesFrecastEntry_L."Prev. Campain Item Qty" := SalesForecastEntry_P."Prev. Campain Item Qty" *
+                                                                 CMCItemFertilizerUnit_L."FU per Unit";
+        FertilQtySalesFrecastEntry_L."Cur. Campain Item Qty"  := SalesForecastEntry_P."Cur. Campaign Item Qty" *
+                                                                 CMCItemFertilizerUnit_L."FU per Unit";
+        FertilQtySalesFrecastEntry_L.MODIFY;
+      UNTIL CMCItemFertilizerUnit_L.NEXT = 0;
+    END;
+
+    PROCEDURE MaintainFertilQtySFEntryTotal@8053003(SalesForecastEntry_P@8053000 : Record 8053204;EntryNo_P@8053003 : Integer;Quantity_P@8053006 : Decimal;QuantityUpdated_P@8053007 : Boolean);
+    VAR
+      CMCItemFertilizerUnit_L@8053002 : Record 8053224;
+      FertilQtySalesFrecastEntry_L@8053001 : Record 8053259;
+      FertilQtySalesFrecastLine_L@8053004 : Record 8053259;
+      CMCSalesForecastEntry_L@8053005 : Record 8053204;
+      FertilizerUnit_L@8053008 : Record 8053223;
+    BEGIN
+      IF NOT UpdateFertilizationQty_G THEN
+        EXIT;
+
+      FertilQtySalesFrecastLine_L.SETRANGE("SalesForecast Entry No.", EntryNo_P);
+      IF NOT FertilQtySalesFrecastLine_L.FINDFIRST THEN
+        EXIT;
+
+      REPEAT
+        FertilQtySalesFrecastEntry_L.RESET;
+        FertilQtySalesFrecastEntry_L.SETCURRENTKEY("Level 1 Value", "Level 2 Value", "Level 3 Value", "Level 4 Value");
+        FertilQtySalesFrecastEntry_L.SETRANGE("SalesForecast Entry No.", SalesForecastEntry_P."Entry No.");
+        FertilQtySalesFrecastEntry_L.SETRANGE("Fertilizer Unit Code", FertilQtySalesFrecastLine_L."Fertilizer Unit Code");
+        FertilQtySalesFrecastEntry_L.SETRANGE("Level Type", SalesForecastEntry_P."Level Type");
+        FertilQtySalesFrecastEntry_L.SETRANGE("Level 1 Value", SalesForecastEntry_P."Level 1 Value");
+        FertilQtySalesFrecastEntry_L.SETRANGE("Level 2 Value", SalesForecastEntry_P."Level 2 Value");
+        FertilQtySalesFrecastEntry_L.SETRANGE("Level 3 Value", SalesForecastEntry_P."Level 3 Value");
+        FertilQtySalesFrecastEntry_L.SETRANGE("Level 4 Value", SalesForecastEntry_P."Level 4 Value");
+
+        IF NOT FertilQtySalesFrecastEntry_L.FINDFIRST THEN BEGIN
+          FertilQtySalesFrecastEntry_L.INIT;
+          FertilQtySalesFrecastEntry_L."SalesForecast Entry No." := SalesForecastEntry_P."Entry No.";
+          FertilQtySalesFrecastEntry_L."Fertilizer Unit Code" := FertilQtySalesFrecastLine_L."Fertilizer Unit Code";
+          FertilQtySalesFrecastEntry_L."Level 1 Value" := SalesForecastEntry_P."Level 1 Value";
+          FertilQtySalesFrecastEntry_L."Level 2 Value" := SalesForecastEntry_P."Level 2 Value";
+          FertilQtySalesFrecastEntry_L."Level 3 Value" := SalesForecastEntry_P."Level 3 Value";
+          FertilQtySalesFrecastEntry_L."Level 4 Value" := SalesForecastEntry_P."Level 4 Value";
+          FertilQtySalesFrecastEntry_L."Level Type"    := SalesForecastEntry_P."Level Type";
+
+          IF FertilizerUnit_L.GET(FertilQtySalesFrecastEntry_L."Fertilizer Unit Code") THEN
+            FertilQtySalesFrecastEntry_L.Index := FertilizerUnit_L.Index;
+
+          FertilQtySalesFrecastEntry_L.INSERT;
+        END;
+
+        CMCSalesForecastEntry_L.GET(EntryNo_P);
+        CMCItemFertilizerUnit_L.SETRANGE("Item No.", CMCSalesForecastEntry_L."Item No.");
+        CMCItemFertilizerUnit_L.SETRANGE("Item Variant", CMCSalesForecastEntry_L."Variant No.");
+        CMCItemFertilizerUnit_L.SETRANGE("Fertilizer Unit", FertilQtySalesFrecastLine_L."Fertilizer Unit Code");
+        IF CMCItemFertilizerUnit_L.FINDFIRST THEN BEGIN
+          FertilQtySalesFrecastEntry_L.Quantity += Quantity_P * CMCItemFertilizerUnit_L."FU per Unit";
+          IF NOT QuantityUpdated_P THEN BEGIN
+            FertilQtySalesFrecastEntry_L."Prev. Campain Item Qty" += CMCSalesForecastEntry_L."Prev. Campain Item Qty" *
+                                                                     CMCItemFertilizerUnit_L."FU per Unit";
+            FertilQtySalesFrecastEntry_L."Cur. Campain Item Qty"  += CMCSalesForecastEntry_L."Cur. Campaign Item Qty" *
+                                                                     CMCItemFertilizerUnit_L."FU per Unit";
+          END;
+          FertilQtySalesFrecastEntry_L.MODIFY;
+        END;
+      UNTIL FertilQtySalesFrecastLine_L.NEXT=0;
+    END;
+
+    PROCEDURE CalculateRanking@1000000000(Location_P@1000000000 : Code[10];LevelValue1_P@1000000001 : Code[20];LevelValue2_P@1000000002 : Code[20];LevelValue3_P@1000000003 : Code[20];LevelValue4_P@1000000004 : Code[20];ItemDesc_P@1000000005 : Code[50]) : Code[150];
+    VAR
+      Ranking_L@1000000006 : Code[150];
+      ReplacedBlank_L@1000000007 : Code[10];
+    BEGIN
+      ReplacedBlank_L := 'ZZZZZ';
+      Ranking_L := Location_P + '-';
+
+      IF LevelValue1_P <> '' THEN Ranking_L += LevelValue1_P
+      ELSE Ranking_L += ReplacedBlank_L;
+      Ranking_L += '-';
+
+      IF LevelValue2_P <> '' THEN Ranking_L += LevelValue2_P
+      ELSE Ranking_L += ReplacedBlank_L;
+      Ranking_L += '-';
+
+      IF LevelValue3_P <> '' THEN Ranking_L += LevelValue3_P
+      ELSE Ranking_L += ReplacedBlank_L;
+      Ranking_L += '-';
+
+      IF LevelValue4_P <> '' THEN Ranking_L += LevelValue4_P
+      ELSE Ranking_L += ReplacedBlank_L;
+      Ranking_L += '-';
+
+      IF ItemDesc_P <> '' THEN Ranking_L += ItemDesc_P
+      ELSE Ranking_L += ReplacedBlank_L;
+
+      EXIT(Ranking_L);
+    END;
+
+    PROCEDURE AddSumPlantingQuantity@8053008(VAR SalesForecastEntry_P@8053000 : Record 8053204);
+    VAR
+      SubmarketSumPlantingQuantity_L@8053002 : Decimal;
+      MarketSumPlantingQuantity_L@8053003 : Decimal;
+      SalesForecastEntry_L@8053001 : Record 8053204;
+    BEGIN
+      WITH SalesForecastEntry_P DO BEGIN
+        SETCURRENTKEY(Ranking);
+        FINDSET;
+        SubmarketSumPlantingQuantity_L := 0;
+        MarketSumPlantingQuantity_L := 0;
+        REPEAT
+          IF NOT ("Level Type" IN  ["Level Type"::Submarket, "Level Type"::Market]) THEN BEGIN
+            SubmarketSumPlantingQuantity_L += "Planting Quantity";
+            MarketSumPlantingQuantity_L += "Planting Quantity";
+          END ELSE BEGIN
+            IF "Level Type" = "Level Type"::Submarket THEN BEGIN
+              "Planting Quantity" := SubmarketSumPlantingQuantity_L;
+              MODIFY;
+              SubmarketSumPlantingQuantity_L := 0;
+            END;
+            IF "Level Type" = "Level Type"::Market THEN BEGIN
+              "Planting Quantity" := MarketSumPlantingQuantity_L;
+              MODIFY;
+              MarketSumPlantingQuantity_L := 0;
+            END;
+          END;
+        UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE MarketSubmarketLevelBreakExist@8053011(SalesForecast_P@8053000 : Record 8053200) : Boolean;
+    BEGIN
+      WITH SalesForecast_P DO BEGIN
+        CASE TRUE OF
+          "Level Break 1" IN ["Level Break 1"::Submarket,"Level Break 1"::Market] : EXIT(TRUE);
+          "Level Break 2" IN ["Level Break 2"::Submarket,"Level Break 2"::Market] : EXIT(TRUE);
+          "Level Break 3" IN ["Level Break 3"::Submarket,"Level Break 3"::Market] : EXIT(TRUE);
+          "Level Break 4" IN ["Level Break 4"::Submarket,"Level Break 4"::Market] : EXIT(TRUE);
+        END;
+        EXIT(FALSE);
+      END;
+    END;
+
+    PROCEDURE VarietyExists@8053007(SalesForecastEntryVariety_P@8053000 : Record 8053204;SalesForecastEntryItem_P@8053001 : Record 8053204;VAR CMCVariety_P@8053002 : Record 8053070;VAR Item_P@8053003 : Record 27) : Boolean;
+    BEGIN
+      IF CMCVariety_P.GET(SalesForecastEntryVariety_P."Level No.") THEN BEGIN
+        CMCVariety_P.TESTFIELD("Sales Forecast Unit Of Measure");
+        Item_P.GET(SalesForecastEntryItem_P."Item No.");
+        EXIT(TRUE);
+      END ELSE
+        EXIT(FALSE);
+    END;
+
+    PROCEDURE MarketExists@1000000003(SalesForecastEntryVariety_P@8053000 : Record 8053204;SalesForecastEntryItem_P@8053001 : Record 8053204;VAR CMCMarket_P@8053002 : Record 8053212;VAR Item_P@8053003 : Record 27) : Boolean;
+    BEGIN
+      IF CMCMarket_P.GET(SalesForecastEntryVariety_P."Level No.") THEN BEGIN
+        CMCMarket_P.TESTFIELD("Sales Forecast Unit Of Measure");
+        Item_P.GET(SalesForecastEntryItem_P."Item No.");
+        EXIT(TRUE);
+      END ELSE
+        EXIT(FALSE);
+    END;
+
+    PROCEDURE SubMarketExists@1000000004(SalesForecastEntryVariety_P@8053000 : Record 8053204;SalesForecastEntryItem_P@8053001 : Record 8053204;VAR CMCSubMarket_P@8053002 : Record 8053213;VAR Item_P@8053003 : Record 27) : Boolean;
+    BEGIN
+      CMCSubMarket_P.RESET;
+      CMCSubMarket_P.SETRANGE(Code,SalesForecastEntryVariety_P."Level No.");
+      IF CMCSubMarket_P.FINDFIRST THEN BEGIN
+        CMCSubMarket_P.TESTFIELD("Sales Forecast Unit Of Measure");
+        Item_P.GET(SalesForecastEntryItem_P."Item No.");
+        EXIT(TRUE);
+      END ELSE
+        EXIT(FALSE);
+    END;
+
+    PROCEDURE CheckItemSetup@8053005(LevelBreak_P@8053000 : ' ,Market,Species,Variety,Submarket');
+    VAR
+      SalesForecastItem_L@8053001 : Record 8053201;
+      Item_L@8053002 : Record 27;
+    BEGIN
+      WITH SalesForecastItem_L DO BEGIN
+        RESET;
+        SETRANGE("Sales Forecast Code","CMC Sales Forecast".Code);
+        IF FINDSET THEN
+          REPEAT
+            IF Item_L.GET("Item No.") THEN
+              CASE LevelBreak_P OF
+                LevelBreak_P::" ": ;
+                LevelBreak_P::Market:
+                  IF Item_L."Market Code" = '' THEN
+                    ERROR(Text8053203,Item_L.FIELDCAPTION(Item_L."Market Code"),Item_L."No.");
+                LevelBreak_P::Species:
+                  IF Item_L."Species Code" = '' THEN
+                    ERROR(Text8053203,Item_L.FIELDCAPTION(Item_L."Species Code"),Item_L."No.");
+                LevelBreak_P::Variety:
+                  IF Item_L."Variety Code" = '' THEN
+                    ERROR(Text8053203,Item_L.FIELDCAPTION(Item_L."Variety Code"),Item_L."No.");
+                LevelBreak_P::Submarket:
+                  IF Item_L."Submarket Code" = '' THEN
+                    ERROR(Text8053203,Item_L.FIELDCAPTION(Item_L."Submarket Code"),Item_L."No.");
+              END;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CalculateRanking2@8053006(Location_P@1000000000 : Code[10];LevelValue1_P@1000000001 : Code[20];LevelValue2_P@1000000002 : Code[20];LevelValue3_P@1000000003 : Code[20];LevelValue4_P@1000000004 : Code[20];ItemDesc_P@1000000005 : Code[50];ItemVariantDesc_P@8053001 : Text[50];Indent_P@8053000 : Integer) : Code[150];
+    VAR
+      Ranking_L@1000000006 : Code[150];
+      ReplacedBlank_L@1000000007 : Code[10];
+    BEGIN
+      ReplacedBlank_L := 'ZZZZZ';
+
+      IF LevelValue1_P <> '' THEN Ranking_L += LevelValue1_P
+      ELSE Ranking_L += ReplacedBlank_L;
+      Ranking_L += '-';
+
+      IF LevelValue2_P <> '' THEN Ranking_L += LevelValue2_P
+      ELSE Ranking_L += ReplacedBlank_L;
+      Ranking_L += '-';
+
+      IF LevelValue3_P <> '' THEN Ranking_L += LevelValue3_P
+      ELSE Ranking_L += ReplacedBlank_L;
+      Ranking_L += '-';
+
+      IF LevelValue4_P <> '' THEN Ranking_L += LevelValue4_P
+      ELSE Ranking_L += ReplacedBlank_L;
+      Ranking_L += '-';
+
+      Ranking_L += FORMAT(Indent_P) + '-';
+
+      IF ItemDesc_P <> '' THEN Ranking_L += ItemDesc_P
+      ELSE Ranking_L += ReplacedBlank_L;
+      Ranking_L += '-';
+
+      IF ItemVariantDesc_P <> '' THEN Ranking_L += ItemVariantDesc_P
+      ELSE Ranking_L += ReplacedBlank_L;
+      Ranking_L += '-';
+
+      IF Location_P <> '' THEN Ranking_L += Location_P
+      ELSE Ranking_L += ReplacedBlank_L;
+
+      EXIT(Ranking_L);
+    END;
+
+    PROCEDURE MaintainItemTotal@8053009(CMCSalesForecastEntry_P@8053003 : Record 8053204;EntryNo_P@8053002 : Integer;Quantity_P@8053001 : Decimal;QuantityUpdated_P@8053000 : Boolean;ItemDesc_P@8053008 : Text[50]);
+    VAR
+      CMCSalesForecastEntry_L@8053004 : Record 8053204;
+      CMCSalesForecast_L@8053005 : Record 8053200;
+      CMCPlanting_L@8053007 : Record 8053258;
+      StopSearch_L@8053006 : Boolean;
+    BEGIN
+      WITH CMCSalesForecastEntry_L DO BEGIN
+        RESET;
+        SETCURRENTKEY("Recipient Company Code","Campaing No.","Sales Forecast Code","Salesperson Code",
+                                              "Level Type","Item No.","Variant No.","Location Code");
+        SETRANGE("Recipient Company Code", CMCSalesForecastEntry_P."Recipient Company Code");
+        SETRANGE("Campaing No.", CMCSalesForecastEntry_P."Campaing No.");
+        SETRANGE("Sales Forecast Code", CMCSalesForecastEntry_P."Sales Forecast Code");
+        SETRANGE("Salesperson Code", CMCSalesForecastEntry_P."Salesperson Code");
+        SETRANGE("Level Type", "Level Type"::"Item Total");
+        SETRANGE("Level No.", CMCSalesForecastEntry_P."Item No.");
+
+        IF NOT FINDFIRST THEN BEGIN
+          INIT;
+
+          "Entry No." := EntryNo;
+          EntryNo += 1;
+          "Recipient Company Code" := CMCSalesForecastEntry_P."Recipient Company Code";
+          "Campaing No." := CMCSalesForecastEntry_P."Campaing No.";
+          "Sales Forecast Code" := CMCSalesForecastEntry_P."Sales Forecast Code";
+          "Salesperson Code" := CMCSalesForecastEntry_P."Salesperson Code";
+
+          "Level 1 Value" := CMCSalesForecastEntry_P."Level 1 Value";
+          "Level 2 Value" := CMCSalesForecastEntry_P."Level 2 Value";
+          "Level 3 Value" := CMCSalesForecastEntry_P."Level 3 Value";
+          "Level 4 Value" := CMCSalesForecastEntry_P."Level 4 Value";
+          "Line Level" := CMCSalesForecastEntry_P."Line Level";
+          "Level Type" := "Level Type"::"Item Total";
+          "Level No."  := CMCSalesForecastEntry_P."Level No.";
+          Description := FORMAT("Level Type") + ' - ' + "Level No.";
+
+          "Activity Production Code" := CMCSalesForecastEntry_P."Activity Production Code";
+          "Sales Area Code" := CMCSalesForecastEntry_P."Sales Area Code";
+          "Sales Zone Code" := CMCSalesForecastEntry_P."Sales Zone Code";
+
+          Indent := 0;
+          Ranking := CalculateRanking2("Location Code","Level 1 Value", "Level 2 Value",
+                                                  "Level 3 Value", "Level 4 Value", ItemDesc_P, '',Indent);
+
+          INSERT;
+        END;
+
+        Quantity += Quantity_P;
+
+        IF "Hectare Dose" <> 0 THEN
+          "Qty (Hectare)" += Quantity_P / "Hectare Dose"
+        ELSE
+          IF CMCSalesForecastEntry_P."Hectare Dose" <> 0 THEN
+            "Qty (Hectare)" += Quantity_P / CMCSalesForecastEntry_P."Hectare Dose";
+
+        IF NOT QuantityUpdated_P THEN BEGIN
+          "Prev. Campain Item Qty"  += CMCSalesForecastEntry_P."Prev. Campain Item Qty";
+          "Prev. Campain Prev. Qty" += CMCSalesForecastEntry_P."Prev. Campain Prev. Qty";
+          "Quota Quantity"          += CMCSalesForecastEntry_P."Quota Quantity";
+          "Cur. Campaign Item Qty"  += CMCSalesForecastEntry_P."Cur. Campaign Item Qty";
+
+          "Planting Quantity" := 0;
+          CMCPlanting_L.SETRANGE("Campaign No.", "Campaing No.");
+          CMCPlanting_L.SETRANGE("Activity Production Code", "Activity Production Code");
+          CMCPlanting_L.SETRANGE(Type, CMCPlanting_L.Type::Item);
+          CMCPlanting_L.SETRANGE("No.", "Level No.");
+          StopSearch_L := FALSE;
+
+          IF "Salesperson Code" <> '' THEN BEGIN
+            CMCPlanting_L.SETRANGE("Salesperson Code", "Salesperson Code");
+            IF CMCPlanting_L.FINDSET THEN BEGIN
+              REPEAT
+                "Planting Quantity" += CMCPlanting_L.Quantity;
+              UNTIL CMCPlanting_L.NEXT=0;
+              StopSearch_L := TRUE;
+            END;
+          END;
+
+          IF (NOT StopSearch_L) AND ("Sales Zone Code" <> '') THEN BEGIN
+            CMCPlanting_L.SETFILTER("Salesperson Code", '%1', '');
+            CMCPlanting_L.SETRANGE("Sales Zone Code", "Sales Zone Code");
+            IF CMCPlanting_L.FINDSET THEN BEGIN
+              REPEAT
+                "Planting Quantity" += CMCPlanting_L.Quantity;
+              UNTIL CMCPlanting_L.NEXT=0;
+              StopSearch_L := TRUE;
+            END;
+          END;
+
+          IF (NOT StopSearch_L) AND ("Sales Area Code" <> '') THEN BEGIN
+            CMCPlanting_L.SETFILTER("Salesperson Code", '%1', '');
+            CMCPlanting_L.SETFILTER("Sales Zone Code", '%1', '');
+            CMCPlanting_L.SETRANGE("Sales Area Code", "Sales Area Code");
+            IF CMCPlanting_L.FINDSET THEN
+              REPEAT
+                "Planting Quantity" += CMCPlanting_L.Quantity;
+              UNTIL CMCPlanting_L.NEXT=0;
+          END;
+        END;
+
+
+        IF CMCSalesForecastEntry_P."Hectare Dose" <> 0 THEN BEGIN
+          "Prev. Campain Item Hect." := "Prev. Campain Item Qty" / CMCSalesForecastEntry_P."Hectare Dose";
+          "Cur. Campaign Hectare" := "Cur. Campaign Item Qty" / CMCSalesForecastEntry_P."Hectare Dose";
+        END;
+
+        IF Quantity <> 0 THEN
+          "Actual Qty / Forec. Qty %" := ROUND("Cur. Campaign Item Qty"*100 / Quantity, 0.01, '=');
+
+        IF "Prev. Campain Item Qty" <> 0  THEN
+          "ForecQty/PrevCampActualQty%" := ROUND(Quantity*100 / "Prev. Campain Item Qty", 0.01, '=');
+
+        IF "Prev. Campain Item Hect." <> 0 THEN
+          "ForecHec/PrevCampActualHec%" := ROUND("Qty (Hectare)"*100 / "Prev. Campain Item Hect.", 0.01, '=');
+
+        "Prev. Campaign Sales Amount" := "Prev. Campain Item Qty" * "Average Unit Price";
+
+        "Forecasted Amount" := Quantity * "Average Unit Price";
+        MODIFY;
+      END;
+
+      MaintainFertilQtySFEntryTotal(CMCSalesForecastEntry_L, EntryNo_P, Quantity_P, QuantityUpdated_P);
+    END;
+
+    PROCEDURE MaintainLocationTotal@8053010(CMCSalesForecastEntry_P@8053003 : Record 8053204;EntryNo_P@8053002 : Integer;Quantity_P@8053001 : Decimal;QuantityUpdated_P@8053000 : Boolean);
+    VAR
+      CMCSalesForecastEntry_L@8053007 : Record 8053204;
+      CMCSalesForecast_L@8053006 : Record 8053200;
+      CMCPlanting_L@8053005 : Record 8053258;
+      StopSearch_L@8053004 : Boolean;
+    BEGIN
+      WITH CMCSalesForecastEntry_L DO BEGIN
+        RESET;
+        SETCURRENTKEY("Recipient Company Code","Campaing No.","Sales Forecast Code","Salesperson Code",
+                                              "Level Type","Item No.","Variant No.","Location Code");
+        SETRANGE("Recipient Company Code", CMCSalesForecastEntry_P."Recipient Company Code");
+        SETRANGE("Campaing No.", CMCSalesForecastEntry_P."Campaing No.");
+        SETRANGE("Sales Forecast Code", CMCSalesForecastEntry_P."Sales Forecast Code");
+        SETRANGE("Salesperson Code", CMCSalesForecastEntry_P."Salesperson Code");
+        SETRANGE("Level Type", "Level Type"::"Location Total");
+        SETRANGE("Location Code", CMCSalesForecastEntry_P."Location Code");
+
+        IF NOT FINDFIRST THEN BEGIN
+          INIT;
+
+          "Entry No." := EntryNo;
+          EntryNo += 1;
+          "Recipient Company Code" := CMCSalesForecastEntry_P."Recipient Company Code";
+          "Campaing No." := CMCSalesForecastEntry_P."Campaing No.";
+          "Sales Forecast Code" := CMCSalesForecastEntry_P."Sales Forecast Code";
+          "Salesperson Code" := CMCSalesForecastEntry_P."Salesperson Code";
+
+          "Level Type" := "Level Type"::"Location Total";
+          "Location Code" := CMCSalesForecastEntry_P."Location Code";
+          Description := FORMAT("Level Type") + ' - ' + "Location Code";
+
+          Indent := 0;
+          Ranking := CalculateRanking2("Location Code","Level 1 Value", "Level 2 Value",
+                                                  "Level 3 Value", "Level 4 Value", '', '',Indent);
+
+          INSERT;
+        END;
+
+        Quantity += Quantity_P;
+
+        IF "Hectare Dose" <> 0 THEN
+          "Qty (Hectare)" += Quantity_P / "Hectare Dose"
+        ELSE
+          IF CMCSalesForecastEntry_P."Hectare Dose" <> 0 THEN
+            "Qty (Hectare)" += Quantity_P / CMCSalesForecastEntry_P."Hectare Dose";
+
+        IF NOT QuantityUpdated_P THEN BEGIN
+          "Prev. Campain Item Qty"  += CMCSalesForecastEntry_P."Prev. Campain Item Qty";
+          "Prev. Campain Prev. Qty" += CMCSalesForecastEntry_P."Prev. Campain Prev. Qty";
+          "Quota Quantity"          += CMCSalesForecastEntry_P."Quota Quantity";
+          "Cur. Campaign Item Qty"  += CMCSalesForecastEntry_P."Cur. Campaign Item Qty";
+
+          "Planting Quantity" := 0;
+          CMCPlanting_L.SETRANGE("Campaign No.", "Campaing No.");
+          CMCPlanting_L.SETRANGE("Activity Production Code", CMCSalesForecastEntry_P."Activity Production Code");
+          CMCPlanting_L.SETRANGE(Type, CMCPlanting_L.Type::Item);
+          CMCPlanting_L.SETRANGE("No.", CMCSalesForecastEntry_P."Level No.");
+          StopSearch_L := FALSE;
+
+          IF "Salesperson Code" <> '' THEN BEGIN
+            CMCPlanting_L.SETRANGE("Salesperson Code", "Salesperson Code");
+            IF CMCPlanting_L.FINDSET THEN BEGIN
+              REPEAT
+                "Planting Quantity" += CMCPlanting_L.Quantity;
+              UNTIL CMCPlanting_L.NEXT=0;
+              StopSearch_L := TRUE;
+            END;
+          END;
+
+          IF (NOT StopSearch_L) AND (CMCSalesForecastEntry_P."Sales Zone Code" <> '') THEN BEGIN
+            CMCPlanting_L.SETFILTER("Salesperson Code", '%1', '');
+            CMCPlanting_L.SETRANGE("Sales Zone Code", CMCSalesForecastEntry_P."Sales Zone Code");
+            IF CMCPlanting_L.FINDSET THEN BEGIN
+              REPEAT
+                "Planting Quantity" += CMCPlanting_L.Quantity;
+              UNTIL CMCPlanting_L.NEXT=0;
+              StopSearch_L := TRUE;
+            END;
+          END;
+
+          IF (NOT StopSearch_L) AND (CMCSalesForecastEntry_P."Sales Area Code" <> '') THEN BEGIN
+            CMCPlanting_L.SETFILTER("Salesperson Code", '%1', '');
+            CMCPlanting_L.SETFILTER("Sales Zone Code", '%1', '');
+            CMCPlanting_L.SETRANGE("Sales Area Code", CMCSalesForecastEntry_P."Sales Area Code");
+            IF CMCPlanting_L.FINDSET THEN
+              REPEAT
+                "Planting Quantity" += CMCPlanting_L.Quantity;
+              UNTIL CMCPlanting_L.NEXT=0;
+          END;
+        END;
+
+
+        IF CMCSalesForecastEntry_P."Hectare Dose" <> 0 THEN BEGIN
+          "Prev. Campain Item Hect." := "Prev. Campain Item Qty" / CMCSalesForecastEntry_P."Hectare Dose";
+          "Cur. Campaign Hectare" := "Cur. Campaign Item Qty" / CMCSalesForecastEntry_P."Hectare Dose";
+        END;
+
+        IF Quantity <> 0 THEN
+          "Actual Qty / Forec. Qty %" := ROUND("Cur. Campaign Item Qty"*100 / Quantity, 0.01, '=');
+
+        IF "Prev. Campain Item Qty" <> 0  THEN
+          "ForecQty/PrevCampActualQty%" := ROUND(Quantity*100 / "Prev. Campain Item Qty", 0.01, '=');
+
+        IF "Prev. Campain Item Hect." <> 0 THEN
+          "ForecHec/PrevCampActualHec%" := ROUND(CMCSalesForecastEntry_L."Qty (Hectare)"*100 / "Prev. Campain Item Hect.", 0.01, '=');
+
+        "Prev. Campaign Sales Amount" := "Prev. Campain Item Qty" * "Average Unit Price";
+
+        "Forecasted Amount" := Quantity * "Average Unit Price";
+        MODIFY;
+      END;
+
+      MaintainFertilQtySFEntryTotal(CMCSalesForecastEntry_L, EntryNo_P, Quantity_P, QuantityUpdated_P);
+    END;
+
+    PROCEDURE ConvertUnitofMeasure@8053012(ToUoMCode_P@1000000006 : Code[10];FromUoMCode_P@8053000 : Code[10];ItemNo_P@8053001 : Code[20]) : Decimal;
+    VAR
+      CMCUnitsMeasure_L@1000000000 : Record 8053025;
+      CMCUnitsMeasure2_L@1000000001 : Record 8053025;
+      ItemUnitofMeasure_L@1000000002 : Record 5404;
+      ItemUnitofMeasure2_L@1000000004 : Record 5404;
+      Rate_L@1000000003 : Decimal;
+      Text005@1000000008 : TextConst 'FRA=Text005';
+    BEGIN
+      IF ToUoMCode_P <> FromUoMCode_P THEN BEGIN
+
+        Rate_L := 0;
+        IF ItemNo_P <> '' THEN BEGIN
+
+          ItemUnitofMeasure_L.RESET;
+          ItemUnitofMeasure_L.SETRANGE("Item No.",ItemNo_P);
+          ItemUnitofMeasure_L.SETRANGE(Code,ToUoMCode_P);
+          ItemUnitofMeasure2_L.RESET;
+          ItemUnitofMeasure2_L.SETRANGE("Item No.",ItemNo_P);
+          ItemUnitofMeasure2_L.SETRANGE(Code,FromUoMCode_P);
+          IF (ItemUnitofMeasure_L.FINDFIRST) AND (ItemUnitofMeasure2_L.FINDFIRST) THEN
+          // --> 20150507-APP02-CMC02.02.00-2959-FHS01
+          BEGIN
+            IF ItemUnitofMeasure_L."Qty. per Unit of Measure" = 0 THEN
+              ERROR(Text8053205, ItemUnitofMeasure_L.TABLECAPTION, ToUoMCode_P, ItemNo_P,
+                ItemUnitofMeasure_L.FIELDCAPTION("Qty. per Unit of Measure"));
+          // <-- 20150507-APP02-CMC02.02.00-2959-FHS01
+            EXIT(ItemUnitofMeasure2_L."Qty. per Unit of Measure" / ItemUnitofMeasure_L."Qty. per Unit of Measure");
+          // --> 20150507-APP02-CMC02.02.00-2959-FHS01
+          END;
+          // <-- 20150507-APP02-CMC02.02.00-2959-FHS01
+
+        END;
+
+        CMCUnitsMeasure_L.RESET;
+        CMCUnitsMeasure_L.SETRANGE(Code,ToUoMCode_P);
+        CMCUnitsMeasure2_L.RESET;
+        CMCUnitsMeasure2_L.SETRANGE(Code,FromUoMCode_P);
+        IF (CMCUnitsMeasure_L.FINDFIRST) AND (CMCUnitsMeasure2_L.FINDFIRST) THEN
+        // --> 20150507-APP02-CMC02.02.00-2959-FHS01
+        BEGIN
+          IF ItemUnitofMeasure_L."Qty. per Unit of Measure" = 0 THEN
+            ERROR(Text8053205, CMCUnitsMeasure_L.TABLECAPTION, ToUoMCode_P, ItemNo_P,
+              CMCUnitsMeasure_L.FIELDCAPTION("Qty. per Unit of Measure"));
+        // <-- 20150507-APP02-CMC02.02.00-2959-FHS01
+          EXIT(CMCUnitsMeasure2_L."Qty. per Unit of Measure" / CMCUnitsMeasure_L."Qty. per Unit of Measure");
+        // --> 20150507-APP02-CMC02.02.00-2959-FHS01
+        END;
+        // <-- 20150507-APP02-CMC02.02.00-2959-FHS01
+
+      END;
+
+      EXIT(1);
+    END;
+
+    PROCEDURE GetTarifN1@60000(recSalesForecastEntry_P@60000 : Record 8053204;SalesForecastFilter_P@60003 : Code[20]) Result_L : Decimal;
+    VAR
+      recSalesPrice_L@60001 : Record 7002;
+      recSalesForecast_L@60002 : Record 8053200;
+    BEGIN
+      // --> 20140725-APP20-TER01.01.00-FHS01
+      Result_L := 0;
+      IF recSalesForecastEntry_P."Item No." <> '' THEN BEGIN
+        recSalesForecast_L.RESET;
+        recSalesForecast_L.SETFILTER(Code, SalesForecastFilter_P);
+        IF recSalesForecast_L.FINDSET(FALSE, FALSE) THEN BEGIN
+          REPEAT
+            recSalesPrice_L.RESET;
+            recSalesPrice_L.SETRANGE("Item No.", recSalesForecastEntry_P."Item No.");
+            recSalesPrice_L.SETRANGE("Variant Code", recSalesForecastEntry_P."Variant No.");
+            recSalesPrice_L.SETRANGE("Sales Type", recSalesForecast_L."Sales Type Code");
+            recSalesPrice_L.SETRANGE("Sales Code", recSalesForecast_L."Sales Code");
+            recSalesPrice_L.SETRANGE("Campaign No.", recSalesForecast_L."CMC Camp. Ref Tarif Price");
+            IF recSalesPrice_L.FINDSET(FALSE, FALSE) THEN BEGIN
+              REPEAT
+                IF (recSalesPrice_L."Starting Date" = 0D) OR (recSalesPrice_L."Starting Date" <=
+                   recSalesForecast_L."Date Ref Tarif Price")
+                   THEN
+                  IF (recSalesPrice_L."Ending Date" = 0D) OR (recSalesPrice_L."Ending Date" >=
+                     recSalesForecast_L."Date Ref Tarif Price")
+                     THEN
+                    Result_L := recSalesPrice_L."Unit Price";
+              UNTIL (recSalesPrice_L.NEXT = 0) OR (Result_L <> 0);
+            END;
+          UNTIL (recSalesForecast_L.NEXT = 0) OR (Result_L <> 0);
+        END;
+      END;
+
+      EXIT(Result_L);
+      // <-- 20140725-APP20-TER01.01.00-FHS01
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20111019-APP02-CMC02.01.00-BRA : CREATEOBJECT
+      20111109-APP02-CMC02.01.00-BRA : ADDCODE
+      20120521-APP02-CMC02.01.00-FEC01 : ADDCODE (Prise en compte des variantes dans la fonction).
+      20120521-APP02-CMC02.01.00-FEC02 : ADDCODE (Prise en compte des variantes dans le calcul).
+      20130917-APP02-CMC02.02.00-PPE01 : ADDCODE (feed new fields)
+      20130917-APP02-CMC02.02.00-PPE02 : MODCODE (create lines by locations, moved code to new function InsertSalesForecastEntry)
+      20130917-APP02-CMC02.02.00-PPE03 : ADDCODE (feed qty. and amount new fields)
+      20130917-APP02-CMC02.02.00-PPE04 : ADDCODE (create/mantain total lines)
+      20130917-APP02-CMC02.02.00-PPE05 : ADDCODE (update table CMC Fertil. Qty Sales Forecast Entry)
+      20131023-APP02-CMC02.02.00-0961-PPE01 : MODCODE(change condition to copy salesperson fields)
+      20131031-APP02-CMC02.02.00-0961-PPE01 : MODCODE (get variety and species codes)
+      20131105-APP02-CMC02.02.00-0961-PPE01 : ADDCODE (set description for subtotal lines)
+      20131106-APP02-CMC02.02.00-0961-PPE01 : DELCODE (moved to table CMC Sales Forecast Entries)
+      20131111-APP02-CMC02.02.00-1074-PPE01 : - ADDCODE (add item no filter)
+                                              - MODCODE (add more parameters to GetCurrCampaignForecast function)
+      20131112-APP02-CMC02.02.00-1074-PPE01 : MODFUNC (GetPreviousCampaignForecast add Location parameter)
+      20131113-APP02-CMC02.02.00-1096-PPE01 : MODCODE (add option Blank for level break)
+      20131114-APP02-CMC02.02.00-1085-PPE01 : MODCODE (level break update totals)
+      20131114-APP02-CMC02.02.00-1101-PPE01 : MODCODE (calculate planting qty)
+      20131126-APP02-CMC02.02.00-1137-PPE01 : ADDCODE (calculate Qty (Hectare), Cur. Campaign Hectare)
+      20131227-APP02-CMC02.02.00-1329-PPE01 : MODECODE (calculate Planting Quantity "a plus fin" Salesperson/Sales Zone/Sales Area)
+      20131227-APP02-CMC02.02.00-1330-PPE01 : ADDCODE (add level break 4)
+      20131231-APP02-CMC02.02.00-1329-PPE01 : MODCODE (calculate Planting Quantity)
+      20131231-APP02-CMC02.02.00-1332-PPE01 : ADDCODE (calculate "Qty (Hectare)" for variety lines)
+      20140103-APP02-CMC02.02.00-1343-PPE01 : ADDCODE (calculate Indent and Ranking)
+      20140106-APP02-CMC02.02.00-1138-PPE01 : MODCODE (correct total calculation if use location)
+      20140106-APP02-CMC02.02.00-1329-PPE01 : ADDCODE (add Sales Zone Code to total lines to calculate Planting Quantity)
+      20140108-APP02-CMC02.02.00-1336-PPE01 : ADDCODE (force adding location)
+      20140110-APP02-CMC02.02.00-1332-PPE01 : ADDCODE (calculate "Qty (Hectare)" if variety level)
+      20140116-APP02-CMC02.02.00-1495-FEC01 : MODFUNC (Changement de la variable Item de la fonction SetLevelValue).
+      20140116-APP02-CMC02.02.00-1495-FEC02 : ADDCODE (Changement de la variable Item de la fonction SetLevelValue).
+      20140306-APP02-CMC02.02.00-1804-FEC01 : MODCODE.
+      20140306-APP02-CMC02.02.00-1804-FEC02 : MODCODE.
+      20140306-APP02-CMC02.02.00-1804-FEC03 : MODCODE.
+      20140314-APP02-CMC02.02.00-1800-PPE01 : ADDCODE (Optimizing)
+      20140314-APP02-CMC02.02.00-1800-PPE02 : ADDCODE (Add new item to forecast lines)
+      20140319-APP02-CMC02.02.00-1798-FDA01 : ADDCODE (Calculation of Planting Quantity for Submarket and Market entries)
+      20140321-APP02-CMC02.02.00-1796-FDA01 : ADDCODE (Calculate forecast line totals for Level Type = Variety with UOM conversion)
+      20140328-APP02-CMC02.02.00-1877-FDA01 : ADDCODE (Check of correct item setup related to Forecast's Level Entry field)
+                                              ADDFUNC (CheckItemSetup)
+      20140328-APP02-CMC02.02.00-1881-FDA01 : MODFUNC (InsertSalesForecastEntry - If variant exists then the Hectare Dose set in
+                                                       table Item Variant is used)
+      20140409-APP02-CMC02.02.00-1913-FDA01 : MODFUNC (InsertSalesForecastEntry,MaintainTotalLines,MaintainTotal)
+                                              ADDFUNC (CalculateRanking2,MaintainItemTotal,MaintainLocationTotal)
+      20140411-APP02-CMC02.02.00-1976-FDA01 : MODFUNC (UpdateFertilQtySFEntryLine,MaintainFertilQtySFEntryTotal - fill in Index)
+      20140415-APP02-CMC02.02.00-1976-FDA01 : MODCODE (Corrections regarding Qty (Hectare) and Cur. Campaign Hectare calculation)
+      20140418-APP02-CMC02.02.00-1976-FDA01 : MODCODE (Modified according new convention: for the total lines next to Variety type line,
+                                                       the fields Qty (Hectare) and Cur. Campaign Hectare should be calculated
+                                                       using Hectare Dose value from Variety line (and not those from Item line).
+      20140418-APP02-CMC02.02.00-1908-FDA01 : MODCODE (New condition display Sales Forecast Line taking account of authorization
+                                                       according strategy and values from Prev. Campain Item Qty and Cur. Campagn Item
+                                                       Qty.)
+      20140513-APP02-CMC02.02.00-1976-FDA01 : MODFUNC (MaintainTotal - corrected "Qty (Hectare)" calculation in Variety line)
+      20140723-APP19-CMC02.02.00-DRN01 : Refactoring
+      20140725-APP20-TER01.01.00-FHS01 : MODCODE (Calcule de "Tarigf N-1")
+      20150420-APP02-CMC02.02.00-2928-FEC01 : MODCODE.
+      20150428-APP02-CMC02.02.00-2927-FHS01 : MODCODE (Ajoute un paramStre permettant le cumul ou non des varaintes sur les articles)
+      20150507-APP02-CMC02.02.00-2959-FHS01 : MODCODE (Corrige les problSmes de division par 0)
+      20150604-APP02-CMC02.02.00-3034-FEC01 : ADDLOCAL (L)
+      20170919-WI00-ADV01.01.00-3289-CJY01 : MODCODE (Prise en compte du vendeur PV actuel et non historique dans generation prevision)
+
+      // <-- 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

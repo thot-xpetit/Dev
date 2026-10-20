@@ -1,0 +1,944 @@
+OBJECT Codeunit 25000 Kit Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=15/01/18;
+    Heure=00:00:00;
+    Liste versions=KITNA6.00.01,CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text25000@1480000 : TextConst 'ENU=The kit is empty;FRA=Le kit est vide';
+      Text25001@1480001 : TextConst 'ENU=Full automatic reservation was not possible.\Reserve items manually?;FRA=La r'servation entiSrement automatique n''est pas possible.\Souhaitez-vous r'server les articles manuellement ?';
+      ItemVariant_G@1000000000 : Record 5401;
+      BooTakeUnitCost_G@60000 : Boolean;
+
+    PROCEDURE MaintainKitBOM@1480000(NewBOMJnlLine@1480000 : Record 89;VAR TempKitBOMJnlLine@1480001 : Record 25001;CheckAvailability@1480002 : Boolean);
+    BEGIN
+      WITH NewBOMJnlLine DO BEGIN
+        TESTFIELD("Item No.");
+        RefreshTempKitBOM(NewBOMJnlLine,TempKitBOMJnlLine,CheckAvailability);
+        IF "Line No." <> 0 THEN BEGIN
+          DeleteKitBOM(NewBOMJnlLine);
+          IF ("Item No." <> '') AND (Quantity <> 0) THEN
+            InsertKitBOM(TempKitBOMJnlLine,"Line No.");
+        END;
+      END;
+    END;
+
+    PROCEDURE RefreshTempKitBOM@1480001(BOMJnlLine@1480000 : Record 89;VAR TempKitBOMJnlLine@1480001 : Record 25001;CheckAvailability@1480010 : Boolean);
+    VAR
+      Item@1480002 : Record 27;
+      Res@1480009 : Record 156;
+      ProdBOMHeader@1480003 : Record 99000771;
+      ProdBOMLine@1480004 : Record 99000772;
+      Location@1480007 : Record 14;
+      ItemJnlLine@1480012 : Record 83;
+      UOMMgt@1480008 : Codeunit 5402;
+      WMSManagement@1480006 : Codeunit 7302;
+      NextLineNo@1480005 : Integer;
+      EmptyKit@1480011 : Boolean;
+      RoundingMethod_L@1000000000 : Record 42;
+    BEGIN
+      TempKitBOMJnlLine.DELETEALL;
+
+      IF BOMJnlLine.Quantity <> 0 THEN BEGIN
+        BOMJnlLine.TESTFIELD("Item No.");
+        Item.GET(BOMJnlLine."Item No.");
+        Item.TESTFIELD(Blocked,FALSE);
+        // --> 20120502-App01-CMC02.01.00-FEC02
+        {BEFORE
+        IF BOMJnlLine."Entry Type" = BOMJnlLine."Entry Type"::Assembly THEN BEGIN
+          Item.TESTFIELD("Kit BOM No.");
+          ProdBOMHeader.GET(Item."Kit BOM No.");
+        END ELSE BEGIN
+          Item.TESTFIELD("Kit Disassembly BOM No.");
+          ProdBOMHeader.GET(Item."Kit Disassembly BOM No.");
+        END;
+        AFTER}
+        IF BOMJnlLine."Variant Code" = '' THEN BEGIN
+          IF BOMJnlLine."Entry Type" = BOMJnlLine."Entry Type"::Assembly THEN BEGIN
+            Item.TESTFIELD("Kit BOM No.");
+            ProdBOMHeader.GET(Item."Kit BOM No.");
+          END ELSE BEGIN
+            Item.TESTFIELD("Kit Disassembly BOM No.");
+            ProdBOMHeader.GET(Item."Kit Disassembly BOM No.");
+          END;
+        END ELSE BEGIN
+          ItemVariant_G.GET(BOMJnlLine."Item No.",BOMJnlLine."Variant Code");
+          IF BOMJnlLine."Entry Type" = BOMJnlLine."Entry Type"::Assembly THEN BEGIN
+            ItemVariant_G.TESTFIELD("Kit BOM No.");
+            ProdBOMHeader.GET(ItemVariant_G."Kit BOM No.");
+          END ELSE BEGIN
+            ItemVariant_G.TESTFIELD("Kit Disassembly BOM No.");
+            ProdBOMHeader.GET(ItemVariant_G."Kit Disassembly BOM No.");
+          END;
+        END;
+        // <-- 20120502-App01-CMC02.01.00-FEC02
+
+        ProdBOMHeader.TESTFIELD(Status,ProdBOMHeader.Status::Certified);
+        ProdBOMHeader.TESTFIELD(Type,ProdBOMHeader.Type::Kitting);
+
+        NextLineNo := 0;
+        EmptyKit := TRUE;
+
+        WITH TempKitBOMJnlLine DO BEGIN
+          ProdBOMLine.SETRANGE("Production BOM No.",ProdBOMHeader."No.");
+          IF ProdBOMLine.FINDSET THEN
+            REPEAT
+              INIT;
+              "Journal Template Name" := BOMJnlLine."Journal Template Name";
+              "Journal Batch Name" := BOMJnlLine."Journal Batch Name";
+              "Journal Line No." := BOMJnlLine."Line No.";
+              NextLineNo := NextLineNo + 10000;
+              "Line No." := NextLineNo;
+              Type := ProdBOMLine.Type;
+              "No." := ProdBOMLine."No.";
+              Description := ProdBOMLine.Description;
+              "Variant Code" := ProdBOMLine."Variant Code";
+              "Location Code" := BOMJnlLine."Location Code";
+
+              "Unit of Measure Code" := ProdBOMLine."Unit of Measure Code";
+              CASE Type OF
+                Type::Item:
+                  BEGIN
+                    ProdBOMLine.TESTFIELD("No.");
+                    Item.GET(ProdBOMLine."No.");
+                    Item.TESTFIELD(Blocked,FALSE);
+                    "Qty. per Unit of Measure" := UOMMgt.GetQtyPerUnitOfMeasure(Item,"Unit of Measure Code");
+                    IF BOMJnlLine."Entry Type" = BOMJnlLine."Entry Type"::Disassembly THEN BEGIN
+                      CLEAR(ItemJnlLine);
+                      ItemJnlLine."Entry Type" := ItemJnlLine."Entry Type"::"Positive Adjmt.";
+                      ItemJnlLine."Location Code" := "Location Code";
+                      ItemJnlLine."Variant Code" := "Variant Code";
+                      ItemJnlLine.VALIDATE("Item No.","No.");
+                      "Unit Cost" := "Qty. per Unit of Measure" * ItemJnlLine."Unit Cost";
+                    END;
+                  END;
+                Type::Resource, Type::"Setup Resource":
+                  BEGIN
+                    ProdBOMLine.TESTFIELD("No.");
+                    Res.GET(ProdBOMLine."No.");
+                    Res.TESTFIELD(Blocked,FALSE);
+                    "Qty. per Unit of Measure" := UOMMgt.GetResQtyPerUnitOfMeasure(Res,"Unit of Measure Code");
+                  END;
+                ELSE
+                  "Qty. per Unit of Measure" := 1;
+              END;
+              TESTFIELD("Qty. per Unit of Measure");
+              "Quantity per" := ProdBOMLine.Quantity;
+              "Quantity per (Base)" := ROUND("Quantity per" * "Qty. per Unit of Measure",0.00001);
+              CASE Type OF
+                Type::Item,Type::Resource:
+                  BEGIN
+                    "Extended Quantity" := "Quantity per" * BOMJnlLine."Quantity (Base)";
+                    "Extended Quantity (Base)" := "Quantity per (Base)" * BOMJnlLine."Quantity (Base)";
+                  END;
+                Type::"Setup Resource":
+                  BEGIN
+                    "Extended Quantity" := "Quantity per";
+                    "Extended Quantity (Base)" := "Quantity per (Base)";
+                  END;
+              END;
+
+              // --> 20140511-Wi00-CMC02.02.00-2099-FEC01
+              IF ProdBOMLine."Rounding Method Code" <> '' THEN BEGIN
+                "Rounding Method Code" := ProdBOMLine."Rounding Method Code";
+                RoundingMethod_L.GET(ProdBOMLine."Rounding Method Code");
+                IF RoundingMethod_L.Precision > 0 THEN BEGIN
+                  "Extended Quantity" :=
+                    ROUND(
+                      "Extended Quantity",
+                      RoundingMethod_L.Precision,COPYSTR('=><',RoundingMethod_L.Type + 1,1));
+                  "Extended Quantity (Base)" :=
+                    ROUND(
+                      "Extended Quantity (Base)",
+                      RoundingMethod_L.Precision,COPYSTR('=><',RoundingMethod_L.Type + 1,1));
+                END;
+              END;
+              // --< 20140511-Wi00-CMC02.02.00-2099-FEC01
+
+              IF CheckAvailability AND (Type = Type::Item) THEN
+                CheckItemAvailableBOM(TempKitBOMJnlLine);
+
+              "Bin Code" := '';
+              IF (Type = Type::Item) AND ("Location Code" <> '') AND ("No." <> '') THEN BEGIN
+                Location.GET("Location Code");
+                IF Location."Bin Mandatory" AND NOT Location."Directed Put-away and Pick" THEN
+                  WMSManagement.GetDefaultBin("No.","Variant Code","Location Code","Bin Code");
+              END;
+              INSERT;
+              IF "Quantity per" > 0 THEN
+                EmptyKit := FALSE;
+            UNTIL ProdBOMLine.NEXT = 0;
+        END;
+        IF EmptyKit THEN
+          ERROR(Text25000);
+      END;
+    END;
+
+    PROCEDURE InsertKitBOM@1480002(VAR TempKitBOMJnlLine@1480000 : Record 25001;JnlLineNo@1480002 : Integer);
+    VAR
+      KitBOMJnlLine@1480001 : Record 25001;
+    BEGIN
+      IF TempKitBOMJnlLine.FINDSET THEN
+        REPEAT
+          KitBOMJnlLine := TempKitBOMJnlLine;
+          KitBOMJnlLine."Journal Line No." := JnlLineNo;
+          KitBOMJnlLine.INSERT;
+        UNTIL TempKitBOMJnlLine.NEXT = 0;
+
+      TempKitBOMJnlLine.DELETEALL;
+    END;
+
+    PROCEDURE DeleteKitBOM@1480003(BOMJnlLine@1480000 : Record 89);
+    VAR
+      KitBOMJnlLine@1480001 : Record 25001;
+    BEGIN
+      KitBOMJnlLine.SETRANGE("Journal Template Name",BOMJnlLine."Journal Template Name");
+      KitBOMJnlLine.SETRANGE("Journal Batch Name",BOMJnlLine."Journal Batch Name");
+      KitBOMJnlLine.SETRANGE("Journal Line No.",BOMJnlLine."Line No.");
+      KitBOMJnlLine.DELETEALL(TRUE);
+    END;
+
+    PROCEDURE CheckItemAvailableBOM@1480004(VAR TempKitBOMJnlLine@1480000 : Record 25001);
+    VAR
+      ItemJnlLine@1480002 : Record 83;
+      ItemCheckAvail@1480003 : Codeunit 311;
+    BEGIN
+      WITH TempKitBOMJnlLine DO BEGIN
+        IF (Type = Type::Item) AND ("No." <> '') THEN BEGIN
+          ItemJnlLine."Entry Type" := ItemJnlLine."Entry Type"::"Negative Adjmt.";
+          ItemJnlLine."Location Code" := "Location Code";
+          ItemJnlLine."Item No." := "No.";
+          ItemJnlLine."Variant Code" := "Variant Code";
+          ItemJnlLine."Unit of Measure Code" := "Unit of Measure Code";
+          ItemJnlLine."Qty. per Unit of Measure" := "Qty. per Unit of Measure";
+          ItemJnlLine.Quantity := "Extended Quantity";
+          IF ItemJnlLine.Quantity <> 0 THEN
+            ItemCheckAvail.ItemJnlCheckLine(ItemJnlLine);
+        END;
+      END;
+    END;
+
+    PROCEDURE GetKitBOM@1480005(BOMJnlLine@1480000 : Record 89;VAR TempKitBOMJnlLine@1480001 : Record 25001);
+    VAR
+      KitBOMJnlLine@1480003 : Record 25001;
+    BEGIN
+      WITH BOMJnlLine DO BEGIN
+        KitBOMJnlLine.SETRANGE("Journal Template Name","Journal Template Name");
+        KitBOMJnlLine.SETRANGE("Journal Batch Name","Journal Batch Name");
+        KitBOMJnlLine.SETRANGE("Journal Line No.","Line No.");
+        IF KitBOMJnlLine.FINDSET THEN
+          REPEAT
+            TempKitBOMJnlLine := KitBOMJnlLine;
+            TempKitBOMJnlLine.INSERT;
+          UNTIL KitBOMJnlLine.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CopyKitBOM@1480006(VAR FromKitBOMJnlLine@1480000 : Record 25001;VAR ToKitBOMJnlLine@1480001 : Record 25001);
+    BEGIN
+      IF FromKitBOMJnlLine.FINDSET THEN
+        REPEAT
+          ToKitBOMJnlLine := FromKitBOMJnlLine;
+          ToKitBOMJnlLine.INSERT;
+        UNTIL FromKitBOMJnlLine.NEXT = 0;
+    END;
+
+    PROCEDURE MaintainKitSales@3(VAR NewSalesLine@1000 : Record 37;VAR TempKitSalesLine@1001 : Record 25000);
+    BEGIN
+      WITH NewSalesLine DO BEGIN
+        DeleteKitSales(NewSalesLine,FALSE);
+        InsertKitSales(TempKitSalesLine,"Line No.");
+      END;
+    END;
+
+    PROCEDURE RefreshTempKitSales@8(VAR SalesLine@1000 : Record 37;VAR TempKitSalesLine@1001 : Record 25000);
+    VAR
+      Item@1002 : Record 27;
+      Res@1009 : Record 156;
+      ProdBOMHeader@1003 : Record 99000771;
+      ProdBOMLine@1004 : Record 99000772;
+      NextLineNo@1005 : Integer;
+      "<< 3LI LOCALS >>"@1180250002 : Integer;
+      ItemVariant_L@1000000000 : Record 5401;
+    BEGIN
+      TempKitSalesLine.DELETEALL;
+
+      SalesLine.TESTFIELD(Type,SalesLine.Type::Item);
+      SalesLine.TESTFIELD("No.");
+      SalesLine.TESTFIELD("Kit Item",TRUE);
+      Item.GET(SalesLine."No.");
+      Item.TESTFIELD(Blocked,FALSE);
+      IF NOT (SalesLine."Build Kit" OR Item."Automatic Build Kit BOM") THEN
+        EXIT;
+      // -->  20120502-App01-CMC02.01.00-FEC01
+      {BEFORE
+      Item.TESTFIELD("Kit BOM No.");
+      ProdBOMHeader.GET(Item."Kit BOM No.");
+      AFTER}
+      IF SalesLine."Variant Code" <> '' THEN BEGIN
+        ItemVariant_L.GET(SalesLine."No.",SalesLine."Variant Code");
+        ItemVariant_L.TESTFIELD("Kit BOM No.");
+        ProdBOMHeader.GET(ItemVariant_L."Kit BOM No.");
+      END ELSE BEGIN
+        Item.TESTFIELD("Kit BOM No.");
+        ProdBOMHeader.GET(Item."Kit BOM No.");
+      END;
+      // <--  20120502-App01-CMC02.01.00-FEC01
+      ProdBOMHeader.TESTFIELD(Status,ProdBOMHeader.Status::Certified);
+      ProdBOMHeader.TESTFIELD(Type,ProdBOMHeader.Type::Kitting);
+
+      NextLineNo := 0;
+
+      WITH TempKitSalesLine DO BEGIN
+        ProdBOMLine.SETRANGE("Production BOM No.",ProdBOMHeader."No.");
+        IF ProdBOMLine.FINDSET THEN
+          REPEAT
+            INIT;
+            SetKitLine(SalesLine);
+            "Document Type" := SalesLine."Document Type";
+            "Document No." := SalesLine."Document No.";
+            "Document Line No." := SalesLine."Line No.";
+            NextLineNo := NextLineNo + 10000;
+            "Line No." := NextLineNo;
+            Type := ProdBOMLine.Type;
+            IF ProdBOMLine."No." <> '' THEN
+              VALIDATE("No.",ProdBOMLine."No.");
+            IF (Type = Type::Item) AND (ProdBOMLine."Variant Code" <> '') THEN
+              VALIDATE("Variant Code",ProdBOMLine."Variant Code"); // variant must be validated before uom in order for cost to be set.
+            IF ProdBOMLine."Unit of Measure Code" <> '' THEN
+              VALIDATE("Unit of Measure Code",ProdBOMLine."Unit of Measure Code");
+            CASE Type OF
+              Type::Item:
+                BEGIN
+                  ProdBOMLine.TESTFIELD("No.");
+                  Item.GET(ProdBOMLine."No.");
+                  Item.TESTFIELD(Blocked,FALSE);
+                END;
+              Type::Resource, Type::"Setup Resource":
+                BEGIN
+                  ProdBOMLine.TESTFIELD("No.");
+                  Res.GET(ProdBOMLine."No.");
+                  Res.TESTFIELD(Blocked,FALSE);
+                END;
+              ELSE
+                Description := ProdBOMLine.Description;
+            END;
+            IF "No." <> '' THEN BEGIN
+              TESTFIELD("Qty. per Unit of Measure");
+              VALIDATE("Quantity per",ProdBOMLine.Quantity);
+            END;
+
+            INSERT;
+          UNTIL ProdBOMLine.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE InsertKitSales@9(VAR TempKitSalesLine@1000 : Record 25000;DocLineNo@1002 : Integer);
+    VAR
+      KitSalesLine@1001 : Record 25000;
+    BEGIN
+      IF TempKitSalesLine.FINDSET THEN
+        REPEAT
+          KitSalesLine := TempKitSalesLine;
+          KitSalesLine."Document Line No." := DocLineNo;
+          KitSalesLine.INSERT;
+        UNTIL TempKitSalesLine.NEXT = 0;
+
+      TempKitSalesLine.DELETEALL;
+    END;
+
+    PROCEDURE DeleteKitSales@10(SalesLine@1000 : Record 37;Suspend@1480000 : Boolean);
+    VAR
+      KitSalesLine@1001 : Record 25000;
+    BEGIN
+      KitSalesLine.SETRANGE("Document Type",SalesLine."Document Type");
+      KitSalesLine.SETRANGE("Document No.",SalesLine."Document No.");
+      KitSalesLine.SETRANGE("Document Line No.",SalesLine."Line No.");
+      KitSalesLine.SetSkipPricing;
+      IF Suspend THEN BEGIN
+        KitSalesLine.SuspendQtyShippedCheck(TRUE);
+        KitSalesLine.SuspendStatusCheck(TRUE);
+      END;
+      IF KitSalesLine.FINDSET THEN
+        REPEAT
+          KitSalesLine.DELETE(TRUE);
+        UNTIL KitSalesLine.NEXT = 0;
+    END;
+
+    PROCEDURE GetKitSales@1480008(SalesLine@1480000 : Record 37;VAR TempKitSalesLine@1480001 : Record 25000);
+    VAR
+      KitSalesLine@1480003 : Record 25000;
+    BEGIN
+      WITH SalesLine DO BEGIN
+        KitSalesLine.SETRANGE("Document Type","Document Type");
+        KitSalesLine.SETRANGE("Document No.","Document No.");
+        KitSalesLine.SETRANGE("Document Line No.","Line No.");
+        IF KitSalesLine.FINDSET THEN
+          REPEAT
+            TempKitSalesLine := KitSalesLine;
+            TempKitSalesLine.INSERT;
+          UNTIL KitSalesLine.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE UpdateKitSales@1480009(SalesLine@1480000 : Record 37;VAR TempKitSalesLine@1480001 : Record 25000);
+    BEGIN
+      WITH TempKitSalesLine DO BEGIN
+        RESET;
+        IF NOT FINDSET THEN BEGIN
+          GetKitSales(SalesLine,TempKitSalesLine);
+        END;
+        IF FINDSET THEN BEGIN
+          REPEAT
+            "Shipment Date" := SalesLine."Shipment Date";
+            "Shortcut Dimension 1 Code" := SalesLine."Shortcut Dimension 1 Code";
+            "Shortcut Dimension 2 Code" := SalesLine."Shortcut Dimension 2 Code";
+            CASE Type OF
+              Type::Item,Type::Resource:
+                BEGIN
+                  "Extended Quantity" := "Quantity per" * SalesLine."Quantity (Base)";
+                  "Extended Quantity (Base)" := "Quantity per (Base)" * SalesLine."Quantity (Base)";
+                  "Outstanding Quantity" := "Quantity per" * SalesLine."Outstanding Qty. (Base)";
+                  "Outstanding Qty. (Base)" := "Quantity per (Base)" * SalesLine."Outstanding Qty. (Base)";
+
+                  // <-- 20110601-Wi00-CMC01.04
+                  IF SalesLine."Document Type" = SalesLine."Document Type"::"Blanket Order" THEN BEGIN
+                    IF "Outstanding Quantity" < 0 THEN BEGIN
+                      "Outstanding Quantity" := 0;
+                      "Outstanding Qty. (Base)" := 0;
+                    END;
+                  END;
+                  // --> 20110601-Wi00-CMC01.04
+
+                END;
+              Type::"Setup Resource":
+                BEGIN
+                  "Extended Quantity" := "Quantity per";
+                  "Extended Quantity (Base)" := "Quantity per (Base)";
+                  "Outstanding Quantity" := "Quantity per";
+                  "Outstanding Qty. (Base)" := "Quantity per (Base)";
+                END;
+            END;
+            "Quantity Shipped (Base)" := "Extended Quantity (Base)" - "Outstanding Qty. (Base)";
+            MODIFY;
+          UNTIL NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE ModifyKitSales@1480016(VAR TempKitSalesLine@1480000 : Record 25000);
+    VAR
+      KitSalesLine@1480001 : Record 25000;
+      xKitSalesLine@1480005 : Record 25000;
+      ReserveKitSalesLine@1480002 : Codeunit 25001;
+      ValidateShipmentDate@1480003 : Boolean;
+      VerifyResv@1480004 : Boolean;
+    BEGIN
+      WITH TempKitSalesLine DO BEGIN
+        IF FINDSET THEN
+          REPEAT
+            // Does not exist when called from archiving
+            IF KitSalesLine.GET("Document Type","Document No.","Document Line No.","Line No.") THEN BEGIN
+              xKitSalesLine := KitSalesLine;
+              ValidateShipmentDate := FALSE;
+              ValidateShipmentDate := ("Shipment Date" <> KitSalesLine."Shipment Date");
+              VerifyResv := FALSE;
+              IF Type = Type::Item THEN
+                VerifyResv := ("Extended Quantity (Base)" <> KitSalesLine."Extended Quantity (Base)");
+              KitSalesLine."Shipment Date" := "Shipment Date";
+              KitSalesLine."Shortcut Dimension 1 Code" := "Shortcut Dimension 1 Code";
+              KitSalesLine."Shortcut Dimension 2 Code" := "Shortcut Dimension 2 Code";
+              KitSalesLine."Extended Quantity" := "Extended Quantity";
+              KitSalesLine."Extended Quantity (Base)" := "Extended Quantity (Base)";
+              KitSalesLine."Outstanding Quantity" := "Outstanding Quantity";
+              KitSalesLine."Outstanding Qty. (Base)" := "Outstanding Qty. (Base)";
+              KitSalesLine."Quantity Shipped (Base)" := "Quantity Shipped (Base)";
+              IF ValidateShipmentDate THEN
+                KitSalesLine.VALIDATE("Shipment Date");
+              IF VerifyResv THEN
+                ReserveKitSalesLine.VerifyQuantity(KitSalesLine,xKitSalesLine);
+
+              KitSalesLine.MODIFY;
+            END;
+          UNTIL NEXT = 0;
+      END;
+      TempKitSalesLine.DELETEALL;
+    END;
+
+    PROCEDURE RollUpCost@1480010(KitSalesLine@1480000 : Record 25000);
+    VAR
+      SalesLine@1480001 : Record 37;
+      KitSalesLine2@1480003 : Record 25000;
+      GLSetup@1480004 : Record 98;
+      UnitCost@1480002 : Decimal;
+    BEGIN
+      WITH KitSalesLine DO BEGIN
+        SalesLine.GET("Document Type","Document No.","Document Line No.");
+        UnitCost := 0;
+        KitSalesLine2.SETRANGE("Document Type","Document Type");
+        KitSalesLine2.SETRANGE("Document No.","Document No.");
+        KitSalesLine2.SETRANGE("Document Line No.","Document Line No.");
+        IF KitSalesLine2.FINDSET THEN
+          REPEAT
+            UnitCost := UnitCost + KitSalesLine2."Quantity per" * KitSalesLine2."Unit Cost (LCY)";
+          UNTIL KitSalesLine2.NEXT = 0;
+        GLSetup.GET;
+        SalesLine.VALIDATE(
+          "Unit Cost (LCY)",
+           ROUND(UnitCost * SalesLine."Qty. per Unit of Measure",GLSetup."Unit-Amount Rounding Precision"));
+        SalesLine.MODIFY;
+      END;
+    END;
+
+    PROCEDURE RollUpPrice@1480011(VAR KitSalesLine@1480000 : Record 25000;RequestType@1480006 : 'Manual,Modify,Delete,Insert');
+    VAR
+      KitSalesLine2@1480003 : Record 25000;
+      KitLine@1480001 : Record 37;
+      Item@1480008 : Record 27;
+      GLSetup@1480004 : Record 98;
+      CustCheckCreditLimit@1480002 : Codeunit 312;
+      UnitPrice@1480005 : Decimal;
+    BEGIN
+      WITH KitSalesLine DO BEGIN
+        KitLine.GET("Document Type","Document No.","Document Line No.");
+        Item.GET(KitLine."No.");
+        IF (RequestType IN [RequestType::Modify,RequestType::Delete,RequestType::Insert]) AND
+           (Item."Roll-up Kit Pricing" <> Item."Roll-up Kit Pricing"::Always)
+        THEN
+          EXIT;
+        Item.TESTFIELD("Roll-up Kit Pricing");
+
+        IF ("Line No." = 0) OR (RequestType = RequestType::Insert) THEN
+          UnitPrice := "Quantity per" * "Unit Price"
+        ELSE
+          UnitPrice := 0;
+        KitSalesLine2.SETRANGE("Document Type","Document Type");
+        KitSalesLine2.SETRANGE("Document No.","Document No.");
+        KitSalesLine2.SETRANGE("Document Line No.","Document Line No.");
+        IF KitSalesLine2.FINDSET THEN
+          REPEAT
+            IF "Line No." = KitSalesLine2."Line No." THEN  // not necessary written to database yet.
+              CASE RequestType OF
+                RequestType::Manual:
+                  UnitPrice := UnitPrice + KitSalesLine2."Quantity per" * KitSalesLine2."Unit Price";
+                RequestType::Modify:
+                  UnitPrice := UnitPrice + "Quantity per" * "Unit Price";
+              END
+            ELSE
+              UnitPrice := UnitPrice + KitSalesLine2."Quantity per" * KitSalesLine2."Unit Price";
+          UNTIL KitSalesLine2.NEXT = 0;
+        GLSetup.GET;
+        UnitPrice := ROUND(UnitPrice,GLSetup."Unit-Amount Rounding Precision");
+        IF KitLine."Unit Price" <> UnitPrice * KitLine."Qty. per Unit of Measure" THEN BEGIN
+          KitLine.VALIDATE("Unit Price",UnitPrice * KitLine."Qty. per Unit of Measure"); // to test status and to set outst. amt.
+          IF (RequestType <> RequestType::Insert) AND
+             ("Document Type" <= "Document Type"::Invoice) AND
+             ((KitLine."Outstanding Amount" + KitLine."Shipped Not Invoiced") > 0)
+          THEN
+            CustCheckCreditLimit.SalesLineCheck(KitLine);
+
+          IF "Line No." <> 0 THEN BEGIN
+            CASE RequestType OF
+              RequestType::Modify:
+                BEGIN
+                  MODIFY;
+                  KitLine.MODIFY;
+                END;
+              RequestType::Manual,RequestType::Insert:
+                KitLine.MODIFY;
+              RequestType::Delete:
+                BEGIN
+                  LOCKTABLE;
+                  KitLine.MODIFY;
+                END;
+            END;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE CopyKitSalesToKitBOM@1480012(VAR FromKitSalesLine@1480000 : Record 25000;VAR ToKitBOMJnlLine@1480001 : Record 25001);
+    BEGIN
+      WITH FromKitSalesLine DO BEGIN
+        IF FINDSET THEN
+          REPEAT
+            ToKitBOMJnlLine."Line No." := "Line No.";
+            ToKitBOMJnlLine.Type := Type;
+            ToKitBOMJnlLine."No." := "No.";
+            ToKitBOMJnlLine.Description := Description;
+            ToKitBOMJnlLine."Variant Code" := "Variant Code";
+            ToKitBOMJnlLine."Location Code" := "Location Code";
+            ToKitBOMJnlLine."Unit of Measure Code" := "Unit of Measure Code";
+            ToKitBOMJnlLine."Qty. per Unit of Measure" := "Qty. per Unit of Measure";
+            ToKitBOMJnlLine."Quantity per" := "Quantity per";
+            ToKitBOMJnlLine."Applies-to Entry" := "Applies-to Entry";
+            ToKitBOMJnlLine."Bin Code" := "Bin Code";
+            // --> 20180115-WI00-ADV01.01.00-3286-CJY01
+            IF BooTakeUnitCost_G THEN
+              ToKitBOMJnlLine."Unit Cost" := FromKitSalesLine."Unit Cost";
+            // <-- 20180115-WI00-ADV01.01.00-3286-CJY01
+            ToKitBOMJnlLine.INSERT;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CopyKitResv@1480013(ItemJnlLine@1480002 : Record 83);
+    VAR
+      OldReservEntry@1480000 : Record 337;
+      NewReservEntry@1480001 : Record 337;
+      NextEntryNo@1480003 : Integer;
+    BEGIN
+      IF NewReservEntry.FINDLAST THEN
+        NextEntryNo := NewReservEntry."Entry No.";
+
+      OldReservEntry.RESET;
+      OldReservEntry.SETCURRENTKEY(
+        "Source ID","Source Ref. No.","Source Type","Source Subtype",
+        "Source Batch Name","Source Prod. Order Line","Reservation Status");
+
+      OldReservEntry.SETRANGE("Source Type",DATABASE::"Item Journal Line");
+      OldReservEntry.SETRANGE("Source Subtype",ItemJnlLine."Entry Type"); // 1=sale
+      OldReservEntry.SETRANGE("Source ID",ItemJnlLine."Journal Template Name");
+      OldReservEntry.SETRANGE("Source Batch Name",ItemJnlLine."Journal Batch Name");
+      OldReservEntry.SETRANGE("Source Prod. Order Line",0);
+      OldReservEntry.SETRANGE("Source Ref. No.",ItemJnlLine."Line No.");
+
+      IF OldReservEntry.FINDSET THEN
+        REPEAT
+          NewReservEntry := OldReservEntry;
+          NewReservEntry."Source Subtype" := 6; // 6=output
+          NewReservEntry."Quantity (Base)" := -OldReservEntry."Quantity (Base)";
+          NewReservEntry.Quantity := OldReservEntry.Quantity;
+          NewReservEntry."Qty. to Handle (Base)" := -OldReservEntry."Qty. to Handle (Base)";
+          NewReservEntry."Qty. to Invoice (Base)" := -OldReservEntry."Qty. to Invoice (Base)";
+          NewReservEntry."Quantity Invoiced (Base)" := -OldReservEntry."Quantity Invoiced (Base)";
+          NextEntryNo += 1;
+          NewReservEntry."Entry No." := NextEntryNo;
+          NewReservEntry.INSERT;
+        UNTIL OldReservEntry.NEXT = 0;
+    END;
+
+    PROCEDURE UpdateKitResv@1480014(ItemJnlLine@1480002 : Record 83;VAR TempHandlingSpecification@1480006 : TEMPORARY Record 336);
+    VAR
+      ReservEntry@1480000 : Record 337;
+    BEGIN
+      WITH ReservEntry DO BEGIN
+        RESET;
+        SETCURRENTKEY(
+          "Source ID","Source Ref. No.","Source Type","Source Subtype",
+          "Source Batch Name","Source Prod. Order Line","Reservation Status");
+        SETRANGE("Source Type",DATABASE::"Item Journal Line");
+        SETRANGE("Source Subtype",ItemJnlLine."Entry Type");
+        SETRANGE("Source ID",ItemJnlLine."Journal Template Name");
+        SETRANGE("Source Batch Name",ItemJnlLine."Journal Batch Name");
+        SETRANGE("Source Prod. Order Line",0);
+        SETRANGE("Source Ref. No.",ItemJnlLine."Line No.");
+        IF FINDSET THEN BEGIN
+          REPEAT
+            TempHandlingSpecification.FINDFIRST;
+            "Appl.-to Item Entry" := TempHandlingSpecification."Appl.-to Item Entry";
+            Correction := TRUE; // Setting flag to trigger cu22 to use Applies-to Entry.
+            MODIFY;
+            TempHandlingSpecification.DELETE;
+          UNTIL NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE CopyCompResv@1480015(VAR TempKitSalesLine@1480002 : Record 25000;VAR TempKitBOMJnlLine@1480004 : Record 25001);
+    VAR
+      ReserveKitSaleslLine@1480001 : Codeunit 25001;
+    BEGIN
+      TempKitSalesLine.SETRANGE(Type,TempKitSalesLine.Type::Item);
+      IF TempKitSalesLine.FINDSET THEN
+        REPEAT
+          TempKitBOMJnlLine.GET('','',0,TempKitSalesLine."Line No.");
+          ReserveKitSaleslLine.TransfKitSaLineToKitBOMJnlLine(
+            TempKitSalesLine,TempKitBOMJnlLine,TempKitSalesLine."Extended Quantity (Base)");
+        UNTIL TempKitSalesLine.NEXT = 0;
+    END;
+
+    PROCEDURE GetKitProdBOM@1480017(KitBOMNo@1480000 : Code[20];VAR TempProdBOMLine@1480001 : Record 99000772;VAR NoOfComp@1480003 : Integer);
+    VAR
+      ProdBOMHeader@1480002 : Record 99000771;
+      ProdBOMLine@1480004 : Record 99000772;
+    BEGIN
+      TempProdBOMLine.DELETEALL;
+      NoOfComp := 0;
+      IF KitBOMNo = '' THEN
+        EXIT;
+
+      ProdBOMHeader.GET(KitBOMNo);
+      ProdBOMHeader.TESTFIELD(Status,ProdBOMHeader.Status::Certified);
+      ProdBOMHeader.TESTFIELD(Type,ProdBOMHeader.Type::Kitting);
+
+      ProdBOMLine.SETRANGE("Production BOM No.",ProdBOMHeader."No.");
+      IF ProdBOMLine.FINDSET THEN
+        REPEAT
+          NoOfComp += 1;
+          TempProdBOMLine.INIT;
+          TempProdBOMLine.TRANSFERFIELDS(ProdBOMLine);
+          TempProdBOMLine.INSERT;
+        UNTIL ProdBOMLine.NEXT = 0;
+    END;
+
+    PROCEDURE UpdateKitUnitCost@1480018(SalesLine@1480000 : Record 37);
+    VAR
+      KitSalesLine@1480001 : Record 25000;
+    BEGIN
+      WITH SalesLine DO BEGIN
+        KitSalesLine.SETRANGE("Document Type","Document Type");
+        KitSalesLine.SETRANGE("Document No.","Document No.");
+        KitSalesLine.SETRANGE("Document Line No.","Line No.");
+        IF KitSalesLine.FINDSET THEN
+          REPEAT
+            KitSalesLine.VALIDATE("Unit Cost (LCY)");
+            KitSalesLine.MODIFY;
+          UNTIL KitSalesLine.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE GetTotalKitPrice@1480019(VAR UnitPrice@1480000 : Decimal;VAR TempKitSalesLine@1480001 : TEMPORARY Record 25000);
+    BEGIN
+      IF TempKitSalesLine.FINDSET THEN
+        REPEAT
+          UnitPrice := UnitPrice + TempKitSalesLine."Quantity per" * TempKitSalesLine."Unit Price";
+        UNTIL TempKitSalesLine.NEXT = 0;
+    END;
+
+    PROCEDURE KitAutoReserve@1480020(SalesLine@1480000 : Record 37);
+    VAR
+      TempKitSalesLine@1480001 : TEMPORARY Record 25000;
+      KitSalesLine@1480002 : Record 25000;
+      Reservation@1480005 : Form 498;
+      ReservMgt@1480003 : Codeunit 99000845;
+      FullAutoReservation@1480004 : Boolean;
+    BEGIN
+      TempKitSalesLine.DELETEALL;
+      KitSalesLine.SETRANGE("Document Type",SalesLine."Document Type");
+      KitSalesLine.SETRANGE("Document No.",SalesLine."Document No.");
+      KitSalesLine.SETRANGE("Document Line No.",SalesLine."Line No.");
+      KitSalesLine.SETRANGE(Type,KitSalesLine.Type::Item);
+      KitSalesLine.SETFILTER("No.",'<>%1','');
+      KitSalesLine.SETRANGE(Reserve,KitSalesLine.Reserve::Always);
+      IF KitSalesLine.FINDSET THEN
+        REPEAT
+          SalesLine.TESTFIELD("Shipment Date");
+          ReservMgt.SetKitSalesLine(KitSalesLine);
+          ReservMgt.AutoReserve(FullAutoReservation,'',KitSalesLine."Shipment Date",KitSalesLine."Extended Quantity");
+          IF NOT FullAutoReservation THEN BEGIN
+            TempKitSalesLine.TRANSFERFIELDS(KitSalesLine);
+            TempKitSalesLine.INSERT;
+          END;
+        UNTIL KitSalesLine.NEXT = 0;
+
+      IF TempKitSalesLine.FINDSET THEN  BEGIN
+        COMMIT;
+        IF CONFIRM(Text25001,TRUE) THEN
+          REPEAT
+            CLEAR(Reservation);
+            Reservation.SetKitSalesLine(TempKitSalesLine);
+            Reservation.RUNMODAL;
+          UNTIL TempKitSalesLine.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE GetKitSalesLinesToPrint@1480021(SalesLine@1480000 : Record 37;VAR TempKitSalesLine@1480001 : TEMPORARY Record 25000);
+    VAR
+      KitSalesLine@1480003 : Record 25000;
+      Item@1480002 : Record 27;
+      ProdBOMHeader@1480004 : Record 99000771;
+      ProdBOMLine@1480005 : Record 99000772;
+      NextLineNo@1480006 : Integer;
+    BEGIN
+      TempKitSalesLine.DELETEALL;
+
+      WITH SalesLine DO BEGIN
+        IF (Type <> Type::Item) OR NOT "Kit Item" THEN
+          EXIT;
+        IF "Build Kit" THEN BEGIN
+          KitSalesLine.SETRANGE("Document Type","Document Type");
+          KitSalesLine.SETRANGE("Document No.","Document No.");
+          KitSalesLine.SETRANGE("Document Line No.","Line No.");
+          IF KitSalesLine.FINDSET THEN
+            REPEAT
+              TempKitSalesLine := KitSalesLine;
+              TempKitSalesLine.INSERT;
+            UNTIL KitSalesLine.NEXT = 0;
+        END ELSE BEGIN
+          Item.GET("No.");
+          IF NOT ProdBOMHeader.GET(Item."Kit BOM No.") THEN
+            EXIT;
+          NextLineNo := 1;
+          ProdBOMLine.SETRANGE("Production BOM No.",ProdBOMHeader."No.");
+          IF ProdBOMLine.FINDSET THEN
+            REPEAT
+              TempKitSalesLine.INIT;
+              TempKitSalesLine."Document Type" := "Document Type";
+              TempKitSalesLine."Document No." := "Document No.";
+              TempKitSalesLine."Document Line No." := "Line No.";
+              TempKitSalesLine."Line No." := NextLineNo;
+              NextLineNo := NextLineNo + 1;
+              TempKitSalesLine.Type := ProdBOMLine.Type;
+              TempKitSalesLine."No." := ProdBOMLine."No.";
+              TempKitSalesLine.Description := ProdBOMLine.Description;
+              TempKitSalesLine."Unit of Measure Code" := ProdBOMLine."Unit of Measure Code";
+              TempKitSalesLine."Variant Code" := ProdBOMLine."Variant Code";
+              TempKitSalesLine."Quantity per" := ProdBOMLine.Quantity;
+              TempKitSalesLine.INSERT;
+            UNTIL ProdBOMLine.NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE GetKitSalesShipLinesToPrint@1480022(SalesShipLine@1480000 : Record 111;VAR TempKitSalesShipLine@1480001 : TEMPORARY Record 25004);
+    VAR
+      KitSalesShipLine@1480003 : Record 25004;
+      Item@1480002 : Record 27;
+      ProdBOMHeader@1480004 : Record 99000771;
+      ProdBOMLine@1480005 : Record 99000772;
+      NextLineNo@1480006 : Integer;
+    BEGIN
+      TempKitSalesShipLine.DELETEALL;
+
+      WITH SalesShipLine DO BEGIN
+        IF (Type <> Type::Item) OR NOT "Kit Item" THEN
+          EXIT;
+        IF "Build Kit" THEN BEGIN
+          KitSalesShipLine.SETRANGE("Document No.","Document No.");
+          KitSalesShipLine.SETRANGE("Document Line No.","Line No.");
+          IF KitSalesShipLine.FINDSET THEN
+            REPEAT
+              TempKitSalesShipLine := KitSalesShipLine;
+              TempKitSalesShipLine.INSERT;
+            UNTIL KitSalesShipLine.NEXT = 0;
+        END ELSE BEGIN
+          Item.GET("No.");
+          IF NOT ProdBOMHeader.GET(Item."Kit BOM No.") THEN
+            EXIT;
+          NextLineNo := 1;
+          ProdBOMLine.SETRANGE("Production BOM No.",ProdBOMHeader."No.");
+          IF ProdBOMLine.FINDSET THEN
+            REPEAT
+              TempKitSalesShipLine.INIT;
+              TempKitSalesShipLine."Document No." := "Document No.";
+              TempKitSalesShipLine."Document Line No." := "Line No.";
+              TempKitSalesShipLine."Line No." := NextLineNo;
+              NextLineNo := NextLineNo + 1;
+              TempKitSalesShipLine.Type := ProdBOMLine.Type;
+              TempKitSalesShipLine."No." := ProdBOMLine."No.";
+              TempKitSalesShipLine.Description := ProdBOMLine.Description;
+              TempKitSalesShipLine."Unit of Measure Code" := ProdBOMLine."Unit of Measure Code";
+              TempKitSalesShipLine."Variant Code" := ProdBOMLine."Variant Code";
+              TempKitSalesShipLine."Quantity per" := ProdBOMLine.Quantity;
+              TempKitSalesShipLine.INSERT;
+            UNTIL ProdBOMLine.NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE GetKitSalesInvLinesToPrint@1480025(SalesInvLine@1480000 : Record 113;VAR TempKitSalesInvLine@1480001 : TEMPORARY Record 25005);
+    VAR
+      KitSalesInvLine@1480003 : Record 25005;
+      Item@1480002 : Record 27;
+      ProdBOMHeader@1480004 : Record 99000771;
+      ProdBOMLine@1480005 : Record 99000772;
+      NextLineNo@1480006 : Integer;
+    BEGIN
+      TempKitSalesInvLine.DELETEALL;
+
+      WITH SalesInvLine DO BEGIN
+        IF (Type <> Type::Item) OR NOT "Kit Item" THEN
+          EXIT;
+        IF "Build Kit" THEN BEGIN
+          KitSalesInvLine.SETRANGE("Document No.","Document No.");
+          KitSalesInvLine.SETRANGE("Document Line No.","Line No.");
+          IF KitSalesInvLine.FINDSET THEN
+            REPEAT
+              TempKitSalesInvLine := KitSalesInvLine;
+              TempKitSalesInvLine.INSERT;
+            UNTIL KitSalesInvLine.NEXT = 0;
+        END ELSE BEGIN
+          Item.GET("No.");
+          IF NOT ProdBOMHeader.GET(Item."Kit BOM No.") THEN
+            EXIT;
+          NextLineNo := 1;
+          ProdBOMLine.SETRANGE("Production BOM No.",ProdBOMHeader."No.");
+          IF ProdBOMLine.FINDSET THEN
+            REPEAT
+              TempKitSalesInvLine.INIT;
+              TempKitSalesInvLine."Document No." := "Document No.";
+              TempKitSalesInvLine."Document Line No." := "Line No.";
+              TempKitSalesInvLine."Line No." := NextLineNo;
+              NextLineNo := NextLineNo + 1;
+              TempKitSalesInvLine.Type := ProdBOMLine.Type;
+              TempKitSalesInvLine."No." := ProdBOMLine."No.";
+              TempKitSalesInvLine.Description := ProdBOMLine.Description;
+              TempKitSalesInvLine."Unit of Measure Code" := ProdBOMLine."Unit of Measure Code";
+              TempKitSalesInvLine."Variant Code" := ProdBOMLine."Variant Code";
+              TempKitSalesInvLine."Quantity per" := ProdBOMLine.Quantity;
+              TempKitSalesInvLine.INSERT;
+            UNTIL ProdBOMLine.NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE CheckResvKitSales@1480023(SalesLine@1480006 : Record 37);
+    VAR
+      KitSalesLine@1480001 : Record 25000;
+      xKitSalesLine@1480005 : Record 25000;
+      ReserveKitSalesLine@1480002 : Codeunit 25001;
+    BEGIN
+      WITH SalesLine DO BEGIN
+        KitSalesLine.SETRANGE("Document Type","Document Type");
+        KitSalesLine.SETRANGE("Document No.","Document No.");
+        KitSalesLine.SETRANGE("Document Line No.","Line No.");
+        KitSalesLine.SETRANGE(Type,KitSalesLine.Type::Item);
+        KitSalesLine.SETFILTER("Quantity per",'<>0');
+        IF KitSalesLine.FINDSET THEN
+          REPEAT
+            xKitSalesLine := KitSalesLine;
+            KitSalesLine."Extended Quantity" := KitSalesLine."Quantity per" * "Quantity (Base)";
+            KitSalesLine."Extended Quantity (Base)" := KitSalesLine."Quantity per (Base)" * "Quantity (Base)";
+            KitSalesLine."Outstanding Quantity" := KitSalesLine."Quantity per" * "Outstanding Qty. (Base)";
+            KitSalesLine."Outstanding Qty. (Base)" := KitSalesLine."Quantity per (Base)" * "Outstanding Qty. (Base)";
+            ReserveKitSalesLine.VerifyQuantity(KitSalesLine,xKitSalesLine);
+          UNTIL KitSalesLine.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE TakeUnitCost@60001(BooTakeUnitCost_P@60000 : Boolean);
+    BEGIN
+      // --> 20180115-WI00-ADV01.01.00-3286-CJY01
+      BooTakeUnitCost_G := BooTakeUnitCost_P;
+      // <-- 20180115-WI00-ADV01.01.00-3286-CJY01
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+
+      20110601-Wi00-CMC01.04 : Version RTM 01.04 - NavAgri
+      20120502-App01-CMC02.01.00-FEC01 : ADDCODE (Gestion des kit dans les variantes)
+      20120502-App01-CMC02.01.00-FEC02 : ADDCODE (Gestion des kit dans les variantes)
+      20140511-Wi00-CMC02.02.00-2099-FEC01 : ADDCODE.
+      20180115-WI00-ADV01.01.00-3286-CJY01 : ADDCODE (Gestion desassemblage lors d'un retour)
+      20180115-WI00-ADV01.01.00-3286-CJY01 : ADDFUNC (add function TakeUnitCost)
+
+
+      // --> 3LI END
+    }
+    END.
+  }
+}
+

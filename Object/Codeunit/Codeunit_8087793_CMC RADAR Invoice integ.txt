@@ -1,0 +1,440 @@
+OBJECT Codeunit 8087793 CMC RADAR Invoice integ
+{
+  OBJECT-PROPERTIES
+  {
+    Date=12/01/24;
+    Heure=08:41:17;
+    Modifi'=Oui;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    TableNo=8087783;
+    OnRun=VAR
+            "<-- 3LI LOCALS -->"@1000000001 : Integer;
+            TableRadarInvoice_L@1000000009 : Record 8087783;
+            TableAccount_L@1000000010 : Record 81;
+            TableAccountPrec_L@1000000033 : Record 81;
+            TableVendor_L@1000000018 : Record 23;
+            TableItem_L@1000000019 : Record 27;
+            TableVendAccountPostingGroup_L@1000000000 : Record 93;
+            TableJournalBatch_L@1000000023 : Record 232;
+            TableGenPostSetup_L@1000000028 : Record 252;
+            TableDftDim_L@1000000029 : Record 352;
+            Ligne_L@1000000013 : Integer;
+            Result_L@1000000008 : Text[250];
+            MontantTtc_L@1000000014 : Decimal;
+            MontantHt_L@1000000015 : Decimal;
+            MontantTva_L@1000000016 : Decimal;
+            MontantTvaLig_L@1000000017 : Decimal;
+            GrpCptMarTva_L@1000000012 : Code[10];
+            GrpCptMar_L@1000000011 : Code[10];
+            Tva_L@1000000002 : Code[10];
+            CodeUnit_L@1000000003 : Integer;
+            ConnectorName_L@1000000020 : Code[20];
+            ImpExpFolder_L@1000000007 : Text[250];
+            LogFolder_L@1000000006 : Text[250];
+            ExtensionFile_L@1000000005 : Text[10];
+            PrefixFile_L@1000000004 : Text[10];
+            TypeFactAvoir_L@1000000021 : Text[1];
+            ModRegl_L@1000000022 : Code[10];
+            DocExterne_L@1000000024 : Code[20];
+            Vendor_L@1000000025 : Code[20];
+            Item_L@1000000030 : Code[20];
+            DateFact_L@1000000026 : Date;
+            Montant_L@1000000027 : Decimal;
+            int_temp_L@1000000031 : Integer;
+            NameJournal_L@1000000032 : Code[10];
+            FinEnr_L@1000000034 : Integer;
+            InvoicePrec_L@1000000035 : Text[20];
+            DateEch_L@1000000036 : Date;
+            DatePost_L@1000000037 : Date;
+            TableRadarInvoice2_L@1000000038 : Record 8087783;
+          BEGIN
+            IF (GetRadarParameters() AND TempRadarParameter_G."Import Invoice") THEN BEGIN
+            //IF ((TableSetup_G.FINDFIRST) AND (TableSetup_G."Import Invoice")) THEN BEGIN
+              CLEARLASTERROR;
+              // Cr'er une nouvelle feuille : Boucler pour trouver un N› libre
+              //-->CDAL20140606
+              // BEFORE
+              {
+              TableJournalBatch_L.SETRANGE("Journal Template Name", "Journal Template Name");
+              TableJournalBatch_L.SETRANGE(TableJournalBatch_L.Name, "Name page");
+              IF TableJournalBatch_L.ISEMPTY THEN BEGIN
+                TableJournalBatch_L."Journal Template Name" := TableSetup_G."Journal Template Name";
+                TableJournalBatch_L.Name := "Name page";
+                TableJournalBatch_L.Description := COPYSTR('Feuille automatique' + ' ' + FORMAT(TODAY, 9),
+                  1, MAXSTRLEN(TableJournalBatch_L.Description));
+                IF NOT TableJournalBatch_L.INSERT(TRUE) THEN BEGIN
+                  ERROR(Text0010, TableJournalBatch_L.TABLECAPTION, GETLASTERRORTEXT);
+                END;
+              END;
+              }
+              // AFTER
+              TableJournalBatch_L.SETRANGE("Journal Template Name", TempRadarParameter_G."Journal Template Name");
+              int_temp_L := 0;
+              REPEAT
+                int_temp_L += 1;
+                NameJournal_L := TempRadarParameter_G."Radical Feuille" + '_' + FORMAT(int_temp_L);
+                TableJournalBatch_L.SETRANGE(TableJournalBatch_L.Name, NameJournal_L);
+              UNTIL NOT TableJournalBatch_L.FINDSET();
+              TableJournalBatch_L."Journal Template Name" := TempRadarParameter_G."Journal Template Name";
+              TableJournalBatch_L.Name := NameJournal_L;
+              TableJournalBatch_L.Description := COPYSTR('Feuille automatique' + ' ' + FORMAT(TODAY, 9),
+                1, MAXSTRLEN(TableJournalBatch_L.Description));
+              IF NOT TableJournalBatch_L.INSERT(TRUE) THEN BEGIN
+                ERROR(COPYSTR(STRSUBSTNO(Text0010, TableJournalBatch_L.TABLECAPTION, GETLASTERRORTEXT),
+                  1, MAXSTRLEN(Result_L)));
+              END;
+
+              TableRadarInvoice_L.SETCURRENTKEY("Journal Template Name", "Name page Temp");
+
+              TableRadarInvoice_L.SETRANGE("Journal Template Name", "Journal Template Name");
+              TableRadarInvoice_L.SETRANGE("Name page Temp", "Name page Temp");
+              TableRadarInvoice_L.SETRANGE(HoroIntegration, HoroIntegration);
+              IF TableRadarInvoice_L.FINDSET THEN BEGIN
+                CodeUnit_L := TempRadarParameter_G."Import Invoice CodeUnit Init";
+                MoteurInterface_G.GetParameter(CodeUnit_L, ConnectorName_L, ImpExpFolder_L, LogFolder_L, ExtensionFile_L, PrefixFile_L);
+                MoteurInterface_G.GetTemplatesCode (ConnectorName_L, ItemTemplateCode_G, CustomerTemplateCode_G, VendorTemplateCode_G,
+                  ContactTemplateCode_G, AccountTemplateCode_G, GlobalTemplateCode_G);
+                // PremiSre facture pour g'rer fin rupture facture
+                InvoicePrec_L := TableRadarInvoice_L.Invoice;
+
+                REPEAT
+                  IF (TableRadarInvoice_L.Type  <> 'TVA') THEN BEGIN
+                    Ligne_L +=1;
+                    CLEAR(TableAccount_L);
+
+                    TableAccount_L.VALIDATE("Journal Template Name", TableRadarInvoice_L."Journal Template Name");
+                    TableAccount_L.VALIDATE("Journal Batch Name", TableJournalBatch_L.Name);
+                    TableAccount_L.VALIDATE("Line No.", Ligne_L);
+                    TableAccount_L.VALIDATE("Source Code", TempRadarParameter_G."Source Code");
+                    CLEAR(Vendor_L);
+                  END;
+                  CASE TableRadarInvoice_L.Type OF
+                    'ENT': BEGIN
+                      MontantTtc_L := 0;
+                      MontantHt_L := 0;
+                      MontantTva_L := 0;
+                      MontantTvaLig_L := 0;
+                      //-->20160606-INT01-CMC02.02.00-ADVITAM-YPR001
+                      CLEAR(TableRadarInvoice2_L);
+
+                      TableRadarInvoice2_L.SETRANGE(TableRadarInvoice2_L.Invoice,TableRadarInvoice_L.Invoice);
+                      TableRadarInvoice2_L.SETRANGE(TableRadarInvoice2_L.Type,'LIN');
+                      IF TableRadarInvoice2_L.FINDFIRST THEN BEGIN
+                        DatePost_L := TableRadarInvoice2_L."Posting Date";
+                      END;
+                      //<--20160606-INT01-CMC02.02.00-ADVITAM-YPR001
+
+                      // Ent^te ==> Compte du fournisseur
+                      //-->20160606-INT01-CMC02.02.00-ADVITAM-YPR001
+                      {
+                      DateFact_L := TableRadarInvoice_L."Invoice date";
+                      }
+                      //<--20160606-INT01-CMC02.02.00-ADVITAM-YPR001
+
+                      //-->20160606-INT01-CMC02.02.00-ADVITAM-YPR002
+                      DateFact_L := TableRadarInvoice_L."Invoice date";
+                      //<--20160606-INT01-CMC02.02.00-ADVITAM-YPR002
+
+                      DateEch_L := TableRadarInvoice_L."Due date";
+                      //<--20151204-INT05-CMC02.02.00-ADVITAM-CDL001
+                      MontantTtc_L += TableRadarInvoice_L.Amount;
+                      TypeFactAvoir_L := TableRadarInvoice_L."Invoice or Credit";
+                      Montant_L := -TableRadarInvoice_L.Amount;
+                      ModRegl_L := MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G, 'Payment Method',
+                        'Code', TableRadarInvoice_L."Payeemnt method", TRUE, FALSE);
+                      IF ModRegl_L = '' THEN BEGIN
+                        ERROR(Text0013, TableRadarInvoice_L.FIELDCAPTION("Payeemnt method"), TableRadarInvoice_L."Payeemnt method",
+                          TableRadarInvoice_L.Invoice);
+                      END;
+
+                      // Correspondance fournisseur.
+                      Vendor_L := MoteurInterface_G.GetReferentialCorrespondance(VendorTemplateCode_G, TRUE, TableRadarInvoice_L.Vendor, TRUE);
+                      IF Vendor_L = '' THEN BEGIN
+                        ERROR(Text0013, TableRadarInvoice_L.FIELDCAPTION(Vendor), TableRadarInvoice_L.Vendor, TableRadarInvoice_L.Invoice);
+                      END;
+                      IF TableVendor_L.GET(Vendor_L) THEN BEGIN
+                        TableAccount_L."Account Type" := TableAccount_L."Account Type"::Vendor;
+                        TableAccount_L.VALIDATE("Account No.", Vendor_L);
+
+                        TableAccount_L.VALIDATE(TableAccount_L."Posting Group", TableVendor_L."Vendor Posting Group");
+                        GrpCptMar_L := TableVendor_L."Gen. Bus. Posting Group";
+                        GrpCptMarTva_L := TableVendor_L."VAT Bus. Posting Group";
+                        DocExterne_L := FORMAT(TableRadarInvoice_L."Invoice date", 0, '<Year>') + '/' + TableRadarInvoice_L.Invoice;
+                      END ELSE BEGIN
+                        ERROR(Text0010, TableRadarInvoice_L.Vendor, TableVendor_L.TABLECAPTION);
+                      END;
+                    END;
+                    'LIN': BEGIN
+                      // Ligne ==> Compte de l'article
+                      Item_L := MoteurInterface_G.GetReferentialCorrespondance(ItemTemplateCode_G, TRUE, TableRadarInvoice_L.Item, TRUE);
+                      IF Item_L = '' THEN BEGIN
+                        Item_L := TableRadarInvoice_L.Item;
+                      END;
+                      IF TableItem_L.GET(Item_L) THEN BEGIN
+
+                        //-->20160606-INT01-CMC02.02.00-ADVITAM-YPR001
+                        DatePost_L := TableRadarInvoice_L."Posting Date";
+                        //<--20160606-INT01-CMC02.02.00-ADVITAM-YPR001
+
+                        MontantHt_L += TableRadarInvoice_L.Amount;
+                        Montant_L := TableRadarInvoice_L.Amount;
+                        IF NOT TableGenPostSetup_L.GET(GrpCptMar_L, TableItem_L."Gen. Prod. Posting Group") THEN BEGIN
+                          ERROR(Text0010, GrpCptMar_L + '-' + TableItem_L."Gen. Prod. Posting Group",
+                            TableGenPostSetup_L.TABLECAPTION);
+                        END ELSE BEGIN
+                          IF TypeFactAvoir_L = 'F' THEN BEGIN
+                            TableAccount_L.VALIDATE("Account No.", TableGenPostSetup_L."Purch. Account");
+                          END ELSE BEGIN
+                            TableAccount_L.VALIDATE("Account No.", TableGenPostSetup_L."Purch. Credit Memo Account");
+                          END;
+                        END;
+                        TableAccount_L.VALIDATE(TableAccount_L.Quantity, TableRadarInvoice_L.Quantity);
+                        TableAccount_L.VALIDATE("Shortcut Dimension 1 Code", TempRadarParameter_G."Shortcut Dimension 1 Code");
+                        IF NOT TableDftDim_L.GET(27, TableItem_L."No.", TableDftDim_L.Type::"Regular Dimension", 'PRODUIT') THEN BEGIN
+                          ERROR(Text0010, '27-' + TableItem_L."No." + '-' + FORMAT(TableDftDim_L.Type::"Regular Dimension") + '-PRODUIT',
+                            TableDftDim_L.TABLECAPTION);
+                        END ELSE BEGIN
+                          TableAccount_L.VALIDATE("Shortcut Dimension 2 Code", TableDftDim_L."Dimension Value Code");
+                        END;
+            //IF TableAccount_L."Shortcut Dimension 1 Code" <> '' THEN BEGIN
+            //TableAccount_L.ValidateShortcutDimCode(1, TableAccount_L."Shortcut Dimension 1 Code");
+            //END;
+            //IF TableAccount_L."Shortcut Dimension 2 Code" <> '' THEN BEGIN
+            //TableAccount_L.ValidateShortcutDimCode(2, TableAccount_L."Shortcut Dimension 2 Code");
+            //END;
+                        IF GrpCptMarTva_L <> '' THEN BEGIN
+                          TableAccount_L.VALIDATE("Gen. Bus. Posting Group", GrpCptMar_L);
+                          TableAccount_L.VALIDATE("VAT Bus. Posting Group", GrpCptMarTva_L);
+                        END;
+                      END ELSE BEGIN
+                        ERROR(Text0010, TableRadarInvoice_L.Item, TableItem_L.TABLECAPTION);
+                      END;
+                    END;
+                    'TVA': BEGIN
+                      // TVA ==> Non repris pour contr"le 'cart TVA
+                      MontantTva_L += TableRadarInvoice_L.Amount;
+                    END;
+                  END;
+
+                  IF (TableRadarInvoice_L.Type  <> 'TVA') THEN BEGIN
+                //    CLEAR(TableVendAccountPostingGroup_L);
+                //    TableVendAccountPostingGroup_L.SETRANGE(TableVendAccountPostingGroup_L."Payables Account",
+                //      TableImportTemp_L.Account);
+                //    IF TableVendAccountPostingGroup_L.FINDFIRST THEN BEGIN
+                //      TableAccount_L.VALIDATE("Posting Group", TableVendAccountPostingGroup_L.Code);
+                //    END ELSE BEGIN
+                //      Result_L:= COPYSTR(STRSUBSTNO(Text0012, TableImportTemp_L.Account), 1, MAXSTRLEN(Result_L));
+                //    END;
+
+                    IF TableRadarInvoice_L."VAT Code" <> '' THEN BEGIN
+                      Tva_L := MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G, 'VAT Product Posting Group',
+                        'Code', TableRadarInvoice_L."VAT Code", TRUE, FALSE);
+                      IF Tva_L = '' THEN BEGIN
+                        ERROR(Text0013, TableRadarInvoice_L.FIELDCAPTION("VAT Code"), TableRadarInvoice_L."VAT Code",
+                          TableRadarInvoice_L.Invoice);
+                      END;
+                      TableAccount_L.VALIDATE("VAT Prod. Posting Group", Tva_L);
+                    END;
+                    IF TypeFactAvoir_L = 'F' THEN BEGIN
+                      TableAccount_L.VALIDATE(TableAccount_L."VAT Base Amount", Montant_L);
+                    END ELSE BEGIN
+                      TableAccount_L.VALIDATE(TableAccount_L."VAT Base Amount", -Montant_L);
+                    END;
+
+                    TableAccount_L.VALIDATE(TableAccount_L."Document No.", TableRadarInvoice_L.Invoice);
+                    TableAccount_L.VALIDATE(TableAccount_L."Document Date", TableRadarInvoice_L."Invoice date");
+                    IF TypeFactAvoir_L = 'F' THEN BEGIN
+                      TableAccount_L.VALIDATE(TableAccount_L."Document Type", TableAccount_L."Document Type"::Invoice);
+                    END ELSE BEGIN
+                      TableAccount_L.VALIDATE(TableAccount_L."Document Type", TableAccount_L."Document Type"::"Credit Memo");
+                    END;
+
+                    TableAccount_L.VALIDATE(TableAccount_L."External Document No.", DocExterne_L);
+                    //-->20151204-INT05-CMC02.02.00-ADVITAM-CDL001
+                    // BEFORE
+                    {
+                    TableAccount_L.VALIDATE("Due Date", TableRadarInvoice_L."Due date");
+                    }
+                    //<--20151204-INT05-CMC02.02.00-ADVITAM-CDL001
+                    TableAccount_L.VALIDATE(TableAccount_L."Payment Method Code", ModRegl_L);
+
+                    MontantTvaLig_L += TableAccount_L."VAT Amount";
+
+                    //-->20160126-INT05-CMC02.02.00-ADVITAM-CDL002
+                    TableAccount_L.VALIDATE("Posting No. Series", TempRadarParameter_G."Posting No. Series");
+                    //<--20160126-INT05-CMC02.02.00-ADVITAM-CDL002
+                    //-->20160606-INT01-CMC02.02.00-ADVITAM-YPR001
+                    {
+                    TableAccount_L.VALIDATE("Posting Date", DateFact_L);
+                    }
+                    TableAccount_L.VALIDATE("Posting Date", DatePost_L);
+                    //<--20160606-INT01-CMC02.02.00-ADVITAM-YPR001
+
+                    //-->20160606-INT01-CMC02.02.00-ADVITAM-YPR002
+                    TableAccount_L.VALIDATE("Document Date",  DateFact_L);
+                    //<--20160606-INT01-CMC02.02.00-ADVITAM-YPR002
+
+                    //-->20151204-INT05-CMC02.02.00-ADVITAM-CDL001
+                    TableAccount_L.VALIDATE("Due Date", DateEch_L);
+                    //<--20151204-INT05-CMC02.02.00-ADVITAM-CDL001
+                    IF NOT TableAccount_L.INSERT(TRUE) THEN BEGIN
+                      ERROR(Text0010, TableAccount_L.TABLECAPTION, GETLASTERRORTEXT);
+                    END;
+                  END;
+                  TableRadarInvoice_L.HoroIntegration := CURRENTDATETIME;
+                  TableRadarInvoice_L."Name page" := TableJournalBatch_L.Name;
+                  TableRadarInvoice_L.MODIFY(TRUE);
+
+                  // Au suiant.
+                  FinEnr_L := TableRadarInvoice_L.NEXT;
+                  // Rupture facture
+                  IF ((TableRadarInvoice_L.Invoice <> InvoicePrec_L) OR (FinEnr_L = 0)) THEN BEGIN
+                    InvoicePrec_L := TableRadarInvoice_L.Invoice;
+                    // Ecart de Tva
+                    IF (MontantTva_L <> MontantTvaLig_L) THEN BEGIN
+                      TableAccountPrec_L := TableAccount_L;
+                      CLEAR(TableAccount_L);
+                      TableAccount_L.VALIDATE("Journal Template Name", TableAccountPrec_L."Journal Template Name");
+                      TableAccount_L.VALIDATE("Journal Batch Name", TableAccountPrec_L."Journal Batch Name");
+
+                      Ligne_L += 1;
+                      TableAccount_L.VALIDATE(TableAccount_L."Line No.", Ligne_L);
+                      //-->20160606-INT01-CMC02.02.00-ADVITAM-YPR001
+                      {
+                      TableAccount_L.VALIDATE("Posting Date", DateFact_L);
+                      }
+                      TableAccount_L.VALIDATE("Posting Date", DatePost_L);
+
+                      //-->20160606-INT01-CMC02.02.00-ADVITAM-YPR001
+                      TableAccount_L.VALIDATE("Document Type", TableAccountPrec_L."Document Type");
+                      TableAccount_L.VALIDATE("Source Code", TableAccountPrec_L."Source Code");
+                      TableAccount_L.VALIDATE("Account Type" , TableAccount_L."Account Type"::"G/L Account");
+
+                      TableAccount_L.VALIDATE(TableAccount_L."Account No.", TempRadarParameter_G."VAT Account No.");
+                      TableAccount_L.VALIDATE(TableAccount_L."VAT Base Amount", (MontantTva_L - MontantTvaLig_L));
+                      TableAccount_L.VALIDATE(TableAccount_L."Posting No. Series", TempRadarParameter_G."Posting No. Series");
+
+                      TableAccount_L.VALIDATE("Document No.", TableAccountPrec_L."Document No.");
+                      TableAccount_L.VALIDATE("External Document No.", TableAccountPrec_L."External Document No.");
+                      TableAccount_L.VALIDATE("On Hold", TableAccountPrec_L."On Hold");
+                      TableAccount_L.VALIDATE("Payment Method Code", TableAccountPrec_L."Payment Method Code");
+                      //-->20151204-INT05-CMC02.02.00-ADVITAM-CDL001
+                      // BEFORE
+                      {
+                      TableAccount_L.VALIDATE("Due Date", TableAccountPrec_L."Due Date");
+                      }
+                      // AFTER
+                      TableAccount_L.VALIDATE("Due Date", DateEch_L);
+                      //<--20151204-INT05-CMC02.02.00-ADVITAM-CDL001
+
+
+                      IF NOT TableAccount_L.INSERT(TRUE) THEN BEGIN
+                        ERROR(Text0010, TableAccount_L.TABLECAPTION, GETLASTERRORTEXT);
+                      END;
+                    END;
+                  END;
+                UNTIL FinEnr_L = 0;
+              END;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      "<-- 3LI TEXT GLOBALS -->"@1000000009 : TextConst;
+      Text0001@1000000003 : TextConst 'FRA=Erreur code soci't' %1 invalide : doit ^tre celle param'tr'e %2 : Enregistrement %3';
+      Text0002@1000000001 : TextConst 'ENU=Error open file %1 : %2;FRA=Erreur ouverture fichier %1 : %2';
+      Text0003@1000000005 : TextConst 'FRA=Erreur flux %1/%2/%3 existe d'j. dans %4.';
+      Text0004@1000000006 : TextConst 'FRA=Erreur flux %1/%2/%3/%4 inexistant dans les exports.';
+      Text0005@1000000008 : TextConst 'ENU=Error file %1 already exist.;FRA=Erreur fichier %1 existe d'j..';
+      Text0006@1000000010 : TextConst 'FRA=Erreur trame invalide "%1" attendu "%2".';
+      Text0007@1000000013 : TextConst 'FRA=Erreur enregistrement dans table "%1" : pour "%2".';
+      Text0008@1000000002 : TextConst 'ENU=Error field %1 : Record %2;FRA="Erreur zone %1=%2 : Enregistrement %3"';
+      Text0009@1000000000 : TextConst 'ENU=Error file %1 was not exist.;FRA=Erreur fichier %1 inexistant.';
+      Text0010@1000000014 : TextConst 'FRA=Erreur "%1" inexistant dans table "%2".';
+      Text0011@1000000015 : TextConst 'FRA=Erreur flux %1/%2 type "%3" non pr'vu.';
+      Text0012@1000000016 : TextConst 'FRA=Erreur type de flux "%1" non valide : Enregistrement %2.';
+      Text0013@1000000004 : TextConst 'FRA=Erreur correspondance "%1" : "%2" non param'tr' pour "%3".';
+      Text0014@1000000007 : TextConst 'ENU=Error backup copy.;FRA=Erreur copie de sauvegarde.';
+      "<-- 3LI GLOBALS -->"@1000000012 : Integer;
+      ToolsFile_G@1000000011 : Codeunit 8053405;
+      MoteurInterface_G@1000000017 : Codeunit 8061230;
+      Text0015@1000000024 : TextConst 'FRA=Erreur Commande Usine %1-%2 inexistante.';
+      Text0016@1000000025 : TextConst 'FRA=Erreur "%1" : "%2" inexistant.';
+      Text0017@1000000026 : TextConst 'FRA=Erreur mise . jour "%1" : "%2".';
+      Text0018@1000000027 : TextConst 'FRA=Unit' "%1" non pr'vue pour %2.';
+      Text0019@1000000029 : TextConst 'FRA=Erreur article exp'dition %1 <> article commande %2 pour %3.';
+      Text0020@1000000030 : TextConst 'FRA="Expedition ""%1"" magasin ""%2"". "';
+      Text0021@1000000031 : TextConst 'FRA=Erreur int'gration Exp'dition "%1/%2/%3".';
+      Text0022@1000000018 : TextConst 'FRA=Exp'dition "%1/%2/%3:%4" int'gr'e, commande "%5".';
+      Text0023@1000000019 : TextConst 'FRA=Erreur Validation Exp'dition "%1/%2/%3:%4", commande "%5".';
+      Text0024@1000000020 : TextConst 'FRA=Exp'dition "%1/%2/%3:%4" valid'e, commande "%5".';
+      Text0025@1000000021 : TextConst 'FRA="Zone ""%1"" = ""%2"" diff'rente de l''ent^te : pour ""%3""."';
+      Text0101@1000000028 : TextConst 'FRA=Veuillez consulter le Log.';
+      ItemTemplateCode_G@1000000037 : Code[20];
+      CustomerTemplateCode_G@1000000036 : Code[20];
+      VendorTemplateCode_G@1000000035 : Code[20];
+      ContactTemplateCode_G@1000000034 : Code[20];
+      AccountTemplateCode_G@1000000033 : Code[20];
+      GlobalTemplateCode_G@1000000032 : Code[20];
+      Text0107@1000000038 : TextConst 'FRA=Erreur enregistrement dans table "%1" : pour "%2". Mise . jour de la date de comptabilisation.';
+      Text999@1000000039 : TextConst 'FRA=Date Comptabilisation %1 pour le type %2.';
+      TempRadarParameter_G@1000000040 : TEMPORARY Record 8053404;
+
+    PROCEDURE "<-- 3LI FUNCTIONS -->"@1000000001();
+    BEGIN
+    END;
+
+    PROCEDURE "-- ADV FUNCTIONS --"@1000000000();
+    BEGIN
+    END;
+
+    PROCEDURE GetRadarParameters@1000000006() ReturnValue : Boolean;
+    VAR
+      RadarSetup@1000000000 : Record 8053404;
+    BEGIN
+      ReturnValue := FALSE;
+      TempRadarParameter_G.DELETEALL();
+      IF (RadarSetup.FINDSET()) THEN BEGIN
+        TempRadarParameter_G.INIT();
+        TempRadarParameter_G.TRANSFERFIELDS(RadarSetup);
+        IF (TempRadarParameter_G.INSERT(FALSE)) THEN BEGIN
+          ReturnValue := TempRadarParameter_G.FINDSET();
+        END;
+      END;
+    END;
+
+    PROCEDURE SaveRadarParameters@1000000007() ReturnValue : Boolean;
+    VAR
+      RadarSetup@1000000000 : Record 8053404;
+    BEGIN
+      ReturnValue := FALSE;
+      RadarSetup.LOCKTABLE(TRUE,FALSE);
+      IF (RadarSetup.FINDSET()) THEN BEGIN
+        ReturnValue := RadarSetup.MODIFY(TRUE);
+      END
+    END;
+
+    BEGIN
+    {
+      //--> 3LI BEGIN
+      20140421-INT05-CMC02.02.00-ADVITAM-CDL : Import facture achat RADAR
+      20140606- Bruno Rumori ouvre un ticket : La quantit' ne suit pas l'analytique
+      20151204-INT05-CMC02.02.00-ADVITAM-CDL001 : - ProblSme date 'ch'ance que dans l'ent^te
+                                                    + Ajout variable locale "DateEch_L"
+      20160126-INT05-CMC02.02.00-ADVITAM-CDL002 : - Table facture Radar : ajout zone "Vendor" dans la cl' unique aprSs "Company"
+                                                    + Activation souche de validation.
+      //<-- 3LI END
+
+      //-->20140421-INT05-CMC02.02.00-ADVITAM-CDL
+      //-->20160606-INT01-CMC02.02.00-ADVITAM-YPR001
+      //-->20160711-INT01-CMC02.02.00-ADVITAM-YPR002: - affectation de la date de facture . la date de document
+    }
+    END.
+  }
+}
+

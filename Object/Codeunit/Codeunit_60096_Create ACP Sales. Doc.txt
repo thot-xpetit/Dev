@@ -1,0 +1,511 @@
+OBJECT Codeunit 60096 Create ACP Sales. Doc
+{
+  OBJECT-PROPERTIES
+  {
+    Date=23/06/20;
+    Heure=00:00:00;
+    Liste versions=SP3446;
+  }
+  PROPERTIES
+  {
+    TableNo=60122;
+    OnRun=VAR
+            PagesCreateDoc_L@1000000000 : Page 60205;
+            NbTotalLines_L@1000000001 : Integer;
+            DefaultCustNo_L@1000000002 : Code[20];
+            NoCustToInvoice_L@1000000003 : Code[20];
+            Cust_L@1000000004 : Record 18;
+          BEGIN
+            CLEAR(PagesCreateDoc_L);
+
+            PagesCreateDoc_L.SetQuantityToPost(DisplayQuantity_G);
+            PagesCreateDoc_L.SetAmountToPost(DisplayAmount_G);
+            PagesCreateDoc_L.SetDate;
+            // --> 20200409-WI00-ADV01.01.00-3446-CJY01
+            PagesCreateDoc_L.SetFinalDocType(FinalDocType_G);
+            // <-- 20200409-WI00-ADV01.01.00-3446-CJY01
+            // --> 20200519-WI00-ADV01.01.00-3446-CJY01
+            PagesCreateDoc_L.SetCampain(CampainNo_G);
+            // <-- 20200519-WI00-ADV01.01.00-3446-CJY01
+
+            //on utilise CostPlusLedgerEntryVerifVend_G pour d'terminer si nous avons un
+            //fournisseur unique pour toutes les lignes, dans ce cas, on pr'remplie
+            NbTotalLines_L := TempACPLedgerEntryVerifVend_G.COUNT;
+            IF NbTotalLines_L > 0 THEN BEGIN
+              TempACPLedgerEntryVerifVend_G.FINDFIRST;
+              TempACPLedgerEntryVerifVend_G.CALCFIELDS("Customer No. to invoice");
+              DefaultCustNo_L := TempACPLedgerEntryVerifVend_G."Customer No. to invoice";
+              TempACPLedgerEntryVerifVend_G.SETRANGE("Customer No. to invoice",DefaultCustNo_L);
+              IF TempACPLedgerEntryVerifVend_G.COUNT = NbTotalLines_L THEN
+                PagesCreateDoc_L.SetSourceNo(DefaultCustNo_L);
+            END;
+
+            IF PagesCreateDoc_L.RUNMODAL = ACTION::OK THEN BEGIN
+              Amount_G := PagesCreateDoc_L.GetAmount();
+              PagesCreateDoc_L.GetSourceNo(CustNo_G);
+              PagesCreateDoc_L.GetDates(PostingDate_G, DocDate_G);
+              // --> 20200519-WI00-ADV01.01.00-3446-CJY01
+              //on r'cupSre la campagne si elle a 't' modifi'e par l'utilisateur
+              PagesCreateDoc_L.GetCampain(CampainNo_G);
+              // <-- 20200519-WI00-ADV01.01.00-3446-CJY01
+
+              // --> 20200602-WI00-ADV01.01.00-3446-SCR01
+              PagesCreateDoc_L.GetGroupingCode(GroupingCode_G);
+              // <-- 20200602-WI00-ADV01.01.00-3446-SCR01
+
+
+             CreateSalesDoc(Rec);
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      DisplayQuantity_G@1000000000 : Decimal;
+      DisplayAmount_G@1000000001 : Decimal;
+      ACPLedgerEntry_G@1000000002 : Record 60122;
+      DocNo_G@1000000003 : Code[20];
+      ACPLedgerEntryVerifVend_G@1000000004 : Record 60122;
+      CustNo_G@1000000005 : Code[20];
+      PostingDate_G@1000000006 : Date;
+      DocDate_G@1000000007 : Date;
+      Text60000@1000000008 : TextConst 'FRA=Service';
+      ApplyItemVAT_G@1000000009 : Boolean;
+      Text60001@1000000010 : TextConst 'FRA=Impossible de g'n'rer le document, il manque le N› de Ressource sur le Code ACP %1';
+      DocumentDimension_G@1000000012 : Record 357;
+      GroupeComptaTvaArticle_G@1000000011 : Code[10];
+      cduCMCDimensions_G@1000000014 : Codeunit 8053004;
+      cduDimMgt_G@1000000013 : Codeunit 408;
+      Txt50000_G@1000000015 : TextConst 'FRA=Vous devez soit Appliquer la TVA Article soit proposer un groupe de comptabilisation TVA';
+      FinalDocType_G@1000000016 : 'Facture,Avoir';
+      Quantity_G@1000000017 : Decimal;
+      Amount_G@1000000018 : Decimal;
+      CampainNo_G@1000000019 : Code[10];
+      GroupingCode_G@1000000020 : Code[10];
+      TempACPLedgerEntryVerifVend_G@1000000021 : TEMPORARY Record 60122;
+
+    PROCEDURE SetQuantity@8053005(DisplayQuantity_P@8053000 : Decimal;Quantity_P@1000000000 : Decimal);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Affecte la quantit' de l'avoir g'n'r'
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Entr'es : Quantity_P : Quantit' global du document . g'n'rer
+      //----------------------------------------------------------------------------------------------------------------------------------
+      DisplayQuantity_G := DisplayQuantity_P;
+      Quantity_G:= Quantity_P;
+    END;
+
+    PROCEDURE SetAmount@8053001(DisplayAmount_P@8053000 : Decimal;Amount_P@1000000000 : Decimal);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Affecte le montant de l'avoir g'n'r'
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Entr'es : Amount_P : Montant global g'n'rer
+      //----------------------------------------------------------------------------------------------------------------------------------
+      DisplayAmount_G := DisplayAmount_P;
+      Amount_G := Amount_P;
+    END;
+
+    PROCEDURE CreateSalesDoc@8053006(VAR ACPLedgerEntry_P@8053000 : Record 60122);
+    VAR
+      "<< 3LI LOCALS >>"@8053004 : Integer;
+      CMCSetup_L@8053006 : Record 8052982;
+      DefaultDim_L@8053015 : Record 352;
+      DocDimTemp_L@8053016 : TEMPORARY Record 357;
+      ItemLedgerEntry_L@8053005 : Record 32;
+      TempACPLedgerEntry_L@8053003 : TEMPORARY Record 60122;
+      TempACPLedgerEntry2_L@8053013 : TEMPORARY Record 60122;
+      SalesHeader_L@8053009 : Record 36;
+      SalesLine_L@8053008 : Record 37;
+      ResourceAcpAssignment_L@8053007 : Record 60130;
+      Item_L@8053012 : Record 27;
+      TotalQuantity_L@8053002 : Decimal;
+      UnitAmount_L@8053001 : Decimal;
+      LineNo_L@8053010 : Integer;
+      LineSalesNo_L@8053011 : Integer;
+      VATRateChangeConversion_L@8053017 : Codeunit 550;
+      ItemVariant_L@8053018 : Record 5401;
+      AcpLedgerEntry_L@1000000000 : Record 60122;
+      ACPList_L@1000000001 : Record 60116;
+    BEGIN
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // G'nSre la facture Cost Plus
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Entrees : CostPlusLedgerEntry_P : Ecritures Cost Plus . partir desquelles la RFC sera calcul'e
+      // ---------------------------------------------------------------------------------------------------------------------------------
+
+
+      SetRecordsToTemp(ACPLedgerEntry_P, TempACPLedgerEntry_L);
+
+      // --> 20200623-WI00-ADV01.01.00-3446-CJY01
+      SetRecordsToTempGlobal(TempACPLedgerEntry_L, TempACPLedgerEntry2_L);
+      // <-- 20200623-WI00-ADV01.01.00-3446-CJY01
+      LineSalesNo_L := 10000;
+
+      IF DocNo_G = '' THEN BEGIN
+        SalesHeader_L.INIT;
+        // --> 20200409-WI00-ADV01.01.00-3446-CJY01
+        IF FinalDocType_G = FinalDocType_G::Facture THEN
+         SalesHeader_L."Document Type" := SalesHeader_L."Document Type"::Invoice
+        ELSE
+          SalesHeader_L."Document Type" := SalesHeader_L."Document Type"::"Credit Memo";
+
+        // <-- 20200409-WI00-ADV01.01.00-3446-CJY01
+        SalesHeader_L."No." := '';
+        SalesHeader_L.INSERT(TRUE);
+        SalesHeader_L.VALIDATE(SalesHeader_L."Sell-to Customer No.", CustNo_G);
+        SalesHeader_L.VALIDATE(ACP , TRUE);
+        SalesHeader_L.VALIDATE("Posting Date", PostingDate_G);
+        SalesHeader_L.VALIDATE("Document Date", DocDate_G);
+        SalesHeader_L.VALIDATE("Posting Description", Text60000);
+        // --> 20200602-WI00-ADV01.01.00-3446-SCR01
+        SalesHeader_L.VALIDATE("Grouping Code",GroupingCode_G);
+        // <-- 20200602-WI00-ADV01.01.00-3446-SCR01
+        SalesHeader_L.MODIFY(TRUE);
+      END;
+      CMCSetup_L.GET;
+      TempACPLedgerEntry2_L.RESET;
+      IF TempACPLedgerEntry2_L.FINDSET THEN BEGIN
+        REPEAT
+          Item_L.GET(TempACPLedgerEntry2_L."Item No.");
+
+          SalesLine_L.INIT;
+
+          SalesLine_L."Document Type" := SalesHeader_L."Document Type";
+          SalesLine_L.VALIDATE("Document No.", SalesHeader_L."No.");
+          SalesLine_L.VALIDATE("Line No.", LineSalesNo_L);
+          SalesLine_L.INSERT(TRUE);
+
+          SalesLine_L.VALIDATE(Type, SalesLine_L.Type::Resource);
+          ACPList_L.GET(TempACPLedgerEntry2_L."ACP Code");
+          IF ACPList_L."No. Ressource" = '' THEN
+            ERROR(Text60001,ACPList_L.Code);
+
+          SalesLine_L.VALIDATE("No.", ACPList_L."No. Ressource");
+
+          SalesLine_L.VALIDATE("Location Code",'');
+          SalesLine_L.VALIDATE("CMC Campaign No.",CampainNo_G);
+
+          SalesLine_L.VALIDATE(Quantity, 1);
+          IF SalesHeader_L."Document Type" = SalesHeader_L."Document Type"::Invoice THEN
+            SalesLine_L.VALIDATE(SalesLine_L."Unit Price", TempACPLedgerEntry2_L."ACP Unit Am. to Invoice")
+           ELSE
+            SalesLine_L.VALIDATE(SalesLine_L."Unit Price", -TempACPLedgerEntry2_L."ACP Unit Am. to Invoice");
+
+          SalesLine_L.MODIFY(TRUE);
+
+
+          // ------------------------------------------------------------------------
+          // Copie Axes Analytiques Article
+          // ------------------------------------------------------------------------
+          //    cduCMCDimensions_G.DimPurchFromItem(DocDimTemp_L, PurchaseLine_L, Item_L."No.");
+          //    cduDimMgt_G.TransferTempToDimToDocDim(DocDimTemp_L);
+          // ------------------------------------------------------------------------
+
+          SalesLine_L.VALIDATE("Analytical Quantity",SalesLine_L.Quantity);
+
+          LineSalesNo_L := LineSalesNo_L + 10000;
+
+          TempACPLedgerEntry_L.SETCURRENTKEY("Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group","ACP Code",
+            "Rupture Prix Unit Fac");
+          // --> 20200312-WI00-ADV01.01.00-3446-CJY01
+          {
+          TempACPLedgerEntry_L.SETRANGE("Item No.", TempACPLedgerEntry2_L."Item No.");
+          TempACPLedgerEntry_L.SETRANGE("VAT Bus. Posting Group", TempACPLedgerEntry2_L."VAT Bus. Posting Group");
+          TempACPLedgerEntry_L.SETRANGE("VAT Prod. Posting Group", TempACPLedgerEntry2_L."VAT Prod. Posting Group");
+          }
+          // <-- 20200312-WI00-ADV01.01.00-3446-CJY01
+          TempACPLedgerEntry_L.SETRANGE("ACP Code", TempACPLedgerEntry2_L."ACP Code");
+          //retrait rupture montant unitaire
+          //TempACPLedgerEntry_L.SETRANGE("Rupture Prix Unit Fac", TempACPLedgerEntry2_L."Rupture Prix Unit Fac");
+          TempACPLedgerEntry_L.FINDSET;
+
+          REPEAT
+
+            ItemLedgerEntry_L.GET(TempACPLedgerEntry_L."Item Ledger Entry No.");
+
+            ResourceAcpAssignment_L.RESET;
+            ResourceAcpAssignment_L.SETRANGE("Document Type", SalesLine_L."Document Type");
+            ResourceAcpAssignment_L.SETRANGE("Document No.", SalesLine_L."Document No.");
+            ResourceAcpAssignment_L.SETRANGE("Document Line No.", SalesLine_L."Line No.");
+            //retrait rupture montant unitaire
+            //ResourceAcpAssignment_L.SETRANGE("Unit Cost", TempACPLedgerEntry_L."Rupture Prix Unit Fac");
+            LineNo_L := 10000;
+            IF ResourceAcpAssignment_L.FINDLAST THEN
+              LineNo_L := ResourceAcpAssignment_L."Line No." + 10000;
+
+            ResourceAcpAssignment_L.INIT;
+            ResourceAcpAssignment_L."Document Type" := SalesLine_L."Document Type";
+            ResourceAcpAssignment_L."Document No." := SalesLine_L."Document No.";
+            ResourceAcpAssignment_L."Document Line No." := SalesLine_L."Line No.";
+            ResourceAcpAssignment_L."Line No." := LineNo_L;
+
+            ResourceAcpAssignment_L."Applies-to Doc. Type" := GetDocType(ItemLedgerEntry_L."Document Type");
+            ResourceAcpAssignment_L."Applies-to Doc. No." := ItemLedgerEntry_L."Document No.";
+            ResourceAcpAssignment_L."Applies-to Doc. Line No." := ItemLedgerEntry_L."Document Line No.";
+
+            ResourceAcpAssignment_L.VALIDATE("Resource No.", ACPList_L."No. Ressource");
+            ResourceAcpAssignment_L.VALIDATE("Item No.", ItemLedgerEntry_L."Item No.");
+            ResourceAcpAssignment_L.VALIDATE(Description, ItemLedgerEntry_L.Description);
+
+            ResourceAcpAssignment_L.VALIDATE("Unit Cost", TempACPLedgerEntry_L."ACP Unit Am. to Invoice");
+
+            ResourceAcpAssignment_L."Acp Ledger Entry No." := TempACPLedgerEntry_L."Entry No.";
+            ResourceAcpAssignment_L.INSERT(TRUE);
+            IF SalesHeader_L."Document Type" = SalesHeader_L."Document Type"::Invoice THEN
+              ResourceAcpAssignment_L.VALIDATE("Qty. to Assign",
+                ResourceAcpAssignment_L."Qty. to Assign" + TempACPLedgerEntry_L."Valued Quantity")
+            ELSE
+              ResourceAcpAssignment_L.VALIDATE("Qty. to Assign",
+                ResourceAcpAssignment_L."Qty. to Assign" - TempACPLedgerEntry_L."Valued Quantity");
+
+            ResourceAcpAssignment_L."Amount to Assign" :=
+              ResourceAcpAssignment_L."Qty. to Assign" * TempACPLedgerEntry_L."ACP Unit Am. to Invoice";
+
+            ResourceAcpAssignment_L.MODIFY(TRUE);
+
+            // -----------------------------------------------------------------------
+            IF AcpLedgerEntry_L.GET(TempACPLedgerEntry_L."Entry No.") THEN BEGIN
+              AcpLedgerEntry_L."ACP Unit Am. to Invoice" := 0;
+              AcpLedgerEntry_L."Rupture Prix Unit Fac" := 0;
+              AcpLedgerEntry_L.MODIFY(TRUE);
+            END;
+
+            // -----------------------------------------------------------------------
+          UNTIL TempACPLedgerEntry_L.NEXT =0;
+
+        UNTIL TempACPLedgerEntry2_L.NEXT=0;
+
+      END;
+    END;
+
+    PROCEDURE SetRecordsToTemp@8053003(VAR ACPLedgerEntry_P@8053000 : Record 60122;VAR TempACPLedgerEntry_P@8053001 : TEMPORARY Record 60122);
+    VAR
+      ACPList_L@1000000000 : Record 60116;
+    BEGIN
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Copie les enregistrements en table temporaire pour traitement.
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Entrees :
+      //  - ACPLedgerEntry_P ....: Ecritures ACP . copier
+      //  - TempACPLedgerEntry_P : Table temporaire . remplir
+      // ---------------------------------------------------------------------------------------------------------------------------------
+
+      TempACPLedgerEntry_P.DELETEALL;
+
+      IF ACPLedgerEntry_P.FIND('-') THEN BEGIN
+        REPEAT
+          TempACPLedgerEntry_P := ACPLedgerEntry_P;
+          //on gSre ici la valeur de la ressource param'tr' dans le "chapeau" ACP
+          ACPList_L.GET(ACPLedgerEntry_P."ACP Code");
+          IF ACPList_L."No. Ressource" = '' THEN
+            ERROR(Text60001,ACPList_L.Code);
+          TempACPLedgerEntry_P."Resource No." := ACPList_L."No. Ressource";
+          TempACPLedgerEntry_P.INSERT;
+        UNTIL ACPLedgerEntry_P.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE SetRecordsToTemp2@8053012(VAR CostPlusLedgerEntry_P@8053000 : Record 60127;VAR TempCostPlusLedgerEntry_P@8053001 : TEMPORARY Record 60127);
+    BEGIN
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Copie les enregistrements en table temporaire pour traitement pour regroupement par article et Groupe TVA
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Entrees :
+      //  - CostPlusLedgerEntry_P ....: Ecritures Cost Plus . copier
+      //  - TempCostPlusLedgerEntry_P : Table temporaire . remplir
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      {
+      TempCostPlusLedgerEntry_P.DELETEALL;
+      IF CostPlusLedgerEntry_P.FINDSET(FALSE,FALSE) THEN BEGIN
+        REPEAT
+          TempCostPlusLedgerEntry_P.SETCURRENTKEY("Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group","Cost Plus Code",
+            "Rupture Prix Unit Fac");
+          TempCostPlusLedgerEntry_P.SETRANGE("Item No.", CostPlusLedgerEntry_P."Item No.");
+          TempCostPlusLedgerEntry_P.SETRANGE("VAT Bus. Posting Group", CostPlusLedgerEntry_P."VAT Bus. Posting Group");
+          TempCostPlusLedgerEntry_P.SETRANGE("VAT Prod. Posting Group", CostPlusLedgerEntry_P."VAT Prod. Posting Group");
+          TempCostPlusLedgerEntry_P.SETRANGE("Cost Plus Code", CostPlusLedgerEntry_P."Cost Plus Code");
+          TempCostPlusLedgerEntry_P.SETRANGE("Rupture Prix Unit Fac", CostPlusLedgerEntry_P."Rupture Prix Unit Fac");
+          IF NOT TempCostPlusLedgerEntry_P.FINDFIRST THEN BEGIN
+            TempCostPlusLedgerEntry_P.RESET;
+            TempCostPlusLedgerEntry_P := CostPlusLedgerEntry_P;
+            //du fait du "temp" on d'tourne l'usage du champ "unitaire" pour un calcul par quantit' le temps de l'op'ration
+            TempCostPlusLedgerEntry_P."Cost Plus Unit Am. to Invoice" := TempCostPlusLedgerEntry_P."Cost Plus Unit Am. to Invoice" *
+            CostPlusLedgerEntry_P."Invoiced Quantity";
+            TempCostPlusLedgerEntry_P.INSERT;
+          END ELSE BEGIN
+            TempCostPlusLedgerEntry_P."Invoiced Quantity" :=
+              TempCostPlusLedgerEntry_P."Invoiced Quantity" + CostPlusLedgerEntry_P."Invoiced Quantity";
+            TempCostPlusLedgerEntry_P."Cost Plus Unit Am. to Invoice" :=
+              TempCostPlusLedgerEntry_P."Cost Plus Unit Am. to Invoice" +
+              (CostPlusLedgerEntry_P."Cost Plus Unit Am. to Invoice" * CostPlusLedgerEntry_P."Invoiced Quantity");
+            TempCostPlusLedgerEntry_P.MODIFY;
+          END;
+        UNTIL CostPlusLedgerEntry_P.NEXT = 0;
+      END;
+      }
+    END;
+
+    PROCEDURE GetDocType@8053010(DocType_P@8053000 : Integer) GetDocType_L : Integer;
+    BEGIN
+      GetDocType_L := 0;
+
+      CASE DocType_P OF
+        5 :
+          GetDocType_L := 6;
+        6 :
+          GetDocType_L := 11;
+        7 :
+          GetDocType_L := 8;
+        8 :
+          GetDocType_L := 12;
+      END;
+
+      EXIT(GetDocType_L);
+    END;
+
+    PROCEDURE SetRecordsToTempItemCharge@1000000002(VAR ACPLedgerEntry_P@8053000 : Record 60122;VAR TempACPLedgerEntry_P@8053001 : TEMPORARY Record 60122);
+    BEGIN
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Copie les enregistrements en table temporaire pour traitement pour regroupement par article et Groupe TVA
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Entrees :
+      //  - ACPLedgerEntry_P ....: Ecritures ACP . copier
+      //  - TempACPLedgerEntry_P : Table temporaire . remplir
+      // ---------------------------------------------------------------------------------------------------------------------------------
+
+      TempACPLedgerEntry_P.DELETEALL;
+      IF ACPLedgerEntry_P.FINDSET(FALSE,FALSE) THEN BEGIN
+        REPEAT
+          TempACPLedgerEntry_P.SETCURRENTKEY("Resource No.","Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group",
+          "ACP Code","Rupture Prix Unit Fac");
+          TempACPLedgerEntry_P.SETRANGE("Resource No.",ACPLedgerEntry_P."Item Charge No.");
+          // --> 20200312-WI00-ADV01.01.00-3446-CJY01
+          //retrait de la rupture par code article
+          {BEFORE
+          TempACPLedgerEntry_P.SETRANGE("Item No.", ACPLedgerEntry_P."Item No.");
+          TempACPLedgerEntry_P.SETRANGE("VAT Bus. Posting Group", ACPLedgerEntry_P."VAT Bus. Posting Group");
+          TempACPLedgerEntry_P.SETRANGE("VAT Prod. Posting Group", ACPLedgerEntry_P."VAT Prod. Posting Group");
+          TempACPLedgerEntry_P.SETRANGE("ACP Code", ACPLedgerEntry_P."ACP Code");
+          AFTER}
+          TempACPLedgerEntry_P.SETRANGE("Rupture Prix Unit Fac", ACPLedgerEntry_P."Rupture Prix Unit Fac");
+          IF NOT TempACPLedgerEntry_P.FINDFIRST THEN BEGIN
+            TempACPLedgerEntry_P.RESET;
+            TempACPLedgerEntry_P := ACPLedgerEntry_P;
+            //du fait du "temp" on d'tourne l'usage du champ "unitaire" pour un calcul par quantit' le temps de l'op'ration
+            TempACPLedgerEntry_P."ACP Unit Am. to Invoice" := TempACPLedgerEntry_P."ACP Unit Am. to Invoice" *
+            ACPLedgerEntry_P."Invoiced Quantity";
+            TempACPLedgerEntry_P.INSERT;
+          END ELSE BEGIN
+            TempACPLedgerEntry_P."Invoiced Quantity" :=
+              TempACPLedgerEntry_P."Invoiced Quantity" + ACPLedgerEntry_P."Invoiced Quantity";
+            TempACPLedgerEntry_P."ACP Unit Am. to Invoice" :=
+              TempACPLedgerEntry_P."ACP Unit Am. to Invoice" +
+              (ACPLedgerEntry_P."ACP Unit Am. to Invoice" * ACPLedgerEntry_P."Invoiced Quantity");
+            TempACPLedgerEntry_P.MODIFY;
+          END;
+        UNTIL ACPLedgerEntry_P.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE SetFinalDocType@1000000000(FinalDocType_P@1000000000 : 'Facture,Avoir');
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // D'termine quel type de document doit ^tre g'n'r'
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Entr'es : FinalDocType_P : type de document g'n'r' (facture ou avoir)
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // --> 20200409-WI00-ADV01.01.00-3446-CJY01
+      FinalDocType_G := FinalDocType_P;
+      // <-- 20200409-WI00-ADV01.01.00-3446-CJY01
+    END;
+
+    PROCEDURE SetRecordsToTempGlobal@1000000001(VAR ACPLedgerEntry_P@8053000 : Record 60122;VAR TempACPLedgerEntry_P@8053001 : TEMPORARY Record 60122);
+    BEGIN
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Copie les enregistrements en table temporaire pour traitement pour regroupement par article et Groupe TVA
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Entrees :
+      //  - ACPLedgerEntry_P ....: Ecritures ACP . copier
+      //  - TempACPLedgerEntry_P : Table temporaire . remplir
+      // ---------------------------------------------------------------------------------------------------------------------------------
+
+      TempACPLedgerEntry_P.DELETEALL;
+      IF ACPLedgerEntry_P.FINDSET(FALSE,FALSE) THEN BEGIN
+        REPEAT
+          TempACPLedgerEntry_P.SETCURRENTKEY("Resource No.","Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group",
+          "ACP Code","Rupture Prix Unit Fac");
+          //TEST
+          {BEFORE
+          TempACPLedgerEntry_P.SETRANGE("Resource No.",ACPLedgerEntry_P."Item Charge No.");
+          AFTER}
+          TempACPLedgerEntry_P.SETRANGE("Resource No.",ACPLedgerEntry_P."Resource No.");
+          //TEST
+          // --> 20200312-WI00-ADV01.01.00-3446-CJY01
+          //retrait de la rupture par code article
+          {BEFORE
+          TempACPLedgerEntry_P.SETRANGE("Item No.", ACPLedgerEntry_P."Item No.");
+          TempACPLedgerEntry_P.SETRANGE("VAT Bus. Posting Group", ACPLedgerEntry_P."VAT Bus. Posting Group");
+          TempACPLedgerEntry_P.SETRANGE("VAT Prod. Posting Group", ACPLedgerEntry_P."VAT Prod. Posting Group");
+          TempACPLedgerEntry_P.SETRANGE("ACP Code", ACPLedgerEntry_P."ACP Code");
+          AFTER}
+          //TEST
+          //retrait de la rupture montant unitaire
+          {BEFORE
+          TempACPLedgerEntry_P.SETRANGE("Rupture Prix Unit Fac", ACPLedgerEntry_P."Rupture Prix Unit Fac");
+          }
+          IF NOT TempACPLedgerEntry_P.FINDFIRST THEN BEGIN
+            TempACPLedgerEntry_P.RESET;
+            TempACPLedgerEntry_P := ACPLedgerEntry_P;
+            //du fait du "temp" on d'tourne l'usage du champ "unitaire" pour un calcul par quantit' le temps de l'op'ration
+            TempACPLedgerEntry_P."ACP Unit Am. to Invoice" := TempACPLedgerEntry_P."ACP Unit Am. to Invoice" *
+            ACPLedgerEntry_P."Invoiced Quantity";
+            TempACPLedgerEntry_P.INSERT;
+          END ELSE BEGIN
+            TempACPLedgerEntry_P."Invoiced Quantity" :=
+              TempACPLedgerEntry_P."Invoiced Quantity" + ACPLedgerEntry_P."Invoiced Quantity";
+            TempACPLedgerEntry_P."ACP Unit Am. to Invoice" :=
+              TempACPLedgerEntry_P."ACP Unit Am. to Invoice" +
+              (ACPLedgerEntry_P."ACP Unit Am. to Invoice" * ACPLedgerEntry_P."Invoiced Quantity");
+            TempACPLedgerEntry_P.MODIFY;
+          END;
+        UNTIL ACPLedgerEntry_P.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE SetCampain@1000000003(CampainNo_P@1000000000 : Code[10]);
+    BEGIN
+      CampainNo_G := CampainNo_P;
+    END;
+
+    PROCEDURE InitTempVendor@1000000004(VAR ACPLedgerEntryVerifVend_P@1000000000 : Record 60122);
+    BEGIN
+      // --> 20200623-WI00-ADV01.01.00-3446-CJY01
+      TempACPLedgerEntryVerifVend_G.RESET;
+      TempACPLedgerEntryVerifVend_G.DELETEALL;
+      IF ACPLedgerEntryVerifVend_P.FINDSET THEN REPEAT
+        TempACPLedgerEntryVerifVend_G.TRANSFERFIELDS(ACPLedgerEntryVerifVend_P);
+        TempACPLedgerEntryVerifVend_G.INSERT;
+      UNTIL ACPLedgerEntryVerifVend_P.NEXT = 0;
+      // <-- 20200623-WI00-ADV01.01.00-3446-CJY01
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20200116-WI00-ADV01.01.00-3446-CJY01 : CREATE Object
+      20200312-WI00-ADV01.01.00-3446-CJY01 : MODCODE (changement suite atelier du 20200310)
+      20200409-WI00-ADV01.01.00-3446-CJY01 : MODCODE (modification suite atelier client)
+      20200519-WI00-ADV01.01.00-3446-CJY01 : ADDCRTL (Gestion campagne par d'faut)
+      20200520-WI00-ADV01.01.00-3446-CJY01 : Nettoyage
+      20200602-WI00-ADV01.01.00-3446-SCR01 : ADDCTRL (Gestion Code de regroupement)
+      20200623-WI00-ADV01.01.00-3446-CJY01 : MODCODE (Correction g'n'ration doc final)
+      20200623-WI00-ADV01.01.00-3446-CJY01 : MODCODE (Modification ACP -> Service constant Text60000)
+      20200623-WI00-ADV01.01.00-3446-CJY01 : Nettoyage objet
+      // <-- 3LI BEGIN
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,584 @@
+OBJECT Dataport 50032 General Journal Line Import V2
+{
+  OBJECT-PROPERTIES
+  {
+    Date=06/05/19;
+    Heure=11:30:15;
+    Modifi'=Oui;
+    Liste versions=ADV;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=General Journal Line Import;
+               FRA=Import feuille comptabilit' V2];
+    FieldStartDelimiter=<None>;
+    FieldEndDelimiter=<None>;
+    FieldSeparator=[;];
+    DataItemSeparator=<<NewLine>>;
+    OnPreDataport=BEGIN
+                    CurrDataport.FILENAME := txtFilename;
+                    // --> 20140414-8060990/1977-CMB6.00.10.05-BDN01
+                    // BEFORE
+                    //txtLogFilename := 'c:\logfile.txt';
+                    // <-- 20140414-8060990/1977-CMB6.00.10.05-BDN01
+                  END;
+
+    OnPostDataport=BEGIN
+                     IF NOT IsError THEN BEGIN
+                       LogFile.CLOSE;
+                       MESSAGE(ProcessEndingOK);
+                       ERASE(txtLogFilename);
+                     END ELSE BEGIN
+                       IF CONFIRM(ProcessEndingNotOK,TRUE,txtLogFilename) THEN
+                         HYPERLINK(LogFile.NAME);
+                       LogFile.CLOSE;
+
+                       GenJnlLine.RESET;
+                       GenJnlLine.SETRANGE("Journal Template Name",JnlTemplName);
+                       GenJnlLine.SETRANGE("Journal Batch Name",JnlBatchName);
+                       IF GenJnlLine.FIND('-') THEN
+                         GenJnlLine.DELETEALL(TRUE);
+                     END;
+                   END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table2000000026;
+        AutoSave=Non;
+        AutoUpdate=Non;
+        AutoReplace=Non;
+        DataItemTableView=SORTING(Num'ro);
+        OnPreDataItem=BEGIN
+                        // --> Controle que les donn'es de base sont renseign'es
+                        IF (JnlTemplName = '') OR
+                           (JnlBatchName = '') THEN
+                           InsertError(BaseDatasOKErr,TRUE);
+
+                        // --> Controle que la feuille compta est vide
+                        GenJnlLine.RESET;
+                        GenJnlLine.SETRANGE("Journal Template Name",JnlTemplName);
+                        GenJnlLine.SETRANGE("Journal Batch Name",JnlBatchName);
+                        IF GenJnlLine.FINDFIRST THEN
+                          InsertError(STRSUBSTNO(GenJnlLineExistErr,JnlTemplName,JnlBatchName),TRUE);
+
+                        // --> Initialisation des variables
+                        NextLineNo := 0;
+                        FileLineNo := 0;
+                        IsError := FALSE;
+
+                        // --> Ouverture du fichier de log
+                        // --> 20140414-8060990/1977-CMB6.00.10.05-BDN01
+                        // BEFORE
+                        //LogFile.CREATE('c:\logfile.txt');
+                        //AFTER
+                        LogFile.CREATE(txtLogFilename);
+                        // <-- 20140414-8060990/1977-CMB6.00.10.05-BDN01
+
+                        LogFile.WRITEMODE := TRUE;
+                        LogFile.TEXTMODE := TRUE;
+                      END;
+
+        OnBeforeImportRecord=BEGIN
+                               CLEAR(InputText);
+                               FileLineNo += 1;
+                             END;
+
+        OnAfterImportRecord=VAR
+                              IndiceAnaVal@1000000000 : Integer;
+                            BEGIN
+                              // --> On ne traite pas la premiSre ligne
+                              IF FileLineNo <= HeaderLineToSkip_G THEN
+                                CurrDataport.SKIP;
+
+                              // --> V'rification de l'existence du compte.
+                              CheckAccount(InputText[4],InputText[5]);
+                              IF InputText[14] <> '' THEN
+                                CheckAccount(InputText[13],InputText[14]);
+
+                              // --> V'rification de l'existence de la valeur d'axe.
+                              //-->20190501-ADV-ADVITAM-CDL-003
+                              // BEFORE
+                              {
+                              FOR i := 1 TO 2 DO
+                                IF InputText[i+6] <> '' THEN
+                                  IF NOT DimValue.GET(DimCode[i],InputText[i+6]) THEN
+                                    InsertError(STRSUBSTNO(DimValueNotExistErr,DimCode[i],InputText[i+6],FileLineNo),FALSE);
+                              }
+                              // AFTER
+                              FOR i := 1 TO 3 DO BEGIN
+                                IndiceAnaVal := i+6;
+                                IF i = 3 THEN
+                                  IndiceAnaVal := 26;
+                                IF InputText[IndiceAnaVal] <> '' THEN
+                                  IF NOT DimValue.GET(DimCode[i],InputText[IndiceAnaVal]) THEN
+                                    InsertError(STRSUBSTNO(DimValueNotExistErr,DimCode[i],InputText[IndiceAnaVal],FileLineNo),FALSE);
+                              END;
+                              //--<20190501-ADV-ADVITAM-CDL-003
+
+                              // --> Insertion dans les lignes feuilles compta
+
+                              FormatFieldsMgt.Text2Decimal(TmpDebAmount,InputText[9]);
+                              FormatFieldsMgt.Text2Decimal(TmpCredAmount,InputText[10]);
+
+                              IF (TmpDebAmount - TmpCredAmount) <> 0 THEN BEGIN
+
+                                NextLineNo += 10000;
+
+                                GenJnlLine.INIT;
+                                GenJnlLine."Line No." := NextLineNo;
+                                GenJnlLine."Journal Template Name" := JnlTemplName;
+                                GenJnlLine."Journal Batch Name" := JnlBatchName;
+                                GenJnlLine."Line No." := NextLineNo;
+                                GenJnlLine."Source Code" := GenJnlTemplate."Source Code";
+
+                                GenJnlLine."Document Type" := ConvertDocType(InputText[2]);
+                                // -->20190116-ADV-ADVITAM-CDL-002
+                                // BEFORE
+                                {
+                                GenJnlLine."Document No." := InputText[3];
+                                }
+                                // AFTER
+                                GenJnlLine."Document No." := InputText[18] + '_' + InputText[3];
+                                // --<20190116-ADV-ADVITAM-CDL-002
+                                GenJnlLine."External Document No." := InputText[6];
+                                GenJnlLine.VALIDATE("Account Type",ConvertAccType(InputText[4]));
+                                GenJnlLine.VALIDATE("Account No.",InputText[5]);
+
+                                IF InputText[14] <> '' THEN BEGIN
+                                  // --> 3LI - 20111014-8060990/065-CMB6.00.01-JDL01 avant
+                                  //GenJnlLine.VALIDATE("Account Type" ,ConvertAccType(InputText[13]));
+                                  //GenJnlLine.VALIDATE("Account No.",InputText[14]);
+                                  //apres
+                                  GenJnlLine.VALIDATE("Bal. Account Type" ,ConvertAccType(InputText[13]));
+                                  GenJnlLine.VALIDATE("Bal. Account No.",InputText[14]);
+                                  // <-- 3LI - 20111014-8060990/065-CMB6.00.01-JDL01
+                                END;
+
+                                FormatFieldsMgt.Text2Date(GenJnlLine."Posting Date",InputText[1]);
+                                GenJnlLine.VALIDATE("Posting Date");
+                                FormatFieldsMgt.Text2Date(GenJnlLine."Document Date",InputText[11]);
+                                GenJnlLine.VALIDATE("Document Date");
+                                FormatFieldsMgt.Text2Date(GenJnlLine."Due Date",InputText[17]);
+                                GenJnlLine.VALIDATE("Due Date");
+
+                                GenJnlLine.Description := FormatFieldsMgt.Ansi2Ascii(COPYSTR(InputText[12],1,50));
+
+                                IF InputText[15] <> '' THEN BEGIN
+                                  FormatFieldsMgt.Text2Decimal(TmpCurrencyFactor,InputText[16]);
+                                  GenJnlLine.VALIDATE("Currency Code",InputText[15]);
+                                  GenJnlLine.VALIDATE("Currency Factor",TmpCurrencyFactor);
+                                END;
+
+                                //-->20130201-8060990/065-CMB6.00.10.05-DRN01
+                                GenJnlLine."Source Code" := InputText[18];
+                                GenJnlLine."Reason Code" := InputText[19];
+                                //<--20130201-8060990/065-CMB6.00.10.05-DRN01
+                                //-->20130220-8060990/065-CMB6.00.10.05-VMR01
+                                GenJnlLine."On Hold":= InputText[20];
+                                GenJnlLine."Payment Method Code":= InputText[21];
+                                IF ConvertAccType(InputText[4])=1 THEN BEGIN
+                                  CLEAR(CustomerPostingGroup_G);
+                                  CustomerPostingGroup_G.SETRANGE("Receivables Account", InputText[22]);
+                                  IF CustomerPostingGroup_G.FINDFIRST THEN
+                                    GenJnlLine."Posting Group":= CustomerPostingGroup_G.Code;
+                                 END;
+                                IF ConvertAccType(InputText[4])= 2 THEN BEGIN
+                                  CLEAR(VendorPostingGroup_G);
+                                  VendorPostingGroup_G.SETRANGE("Payables Account", InputText[22]);
+                                  IF VendorPostingGroup_G.FINDFIRST THEN
+                                    GenJnlLine."Posting Group":= VendorPostingGroup_G.Code;
+                                 END;
+                                //<--20130228-8060990/065-CMB6.00.10.05-VMR01
+                                //-->20130318-8060990/065-CMB6.00.10.05-VMR01
+                                GenJnlLine."Intra Group Code":= InputText[23];
+                                //<--20130318-8060990/065-CMB6.00.10.05-VMR01
+                                GenJnlLine.VALIDATE(Amount,TmpDebAmount-TmpCredAmount);
+                                //-->20130530-8060990/065-CMB6.00.10.05-VMR01
+                                GenJnlLine."External ID":=InputText[24];
+                                GenJnlLine."Applies-to ID":= InputText[25];
+                                //<--20130530-8060990/065-CMB6.00.10.05-VMR01
+                                GenJnlLine.INSERT(TRUE);
+
+                                // Insertion de l'analytique.
+                                //-->20190501-ADV-ADVITAM-CDL-003
+                                // BEFORE
+                                {
+                                FOR i := 1 TO 2 DO
+                                  IF InputText[i+6] <> '' THEN
+                                    InsertDim(GenJnlLine,DimCode[i],InputText[i+6]);
+                                }
+                              // AFTER
+                                FOR i := 1 TO 3 DO BEGIN
+                                  IndiceAnaVal := i+6;
+                                  IF i = 3 THEN
+                                    IndiceAnaVal := 26;
+                                  IF InputText[IndiceAnaVal] <> '' THEN
+                                    InsertDim(GenJnlLine,DimCode[i],InputText[IndiceAnaVal]);
+                                END;
+                              //--<20190501-ADV-ADVITAM-CDL-003
+
+                              END;
+                            END;
+
+      }
+      FIELDS
+      {
+        {      ;     ;InputText[1]         }
+        {      ;     ;InputText[2]         }
+        {      ;     ;InputText[3]         }
+        {      ;     ;InputText[4]         }
+        {      ;     ;InputText[5]         }
+        {      ;     ;InputText[6]         }
+        {      ;     ;InputText[7]         }
+        {      ;     ;InputText[8]         }
+        {      ;     ;InputText[9]        ;OnBeforeEvaluateField=BEGIN
+                                                                   IF Text = '' THEN
+                                                                     Text := '0';
+                                                                 END;
+                                                                  }
+        {      ;     ;InputText[10]       ;OnBeforeEvaluateField=BEGIN
+                                                                   IF Text = '' THEN
+                                                                     Text := '0';
+                                                                 END;
+                                                                  }
+        {      ;     ;InputText[11]        }
+        {      ;     ;InputText[12]        }
+        {      ;     ;InputText[13]        }
+        {      ;     ;InputText[14]        }
+        {      ;     ;InputText[15]        }
+        {      ;     ;InputText[16]        }
+        {      ;     ;InputText[17]        }
+        {      ;     ;InputText[18]        }
+        {      ;     ;InputText[19]        }
+        {      ;     ;InputText[20]        }
+        {      ;     ;InputText[21]        }
+        {      ;     ;InputText[22]        }
+        {      ;     ;InputText[23]        }
+        {      ;     ;InputText[24]        }
+        {      ;     ;InputText[25]        }
+        {      ;     ;InputText[26]        }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=16060;
+      Height=17270;
+      SaveControlInfo=Oui;
+      SaveValues=Oui;
+      OnOpenForm=BEGIN
+                   HeaderLineToSkip_G := 0;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1   ;TextBox      ;3850 ;2530 ;5610 ;440  ;InPage=-1;
+                                                   AssistEdit=Oui;
+                                                   CaptionML=[ENU=File name;
+                                                              FRA=Nom du fichier];
+                                                   SourceExpr=txtFilename }
+      { 60001;Label       ;110  ;2530 ;3630 ;440  ;ParentControl=1;
+                                                   InPage=-1 }
+      { 60000;TextBox     ;3850 ;110  ;2750 ;440  ;InPage=-1;
+                                                   CaptionML=[DEU=Fibu Buch.-Blatt Vorlage;
+                                                              ENU=Gen. Journal Template;
+                                                              FRA=ModSle feuille comptabilit'];
+                                                   SourceExpr=JnlTemplName;
+                                                   TableRelation="Gen. Journal Template";
+                                                   OnValidate=BEGIN
+                                                                JnlBatchName := '';
+                                                              END;
+                                                               }
+      { 60002;TextBox     ;3850 ;660  ;2750 ;440  ;InPage=-1;
+                                                   Lookup=Oui;
+                                                   CaptionML=[DEU=Fibu Buch.-Blatt Name;
+                                                              ENU=Gen. Journal Batch;
+                                                              FRA=Nom feuille comptabilit'];
+                                                   SourceExpr=JnlBatchName;
+                                                   OnValidate=BEGIN
+                                                                IF JnlBatchName <> '' THEN
+                                                                  GenJnlBatch.GET(JnlTemplName,JnlBatchName);
+                                                              END;
+
+                                                   OnLookup=BEGIN
+                                                              IF JnlTemplName <> '' THEN BEGIN
+                                                                GenJnlTemplate.GET(JnlTemplName);
+                                                                GenJnlBatch.SETRANGE("Journal Template Name",JnlTemplName);
+                                                                IF FORM.RUNMODAL(0,GenJnlBatch) = ACTION::LookupOK THEN
+                                                                  JnlBatchName := GenJnlBatch.Name;
+                                                              END;
+                                                            END;
+                                                             }
+      { 60003;Label       ;110  ;110  ;3630 ;440  ;ParentControl=60000;
+                                                   InPage=-1 }
+      { 60004;Label       ;110  ;660  ;3630 ;440  ;ParentControl=60002;
+                                                   InPage=-1 }
+      { 60007;TextBox     ;3850 ;1320 ;2750 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Dimension Code 1;
+                                                              FRA=Axe analytique 1];
+                                                   SourceExpr=DimCode[1];
+                                                   TableRelation=Dimension }
+      { 60008;TextBox     ;3850 ;1870 ;2750 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Dimension Code 2;
+                                                              FRA=Axe analytique 2];
+                                                   SourceExpr=DimCode[2];
+                                                   TableRelation=Dimension }
+      { 60009;Label       ;110  ;1320 ;3630 ;440  ;ParentControl=60007;
+                                                   InPage=-1 }
+      { 60010;Label       ;110  ;1870 ;3630 ;440  ;ParentControl=60008;
+                                                   InPage=-1 }
+      { 1180250002;Label  ;110  ;4400 ;6050 ;440  ;InPage=-1;
+                                                   LeaderDots=Non;
+                                                   CaptionML=[FRA="Type de fichier : CSV s'parateur "";"""] }
+      { 1180250004;Label  ;110  ;4950 ;6050 ;440  ;FontUnderline=Oui;
+                                                   LeaderDots=Non;
+                                                   CaptionML=FRA=Structure des colonnes : }
+      { 1180250005;Label  ;330  ;5610 ;8250 ;440  ;InPage=-1;
+                                                   LeaderDots=Non;
+                                                   CaptionML=FRA=1 - Date comptabilisation (JJ/MM/AA) }
+      { 1180250006;Label  ;330  ;6050 ;13750;440  ;MultiLine=Oui;
+                                                   LeaderDots=Non;
+                                                   CaptionML=FRA=2 - Type document. Valeurs possibles :'',Paiement, Facture, Avoir, Int'r^ts, Relance, Remboursement }
+      { 1180250007;Label  ;330  ;6490 ;8250 ;440  ;InPage=-1;
+                                                   LeaderDots=Non;
+                                                   CaptionML=FRA=3 - N› document }
+      { 1180250008;Label  ;330  ;6930 ;13750;440  ;MultiLine=Oui;
+                                                   LeaderDots=Non;
+                                                   CaptionML=FRA=4 - Type de compte. Valeurs possibles : G'n'ral,Client, Fournisseur, Banque, Immobilisation, Partenaire IC }
+      { 1180250009;Label  ;330  ;7370 ;8250 ;440  ;InPage=-1;
+                                                   LeaderDots=Non;
+                                                   CaptionML=FRA=5 - N› du compte }
+      { 1180250010;Label  ;330  ;7810 ;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=6 - N› doc externe }
+      { 1180250011;Label  ;330  ;8250 ;8250 ;440  ;InPage=-1;
+                                                   LeaderDots=Non;
+                                                   CaptionML=FRA=7 - Valeur axe analytique 1 }
+      { 1180250013;Label  ;330  ;9130 ;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=9 - Montant d'bit }
+      { 1180250014;Label  ;330  ;9570 ;8250 ;440  ;InPage=-1;
+                                                   LeaderDots=Non;
+                                                   CaptionML=FRA=10 - Montant cr'dit }
+      { 1180250015;Label  ;330  ;10010;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=11 - Date document (JJ/MM/AA) }
+      { 1180250016;Label  ;330  ;10450;8250 ;440  ;InPage=-1;
+                                                   LeaderDots=Non;
+                                                   CaptionML=FRA=12 - D'signation }
+      { 1180250017;Label  ;330  ;11770;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=15 - Code devise }
+      { 1180250018;Label  ;330  ;12210;8250 ;440  ;InPage=-1;
+                                                   LeaderDots=Non;
+                                                   CaptionML=FRA=16 - Facteur devise }
+      { 1180250019;Label  ;330  ;8690 ;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=8 - Valeur axe analytique 2 }
+      { 1180250020;Label  ;330  ;10890;15510;440  ;InPage=-1;
+                                                   MultiLine=Oui;
+                                                   LeaderDots=Non;
+                                                   CaptionML=FRA=13 - Type de compte contrepartie. Valeurs possibles : G'n'ral,Client, Fournisseur, Banque, Immobilisation, Partenaire IC }
+      { 1180250021;Label  ;330  ;11330;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=14 - N› du compte contrepartie }
+      { 1180250022;Label  ;330  ;12650;8250 ;440  ;InPage=-1;
+                                                   LeaderDots=Non;
+                                                   CaptionML=FRA=17 - Date 'ch'ance (JJ/MM/AA) }
+      { 1180250003;TextBox;3850 ;3740 ;2750 ;440  ;CaptionML=[ENU=Header Line to Skip;
+                                                              FRA=Nb. lignes en-t^te . ignorer];
+                                                   SourceExpr=HeaderLineToSkip_G }
+      { 1180250012;Label  ;110  ;3740 ;3630 ;440  ;ParentControl=1180250003;
+                                                   InPage=-1 }
+      { 1180250023;Label  ;330  ;13090;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=18 - Code journal }
+      { 1180250024;Label  ;330  ;13530;8250 ;440  ;InPage=-1;
+                                                   LeaderDots=Non;
+                                                   CaptionML=FRA=19 - Code motif }
+      { 1000000000;Label  ;330  ;13970;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=20 - En attente }
+      { 1000000001;Label  ;330  ;14410;8250 ;440  ;InPage=-1;
+                                                   LeaderDots=Non;
+                                                   CaptionML=FRA=21 - Code mode de rSglement }
+      { 1000000002;Label  ;330  ;14850;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=22 - Groupe comptabilisation }
+      { 1000000003;Label  ;330  ;15290;8250 ;440  ;InPage=-1;
+                                                   LeaderDots=Non;
+                                                   CaptionML=FRA=23 - Code intra groupe }
+      { 1000000004;Label  ;330  ;15730;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=24 - ID Externe }
+      { 1000000005;Label  ;330  ;16170;8250 ;440  ;InPage=-1;
+                                                   LeaderDots=Non;
+                                                   CaptionML=FRA=25 - ID Lettrage }
+      { 1000000006;TextBox;3850 ;3080 ;5610 ;440  ;CaptionML=[ENU=Log File name;
+                                                              FRA=Nom du fichier log];
+                                                   SourceExpr=txtLogFilename }
+      { 1000000007;Label  ;110  ;3080 ;3630 ;440  ;ParentControl=1000000006;
+                                                   InPage=-1 }
+      { 1000000008;TextBox;10560;1870 ;2750 ;440  ;CaptionML=[ENU=Dimension Code 3;
+                                                              FRA=Axe analytique 3];
+                                                   SourceExpr=DimCode[3];
+                                                   TableRelation=Dimension }
+      { 1000000009;Label  ;6820 ;1870 ;3630 ;440  ;ParentControl=1000000008 }
+      { 1000000010;Label  ;330  ;16610;8250 ;440  ;LeaderDots=Non;
+                                                   CaptionML=FRA=26 - Valeur axe analytique 3 }
+    }
+  }
+  CODE
+  {
+    VAR
+      BaseDatasOKErr@60031 : TextConst 'FRA=Les donn'es de base doivent ^tre renseign'es.';
+      GenJnlLineExistErr@60018 : TextConst 'FRA=Des lignes existent pour le modSle %1 feuille %2, vous devez les supprimer pour continuer l''import.';
+      FormatFieldsMgt@60019 : Codeunit 8060985;
+      GLAccountNotExistErr@60021 : TextConst 'FRA=Le compte g'n'ral %1 n''existe pas, erreur ligne %2';
+      NextLineNo@60012 : Integer;
+      GenJnlLine@60025 : Record 81;
+      FileLineNo@60034 : Integer;
+      InputText@60000 : ARRAY [100] OF Text[250];
+      txtFilename@60001 : Text[250];
+      txtLogFilename@60027 : Text[250];
+      GenJnlTemplate@60004 : Record 80;
+      GenJnlBatch@60003 : Record 232;
+      JnlTemplName@60002 : Code[20];
+      JnlBatchName@60005 : Code[20];
+      GLAccount@60007 : Record 15;
+      CustNotExistErr@1000000002 : TextConst 'FRA=Le client %1 n''existe pas, erreur ligne %2';
+      VendNotExistErr@1000000003 : TextConst 'FRA=Le fournisseur %1 n''existe pas, erreur ligne %2';
+      BankAccNotExistErr@1000000005 : TextConst 'FRA=Le compte bancaire %1 n''existe pas, erreur ligne %2';
+      FANotExistErr@1000000006 : TextConst 'FRA=L''immobilisation %1 n''existe pas, erreur ligne %2';
+      ICPartNotExistErr@1000000007 : TextConst 'FRA=L''immobilisation %1 n''existe pas, erreur ligne %2';
+      SourceCodeNotOKErr@60008 : TextConst 'FRA=La code journal de la feuille %1 diffSre de celui du fichier %2, erreur ligne %3.';
+      Cust@1000000000 : Record 18;
+      Vendor@1000000001 : Record 23;
+      BankAcc@1000000004 : Record 270;
+      FA@1000000008 : Record 5600;
+      ICPartner@1000000009 : Record 413;
+      TmpCredAmount@60009 : Decimal;
+      TmpDebAmount@60010 : Decimal;
+      ProcessEndingOK@60011 : TextConst 'FRA=Le traitement s''est d'roul' avec succSs.';
+      ProcessEndingNotOK@60023 : TextConst 'FRA=Le traitement a rencontr' des erreurs. \Un fichier log a 't' g'n'r' . cet emplacement : \%1\Voulez-vous le consulter ?';
+      DimValueNotExistErr@60014 : TextConst 'FRA=L''axe analytique %1 %2 n''existe pas, erreur ligne %3.';
+      TmpCurrencyFactor@1000000010 : Decimal;
+      DimCode@60016 : ARRAY [10] OF Code[20];
+      LogFile@60013 : File;
+      IsError@60020 : Boolean;
+      DimValue@60024 : Record 349;
+      i@60017 : Integer;
+      HeaderLineToSkip_G@1180250002 : Integer;
+      CustomerPostingGroup_G@1000000011 : Record 92;
+      VendorPostingGroup_G@1000000012 : Record 93;
+
+    PROCEDURE InsertDim@60000(GenJnlLine2@60003 : Record 81;DimCode@60001 : Code[20];DimValueCode@60002 : Code[20]);
+    VAR
+      JnlLineDim@60000 : Record 356;
+    BEGIN
+      // --> 3LI-20120403-8060990/065-CMB6.00.10.05-JDL01
+      JnlLineDim.RESET;
+      JnlLineDim.SETFILTER("Table ID",'=%1',DATABASE::"Gen. Journal Line");
+      JnlLineDim.SETFILTER("Journal Template Name",'=%1',GenJnlLine2."Journal Template Name");
+      JnlLineDim.SETFILTER("Journal Batch Name",'=%1',GenJnlLine2."Journal Batch Name");
+      JnlLineDim.SETFILTER("Journal Line No.",'=%1',GenJnlLine2."Line No.");
+      JnlLineDim.SETFILTER("Allocation Line No.",'=%1',0);
+      JnlLineDim.SETFILTER("Dimension Code",'=%1',DimCode);
+      IF JnlLineDim.ISEMPTY THEN BEGIN
+        JnlLineDim.RESET;
+      // <-- 3LI-20120403-8060990/065-CMB6.00.10.05-JDL01
+      JnlLineDim.INIT;
+      JnlLineDim."Table ID" := DATABASE::"Gen. Journal Line";
+      JnlLineDim."Journal Template Name" := GenJnlLine2."Journal Template Name";
+      JnlLineDim."Journal Batch Name" := GenJnlLine2."Journal Batch Name";
+      JnlLineDim."Journal Line No." := GenJnlLine2."Line No.";
+      JnlLineDim."Allocation Line No." := 0;
+      JnlLineDim."Dimension Code" := DimCode;
+      JnlLineDim."Dimension Value Code" := DimValueCode;
+      JnlLineDim.INSERT(TRUE);
+      // --> 3LI-20120403-8060990/065-CMB6.00.10.05-JDL01
+      END ELSE BEGIN
+        JnlLineDim.FIND('-');
+        JnlLineDim."Dimension Value Code" := DimValueCode;
+        JnlLineDim.MODIFY(TRUE);
+      END;
+      // <-- 3LI-20120403-8060990/065-CMB6.00.10.05-JDL01
+    END;
+
+    PROCEDURE InsertError@60001(ErrorText@60000 : Text[250];StopProcess@60001 : Boolean);
+    BEGIN
+      IF StopProcess THEN
+        ERROR(ErrorText)
+      ELSE BEGIN
+        IsError := TRUE;
+        LogFile.WRITE(ErrorText);
+        CurrDataport.SKIP;
+      END;
+    END;
+
+    PROCEDURE ConvertAccType@1000000004(Input@1000000000 : Text[30]) : Integer;
+    BEGIN
+      CASE Input OF
+        'G'n'ral' : EXIT(0);
+        'Client' : EXIT(1);
+        'Fournisseur' : EXIT(2);
+        'Banque' : EXIT(3);
+        'Immobilisation' : EXIT(4);
+        'Partenaire IC' : EXIT(5);
+      END;
+    END;
+
+    PROCEDURE CheckAccount@1000000006(AccountTypeText@1000000000 : Text[30];AccountNoText@1000000001 : Text[30]);
+    BEGIN
+      CASE ConvertAccType(AccountTypeText) OF
+        0 : IF NOT GLAccount.GET(AccountNoText) THEN
+              InsertError(STRSUBSTNO(GLAccountNotExistErr,AccountNoText,FileLineNo),FALSE);
+        1 : IF NOT Cust.GET(AccountNoText) THEN
+              InsertError(STRSUBSTNO(CustNotExistErr,AccountNoText,FileLineNo),FALSE);
+        2 : IF NOT Vendor.GET(AccountNoText) THEN
+              InsertError(STRSUBSTNO(VendNotExistErr,AccountNoText,FileLineNo),FALSE);
+        3 : IF NOT BankAcc.GET(AccountNoText) THEN
+              InsertError(STRSUBSTNO(BankAccNotExistErr,AccountNoText,FileLineNo),FALSE);
+        4 : IF NOT FA.GET(AccountNoText) THEN
+              InsertError(STRSUBSTNO(FANotExistErr,AccountNoText,FileLineNo),FALSE);
+        5 : IF NOT ICPartner.GET(AccountNoText) THEN
+              InsertError(STRSUBSTNO(ICPartNotExistErr,AccountNoText,FileLineNo),FALSE);
+      END;
+    END;
+
+    PROCEDURE ConvertDocType@1000000001(Input@1000000000 : Text[30]) : Integer;
+    BEGIN
+      CASE Input OF
+        '' : EXIT(0);
+        'Paiement' : EXIT(1);
+        'Facture' : EXIT(2);
+        'Avoir' : EXIT(3);
+        'Int'r^ts' : EXIT(4);
+        'Relance' : EXIT(5);
+        'Remboursement' : EXIT(6);
+      END;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20101213-8060990/065-CMB6.00.01-FEC01 : ADDOBJ (Nouvel objet).
+      20111017-8060990/065-CMB6.00.10.04-JDL01 : MODOBJ (Modification complSte du C/AL Code (position des champs, request form ...)).
+      20120403-8060990/065-CMB6.00.10.05-JDL01 : ADDCODE (pour corriger PB sur analytique si existant dans la feuille)
+      20130201-8060990/065-CMB6.00.10.05-DRN01 : ADDCODE (Import Code journal et code motif)
+      20130220-8060990/065-CMB6.00.10.05-VMR01 : ADDCODE (En attente, Code mode r'glement et Groupe Compta)
+      20130228-8060990/065-CMB6.00.10.05-VMR01 : ADDCODE (Recuperation du code groupe compta . partir du num de cpte
+      20130318-8060990/065-CMB6.00.10.05-VMR01 : ADDCODE (Import Intra Group Code)
+      20130530-8060990/065-CMB6.00.10.05-VMR01 : ADDCODE (Import External ID,
+      20130530-8060990/065-CMB6.00.10.05-VMR01 : ADDCODE (External ID,Applies-to ID)
+      20140414-8060990/1977-CMB6.00.10.05-BDN01 : MODCODE (Fichier log en option)
+      20190116-ADV-ADVITAM-CDL-001 : - Tiers limit' . 9 caractSres : ProblSme certain sur 10 ==> Passer sur la taille maxi 20.
+                                       + Zone InputText[5] : Taille non limit' donc pas de modification n'cessaire : Uniquement AS400.
+      20190116-ADV-ADVITAM-CDL-002 : - Pb N› Document identique pour m^me piSce provenant de journaut diff'rent : Concat'nation du
+        journal pour rendre le N› de document unique par piSce.
+      20190501-ADV-ADVITAM-CDL-003 : - Besoin d'un Analytique 3
+                                       + Ajout saisie dans la RequestForm
+                                       + Ajout DataFields InputText[26]
+                                       + Fonction "OnBeforeImportRecord" ajout variable locale "IndiceAnaVal".
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,679 @@
+OBJECT Codeunit 50004 Extranet Export Delta
+{
+  OBJECT-PROPERTIES
+  {
+    Date=29/05/24;
+    Heure=15:02:33;
+    Modifi'=Oui;
+    Liste versions=ADV09.07.01;
+  }
+  PROPERTIES
+  {
+    TableNo=8061230;
+    OnRun=BEGIN
+            IF (Initialize(Rec)) THEN BEGIN
+              ExportApportBon();
+              ExportApportAnalysis();
+              ExportApportTracking();
+              IF (CreateZipFile()) THEN BEGIN
+                SendZipFile();
+                LaunchProcess();
+              END;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      TableParam_G@1000000020 : Record 8053452;
+      TableCompany_G@1000000010 : Record 79;
+      TableAdvitam_G@1000000009 : Record 8053450;
+      MoteurInterface_G@1000000008 : Codeunit 8061230;
+      ToolsFile_G@1000000007 : Codeunit 8053405;
+      CodeUnit_G@1000000006 : Integer;
+      ConnectorName_G@1000000005 : Code[20];
+      ImpExpFolder_G@1000000004 : Text[250];
+      LogFolder_G@1000000003 : Text[250];
+      FileLogName_G@1000000002 : Text[250];
+      ExtensionFile_G@1000000001 : Text[10];
+      PrefixFile_G@1000000000 : Text[10];
+      TextLog@1000000011 : TextConst 'ENU=EXTRADELTA;FRA=EXTRADELTA';
+      Text0001@1000000012 : TextConst 'ENU=Error Table "%1" doesn''t exist \Company : %2;FRA=Erreur Table "%1" inexistante \Societe : %2';
+      TInitialization@1000000013 : TextConst 'ENU=Data Initialization;FRA=Inititialisation des donn'es';
+      ErrType@1000000014 : 'Info,Error';
+      TExportData@1000000015 : TextConst 'ENU=Export Data : %1;FRA=Exportation des donn'es : %1';
+      TNoData@1000000016 : TextConst 'ENU=No data found;FRA=Aucune donn'es trouv'es';
+      FileExport@1000000017 : File;
+      FileExportStream@1000000018 : OutStream;
+      TErrFile@1000000019 : TextConst 'ENU=Error Creating File %1 \%2.;FRA=Erreur cr'ation fichier %1 \%2.';
+      FileOpen@1000000021 : Boolean;
+      HeaderInserted@1000000022 : Boolean;
+      TGenerateZip@1000000023 : TextConst 'ENU=Generate Zip File;FRA=G'n'ration du fichier zip';
+      ZipFileName@1000000024 : Text[1024];
+      FTPAddress@1000000025 : Text[256];
+      FTPUser@1000000026 : Text[256];
+      FTPPwd@1000000027 : Text[256];
+      FTPFolder@1000000028 : Text[256];
+      ZipNameFile@1000000029 : Text[256];
+      UseReplicaDatabase@1000000030 : Boolean;
+
+    PROCEDURE Initialize@1000000001(InterfaceSetup@1000000001 : Record 8061230) ReturnValue : Boolean;
+    VAR
+      Result_L@1000000000 : Text[256];
+    BEGIN
+      ReturnValue := TRUE;
+      FileOpen := FALSE;
+      HeaderInserted := FALSE;
+      CodeUnit_G := InterfaceSetup.Processing;
+
+      UseReplicaDatabase := InterfaceSetup."Use Replica Database";
+
+      MoteurInterface_G.GetParameter(CodeUnit_G, ConnectorName_G, ImpExpFolder_G, LogFolder_G, ExtensionFile_G, PrefixFile_G);
+
+      FTPAddress := InterfaceSetup."URL FTP";
+      FTPUser := InterfaceSetup."User FTP";
+      FTPPwd := InterfaceSetup."Password FTP";
+      FTPFolder := InterfaceSetup."Folder FTP";
+
+      ToolsFile_G.LogInit(LogFolder_G, TextLog);
+      //-->20131112-Int17-CMC02.02.00-ADVITAM-CDL
+      ToolsFile_G.LogInitCodeUnit(CodeUnit_G);
+      //<--20131112-Int17-CMC02.02.00-ADVITAM-CDL
+
+      IF NOT TableAdvitam_G.FINDFIRST THEN BEGIN
+        WriteLog(ErrType::Error, STRSUBSTNO(Text0001, TableAdvitam_G.TABLECAPTION , COMPANYNAME));
+        ReturnValue := FALSE;
+      END ELSE BEGIN
+        IF (NOT TableParam_G.FINDFIRST()) THEN BEGIN
+          WriteLog(ErrType::Error, STRSUBSTNO(Text0001, TableParam_G.TABLECAPTION , COMPANYNAME));
+          ReturnValue := FALSE;
+        END ELSE BEGIN
+          WriteLog(ErrType::Info, TInitialization);
+        END;
+      END;
+    END;
+
+    PROCEDURE ExportApportBon@1000000002();
+    VAR
+      SQLConnection_L@1000000013 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      SQLCommand_L@1000000012 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlCommand";
+      CmdType_L@1000000011 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.CommandType";
+      SqlDbType_L@1000000010 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlDbType";
+      Direction_L@1000000009 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.ParameterDirection";
+      Session_L@1000000004 : Record 2000000009;
+      SQLDbReader_L@1000000000 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader";
+    BEGIN
+      // Generate new Apport_Bon
+      WriteLog(ErrType::Info, STRSUBSTNO(TExportData, 'Bon d''apport'));
+      Session_L.SETRANGE("Ma session",TRUE);
+      IF Session_L.FINDFIRST THEN;
+
+      SQLConnection_L := SQLConnection_L.SqlConnection(
+                                                        ToolsFile_G.GetSQLConnectionString(
+                                                          TableParam_G.BddExtranet,
+                                                          '',
+                                                          '',
+                                                          TableAdvitam_G."Replica Database",
+                                                          UseReplicaDatabase)
+                                                      );
+      //ToolsFile_G.GetConnectionString2(TableAdvitam_G.BddNavision,
+      //  TableParam_G.BddExtranet, '','', TableAdvitam_G."Replica Database"));
+      SQLConnection_L.Open;
+
+      WriteLog(ErrType::Info, TableParam_G.BddExtranet + '.dbo.Genere_apport_bon_delta');
+      SQLCommand_L := SQLCommand_L.SqlCommand(); //Constructor
+      SQLCommand_L.Connection := SQLConnection_L;
+      CmdType_L := SQLCommand_L.CommandType;
+      SQLCommand_L.CommandText := TableParam_G.BddExtranet + '.dbo.Genere_apport_bon_delta';
+      SQLCommand_L.Connection := SQLConnection_L;
+      SQLCommand_L.CommandType := CmdType_L.Parse(CmdType_L.GetType(),'StoredProcedure');
+      SQLCommand_L.CommandTimeout := 0;
+      SQLCommand_L.ExecuteNonQuery;
+      SQLCommand_L.Dispose;
+      SQLConnection_L.Close;
+      SQLConnection_L.Dispose;
+
+      SQLConnection_L := SQLConnection_L.SqlConnection(ToolsFile_G.GetSQLConnectionString(
+                                                          TableParam_G.BddExtranet,
+                                                          '',
+                                                          '',
+                                                          TableAdvitam_G."Replica Database",
+                                                          UseReplicaDatabase)
+                                                       );
+      //ToolsFile_G.GetConnectionString2(TableAdvitam_G.BddNavision,
+      //  TableParam_G.BddExtranet , '','', TableAdvitam_G."Replica Database"));
+      SQLConnection_L.Open;
+
+      WriteLog(ErrType::Info, TableParam_G.BddExtranet + '.dbo.Export_apport_bon_delta');
+      SQLCommand_L := SQLCommand_L.SqlCommand(); //Constructor
+       SQLCommand_L.Connection := SQLConnection_L;
+      CmdType_L := SQLCommand_L.CommandType;
+      SQLCommand_L.CommandText := TableParam_G.BddExtranet + '.dbo.Export_Apport_Bon_Delta';
+      SQLCommand_L.Connection := SQLConnection_L;
+      SQLCommand_L.CommandType := CmdType_L.Parse(CmdType_L.GetType(),'StoredProcedure');
+      SQLCommand_L.CommandTimeout := 0;
+      SQLDbReader_L := SQLCommand_L.ExecuteReader();
+      CheckTargetFile('fic_apport_bon');
+      WHILE SQLDbReader_L.Read() DO BEGIN
+        IF (NOT FileOpen) THEN BEGIN
+          IF (CreateFile('fic_apport_bon')) THEN BEGIN
+            AddHeaderApport(SQLDbReader_L);
+          END;
+        END;
+        AddLineApport(SQLDbReader_L);
+      END;
+      CloseFile();
+      SQLDbReader_L.Close();
+    END;
+
+    PROCEDURE ExportApportAnalysis@1000000003();
+    VAR
+      SQLConnection_L@1000000006 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      SQLCommand_L@1000000005 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlCommand";
+      CmdType_L@1000000004 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.CommandType";
+      SqlDbType_L@1000000003 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlDbType";
+      Direction_L@1000000002 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.ParameterDirection";
+      Session_L@1000000001 : Record 2000000009;
+      SQLDbReader_L@1000000000 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader";
+    BEGIN
+      // Generate new Apport_Bon
+      WriteLog(ErrType::Info, STRSUBSTNO(TExportData, 'Bon d''analyse'));
+      Session_L.SETRANGE("Ma session",TRUE);
+      IF Session_L.FINDFIRST THEN;
+
+      SQLConnection_L := SQLConnection_L.SqlConnection(
+                                                        ToolsFile_G.GetSQLConnectionString(
+                                                          TableParam_G.BddExtranet,
+                                                          '',
+                                                          '',
+                                                          TableAdvitam_G."Replica Database",
+                                                          UseReplicaDatabase)
+                                                       );
+      //ToolsFile_G.GetConnectionString2(TableAdvitam_G.BddNavision,
+      //  TableParam_G.BddExtranet, '','', TableAdvitam_G."Replica Database"));
+      SQLConnection_L.Open;
+
+      WriteLog(ErrType::Info, TableParam_G.BddExtranet + '.dbo.Genere_apport_analyse_delta');
+      SQLCommand_L := SQLCommand_L.SqlCommand(); //Constructor
+      SQLCommand_L.Connection := SQLConnection_L;
+      CmdType_L := SQLCommand_L.CommandType;
+      SQLCommand_L.CommandText := TableParam_G.BddExtranet + '.dbo.Genere_apport_analyse_delta';
+      SQLCommand_L.Connection := SQLConnection_L;
+      SQLCommand_L.CommandType := CmdType_L.Parse(CmdType_L.GetType(),'StoredProcedure');
+      SQLCommand_L.CommandTimeout := 0;
+      SQLCommand_L.ExecuteNonQuery;
+      SQLCommand_L.Dispose;
+      SQLConnection_L.Close;
+      SQLConnection_L.Dispose;
+
+      SQLConnection_L := SQLConnection_L.SqlConnection(
+                                                        ToolsFile_G.GetSQLConnectionString(
+                                                          TableParam_G.BddExtranet,
+                                                          '',
+                                                          '',
+                                                          TableAdvitam_G."Replica Database",
+                                                          UseReplicaDatabase)
+                                                       );
+
+      //ToolsFile_G.GetConnectionString2(TableAdvitam_G.BddNavision,
+      //  TableParam_G.BddExtranet, '','', TableAdvitam_G."Replica Database"));
+      SQLConnection_L.Open;
+
+      WriteLog(ErrType::Info, TableParam_G.BddExtranet + '.dbo.Export_Apport_Analyse_Delta');
+      SQLCommand_L := SQLCommand_L.SqlCommand(); //Constructor
+       SQLCommand_L.Connection := SQLConnection_L;
+      CmdType_L := SQLCommand_L.CommandType;
+      SQLCommand_L.CommandText := TableParam_G.BddExtranet + '.dbo.Export_Apport_Analyse_Delta';
+      SQLCommand_L.Connection := SQLConnection_L;
+      SQLCommand_L.CommandType := CmdType_L.Parse(CmdType_L.GetType(),'StoredProcedure');
+      SQLCommand_L.CommandTimeout := 0;
+      SQLDbReader_L := SQLCommand_L.ExecuteReader();
+      CheckTargetFile('fic_apport_analyse');
+      WHILE SQLDbReader_L.Read() DO BEGIN
+        IF (NOT FileOpen) THEN BEGIN
+          IF (CreateFile('fic_apport_analyse')) THEN BEGIN
+            AddHeaderAnalyse(SQLDbReader_L);
+          END;
+        END;
+        AddLineAnalyse(SQLDbReader_L);
+      END;
+      CloseFile();
+      SQLDbReader_L.Close();
+    END;
+
+    PROCEDURE ExportApportTracking@1000000004();
+    VAR
+      SQLConnection_L@1000000006 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      SQLCommand_L@1000000005 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlCommand";
+      CmdType_L@1000000004 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.CommandType";
+      SqlDbType_L@1000000003 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlDbType";
+      Direction_L@1000000002 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.ParameterDirection";
+      Session_L@1000000001 : Record 2000000009;
+      SQLDbReader_L@1000000000 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader";
+    BEGIN
+      // Generate new Apport_Bon
+      WriteLog(ErrType::Info, STRSUBSTNO(TExportData, 'Bon tracabilite'));
+      Session_L.SETRANGE("Ma session",TRUE);
+      IF Session_L.FINDFIRST THEN;
+
+      SQLConnection_L := SQLConnection_L.SqlConnection(
+                                                        ToolsFile_G.GetSQLConnectionString(
+                                                          TableParam_G.BddExtranet,
+                                                          '',
+                                                          '',
+                                                          TableAdvitam_G."Replica Database",
+                                                          UseReplicaDatabase)
+                                                       );
+
+      //ToolsFile_G.GetConnectionString2(TableAdvitam_G.BddNavision,
+      //  TableParam_G.BddExtranet, '','', TableAdvitam_G."Replica Database"));
+      SQLConnection_L.Open;
+
+      WriteLog(ErrType::Info, TableParam_G.BddExtranet + '.dbo.Genere_apport_tracabilite_delta');
+      SQLCommand_L := SQLCommand_L.SqlCommand(); //Constructor
+      SQLCommand_L.Connection := SQLConnection_L;
+      CmdType_L := SQLCommand_L.CommandType;
+      SQLCommand_L.CommandText := TableParam_G.BddExtranet + '.dbo.Genere_apport_tracabilite_delta';
+      SQLCommand_L.Connection := SQLConnection_L;
+      SQLCommand_L.CommandType := CmdType_L.Parse(CmdType_L.GetType(),'StoredProcedure');
+      SQLCommand_L.CommandTimeout := 0;
+      SQLCommand_L.ExecuteNonQuery;
+      SQLCommand_L.Dispose;
+      SQLConnection_L.Close;
+      SQLConnection_L.Dispose;
+
+      SQLConnection_L := SQLConnection_L.SqlConnection(
+                                                        ToolsFile_G.GetSQLConnectionString(
+                                                          TableParam_G.BddExtranet,
+                                                          '',
+                                                          '',
+                                                          TableAdvitam_G."Replica Database",
+                                                          UseReplicaDatabase)
+                                                       );
+
+      //ToolsFile_G.GetConnectionString2(TableAdvitam_G.BddNavision,
+      //  TableParam_G.BddExtranet, '','', TableAdvitam_G."Replica Database"));
+      SQLConnection_L.Open;
+
+      WriteLog(ErrType::Info, TableParam_G.BddExtranet + '.dbo.Export_Apport_Tracabilite_Delta');
+      SQLCommand_L := SQLCommand_L.SqlCommand(); //Constructor
+       SQLCommand_L.Connection := SQLConnection_L;
+      CmdType_L := SQLCommand_L.CommandType;
+      SQLCommand_L.CommandText := TableParam_G.BddExtranet + '.dbo.Export_Apport_Tracabilite_Delta';
+      SQLCommand_L.Connection := SQLConnection_L;
+      SQLCommand_L.CommandType := CmdType_L.Parse(CmdType_L.GetType(),'StoredProcedure');
+      SQLCommand_L.CommandTimeout := 0;
+      SQLDbReader_L := SQLCommand_L.ExecuteReader();
+      CheckTargetFile('fic_apport_tracabilite');
+      WHILE SQLDbReader_L.Read() DO BEGIN
+        IF (NOT FileOpen) THEN BEGIN
+          IF (CreateFile('fic_apport_tracabilite')) THEN BEGIN
+            AddHeaderTracking(SQLDbReader_L);
+          END;
+        END;
+        AddLineTracking(SQLDbReader_L);
+      END;
+      CloseFile();
+      SQLDbReader_L.Close();
+    END;
+
+    PROCEDURE WriteLog@1000000007(Type@1000000000 : 'Info,Error';ErrMsg@1000000001 : Text[1024]);
+    VAR
+      Result_L@1000000002 : Text[256];
+    BEGIN
+      CASE (Type) OF
+        Type::Info : BEGIN
+          ToolsFile_G.LogWriteInfo(COPYSTR(ErrMsg, 1, MAXSTRLEN(Result_L)));
+        END;
+        Type::Error : BEGIN
+          ToolsFile_G.LogWriteErreur(COPYSTR(ErrMsg, 1, MAXSTRLEN(Result_L)));
+        END;
+      END;
+    END;
+
+    PROCEDURE CreateFile@1000000009(FileName@1000000000 : Text[256]) ReturnValue : Boolean;
+    VAR
+      FullFileName@1000000001 : Text[1024];
+    BEGIN
+      ReturnValue := TRUE;
+      FileOpen := FALSE;
+      HeaderInserted := FALSE;
+      FullFileName := ImpExpFolder_G + '\' + DELCHR(PrefixFile_G, '<>', ' ') + FileName + '.' + ExtensionFile_G;
+      IF NOT FileExport.CREATE(FullFileName) THEN BEGIN
+        WriteLog(ErrType::Error, STRSUBSTNO(TErrFile, FullFileName, GETLASTERRORTEXT));
+        CLEARLASTERROR;
+        ReturnValue := FALSE;
+      END ELSE BEGIN
+        FileExport.CREATEOUTSTREAM(FileExportStream);
+        FileOpen := TRUE;
+      END;
+    END;
+
+    PROCEDURE CloseFile@1000000010();
+    BEGIN
+      IF (FileOpen) THEN
+        FileExport.CLOSE();
+      FileOpen := FALSE;
+      HeaderInserted := FALSE;
+    END;
+
+    PROCEDURE AddHeaderApport@1000000014(Reader@1000000001 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      char13@1000000002 : Char;
+      char10@1000000000 : Char;
+    BEGIN
+      char10 := 10;
+      char13 := 13;
+
+      IF (NOT HeaderInserted) THEN BEGIN
+        FileExportStream.WRITETEXT(
+          Reader.GetName(Reader.GetOrdinal('i_apport_bon_id')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('i_mvt_typ_id')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('i_serv_id')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('v_person_typ')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('i_person_num')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('i_pro_id')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('i_nature_id')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('i_variete_id')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('v_intitule')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('d_date')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('v_poids_brut')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('v_poids_brut_unite')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('v_poids_net')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('v_poids_net_unite')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('v_commentaire')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('v_prix_net')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('v_prix_net_unite')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('v_num_contrat')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('d_creat')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('d_maj')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('d_suppr')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('v_code_libre')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('i_campagne_id')) +
+          FORMAT(char13) + FORMAT(char10)
+        );
+      END;
+      HeaderInserted := TRUE;
+    END;
+
+    PROCEDURE AddLineApport@1000000015(Reader@1000000000 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      char13@1000000002 : Char;
+      char10@1000000001 : Char;
+      CreateDate@1000000003 : Text[30];
+      DDate@1000000004 : Text[30];
+      UpdateDate@1000000005 : Text[30];
+      DeleteDate@1000000006 : Text[30];
+    BEGIN
+      char10 := 10;
+      char13 := 13;
+
+      IF (Reader.IsDBNull(Reader.GetOrdinal('d_date'))) THEN
+        DDate := ''
+      ELSE
+        DDate := FORMAT(Reader.GetDateTime(Reader.GetOrdinal('d_date')),0,
+                        '<Year4>/<Month,2>/<Day,2> <Hours24,2>:<Minutes,2>:<Seconds,2>.000');
+
+
+      IF (Reader.IsDBNull(Reader.GetOrdinal('d_creat'))) THEN
+        CreateDate := ''
+      ELSE
+        CreateDate := FORMAT(Reader.GetDateTime(Reader.GetOrdinal('d_creat')),0,
+                             '<Year4>/<Month,2>/<Day,2> <Hours24,2>:<Minutes,2>:<Seconds,2>.000');
+
+      IF (Reader.IsDBNull(Reader.GetOrdinal('d_maj'))) THEN
+        UpdateDate := ''
+      ELSE
+        UpdateDate := FORMAT(Reader.GetDateTime(Reader.GetOrdinal('d_maj')),0,
+                      '<Year4>/<Month,2>/<Day,2> <Hours24,2>:<Minutes,2>:<Seconds,2>.000');
+
+      IF (Reader.IsDBNull(Reader.GetOrdinal('d_suppr'))) THEN
+        DeleteDate := ''
+      ELSE
+        DeleteDate := FORMAT(Reader.GetDateTime(Reader.GetOrdinal('d_suppr')),0,
+                             '<Year4>/<Month,2>/<Day,2> <Hours24,2>:<Minutes,2>:<Seconds,2>.000');
+
+
+
+      FileExportStream.WRITETEXT(
+        FORMAT(Reader.GetInt64(Reader.GetOrdinal('i_apport_bon_id'))) + ';' +
+        FORMAT(Reader.GetInt32(Reader.GetOrdinal('i_mvt_typ_id'))) + ';' +
+        FORMAT(Reader.GetInt32(Reader.GetOrdinal('i_serv_id'))) + ';' +
+        FORMAT(Reader.GetString(Reader.GetOrdinal('v_person_typ'))) + ';' +
+        FORMAT(Reader.GetInt32(Reader.GetOrdinal('i_person_num'))) + ';' +
+        FORMAT(Reader.GetInt64(Reader.GetOrdinal('i_pro_id'))) + ';' +
+        FORMAT(Reader.GetInt32(Reader.GetOrdinal('i_nature_id'))) + ';' +
+        FORMAT(Reader.GetInt64(Reader.GetOrdinal('i_variete_id'))) + ';' +
+        FORMAT(Reader.GetString(Reader.GetOrdinal('v_intitule'))) + ';' +
+        DDate + ';' +
+        FORMAT(Reader.GetString(Reader.GetOrdinal('v_poids_brut'))) + ';' +
+        FORMAT(Reader.GetString(Reader.GetOrdinal('v_poids_brut_unite'))) + ';' +
+        FORMAT(Reader.GetString(Reader.GetOrdinal('v_poids_net'))) + ';' +
+        FORMAT(Reader.GetString(Reader.GetOrdinal('v_poids_net_unite'))) + ';' +
+        FORMAT(Reader.GetString(Reader.GetOrdinal('v_commentaire'))) + ';' +
+        FORMAT(Reader.GetString(Reader.GetOrdinal('v_prix_net'))) + ';' +
+        FORMAT(Reader.GetString(Reader.GetOrdinal('v_prix_net_unite'))) + ';' +
+        FORMAT(Reader.GetString(Reader.GetOrdinal('v_num_contrat'))) + ';' +
+        CreateDate + ';' +
+        UpdateDate + ';' +
+        DeleteDate + ';' +
+        FORMAT(Reader.GetString(Reader.GetOrdinal('v_code_libre'))) + ';' +
+        FORMAT(Reader.GetInt32(Reader.GetOrdinal('i_campagne_id'))) +
+        FORMAT(char13) + FORMAT(char10)
+      );
+    END;
+
+    PROCEDURE AddHeaderAnalyse@1000000018(Reader@1000000001 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      char13@1000000000 : Char;
+      char10@1000000002 : Char;
+    BEGIN
+      char10 := 10;
+      char13 := 13;
+      IF (NOT HeaderInserted) THEN BEGIN
+        FileExportStream.WRITETEXT(
+          Reader.GetName(Reader.GetOrdinal('i_apport_bon_id')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('v_intitule')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('v_valeur')) +
+          FORMAT(char13) + FORMAT(char10)
+        );
+      END;
+      HeaderInserted := TRUE;
+    END;
+
+    PROCEDURE AddLineAnalyse@1000000017(Reader@1000000000 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      char13@1000000002 : Char;
+      char10@1000000001 : Char;
+    BEGIN
+      char10 := 10;
+      char13 := 13;
+
+      FileExportStream.WRITETEXT(
+        FORMAT(Reader.GetInt64(Reader.GetOrdinal('i_apport_bon_id'))) + ';' +
+        FORMAT(Reader.GetString(Reader.GetOrdinal('v_intitule'))) + ';' +
+        FORMAT(Reader.GetString(Reader.GetOrdinal('v_valeur'))) +
+        FORMAT(char13) + FORMAT(char10)
+      );
+    END;
+
+    PROCEDURE AddHeaderTracking@1000000021(Reader@1000000001 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      char13@1000000002 : Char;
+      char10@1000000000 : Char;
+    BEGIN
+      char10 := 10;
+      char13 := 13;
+
+      IF (NOT HeaderInserted) THEN BEGIN
+        FileExportStream.WRITETEXT(
+          Reader.GetName(Reader.GetOrdinal('i_apport_trace_id')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('i_apport_bon_id')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('v_intitule')) + ';' +
+          Reader.GetName(Reader.GetOrdinal('v_valeur')) +
+          FORMAT(char13) + FORMAT(char10)
+        );
+      END;
+      HeaderInserted := TRUE;
+    END;
+
+    PROCEDURE AddLineTracking@1000000020(Reader@1000000000 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader");
+    VAR
+      char13@1000000002 : Char;
+      char10@1000000001 : Char;
+    BEGIN
+      char10 := 10;
+      char13 := 13;
+
+      FileExportStream.WRITETEXT(
+        FORMAT(Reader.GetInt64(Reader.GetOrdinal('i_apport_trace_id'))) + ';' +
+        FORMAT(Reader.GetInt64(Reader.GetOrdinal('i_apport_bon_id'))) + ';' +
+        FORMAT(Reader.GetString(Reader.GetOrdinal('v_intitule'))) + ';' +
+        FORMAT(Reader.GetString(Reader.GetOrdinal('v_valeur'))) +
+        FORMAT(char13) + FORMAT(char10)
+      );
+    END;
+
+    PROCEDURE CheckTargetFile@1000000008(FileName@1000000000 : Text[256]);
+    VAR
+      FullFileName@1000000001 : Text[1024];
+    BEGIN
+      FullFileName := ImpExpFolder_G + '\' + DELCHR(PrefixFile_G, '<>', ' ') + FileName + '.' + ExtensionFile_G;
+      IF (EXISTS(FullFileName)) THEN
+        ERASE(FullFileName);
+    END;
+
+    PROCEDURE CreateZipFile@1000000000() ReturnValue : Boolean;
+    VAR
+      ZipEntry@1000000000 : DotNet "'ICSharpCode.SharpZipLib, Version=0.84.0.0, Culture=neutral, PublicKeyToken=1b03e6acf1164f73'.ICSharpCode.SharpZipLib.Zip.ZipEntry";
+      ZipOutStream@1000000001 : DotNet "'ICSharpCode.SharpZipLib, Version=0.84.0.0, Culture=neutral, PublicKeyToken=1b03e6acf1164f73'.ICSharpCode.SharpZipLib.Zip.ZipOutputStream";
+      FileStream@1000000003 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.FileStream";
+      File@1000000004 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.File";
+      FileInfo@1000000005 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.FileInfo";
+      FullFileName@1000000006 : Text[1024];
+      EntryName@1000000007 : Text[1024];
+      FastZip@1000000008 : DotNet "'ICSharpCode.SharpZipLib, Version=0.84.0.0, Culture=neutral, PublicKeyToken=1b03e6acf1164f73'.ICSharpCode.SharpZipLib.Zip.FastZip";
+      FlagFile@1000000002 : File;
+    BEGIN
+      ReturnValue := FALSE;
+      WriteLog(ErrType::Info, STRSUBSTNO(TGenerateZip));
+      IF (FilesExists()) THEN BEGIN
+        ZipNameFile := 'fic_apport_bon' +
+                       FORMAT(CURRENTDATETIME, 0,'<Year4><Month,2><Day,2><Hours24,2><Minutes,2><Seconds,2><Second dec>') + '.zip';
+        ZipFileName := ImpExpFolder_G + '\' + DELCHR(PrefixFile_G, '<>', ' ') + ZipNameFile;
+        FullFileName := ImpExpFolder_G + '\' + DELCHR(PrefixFile_G, '<>', ' ');
+        {
+        FileStream := File.Create(ZipFileName);
+        ZipOutStream := ZipOutStream.ZipOutputStream(FileStream);
+        // Add File into Zip
+
+        FullFileName := ImpExpFolder_G + '\' + DELCHR(PrefixFile_G, '<>', ' ') + 'fic_apport_bon' + '.' + ExtensionFile_G;
+        IF (EXISTS(FullFileName)) THEN BEGIN
+          FileInfo := FileInfo.FileInfo(FullFileName);
+          EntryName := FileInfo.Name;
+          ZipEntry := ZipEntry.ZipEntry(EntryName);
+          ZipEntry.DateTime := FileInfo.LastWriteTime;
+          ZipEntry.Size := FileInfo.Length;
+          ZipOutStream.PutNextEntry(ZipEntry);
+          ZipOutStream.CloseEntry();
+        END;
+
+        FullFileName := ImpExpFolder_G + '\' + DELCHR(PrefixFile_G, '<>', ' ') + 'fic_apport_analyse' + '.' + ExtensionFile_G;
+        IF (EXISTS(FullFileName)) THEN BEGIN
+          FileInfo := FileInfo.FileInfo(FullFileName);
+          EntryName := FileInfo.Name;
+          ZipEntry := ZipEntry.ZipEntry(EntryName);
+          ZipEntry.DateTime := FileInfo.LastWriteTime;
+          ZipEntry.Size := FileInfo.Length;
+          ZipOutStream.PutNextEntry(ZipEntry);
+          ZipOutStream.CloseEntry();
+        END;
+
+        FullFileName := ImpExpFolder_G + '\' + DELCHR(PrefixFile_G, '<>', ' ') + 'fic_apport_tracabilite' + '.' + ExtensionFile_G;
+        IF (EXISTS(FullFileName)) THEN BEGIN
+          FileInfo := FileInfo.FileInfo(FullFileName);
+          EntryName := FileInfo.Name;
+          ZipEntry := ZipEntry.ZipEntry(EntryName);
+          ZipEntry.DateTime := FileInfo.LastWriteTime;
+          ZipEntry.Size := FileInfo.Length;
+          ZipOutStream.PutNextEntry(ZipEntry);
+          ZipOutStream.CloseEntry();
+        END;
+
+        ZipOutStream.IsStreamOwner(TRUE);
+        ZipOutStream.Close();
+        }
+        FastZip := FastZip.FastZip();
+        FastZip.CreateZip(ZipFileName, FullFileName, FALSE, '\.csv$');
+        FlagFile.CREATE(ImpExpFolder_G + '\start.flag');
+        FlagFile.CLOSE();
+        ReturnValue := TRUE;
+      END;
+    END;
+
+    PROCEDURE FilesExists@1000000012() ReturnValue : Boolean;
+    VAR
+      FullFileName@1000000000 : Text[1024];
+    BEGIN
+      ReturnValue := FALSE;
+      FullFileName := ImpExpFolder_G + '\' + DELCHR(PrefixFile_G, '<>', ' ') + 'fic_apport_bon' + '.' + ExtensionFile_G;
+      ReturnValue := ReturnValue OR EXISTS(FullFileName);
+      FullFileName := ImpExpFolder_G + '\' + DELCHR(PrefixFile_G, '<>', ' ') + 'fic_apport_analyse' + '.' + ExtensionFile_G;
+      ReturnValue := ReturnValue OR EXISTS(FullFileName);
+      FullFileName := ImpExpFolder_G + '\' + DELCHR(PrefixFile_G, '<>', ' ') + 'fic_apport_tracabilite' + '.' + ExtensionFile_G;
+      ReturnValue := ReturnValue OR EXISTS(FullFileName);
+    END;
+
+    PROCEDURE SendZipFile@1000000005() returnValue : Boolean;
+    VAR
+      sftp@1000000000 : DotNet "'Renci.SshNet, Version=2017.0.0.0, Culture=neutral, PublicKeyToken=1cee9f8bde3db106'.Renci.SshNet.SftpClient";
+      File@1000000001 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.File";
+      RemoteFileName@1000000002 : Text[256];
+      FileStream@1000000003 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.FileStream";
+      Action@1000000004 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Action`1";
+    BEGIN
+      returnValue := FALSE;
+      WriteLog(ErrType::Info, STRSUBSTNO('%1 - %2 - %3', FTPAddress, FTPUser, FTPPwd));
+      sftp := sftp.SftpClient(FTPAddress, FTPUser, FTPPwd);
+      sftp.Connect();
+      IF (FTPFolder <> '') THEN
+        sftp.ChangeDirectory(FTPFolder);
+
+      FileStream := File.OpenRead(ZipFileName);
+      sftp.UploadFile(FileStream, ZipNameFile, Action);
+      FileStream.Close();
+
+      FileStream := File.OpenRead(ImpExpFolder_G + '\start.flag');
+      sftp.UploadFile(FileStream, 'start.flag', Action);
+      FileStream.Close();
+
+      sftp.Disconnect();
+
+      ERASE(ImpExpFolder_G + '\start.flag');
+      ERASE(ZipFileName);
+      returnValue := TRUE;
+    END;
+
+    PROCEDURE LaunchProcess@1000000006();
+    VAR
+      sshClient@1000000000 : DotNet "'Renci.SshNet, Version=2017.0.0.0, Culture=neutral, PublicKeyToken=1cee9f8bde3db106'.Renci.SshNet.SshClient";
+      sshCommand@1000000001 : DotNet "'Renci.SshNet, Version=2017.0.0.0, Culture=neutral, PublicKeyToken=1cee9f8bde3db106'.Renci.SshNet.SshCommand";
+    BEGIN
+      WriteLog(ErrType::Info, STRSUBSTNO('%1 - %2 - %3', FTPAddress, FTPUser, FTPPwd));
+      sshClient := sshClient.SshClient(FTPAddress, FTPUser, FTPPwd);
+      sshClient.Connect();
+
+      sshCommand := sshClient.RunCommand(
+                         '/var/lib/postgresql/postgres-coop/kettle/kettle_data/script/Job_maj_apport_jour.sh');
+      sshClient.Disconnect();
+    END;
+
+    BEGIN
+    {
+      ADV180706-1 06/07/2018 XPE : Codeunit Creation
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,2340 @@
+OBJECT Codeunit 8061932 PositionManagement
+{
+  OBJECT-PROPERTIES
+  {
+    Date=29/09/16;
+    Heure=00:00:00;
+    Liste versions=CMB6.00.10.09,CMC02.02.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 17=m;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      PosEntry_G@8061944 : Record 8061932;
+      GLSetup_G@8061943 : Record 98;
+      DimMgt_G@8061942 : Codeunit 408;
+      GenJnlPostLine_G@8061941 : Codeunit 12;
+      TempLedgerEntryDim_G@8061940 : Record 355;
+      DimBufMgt_G@8061939 : Codeunit 411;
+      PosPostBuffer_G@8061938 : ARRAY [2] OF TEMPORARY Record 8061933;
+      PostDocNo_G@8061937 : Code[20];
+      PostPostingDescription_G@8061936 : Text[30];
+      TotalRecCount_G@8061934 : Integer;
+      CurrentRecCount_G@8061933 : Integer;
+      Window_G@8061932 : Dialog;
+      Text8061932@8061951 : TextConst 'ENU=Position Dates are mandatory for G/L Account %1.;FRA=Les dates de situation sont obligatoires sur le compte %1.';
+      Text8061933@8061950 : TextConst 'ENU=Position Dates are mandatory for G/L Account %1.;FRA=Les dates de situation sont interdites sur le compte %1.';
+      Text8061934@8061949 : TextConst 'ENU=The Dates are unconsistent.;FRA=Les dates saisies ne sont pas coh'rentes.';
+      Text8061935@8061948 : TextConst 'ENU=Do you want to delete the %1 selected entries ?;FRA=Voulez-vous supprimer les %1 'critures s'lectionn'es ?';
+      Text8061936@8061947 : TextConst 'ENU=It is not possible to delete the entries because at least one of them is posted to the general ledger.;FRA=Il n''est pas possible de supprimer ces 'critures car au moins l''une d''entre-elles a 't' comptabilis'e.';
+      Text8061937@8061946 : TextConst 'ENU=Unposted Position Entries exist for this G/L Entry. Do you want to delete them ?;FRA=Il existe des 'critures de situations non comptabilis'es pour cette 'criture. Voulez-vous les supprimer ?';
+      Text8061938@8061945 : TextConst 'ENU=Posted Position Entries exist for the G/L Entry.;FRA=Il existe des 'critures de situations comptabilis'es pour cette 'criture.';
+      Text8061939@8061935 : TextConst 'ENU=The Position Date must be Filled.;FRA=La date de situation doit ^tre renseign'e.';
+      ItemLdgEntry_G@8061050 : Record 32;
+      Dimension_G@8053000 : Record 355;
+      Text001@8053001 : TextConst 'FRA=Attention, l''axe Lieu de la ligne %1 n''est pas pr'sent dans la table 'criture comptable Analytique';
+      GLAccount_G@8053003 : Record 15;
+      SourceCode_G@8053002 : Record 230;
+      Text002@8053004 : TextConst 'FRA=Attention, le code intra groupe est obligatoire pour la ligne %1, veuillez renseigner le champ "Code intra groupe"';
+      Text60000@1000000000 : TextConst 'ENU=Do you want to delete the %1 selected entries ?;FRA=Voulez vous vider la feuille de situation de ses 'critures non comptabilis'es ?';
+
+    PROCEDURE InsertGLPosEntry@8061963(VAR GLEntry_P@8061936 : Record 17;PositionDate_P@8061935 : Date;PositionAmount_P@8061934 : Decimal;TransferDatas_P@8061933 : ARRAY [8] OF Decimal;InAdvance_P@8061932 : Boolean);
+    VAR
+      Cust_L@8061300 : Record 18;
+      Vend_L@8061301 : Record 23;
+    BEGIN
+      IF PositionAmount_P = 0 THEN
+        EXIT;
+
+      PosEntry_G.INIT;
+      PosEntry_G."Entry No." := GetNextEntryNo;
+      PosEntry_G."Position Source" := PosEntry_G."Position Source"::"G/L Entry";
+      PosEntry_G."G/L Entry No." := GLEntry_P."Entry No.";
+      PosEntry_G."Position Date" := PositionDate_P;
+      PosEntry_G."Position Amount" := PositionAmount_P;
+      PosEntry_G.Description := GLEntry_P.Description;
+      PosEntry_G."G/L Account No." := GLEntry_P."G/L Account No.";
+      PosEntry_G."In Advance" := InAdvance_P;
+
+      // --> 20101105-8061050-CMB6.00.01-FEC02
+      IF GLEntry_P."Source Type" IN [GLEntry_P."Source Type"::Customer,GLEntry_P."Source Type"::Vendor] THEN BEGIN
+        PosEntry_G."Customer / Vendor" := GLEntry_P."Source Type";
+        PosEntry_G.VALIDATE("Cust. / Vendor No.",GLEntry_P."Source No.");
+      END ELSE BEGIN
+        GetCustVendFromGLEntry(PosEntry_G."G/L Entry No.",PosEntry_G."Customer / Vendor",PosEntry_G."Cust. / Vendor No.");
+        PosEntry_G.VALIDATE("Cust. / Vendor No.");
+      END;
+      // <-- 20101105-8061050-CMB6.00.01-FEC02
+
+      // -->20130930-FINA16-CMC02.02.00-KEM02
+      CASE PosEntry_G."Customer / Vendor" OF
+       PosEntry_G."Customer / Vendor"::Customer:
+       BEGIN
+        Cust_L.GET(PosEntry_G."Cust. / Vendor No.");
+        IF Cust_L."Intra Group" THEN
+          PosEntry_G."Intra Group Code" := Cust_L."Intra Group Code";
+       END;
+       PosEntry_G."Customer / Vendor"::Vendor:
+       BEGIN
+        Vend_L.GET(PosEntry_G."Cust. / Vendor No.");
+        IF Vend_L."Intra Group" THEN
+          PosEntry_G."Intra Group Code" := Vend_L."Intra Group Code";
+       END;
+
+      END;
+      // <--20130930-FINA16-CMC02.02.00-KEM02
+
+      SetPositionAccountNo(PosEntry_G);
+      PosEntry_G."Posting Date" := GLEntry_P."Posting Date";
+      PosEntry_G."Document Type" := GLEntry_P."Document Type";
+      PosEntry_G."Document No." := GLEntry_P."Document No.";
+      PosEntry_G."Position Starting Date" := GLEntry_P."Position Starting Date";
+      PosEntry_G."Position Ending Date" := GLEntry_P."Position Ending Date";
+      PosEntry_G."Total Period No." := TransferDatas_P[1];
+      PosEntry_G."Realized Period No." := TransferDatas_P[2];
+      PosEntry_G."Remaining Period No." := TransferDatas_P[3];
+      PosEntry_G."Realized Percent" := TransferDatas_P[4];
+      PosEntry_G."Remaining Percent" := TransferDatas_P[5];
+      PosEntry_G."Original Amount" := TransferDatas_P[6];
+      PosEntry_G."Posted Amount" := TransferDatas_P[7];
+      PosEntry_G."Realized Amount" := TransferDatas_P[8];
+      // --> 20110207-8061050-CMB6.00.10-FEC02
+      PosEntry_G."Entry Type" := PosEntry_G."Entry Type"::Position;
+      // <-- 20110207-8061050-CMB6.00.10-FEC02
+      CalcVATAmount(PosEntry_G);
+
+      // --> 20101105-8061050-CMB6.00.01-FEC01
+      {// --> 20101021-8061050-CMB6.00.01-FEC01
+      IF GLEntry_P."Source Type" IN [GLEntry_P."Source Type"::Customer,GLEntry_P."Source Type"::Vendor] THEN BEGIN
+        PosEntry_G."Customer / Vendor" := GLEntry_P."Source Type";
+        PosEntry_G.VALIDATE("Cust. / Vendor No.",GLEntry_P."Source No.");
+      END ELSE BEGIN
+        GetCustVendFromGLEntry(PosEntry_G."G/L Entry No.",PosEntry_G."Customer / Vendor",PosEntry_G."Cust. / Vendor No.");
+        PosEntry_G.VALIDATE("Cust. / Vendor No.");
+      END;
+      // <-- 20101021-8061050-CMB6.00.01-FEC01}
+      // <-- 20101105-8061050-CMB6.00.01-FEC01
+
+      // --> 20110823-8061050-CMB6.00.10.01-FEC01
+      PosEntry_G."Global Dimension 1 Code" := GLEntry_P."Global Dimension 1 Code";
+      PosEntry_G."Global Dimension 2 Code" := GLEntry_P."Global Dimension 2 Code";
+      // <-- 20110823-8061050-CMB6.00.10.01-FEC01
+
+      PosEntry_G.INSERT;
+
+      DimMgt_G.CopyLedgEntryDimToLedgEntryDim(DATABASE::"G/L Entry",PosEntry_G."G/L Entry No.",
+                                              DATABASE::"Position Entry",PosEntry_G."Entry No.");
+    END;
+
+    PROCEDURE InsertGLBudgetPosEntry@8061962(VAR GLBudgetEntry_P@8061936 : Record 96;PositionDate_P@8061935 : Date;PositionAmount_P@8061934 : Decimal;TransferDatas_P@8061933 : ARRAY [8] OF Decimal;InAdvance_P@8061932 : Boolean);
+    BEGIN
+      IF PositionAmount_P = 0 THEN
+        EXIT;
+
+      PosEntry_G.INIT;
+      PosEntry_G."Entry No." := GetNextEntryNo;
+      PosEntry_G."Position Source" := PosEntry_G."Position Source"::"G/L Budget Entry";
+      PosEntry_G."G/L Entry No." := GLBudgetEntry_P."Entry No.";
+      PosEntry_G."Position Date" := PositionDate_P;
+      PosEntry_G."Position Amount" := PositionAmount_P;
+      PosEntry_G.Description := GLBudgetEntry_P.Description;
+      PosEntry_G."G/L Account No." := GLBudgetEntry_P."G/L Account No.";
+      PosEntry_G."In Advance" := InAdvance_P;
+      SetPositionAccountNo(PosEntry_G);
+      PosEntry_G."Posting Date" := 0D;
+      PosEntry_G."Document Type" := PosEntry_G."Document Type"::" ";
+      PosEntry_G."Document No." := GLBudgetEntry_P."Budget Name";
+      PosEntry_G."Position Starting Date" := GLBudgetEntry_P."Position Starting Date";
+      PosEntry_G."Position Ending Date" := GLBudgetEntry_P."Position Ending Date";
+      PosEntry_G."Total Period No." := TransferDatas_P[1];
+      PosEntry_G."Realized Period No." := TransferDatas_P[2];
+      PosEntry_G."Remaining Period No." := TransferDatas_P[3];
+      PosEntry_G."Realized Percent" := TransferDatas_P[4];
+      PosEntry_G."Remaining Percent" := TransferDatas_P[5];
+      PosEntry_G."Original Amount" := TransferDatas_P[6];
+      PosEntry_G."Posted Amount" := TransferDatas_P[7];
+      PosEntry_G."Realized Amount" := TransferDatas_P[8];
+      // --> 20110207-8061050-CMB6.00.10-FEC03
+      PosEntry_G."Entry Type" := PosEntry_G."Entry Type"::Position;
+      // <-- 20110207-8061050-CMB6.00.10-FEC03
+      CalcVATAmount(PosEntry_G);
+
+      // --> 20110823-8061050-CMB6.00.10.01-FEC02
+      PosEntry_G."Global Dimension 1 Code" := GLBudgetEntry_P."Global Dimension 1 Code";
+      PosEntry_G."Global Dimension 2 Code" := GLBudgetEntry_P."Global Dimension 2 Code";
+      // <-- 20110823-8061050-CMB6.00.10.01-FEC02
+
+      PosEntry_G.INSERT;
+
+      CopyBudgEntryDimToLedgEntryDim(PosEntry_G."G/L Entry No.",
+                                     DATABASE::"Position Entry",PosEntry_G."Entry No.");
+    END;
+
+    PROCEDURE GetNextEntryNo@8061961() : Integer;
+    VAR
+      PosEntry_L@8061932 : Record 8061932;
+    BEGIN
+      PosEntry_L.RESET;
+      IF PosEntry_L.FINDLAST THEN
+        EXIT(PosEntry_L."Entry No." + 1)
+      ELSE
+        EXIT(1);
+    END;
+
+    PROCEDURE SetPositionAccountNo@8061960(VAR PosEntry_P@8061932 : Record 8061932);
+    VAR
+      VATPostingSetup_L@8061949 : Record 325;
+      GLAccount_L@8061948 : Record 15;
+      GLEntry_L@8061947 : Record 17;
+      GLBudgetEntry_L@8061946 : Record 96;
+      VATBusPostingGroup_L@8061945 : Code[20];
+      VATProdPostingGroup_L@8061944 : Code[20];
+      GenPostingType_L@8061943 : ' ,Purchase,Sale,Settlement';
+      SalesShipmentLine_L@8061942 : Record 111;
+      ReturnReceiptLine_L@8061941 : Record 6661;
+      PurchRcptLine_L@8061940 : Record 121;
+      ReturnShipmLine_L@8061939 : Record 6651;
+      ServShipmLine_L@8061938 : Record 5991;
+      ISAccountNo_L@8061937 : Code[20];
+      Cust_L@8061936 : Record 18;
+      Vend_L@8061935 : Record 23;
+      CustPostingGroup_L@8061934 : Record 92;
+      VendPostingGroup_L@8061933 : Record 93;
+      ValueEntry_L@1000000001 : Record 5802;
+      PurchEcdEntry_L@1000000000 : Record 8053088;
+    BEGIN
+      WITH PosEntry_P DO BEGIN
+
+        GLAccount_L.GET(PosEntry_G."G/L Account No.");
+        // --> 20101021-8061050-CMB6.00.01-FEC13
+        {BEFORE
+        GLEntry_L.GET(PosEntry_P."G/L Entry No.");}
+        // <-- 20101021-8061050-CMB6.00.01-FEC13
+
+        IF NOT "In Advance" THEN BEGIN
+
+          // --> 20101021-8061050-CMB6.00.01-FEC10
+          {BEFORE
+          GLAccount_L.TESTFIELD("BS Position Acc. No.");
+          "Bal. Sheet G/L Account No." := GLAccount_L."BS Position Acc. No.";
+          GLAccount_L.TESTFIELD("IS Position Acc. No.");
+          "Income Stat. G/L Account No." := GLAccount_L."IS Position Acc. No.";
+          AFTER}
+          PosEntry_P."Bal. Sheet G/L Account No." := GLAccount_L."BS Position Acc. No.";
+
+          IF PosEntry_P."Bal. Sheet G/L Account No." = '' THEN
+            IF PosEntry_P."Cust. / Vendor No." <> '' THEN BEGIN
+              IF PosEntry_P."Customer / Vendor" = PosEntry_P."Customer / Vendor"::Customer THEN BEGIN
+                Cust_L.GET(PosEntry_P."Cust. / Vendor No.");
+                CustPostingGroup_L.GET(Cust_L."Customer Posting Group");
+                PosEntry_P."Bal. Sheet G/L Account No." := CustPostingGroup_L."Position Acc. No.";
+              END ELSE BEGIN
+                Vend_L.GET(PosEntry_P."Cust. / Vendor No.");
+                VendPostingGroup_L.GET(Vend_L."Vendor Posting Group");
+                PosEntry_P."Bal. Sheet G/L Account No." := VendPostingGroup_L."Position Acc. No.";
+              END;
+            END;
+
+          IF PosEntry_P."Bal. Sheet G/L Account No." = '' THEN BEGIN
+            GLSetup_G.GET;
+            IF COPYSTR(GLAccount_L."No.",1,1) = '7' THEN BEGIN
+              // --> 20131219-8061050-CMB6.00.10.09-BDN BEGIN
+              //GLSetup_G.TESTFIELD("BS Prod. Pos. Acc. No.");
+              //PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Prod. Pos. Acc. No.";
+              IF PosEntry_P."Position Source" = PosEntry_P."Position Source"::"Return Receipt Line" THEN BEGIN
+                IF PosEntry_P."Intra Group Code" <> '' THEN BEGIN
+                  GLSetup_G.TESTFIELD("BS Prod. Pos. Acc. No. CM  IG");
+                  PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Prod. Pos. Acc. No. CM  IG";
+                END
+                ELSE BEGIN
+                  GLSetup_G.TESTFIELD("BS Prod. Pos. Acc. No. CM");
+                  PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Prod. Pos. Acc. No. CM";
+                END;
+              END
+              ELSE BEGIN
+                IF PosEntry_P."Intra Group Code" <> '' THEN BEGIN
+                  GLSetup_G.TESTFIELD("BS Prod. Pos. Acc. No. IG");
+                  PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Prod. Pos. Acc. No. IG";
+                END
+                ELSE BEGIN
+                  GLSetup_G.TESTFIELD("BS Prod. Pos. Acc. No.");
+                  PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Prod. Pos. Acc. No.";
+                END;
+              END;
+              // <-- 20131219-8061050-CMB6.00.10.09-BDN END
+            END ELSE BEGIN
+              // --> 20131219-8061050-CMB6.00.10.09-BDN BEGIN
+              //GLSetup_G.TESTFIELD("BS Charge Pos. Acc. No.");
+              //PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Charge Pos. Acc. No.";
+              IF PosEntry_P."Position Source" = PosEntry_P."Position Source"::"Return Shipment Line" THEN BEGIN
+                IF PosEntry_P."Intra Group Code" <> '' THEN BEGIN
+                  GLSetup_G.TESTFIELD("BS Charge Pos. Acc. No. CM IG");
+                  PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Charge Pos. Acc. No. CM IG";
+                END
+                ELSE BEGIN
+                  GLSetup_G.TESTFIELD("BS Charge Pos. Acc. No. CM");
+                  PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Charge Pos. Acc. No. CM";
+                END;
+              END
+              ELSE BEGIN
+                IF PosEntry_P."Intra Group Code" <> '' THEN BEGIN
+                  GLSetup_G.TESTFIELD("BS Charge Pos. Acc. No. IG");
+                  PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Charge Pos. Acc. No. IG";
+                END
+                ELSE BEGIN
+                  GLSetup_G.TESTFIELD("BS Charge Pos. Acc. No.");
+                  PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Charge Pos. Acc. No.";
+                END;
+              END;
+              // <-- 20131219-8061050-CMB6.00.10.09-BDN END
+            END;
+          END;
+
+          IF GLAccount_L."IS Position Acc. No." <> '' THEN
+            "Income Stat. G/L Account No." := GLAccount_L."IS Position Acc. No."
+          ELSE
+            "Income Stat. G/L Account No." := PosEntry_G."G/L Account No.";
+          // <-- 20101021-8061050-CMB6.00.01-FEC10
+
+          CASE PosEntry_P."Position Source" OF
+            PosEntry_P."Position Source"::"G/L Entry" : BEGIN
+              GLEntry_L.GET(PosEntry_P."G/L Entry No.");
+              VATBusPostingGroup_L := GLEntry_L."VAT Bus. Posting Group";
+              VATProdPostingGroup_L := GLEntry_L."VAT Prod. Posting Group";
+              GenPostingType_L := GLEntry_L."Gen. Posting Type";
+            END;
+            PosEntry_P."Position Source"::"G/L Budget Entry" : BEGIN
+              GLBudgetEntry_L.GET(PosEntry_P."G/L Entry No.");
+              VATBusPostingGroup_L := GLBudgetEntry_L."VAT Bus. Posting Group";
+              VATProdPostingGroup_L := GLBudgetEntry_L."VAT Prod. Posting Group";
+              GenPostingType_L := GLBudgetEntry_L."Gen. Posting Type";
+            END;
+            // --> 20101021-8061050-CMB6.00.01-FEC11
+            PosEntry_P."Position Source"::"Sales Shipment Line" : BEGIN
+              SalesShipmentLine_L.GET(PosEntry_P."Document No.",PosEntry_P."Document Line No.");
+              VATBusPostingGroup_L := SalesShipmentLine_L."VAT Bus. Posting Group";
+              VATProdPostingGroup_L := SalesShipmentLine_L."VAT Prod. Posting Group";
+              GenPostingType_L := GenPostingType_L::Sale;
+            END;
+            PosEntry_P."Position Source"::"Return Receipt Line" : BEGIN
+              ReturnReceiptLine_L.GET(PosEntry_P."Document No.",PosEntry_P."Document Line No.");
+              VATBusPostingGroup_L := ReturnReceiptLine_L."VAT Bus. Posting Group";
+              VATProdPostingGroup_L := ReturnReceiptLine_L."VAT Prod. Posting Group";
+              GenPostingType_L := GenPostingType_L::Sale;
+            END;
+            PosEntry_P."Position Source"::"Purch. Rcpt. Line" : BEGIN
+              PurchRcptLine_L.GET(PosEntry_P."Document No.",PosEntry_P."Document Line No.");
+              VATBusPostingGroup_L := PurchRcptLine_L."VAT Bus. Posting Group";
+              VATProdPostingGroup_L := PurchRcptLine_L."VAT Prod. Posting Group";
+              GenPostingType_L := GenPostingType_L::Purchase;
+            END;
+            PosEntry_P."Position Source"::"Return Shipment Line" : BEGIN
+              ReturnShipmLine_L.GET(PosEntry_P."Document No.",PosEntry_P."Document Line No.");
+              VATBusPostingGroup_L := ReturnShipmLine_L."VAT Bus. Posting Group";
+              VATProdPostingGroup_L := ReturnShipmLine_L."VAT Prod. Posting Group";
+              GenPostingType_L := GenPostingType_L::Purchase;
+            END;
+            PosEntry_P."Position Source"::"Service Shipment Line" : BEGIN
+              ServShipmLine_L.GET(PosEntry_P."Document No.",PosEntry_P."Document Line No.");
+              VATBusPostingGroup_L := ServShipmLine_L."VAT Bus. Posting Group";
+              VATProdPostingGroup_L := ServShipmLine_L."VAT Prod. Posting Group";
+              GenPostingType_L := GenPostingType_L::Sale;
+            END;
+            // <-- 20101021-8061050-CMB6.00.01-FEC11
+            // --> 20140523-APP33-CMC02.02.00-2159-FEC02
+            PosEntry_P."Position Source"::"ECD Entry" : BEGIN
+              ValueEntry_L.RESET;
+              ValueEntry_L.SETCURRENTKEY("Item Ledger Entry No.");
+              ValueEntry_L.SETRANGE("Item Ledger Entry No.",PosEntry_P."G/L Entry No.");
+              IF ValueEntry_L.FINDFIRST THEN BEGIN
+                VATBusPostingGroup_L := ValueEntry_L."VAT Bus. Posting Group";
+                VATProdPostingGroup_L := ValueEntry_L."VAT Prod. Posting Group";
+                GenPostingType_L := GenPostingType_L::Purchase;
+              END;
+            END;
+            // --< 20140523-APP33-CMC02.02.00-2159-FEC02
+          END;
+
+          IF VATPostingSetup_L.GET(VATBusPostingGroup_L,VATProdPostingGroup_L) THEN BEGIN
+            // --> 20120316-8061050-CMB6.00.10.01-FEC01
+            // --> 20140123-8061050-CMB6.00.10.01-1107-BDN01
+            // --> BEFORE
+            //IF (VATPostingSetup_L."VAT Calculation Type" = VATPostingSetup_L."VAT Calculation Type"::"Normal VAT") THEN BEGIN
+            // <-- AFTER
+            IF (VATPostingSetup_L."VAT Calculation Type" = VATPostingSetup_L."VAT Calculation Type"::"Normal VAT")
+               AND (VATPostingSetup_L."VAT %" <> 0) THEN BEGIN
+            // --> 20140123-8061050-CMB6.00.10.01-1107-BDN01
+            // <-- 20120316-8061050-CMB6.00.10.01-FEC01
+              CASE GenPostingType_L OF
+                GenPostingType_L::Sale : BEGIN
+                  VATPostingSetup_L.TESTFIELD("Sales Position Account");
+                  PosEntry_P."VAT G/L Account No." := VATPostingSetup_L."Sales Position Account";
+                END;
+                GenPostingType_L::Purchase : BEGIN
+                  VATPostingSetup_L.TESTFIELD("Purch. Position Account");
+                  PosEntry_P."VAT G/L Account No." := VATPostingSetup_L."Purch. Position Account";
+                END;
+              END;
+              PosEntry_P."VAT Rate" := VATPostingSetup_L."VAT %";
+            // --> 20120316-8061050-CMB6.00.10.01-FEC02
+            END;
+            // <-- 20120316-8061050-CMB6.00.10.01-FEC02
+          END;
+
+        END ELSE BEGIN
+          // --> 20101021-8061050-CMB6.00.01-FEC12
+          {BEFORE
+          GLAccount_L.TESTFIELD("BS Position Acc. No. (Adv.)");
+          "Bal. Sheet G/L Account No." := GLAccount_L."BS Position Acc. No. (Adv.)";
+          GLAccount_L.TESTFIELD("IS Position Acc. No. (Adv.)");
+          "Income Stat. G/L Account No." := GLAccount_L."IS Position Acc. No. (Adv.)";
+          AFTER}
+          PosEntry_P."Bal. Sheet G/L Account No." := GLAccount_L."BS Position Acc. No. (Adv.)";
+
+          IF PosEntry_P."Bal. Sheet G/L Account No." = '' THEN
+            IF PosEntry_P."Cust. / Vendor No." <> '' THEN BEGIN
+              IF PosEntry_P."Customer / Vendor" = PosEntry_P."Customer / Vendor"::Customer THEN BEGIN
+                Cust_L.GET(PosEntry_P."Cust. / Vendor No.");
+                IF Cust_L."Customer Posting Group" <> '' THEN BEGIN
+                  CustPostingGroup_L.GET(Cust_L."Customer Posting Group");
+                  PosEntry_P."Bal. Sheet G/L Account No." := CustPostingGroup_L."Position Acc. No. (Adv.)";
+                END;
+              END ELSE BEGIN
+                Vend_L.GET(PosEntry_P."Cust. / Vendor No.");
+                IF Vend_L."Vendor Posting Group" <> '' THEN BEGIN
+                  VendPostingGroup_L.GET(Vend_L."Vendor Posting Group");
+                  PosEntry_P."Bal. Sheet G/L Account No." := VendPostingGroup_L."Position Acc. No. (Adv.)";
+                END;
+              END;
+            END;
+
+          IF PosEntry_P."Bal. Sheet G/L Account No." = '' THEN BEGIN
+            GLSetup_G.GET;
+            // --> 20110228-8061050-CMB6.00.10-FEC03
+            {BEFORE
+            IF COPYSTR(GLAccount_L."No.",1,1) = '7' THEN
+              PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Prod. Acc. No. (Adv.)"
+            ELSE
+              PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Charge Pos. Acc. No. (Adv.)";
+            AFTER}
+            IF COPYSTR(GLAccount_L."No.",1,1) = '7' THEN BEGIN
+            //-->20150601-8061050-CMB6.00.10.01-3021-NLN01
+            {BEFORE
+              GLSetup_G.TESTFIELD("BS Prod. Acc. No. (Adv.)");
+              PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Prod. Acc. No. (Adv.)";
+            END ELSE BEGIN
+              GLSetup_G.TESTFIELD("BS Charge Pos. Acc. No. (Adv.)");
+              PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Charge Pos. Acc. No. (Adv.)";
+            END;
+            AFTER}
+                IF PosEntry_P."Intra Group Code" <> '' THEN BEGIN
+                  GLSetup_G.TESTFIELD("BS Prod. Acc. No. (Adv.) IG");
+                  PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Prod. Acc. No. (Adv.) IG";
+                END
+                ELSE BEGIN
+                  GLSetup_G.TESTFIELD("BS Prod. Acc. No. (Adv.)");
+                  PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Prod. Acc. No. (Adv.)";
+                END;
+            END
+            ELSE BEGIN
+                IF PosEntry_P."Intra Group Code" <> '' THEN BEGIN
+                  GLSetup_G.TESTFIELD("BS Charge Pos. Acc. No.Adv IG");
+                  PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Charge Pos. Acc. No.Adv IG";
+                END
+                ELSE BEGIN
+                  GLSetup_G.TESTFIELD("BS Charge Pos. Acc. No. (Adv.)");
+                  PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Charge Pos. Acc. No. (Adv.)";
+                END;
+            END;
+            //<--20150601-8061050-CMB6.00.10.01-3021-NLN01
+            // <-- 20110228-8061050-CMB6.00.10-FEC03
+          END;
+
+          IF GLAccount_L."IS Position Acc. No. (Adv.)" <> '' THEN
+            "Income Stat. G/L Account No." := GLAccount_L."IS Position Acc. No. (Adv.)"
+          ELSE
+            "Income Stat. G/L Account No." := PosEntry_G."G/L Account No.";
+
+          // <-- 20101021-8061050-CMB6.00.01-FEC12
+
+        END;
+        // --> 20160428-WI00-ADV01.01.00-2944-CJY01
+        IF (("Position Source" = PosEntry_P."Position Source"::"ECD Entry") AND
+             ("Customer / Vendor" = PosEntry_P."Customer / Vendor"::Vendor)) THEN BEGIN
+          GLSetup_G.GET;
+          GLSetup_G.TESTFIELD("BS Charge Pos. Acc. No. CM");
+          GLSetup_G.TESTFIELD("BS Charge Pos. Acc. No.");
+          PurchEcdEntry_L.GET(PosEntry_P."G/L Entry No.");
+          IF ((PurchEcdEntry_L."Document Type" = PurchEcdEntry_L."Document Type"::"Purchase Receipt") OR
+              (PurchEcdEntry_L."Document Type" = PurchEcdEntry_L."Document Type"::"Purchase Invoice")) THEN BEGIN
+                PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Charge Pos. Acc. No. CM";
+          END
+          ELSE BEGIN
+                PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Charge Pos. Acc. No.";
+
+          END;
+        END;
+        // <-- 20160428-WI00-ADV01.01.00-2944-CJY01
+      END;
+    END;
+
+    PROCEDURE InsertGnlJnlLine@8061959(PosEntry_P@8061936 : Record 8061932;GLAcc_P@8061935 : Code[20];Amount_P@8061934 : Decimal;SetDim_P@8061933 : Boolean;IsReverseEntry_P@8061932 : Boolean);
+    VAR
+      TempJnlLineDim_L@8061939 : TEMPORARY Record 356;
+      GenJnlLine_L@8061938 : Record 81;
+      LedgerEntryDim_L@8061937 : Record 355;
+      TempDescr_L@8061940 : Text[1024];
+      "<-- 3LI LOCALS -->"@8061301 : Integer;
+      PositionDate_L@8061300 : Record 8061935;
+    BEGIN
+      GenJnlLine_L.INIT;
+      // --> 20150423-WI00-CMC02.02.00-2912-NLN01
+      IF PosEntry_P."Global Dimension 1 Code" <> '' THEN BEGIN
+      LedgerEntryDim_L.SETRANGE("Table ID",DATABASE::"Position Entry");
+      LedgerEntryDim_L.SETRANGE("Entry No.",PosEntry_P."Entry No.");
+      LedgerEntryDim_L.SETRANGE(Type, LedgerEntryDim_L.Type :: "Regular Dimension");
+      LedgerEntryDim_L.SETRANGE("Dimension Code",GLSetup_G."Global Dimension 1 Code");
+        IF NOT LedgerEntryDim_L.FINDFIRST THEN
+          ERROR (Text001,PosEntry_P."Entry No.");
+      END;
+      // <-- 20150423-WI00-CMC02.02.00-2912-NLN01
+
+      IF NOT IsReverseEntry_P THEN
+        GenJnlLine_L."Posting Date" := PosEntry_P."Position Date"
+      ELSE
+        GenJnlLine_L."Posting Date" := CALCDATE('<+1D>',PosEntry_P."Position Date");
+
+      GenJnlLine_L."Document Type" := GenJnlLine_L."Document Type"::" ";
+      GenJnlLine_L."Document No." := PostDocNo_G;
+      GenJnlLine_L."Account No." := GLAcc_P;
+      // --> 20110824-8061050-CMB6.00.10.01-FEC03
+      {BEFORE
+      GenJnlLine_L.Description := PostPostingDescription_G;
+      AFTER}
+      GLSetup_G.GET;
+      IF GLSetup_G."GL Position Entry Description" = '' THEN
+        GenJnlLine_L.Description := PostPostingDescription_G
+      ELSE BEGIN
+        TempDescr_L := STRSUBSTNO(GLSetup_G."GL Position Entry Description",
+                                  PosEntry_P."Document No.",
+                                  PosEntry_P."Customer / Vendor",
+                                  PosEntry_P."Cust. / Vendor No.",
+                                  PosEntry_P."Cust. / Vendor Name",
+                                  PosEntry_P.Description);
+        GenJnlLine_L.Description := COPYSTR(TempDescr_L,1,50);
+      END;
+      // <-- 20110824-8061050-CMB6.00.10.01-FEC03
+      GenJnlLine_L.Amount := Amount_P;
+      GenJnlLine_L."Gen. Posting Type" := GenJnlLine_L."Gen. Posting Type"::" ";
+      GenJnlLine_L."Gen. Bus. Posting Group" := '';
+      GenJnlLine_L."Gen. Prod. Posting Group" := '';
+      GenJnlLine_L."VAT Bus. Posting Group" := '';
+      GenJnlLine_L."VAT Prod. Posting Group" := '';
+      // --> 20110207-8061050-CMB6.00.10-FEC09
+      {BEFORE
+      GenJnlLine_L."Source Code" := PostSourceCode_G;
+      AFTER}
+      IF PosEntry_P."Entry Type" = PosEntry_P."Entry Type"::Position THEN BEGIN
+      // -->20130930-FINA16-CMC02.02.00-KEM01
+      //BEFORE
+      {
+        GLSetup_G.TESTFIELD("Position Source Code");
+        GenJnlLine_L."Source Code" := GLSetup_G."Position Source Code";
+      }
+      //AFTER
+        PositionDate_L.GET(PosEntry_P."Position Date");//BRA
+        IF PositionDate_L."Source Code"='' THEN
+         BEGIN
+          GLSetup_G.TESTFIELD("Position Source Code");
+          GenJnlLine_L."Source Code" := GLSetup_G."Position Source Code";
+         END ELSE
+          GenJnlLine_L."Source Code" := PositionDate_L."Source Code";
+      // <--20130930-FINA16-CMC02.02.00-KEM01
+      END ELSE BEGIN
+        GLSetup_G.TESTFIELD("Commitm. Source Code");
+        GenJnlLine_L."Source Code" := GLSetup_G."Commitm. Source Code";
+      END;
+      // <-- 20110207-8061050-CMB6.00.01.01-FEC09
+
+      // -->20130930-FINA16-CMC02.02.00-KEM02
+      //-->20150601-8061050-CMB6.00.10.01-3013-NLN01
+      GLAccount_G.GET(PosEntry_P."Bal. Sheet G/L Account No.");
+      SourceCode_G.GET(PositionDate_L."Source Code");
+      // --> 20150615-8061050-CMB6.00.10.01-3013-BRA01
+      //BEFORE
+      //IF (GLAccount_G."Intra Code Mand. In Situation") AND (SourceCode_G.Simulation) AND
+      // AFTER
+      IF (GLAccount_G."Intra Code Mand. In Situation") AND
+      // <-- 20150615-8061050-CMB6.00.10.01-3013-BRA01
+          (PosEntry_P."Intra Group Code" = '') THEN
+      ERROR (Text002,PosEntry_P."Entry No.");
+      //<--20150601-8061050-CMB6.00.10.01-3013-NLN01
+
+      GenJnlLine_L."Intra Group Code" := PosEntry_P."Intra Group Code";
+      // <--20130930-FINA16-CMC02.02.00-KEM02
+
+      // --> 20110317-8061050-CMB6.00.10-FEC01
+      IF GLSetup_G."Dimension on All Entries" THEN
+        SetDim_P := TRUE;
+      // <-- 20110317-8061050-CMB6.00.10-FEC01
+
+      TempJnlLineDim_L.DELETEALL;
+      IF SetDim_P THEN BEGIN
+        // --> 20110824-8061050-CMB6.00.10.01-FEC01
+        GenJnlLine_L."Shortcut Dimension 1 Code" := PosEntry_P."Global Dimension 1 Code";
+        GenJnlLine_L."Shortcut Dimension 2 Code" := PosEntry_P."Global Dimension 2 Code";
+        // <-- 20110824-8061050-CMB6.00.10.01-FEC01
+        LedgerEntryDim_L.RESET;
+        LedgerEntryDim_L.SETRANGE("Table ID",DATABASE::"Position Entry");
+        LedgerEntryDim_L.SETRANGE("Entry No.",PosEntry_P."Entry No.");
+        DimMgt_G.CopyLedgEntryDimToJnlLineDim(LedgerEntryDim_L,TempJnlLineDim_L);
+      END;
+
+      // --> 20100712-8061050-CMB6.00.01-FEC02
+      GenJnlPostLine_G.SetOverPosDateErr;
+      // <-- 20100712-8061050-CMB6.00.01-FEC02
+
+      GenJnlPostLine_G.RunWithCheck(GenJnlLine_L,TempJnlLineDim_L);
+    END;
+
+    PROCEDURE ChangeGLEntryPosDates@8061958(VAR GLEntry2_P@8061934 : Record 17;NewStartingDate_P@8061933 : Date;NewEndingDate_P@8061932 : Date);
+    VAR
+      GLEntry_L@8061936 : Record 17;
+      PosEntry_L@8061935 : Record 8061932;
+    BEGIN
+      // --> 20110207-8061050-CMB6.00.10-FEC05
+      GLSetup_G.GET;
+      // <-- 20110207-8061050-CMB6.00.10-FEC05
+      IF GLEntry2_P.FINDFIRST THEN
+        REPEAT
+
+          GLEntry_L.GET(GLEntry2_P."Entry No.");
+
+          CheckPosDateValuePosting(GLEntry_L."G/L Account No.",NewStartingDate_P,NewEndingDate_P);
+          CheckPosDatePosting(NewStartingDate_P,NewEndingDate_P,FALSE);
+          // --> 20110207-8061050-CMB6.00.10-FEC06
+          CheckPosDateSource(GLEntry_L."Source Code",NewStartingDate_P);
+          // <-- 20110207-8061050-CMB6.00.10-FEC06
+
+          IF (GLEntry_L."Position Starting Date" <> NewStartingDate_P) OR
+             (GLEntry_L."Position Ending Date" <> NewEndingDate_P) THEN BEGIN
+
+            GLEntry_L."Position Starting Date" := NewStartingDate_P;
+            GLEntry_L."Position Ending Date" := NewEndingDate_P;
+            GLEntry_L.MODIFY;
+
+            PosEntry_L.RESET;
+            PosEntry_L.SETCURRENTKEY("Position Source","G/L Entry No.",Posted);
+            PosEntry_L.SETRANGE("Position Source",PosEntry_G."Position Source"::"G/L Entry");
+            PosEntry_L.SETRANGE("G/L Entry No.",GLEntry_L."Entry No.");
+            PosEntry_L.SETRANGE(Posted,FALSE);
+            IF NOT PosEntry_L.ISEMPTY THEN
+            // --> 20101119-8061050-CMB6.00.01-FEC01
+            {BEFORE
+              DeletePosEntry(PosEntry_L);
+            AFTER}
+              IF CONFIRM(Text8061937,FALSE) THEN
+                DeletePosEntry(PosEntry_L);
+
+            PosEntry_L.SETRANGE(Posted,TRUE);
+            // --> 20110207-8061050-CMB6.00.10-FEC07
+            {BEFORE
+            IF NOT PosEntry_L.ISEMPTY THEN
+              MESSAGE(Text8061938);
+            AFTER}
+            IF NOT PosEntry_L.ISEMPTY THEN BEGIN
+              IF GLSetup_G."Forbid Pos. Date Update" THEN
+                ERROR(Text8061938)
+              ELSE
+                MESSAGE(Text8061938);
+            END;
+            // <-- 20110207-8061050-CMB6.00.10-FEC07
+            // --> 20101119-8061050-CMB6.00.01-FEC01
+
+          END;
+
+        UNTIL GLEntry2_P.NEXT = 0;
+    END;
+
+    PROCEDURE CheckPosDateValuePosting@8061957(GLAccNo_P@8061934 : Code[20];NewStartingDate_P@8061933 : Date;NewEndingDate_P@8061932 : Date);
+    VAR
+      GLAccount_L@8061935 : Record 15;
+    BEGIN
+      GLAccount_L.GET(GLAccNo_P);
+      CASE GLAccount_L."Pos. Date Value Posting" OF
+        GLAccount_L."Pos. Date Value Posting"::Mandatory :
+          IF (NewStartingDate_P = 0D) OR (NewEndingDate_P = 0D) THEN
+            // --> 20100712-8061050-CMB6.00.01-FEC03
+            {BEFORE
+            ERROR(Text8061932);
+            AFTER}
+            ERROR(Text8061932,GLAccount_L."No.");
+            // <-- 20100712-8061050-CMB6.00.01-FEC03
+        GLAccount_L."Pos. Date Value Posting"::"No Period" :
+          IF (NewStartingDate_P <> 0D) OR (NewEndingDate_P <> 0D) THEN
+            // --> 20100712-8061050-CMB6.00.01-FEC04
+            {BEFORE
+            ERROR(Text8061933);
+            AFTER}
+            ERROR(Text8061933,GLAccount_L."No.");
+            // <-- 20100712-8061050-CMB6.00.01-FEC04
+      END;
+    END;
+
+    PROCEDURE CheckPosDate@8061956(NewStartingDate_P@8061933 : Date;NewEndingDate_P@8061932 : Date);
+    BEGIN
+      IF (NewStartingDate_P <> 0D) AND (NewEndingDate_P <> 0D) THEN
+        IF NewStartingDate_P > NewEndingDate_P THEN
+          ERROR(Text8061934);
+    END;
+
+    PROCEDURE CheckPosDatePosting@8061955(NewStartingDate_P@8061934 : Date;NewEndingDate_P@8061933 : Date;CheckBlank_P@8061932 : Boolean);
+    BEGIN
+      IF CheckBlank_P AND
+         ((NewStartingDate_P = 0D) AND (NewEndingDate_P = 0D)) THEN
+        ERROR(Text8061934);
+      IF ((NewStartingDate_P <> 0D) AND (NewEndingDate_P = 0D)) OR
+         ((NewStartingDate_P = 0D) AND (NewEndingDate_P <> 0D)) OR
+          (NewStartingDate_P > NewEndingDate_P) THEN
+        ERROR(Text8061934);
+    END;
+
+    PROCEDURE CheckBeforeDateUpdate@8061954(VAR GLEntry2_VP@8061932 : Record 17);
+    VAR
+      Text8061932@60002 : TextConst 'ENU=G/L Account %1 does not Allow Position Dates.;FRA=Le compte %1 ne permet pas de saisir des dates de situation.';
+      GLAcc_L@8061933 : Record 15;
+    BEGIN
+      IF GLEntry2_VP.FINDFIRST THEN
+        REPEAT
+          GLAcc_L.GET(GLEntry2_VP."G/L Account No.");
+          IF GLAcc_L."Pos. Date Value Posting" = GLAcc_L."Pos. Date Value Posting"::"No Period" THEN
+            ERROR(Text8061932,GLAcc_L."No.");
+        UNTIL GLEntry2_VP.NEXT = 0;
+    END;
+
+    PROCEDURE CalcVATAmount@8061953(VAR PosEntry_P@8061932 : Record 8061932);
+    BEGIN
+      IF (PosEntry_P."VAT Rate" <> 0) THEN
+        PosEntry_P."VAT Amount" := ROUND(PosEntry_P."Position Amount" * (PosEntry_P."VAT Rate" / 100),0.01);
+    END;
+
+    PROCEDURE PostPosEntryToGL@8061952(VAR PosEntry_P@8061932 : Record 8061932);
+    BEGIN
+      GLSetup_G.GET;
+
+      WITH PosEntry_P DO BEGIN
+
+        CreateWindow(COUNT);
+
+        IF FINDFIRST THEN
+          REPEAT
+
+            UpdateWindow;
+
+            IF "VAT Amount" = 0 THEN BEGIN
+              InsertGnlJnlLine(PosEntry_P,"Bal. Sheet G/L Account No.","Position Amount",FALSE,FALSE);
+              InsertGnlJnlLine(PosEntry_P,"Income Stat. G/L Account No.",-"Position Amount",TRUE,FALSE);
+              InsertGnlJnlLine(PosEntry_P,"Bal. Sheet G/L Account No.",-"Position Amount",FALSE,TRUE);
+              InsertGnlJnlLine(PosEntry_P,"Income Stat. G/L Account No.","Position Amount",TRUE,TRUE);
+            END ELSE BEGIN
+              InsertGnlJnlLine(PosEntry_P,"Bal. Sheet G/L Account No.","Position Amount"+"VAT Amount",FALSE,FALSE);
+              InsertGnlJnlLine(PosEntry_P,"VAT G/L Account No.",-"VAT Amount",FALSE,FALSE);
+              InsertGnlJnlLine(PosEntry_P,"Income Stat. G/L Account No.",-"Position Amount",TRUE,FALSE);
+              InsertGnlJnlLine(PosEntry_P,"Bal. Sheet G/L Account No.",-"Position Amount"-"VAT Amount",FALSE,TRUE);
+              InsertGnlJnlLine(PosEntry_P,"VAT G/L Account No.","VAT Amount",FALSE,TRUE);
+              InsertGnlJnlLine(PosEntry_P,"Income Stat. G/L Account No.","Position Amount",TRUE,TRUE);
+            END;
+
+            // --> 20100712-8061050-CMB6.00.01-FEC05
+            {BEFORE
+            Posted := TRUE;
+            MODIFY;
+            }
+            // <-- 20100712-8061050-CMB6.00.01-FEC05
+
+          UNTIL NEXT = 0;
+
+        CloseWindow('');
+
+        CLEAR(GenJnlPostLine_G);
+
+      END;
+    END;
+
+    PROCEDURE PostPosEntryToGLCompress@8061951(VAR PosEntry_P@8061932 : Record 8061932);
+    VAR
+      GenJnlLine_L@8061933 : Record 81;
+    BEGIN
+      WITH PosEntry_P DO BEGIN
+
+        GLSetup_G.GET;
+
+        CreateWindow(COUNT);
+
+        IF FINDFIRST THEN
+          REPEAT
+
+            UpdateWindow;
+
+            IF "VAT Amount" = 0 THEN BEGIN
+              FillInvPostingBuffer(PosEntry_P,"Bal. Sheet G/L Account No.","Position Amount",FALSE,FALSE);
+              FillInvPostingBuffer(PosEntry_P,"Income Stat. G/L Account No.",-"Position Amount",TRUE,FALSE);
+              FillInvPostingBuffer(PosEntry_P,"Bal. Sheet G/L Account No.",-"Position Amount",FALSE,TRUE);
+              FillInvPostingBuffer(PosEntry_P,"Income Stat. G/L Account No.","Position Amount",TRUE,TRUE);
+            END ELSE BEGIN
+              FillInvPostingBuffer(PosEntry_P,"Bal. Sheet G/L Account No.","Position Amount"+"VAT Amount",FALSE,FALSE);
+              FillInvPostingBuffer(PosEntry_P,"VAT G/L Account No.",-"VAT Amount",FALSE,FALSE);
+              FillInvPostingBuffer(PosEntry_P,"Income Stat. G/L Account No.",-"Position Amount",TRUE,FALSE);
+              FillInvPostingBuffer(PosEntry_P,"Bal. Sheet G/L Account No.",-"Position Amount"-"VAT Amount",FALSE,TRUE);
+              FillInvPostingBuffer(PosEntry_P,"VAT G/L Account No.","VAT Amount",FALSE,TRUE);
+              FillInvPostingBuffer(PosEntry_P,"Income Stat. G/L Account No.","Position Amount",TRUE,TRUE);
+            END;
+
+            // --> 20100712-8061050-CMB6.00.01-FEC06
+            {BEFORE
+            Posted := TRUE;
+            MODIFY;
+            }
+            // <-- 20100712-8061050-CMB6.00.01-FEC06
+
+          UNTIL NEXT = 0;
+
+        CloseWindow('');
+
+      END;
+
+      CreateWindow(PosPostBuffer_G[1].COUNT);
+
+      IF PosPostBuffer_G[1].FINDSET THEN
+        REPEAT
+
+          UpdateWindow;
+
+          GenJnlLine_L.INIT;
+          GenJnlLine_L."Posting Date" := PosPostBuffer_G[1]."Posting Date";
+          GenJnlLine_L."Document Type" := GenJnlLine_L."Document Type"::" ";
+          GenJnlLine_L."Document No." := PostDocNo_G;
+          GenJnlLine_L."Account No." := PosPostBuffer_G[1]."G/L Account";
+          GenJnlLine_L.Description := PostPostingDescription_G;
+          GenJnlLine_L.Amount := PosPostBuffer_G[1].Amount;
+          GenJnlLine_L."Gen. Posting Type" := GenJnlLine_L."Gen. Posting Type"::" ";
+      // -->20130930-FINA16-CMC02.02.00-KEM02
+          GenJnlLine_L."Intra Group Code" := PosPostBuffer_G[1]."Intra Group Code";
+      // <--20130930-FINA16-CMC02.02.00-KEM02
+          GenJnlLine_L."Gen. Bus. Posting Group" := '';
+          GenJnlLine_L."Gen. Prod. Posting Group" := '';
+          GenJnlLine_L."VAT Bus. Posting Group" := '';
+          GenJnlLine_L."VAT Prod. Posting Group" := '';
+          // --> 20110207-8061050-CMB6.00.10-FEC08
+          {BEFORE
+          GenJnlLine_L."Source Code" := PostSourceCode_G;
+          AFTER}
+          GenJnlLine_L."Source Code" := PosPostBuffer_G[1]."Source Code";
+          // <-- 20110207-8061050-CMB6.00.10-FEC08
+
+          // --> 20110824-8061050-CMB6.00.10.01-FEC02
+          GenJnlLine_L."Shortcut Dimension 1 Code" := PosPostBuffer_G[1]."Global Dimension 1 Code";
+          GenJnlLine_L."Shortcut Dimension 2 Code" := PosPostBuffer_G[1]."Global Dimension 2 Code";
+          // <-- 20110824-8061050-CMB6.00.10.01-FEC02
+
+          RunGenJnlPostLine(GenJnlLine_L,PosPostBuffer_G[1]."Dimension Entry No.");
+
+        UNTIL PosPostBuffer_G[1].NEXT = 0;
+
+      PosPostBuffer_G[1].DELETEALL;
+
+      CloseWindow('');
+
+      CLEAR(GenJnlPostLine_G);
+    END;
+
+    LOCAL PROCEDURE FillInvPostingBuffer@8061950(PosEntry_P@8061936 : Record 8061932;GLAccount_P@8061935 : Code[20];Amount_P@8061934 : Decimal;SetDim_P@8061933 : Boolean;IsReverseEntry_P@8061932 : Boolean);
+    VAR
+      TotalVAT@8061940 : Decimal;
+      TotalVATACY@8061939 : Decimal;
+      TotalAmount@8061938 : Decimal;
+      TotalAmountACY@8061937 : Decimal;
+      "<-- 3LI LOCALS -->"@8061300 : Integer;
+      PositionDate_L@8061301 : Record 8061935;
+    BEGIN
+      PosPostBuffer_G[1]."G/L Account" := GLAccount_P;
+
+      IF PosEntry_P."Entry Type" = PosEntry_P."Entry Type"::Position THEN BEGIN
+      // -->20130930-FINA16-CMC02.02.00-KEM01
+      //BEFOR
+      {
+        GLSetup_G.TESTFIELD("Position Source Code");
+        PosPostBuffer_G[1]."Source Code" := GLSetup_G."Position Source Code";
+      }
+      //AFTER
+        PositionDate_L.GET(PosEntry_P."Position Date");
+        IF PositionDate_L."Source Code"='' THEN
+         BEGIN
+          GLSetup_G.TESTFIELD("Position Source Code");
+          PosPostBuffer_G[1]."Source Code" := GLSetup_G."Position Source Code";
+         END ELSE
+          PosPostBuffer_G[1]."Source Code" := PositionDate_L."Source Code";
+      // <--20130930-FINA16-CMC02.02.00-KEM01
+      END ELSE BEGIN
+        PosPostBuffer_G[1]."Source Code" := GLSetup_G."Commitm. Source Code";
+        GLSetup_G.TESTFIELD("Commitm. Source Code");
+      END;
+
+      IF NOT IsReverseEntry_P THEN
+        PosPostBuffer_G[1]."Posting Date" := PosEntry_P."Position Date"
+      ELSE
+        PosPostBuffer_G[1]."Posting Date" := CALCDATE('<+1D>',PosEntry_P."Position Date");
+      // -->20130930-FINA16-CMC02.02.00-KEM02
+      PosPostBuffer_G[1]."Intra Group Code" := PosEntry_P."Intra Group Code";
+      // <--20130930-FINA16-CMC02.02.00-KEM02
+      PosPostBuffer_G[1].Amount := Amount_P;
+
+      TempLedgerEntryDim_G.SETRANGE("Table ID",DATABASE::"Position Entry");
+      TempLedgerEntryDim_G.SETRANGE("Entry No.",PosEntry_P."Entry No.");
+
+      UpdInvPostingBuffer(SetDim_P);
+    END;
+
+    LOCAL PROCEDURE UpdInvPostingBuffer@8061949(SetDim_P@8061932 : Boolean);
+    VAR
+      TempDimBuf_L@8061934 : TEMPORARY Record 360;
+      EntryNo_L@8061933 : Integer;
+    BEGIN
+      // --> 20110317-8061050-CMB6.00.10-FEC02
+      IF GLSetup_G."Dimension on All Entries" THEN
+        SetDim_P := TRUE;
+      // <-- 20110317-8061050-CMB6.00.10-FEC02
+
+      IF SetDim_P THEN BEGIN
+        IF TempLedgerEntryDim_G.FINDSET THEN
+          REPEAT
+            TempDimBuf_L."Table ID" := TempLedgerEntryDim_G."Table ID";
+            TempDimBuf_L."Dimension Code" := TempLedgerEntryDim_G."Dimension Code";
+            TempDimBuf_L."Dimension Value Code" := TempLedgerEntryDim_G."Dimension Value Code";
+
+            // --> 20140106-8061050-CMB6.00.10.09-1217-BDN
+            TempDimBuf_L."Allocation %" := TempLedgerEntryDim_G."Allocation %";
+            TempDimBuf_L.Type := TempLedgerEntryDim_G.Type;
+            TempDimBuf_L."Allocation Amount" := TempLedgerEntryDim_G."Allocation Amount";
+            // <-- 20140106-8061050-CMB6.00.10.09-1217-BDN
+            // --> 20160929-WI00-ADV01.01.00-21924-JCD01
+            IF GLSetup_G."Global Dimension 1 Code" = TempLedgerEntryDim_G."Dimension Code" THEN
+              PosPostBuffer_G[1]."Global Dimension 1 Code" := TempLedgerEntryDim_G."Dimension Value Code";
+            IF GLSetup_G."Global Dimension 2 Code" = TempLedgerEntryDim_G."Dimension Code" THEN
+              PosPostBuffer_G[1]."Global Dimension 2 Code" := TempLedgerEntryDim_G."Dimension Value Code";
+            // <-- 20160929-WI00-ADV01.01.00-21924-JCD01
+            TempDimBuf_L.INSERT;
+          UNTIL TempLedgerEntryDim_G.NEXT = 0;
+        EntryNo_L := DimBufMgt_G.FindDimensions(TempDimBuf_L);
+        IF EntryNo_L = 0 THEN
+          EntryNo_L := DimBufMgt_G.InsertDimensions(TempDimBuf_L);
+        PosPostBuffer_G[1]."Dimension Entry No." := EntryNo_L;
+      END ELSE
+        PosPostBuffer_G[1]."Dimension Entry No." := 0;
+
+      PosPostBuffer_G[2] := PosPostBuffer_G[1];
+      IF PosPostBuffer_G[2].FIND THEN BEGIN
+        PosPostBuffer_G[2].Amount := PosPostBuffer_G[2].Amount + PosPostBuffer_G[1].Amount;
+        PosPostBuffer_G[2].MODIFY;
+      END ELSE
+        PosPostBuffer_G[1].INSERT;
+    END;
+
+    LOCAL PROCEDURE RunGenJnlPostLine@8061948(VAR GenJnlLine_P@8061933 : Record 81;DimEntryNo_P@8061932 : Integer);
+    VAR
+      TempDimBuf_L@8061935 : TEMPORARY Record 360;
+      TempJnlLineDim_L@8061934 : TEMPORARY Record 356;
+    BEGIN
+      TempDimBuf_L.DELETEALL;
+      TempJnlLineDim_L.DELETEALL;
+      DimBufMgt_G.GetDimensions(DimEntryNo_P,TempDimBuf_L);
+      DimMgt_G.CopyDimBufToJnlLineDim(
+        TempDimBuf_L,TempJnlLineDim_L,GenJnlLine_P."Journal Template Name",
+        GenJnlLine_P."Journal Batch Name",GenJnlLine_P."Line No.");
+
+      // --> 20100712-8061050-CMB6.00.01-FEC02
+      GenJnlPostLine_G.SetOverPosDateErr;
+      // <-- 20100712-8061050-CMB6.00.01-FEC02
+
+      GenJnlPostLine_G.RunWithCheck(GenJnlLine_P,TempJnlLineDim_L);
+    END;
+
+    PROCEDURE DeletePosEntry@8061947(VAR PosEntry_P@8061932 : Record 8061932);
+    VAR
+      LedgerEntryDim_L@8061933 : Record 355;
+    BEGIN
+      IF PosEntry_P.FINDFIRST THEN
+        REPEAT
+          IF PosEntry_P.Posted THEN
+            ERROR(Text8061936);
+        UNTIL PosEntry_P.NEXT = 0;
+
+      IF CONFIRM(Text8061935,FALSE,PosEntry_P.COUNT) THEN
+        IF PosEntry_P.FINDFIRST THEN
+          REPEAT
+            LedgerEntryDim_L.RESET;
+            LedgerEntryDim_L.SETRANGE("Table ID",DATABASE::"Position Entry");
+            LedgerEntryDim_L.SETRANGE("Entry No.",PosEntry_P."Entry No.");
+            LedgerEntryDim_L.DELETEALL;
+            PosEntry_P.DELETE;
+          UNTIL PosEntry_P.NEXT = 0;
+    END;
+
+    PROCEDURE SetPostingData@8061946(PostDoctNo_P@8061934 : Code[20];PostPostingDescription_P@8061933 : Text[30]);
+    BEGIN
+      PostDocNo_G := PostDoctNo_P;
+      PostPostingDescription_G := PostPostingDescription_P;
+      // --> 20110207-8061050-CMB6.00.10-FEC10
+      {BEFORE
+      PostSourceCode_G := PostSourceCode_P;}
+      // <-- 20110207-8061050-CMB6.00.10-FEC10
+    END;
+
+    PROCEDURE CopyBudgEntryDimToLedgEntryDim@8061945(FromEntryNo@8061934 : Integer;ToTableID@8061933 : Integer;ToEntryNo@8061932 : Integer);
+    VAR
+      FromLedgEntryDim@8061936 : Record 361;
+      ToLedgEntryDim@8061935 : Record 355;
+    BEGIN
+      WITH FromLedgEntryDim DO BEGIN
+        SETRANGE("Entry No.",FromEntryNo);
+        IF FINDSET THEN BEGIN
+          REPEAT
+            ToLedgEntryDim."Table ID" := ToTableID;
+            ToLedgEntryDim."Entry No." := ToEntryNo;
+            ToLedgEntryDim."Dimension Code" := "Dimension Code";
+            ToLedgEntryDim."Dimension Value Code" := "Dimension Value Code";
+            ToLedgEntryDim.INSERT;
+          UNTIL NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE CreateWindow@8061944(RecCount_P@8061932 : Integer);
+    BEGIN
+      TotalRecCount_G := RecCount_P;
+      Window_G.OPEN('@1@@@@@@@@@@@@@@@@@@@@@@@@@@@@');
+    END;
+
+    PROCEDURE UpdateWindow@8061943();
+    BEGIN
+      CurrentRecCount_G := CurrentRecCount_G + 1;
+      IF TotalRecCount_G <> 0 THEN
+        Window_G.UPDATE(1,ROUND((CurrentRecCount_G/TotalRecCount_G)*10000,1));
+    END;
+
+    PROCEDURE CloseWindow@8061942(ProcessEndMessage_P@8061932 : Text[1024]);
+    BEGIN
+      IF ProcessEndMessage_P <> '' THEN
+        MESSAGE(ProcessEndMessage_P,CurrentRecCount_G);
+      Window_G.CLOSE;
+    END;
+
+    PROCEDURE InsertDocPosEntry@8061941(SourceTableID@8061938 : Integer;GLAccountNo_P@8061937 : Code[20];PositionDate_P@8061936 : Date;PositionAmount_P@8061935 : Decimal;DocNo_P@8061934 : Code[20];DocLine_P@8061933 : Integer;InvoicedQty_P@8061932 : Decimal);
+    VAR
+      SalesShipmentHeader_L@8061950 : Record 110;
+      SalesShipmentLine_L@8061949 : Record 111;
+      ReturnReceiptHeader_L@8061948 : Record 6660;
+      ReturnReceiptLine_L@8061947 : Record 6661;
+      PurchRcptHeader_L@8061946 : Record 120;
+      PurchRcptLine_L@8061945 : Record 121;
+      ReturnShipmHeader_L@8061944 : Record 6650;
+      ReturnShipmLine_L@8061943 : Record 6651;
+      ServShipmHeader_L@8061942 : Record 5990;
+      ServShipmLine_L@8061941 : Record 5991;
+      PostedDocDim_L@8061940 : Record 359;
+      Currency_L@8061939 : Record 4;
+      SalesInvHeader_L@8061951 : Record 112;
+      SalesInvLine_L@8061952 : Record 113;
+      SalesCrMemoHeader_L@8061953 : Record 114;
+      SalesCrMemoLine_L@8061954 : Record 115;
+      PurchInvHeader_L@8061955 : Record 122;
+      PurchInvLine_L@8061956 : Record 123;
+      PurchCrMemoHeader_L@8061957 : Record 124;
+      PurchCrMemoLine_L@8061958 : Record 125;
+      ServInvHeader_L@8061959 : Record 5992;
+      ServInvLine_L@8061960 : Record 5993;
+      Cust_L@8053000 : Record 18;
+      Vend_L@8053001 : Record 23;
+    BEGIN
+      // --> 20160531-WI00-ADV01.01.00-3022-JCD01
+      IF GLSetup_G."LCY Code" = '' THEN
+        GLSetup_G.GET;
+      IF GLSetup_G."BS Pos.Include zero" = FALSE THEN
+        IF PositionAmount_P = 0 THEN
+          EXIT;
+      // <-- 20160531-WI00-ADV01.01.00-3022-JCD01
+
+      PosEntry_G.INIT;
+      PosEntry_G."Entry No." := GetNextEntryNo;
+      PosEntry_G."Position Date" := PositionDate_P;
+      PosEntry_G."Position Amount" := PositionAmount_P;
+      PosEntry_G."G/L Account No." := GLAccountNo_P;
+      PosEntry_G."Document No." := DocNo_P;
+      PosEntry_G."Document Line No." := DocLine_P;
+
+      CASE SourceTableID OF
+        DATABASE::"Sales Shipment Line" : BEGIN
+          PosEntry_G."Position Source" := PosEntry_G."Position Source"::"Sales Shipment Line";
+          SalesShipmentHeader_L.GET(PosEntry_G."Document No.");
+          SalesShipmentLine_L.GET(PosEntry_G."Document No.",PosEntry_G."Document Line No.");
+          PosEntry_G."Customer / Vendor" := PosEntry_G."Customer / Vendor"::Customer;
+          PosEntry_G."Cust. / Vendor No." := SalesShipmentLine_L."Bill-to Customer No.";
+          PosEntry_G."Posting Date" := SalesShipmentLine_L."Posting Date";
+          PosEntry_G."Total Period No." := SalesShipmentLine_L.Quantity;
+          PosEntry_G."Realized Period No." := InvoicedQty_P;
+          PosEntry_G."Original Amount" := CalcAmount(PositionDate_P,SalesShipmentLine_L.Quantity,
+            SalesShipmentLine_L."Unit Price",SalesShipmentLine_L."Line Discount %",SalesShipmentHeader_L."Currency Code");
+
+          // --> 20110823-8061050-CMB6.00.10.01-FEC03
+          PosEntry_G."Global Dimension 1 Code" := SalesShipmentLine_L."Shortcut Dimension 1 Code";
+          PosEntry_G."Global Dimension 2 Code" := SalesShipmentLine_L."Shortcut Dimension 2 Code";
+          // <-- 20110823-8061050-CMB6.00.10.01-FEC03
+
+          // --> 20140106-8061050-CMB6.00.10.09-1404-FEC01
+          PosEntry_G."Order / Return No" := SalesShipmentHeader_L."Order No.";
+          PosEntry_G."Doc. Line Type" := SalesShipmentLine_L.Type;
+          PosEntry_G."Doc. Line No." := SalesShipmentLine_L."No.";
+          PosEntry_G."Doc. Line Description" := SalesShipmentLine_L.Description;
+          // --< 20140106-8061050-CMB6.00.10.09-1404-FEC01
+          //--> 20150122-8061050-CMB6.00.10.01-2680-KEM01
+          ItemLdgEntry_G.RESET;
+          ItemLdgEntry_G.SETCURRENTKEY("Document No.","Document Type","Document Line No.");
+          ItemLdgEntry_G.SETRANGE("Document No.",PosEntry_G."Document No.");
+          ItemLdgEntry_G.SETRANGE("Document Type",ItemLdgEntry_G."Document Type"::"Sales Shipment");
+          ItemLdgEntry_G.SETRANGE("Document Line No.",PosEntry_G."Document Line No.");
+          IF ItemLdgEntry_G.FINDFIRST THEN
+            PosEntry_G."CMC Campaign No." := ItemLdgEntry_G."Campaign No.";
+          //<-- 20150122-8061050-CMB6.00.10.01-2680-KEM01
+        END;
+        DATABASE::"Return Receipt Line" : BEGIN
+          PosEntry_G."Position Source" := PosEntry_G."Position Source"::"Return Receipt Line";
+          ReturnReceiptHeader_L.GET(PosEntry_G."Document No.");
+          ReturnReceiptLine_L.GET(PosEntry_G."Document No.",PosEntry_G."Document Line No.");
+          PosEntry_G."Customer / Vendor" := PosEntry_G."Customer / Vendor"::Customer;
+          PosEntry_G."Cust. / Vendor No." := ReturnReceiptLine_L."Bill-to Customer No.";
+          PosEntry_G."Posting Date" := ReturnReceiptLine_L."Posting Date";
+          PosEntry_G."Total Period No." := ReturnReceiptLine_L.Quantity;
+          PosEntry_G."Realized Period No." := InvoicedQty_P;
+          PosEntry_G."Original Amount" := CalcAmount(PositionDate_P,ReturnReceiptLine_L.Quantity,
+            ReturnReceiptLine_L."Unit Price",ReturnReceiptLine_L."Line Discount %",ReturnReceiptHeader_L."Currency Code");
+          // --> 20110823-8061050-CMB6.00.10.01-FEC04
+          PosEntry_G."Global Dimension 1 Code" := ReturnReceiptLine_L."Shortcut Dimension 1 Code";
+          PosEntry_G."Global Dimension 2 Code" := ReturnReceiptLine_L."Shortcut Dimension 2 Code";
+          // <-- 20110823-8061050-CMB6.00.10.01-FEC04
+
+          // --> 20140106-8061050-CMB6.00.10.09-1404-FEC02
+          PosEntry_G."Order / Return No" := ReturnReceiptHeader_L."Return Order No.";
+          PosEntry_G."Doc. Line Type" := ReturnReceiptLine_L.Type;
+          PosEntry_G."Doc. Line No." := ReturnReceiptLine_L."No.";
+          PosEntry_G."Doc. Line Description" := ReturnReceiptLine_L.Description;
+          // --< 20140106-8061050-CMB6.00.10.09-1404-FEC02
+          //--> 20150122-8061050-CMB6.00.10.01-2680-KEM01
+          ItemLdgEntry_G.RESET;
+          ItemLdgEntry_G.SETCURRENTKEY("Document No.","Document Type","Document Line No.");
+          ItemLdgEntry_G.SETRANGE("Document No.",PosEntry_G."Document No.");
+          ItemLdgEntry_G.SETRANGE("Document Type",ItemLdgEntry_G."Document Type"::"Sales Return Receipt");
+          ItemLdgEntry_G.SETRANGE("Document Line No.",PosEntry_G."Document Line No.");
+          IF ItemLdgEntry_G.FINDFIRST THEN
+            PosEntry_G."CMC Campaign No." := ItemLdgEntry_G."Campaign No.";
+          //<-- 20150122-8061050-CMB6.00.10.01-2680-KEM01
+        END;
+        DATABASE::"Purch. Rcpt. Line" : BEGIN
+          PosEntry_G."Position Source" := PosEntry_G."Position Source"::"Purch. Rcpt. Line";
+          PurchRcptHeader_L.GET(PosEntry_G."Document No.");
+          PurchRcptLine_L.GET(PosEntry_G."Document No.",PosEntry_G."Document Line No.");
+          PosEntry_G."Customer / Vendor" := PosEntry_G."Customer / Vendor"::Vendor;
+          PosEntry_G."Cust. / Vendor No." := PurchRcptLine_L."Pay-to Vendor No.";
+          PosEntry_G."Posting Date" := PurchRcptLine_L."Posting Date";
+          PosEntry_G."Total Period No." := PurchRcptLine_L.Quantity;
+          PosEntry_G."Realized Period No." := InvoicedQty_P;
+          PosEntry_G."Original Amount" := CalcAmount(PositionDate_P,PurchRcptLine_L.Quantity,
+            PurchRcptLine_L."Direct Unit Cost",PurchRcptLine_L."Line Discount %",PurchRcptHeader_L."Currency Code");
+          // --> 20110823-8061050-CMB6.00.10.01-FEC05
+          PosEntry_G."Global Dimension 1 Code" := PurchRcptLine_L."Shortcut Dimension 1 Code";
+          PosEntry_G."Global Dimension 2 Code" := PurchRcptLine_L."Shortcut Dimension 2 Code";
+          // <-- 20110823-8061050-CMB6.00.10.01-FEC05
+
+          // --> 20140106-8061050-CMB6.00.10.09-1404-FEC03
+          PosEntry_G."Order / Return No" := PurchRcptHeader_L."Order No.";
+          PosEntry_G."Doc. Line Type" := PurchRcptLine_L.Type;
+          PosEntry_G."Doc. Line No." := PurchRcptLine_L."No.";
+          PosEntry_G."Doc. Line Description" := PurchRcptLine_L.Description;
+          // --< 20140106-8061050-CMB6.00.10.09-1404-FEC03
+          //--> 20150122-8061050-CMB6.00.10.01-2680-KEM01
+          ItemLdgEntry_G.RESET;
+          ItemLdgEntry_G.SETCURRENTKEY("Document No.","Document Type","Document Line No.");
+          ItemLdgEntry_G.SETRANGE("Document No.",PosEntry_G."Document No.");
+          ItemLdgEntry_G.SETRANGE("Document Type",ItemLdgEntry_G."Document Type"::"Purchase Receipt");
+          ItemLdgEntry_G.SETRANGE("Document Line No.",PosEntry_G."Document Line No.");
+          IF ItemLdgEntry_G.FINDFIRST THEN
+            PosEntry_G."CMC Campaign No." := ItemLdgEntry_G."Campaign No.";
+          //<-- 20150122-8061050-CMB6.00.10.01-2680-KEM01
+
+        END;
+        DATABASE::"Return Shipment Line" : BEGIN
+          PosEntry_G."Position Source" := PosEntry_G."Position Source"::"Return Shipment Line";
+          ReturnShipmHeader_L.GET(PosEntry_G."Document No.");
+          ReturnShipmLine_L.GET(PosEntry_G."Document No.",PosEntry_G."Document Line No.");
+          PosEntry_G."Customer / Vendor" := PosEntry_G."Customer / Vendor"::Vendor;
+          PosEntry_G."Cust. / Vendor No." := ReturnShipmLine_L."Pay-to Vendor No.";
+          PosEntry_G."Posting Date" := ReturnShipmLine_L."Posting Date";
+          PosEntry_G."Total Period No." := ReturnShipmLine_L.Quantity;
+          PosEntry_G."Realized Period No." := InvoicedQty_P;
+          PosEntry_G."Original Amount" := CalcAmount(PositionDate_P,ReturnShipmLine_L.Quantity,
+            ReturnShipmLine_L."Direct Unit Cost",ReturnShipmLine_L."Line Discount %",ReturnShipmHeader_L."Currency Code");
+          // --> 20110823-8061050-CMB6.00.10.01-FEC06
+          PosEntry_G."Global Dimension 1 Code" := ReturnShipmLine_L."Shortcut Dimension 1 Code";
+          PosEntry_G."Global Dimension 2 Code" := ReturnShipmLine_L."Shortcut Dimension 2 Code";
+          // <-- 20110823-8061050-CMB6.00.10.01-FEC06
+
+          // --> 20140106-8061050-CMB6.00.10.09-1404-FEC04
+          PosEntry_G."Order / Return No" := ReturnShipmHeader_L."Return Order No.";
+          PosEntry_G."Doc. Line Type" := ReturnShipmLine_L.Type;
+          PosEntry_G."Doc. Line No." := ReturnShipmLine_L."No.";
+          PosEntry_G."Doc. Line Description" := ReturnShipmLine_L.Description;
+          // --< 20140106-8061050-CMB6.00.10.09-1404-FEC04
+          //--> 20150122-8061050-CMB6.00.10.01-2680-KEM01
+          ItemLdgEntry_G.RESET;
+          ItemLdgEntry_G.SETCURRENTKEY("Document No.","Document Type","Document Line No.");
+          ItemLdgEntry_G.SETRANGE("Document No.",PosEntry_G."Document No.");
+          ItemLdgEntry_G.SETRANGE("Document Type",ItemLdgEntry_G."Document Type"::"Purchase Return Shipment");
+          ItemLdgEntry_G.SETRANGE("Document Line No.",PosEntry_G."Document Line No.");
+          IF ItemLdgEntry_G.FINDFIRST THEN
+            PosEntry_G."CMC Campaign No." := ItemLdgEntry_G."Campaign No.";
+          //<-- 20150122-8061050-CMB6.00.10.01-2680-KEM01
+        END;
+        DATABASE::"Service Shipment Line" : BEGIN
+          PosEntry_G."Position Source" := PosEntry_G."Position Source"::"Service Shipment Line";
+          ServShipmHeader_L.GET(PosEntry_G."Document No.");
+          ServShipmLine_L.GET(PosEntry_G."Document No.",PosEntry_G."Document Line No.");
+          PosEntry_G."Customer / Vendor" := PosEntry_G."Customer / Vendor"::Customer;
+          PosEntry_G."Cust. / Vendor No." := ServShipmLine_L."Bill-to Customer No.";
+          PosEntry_G."Posting Date" := ServShipmLine_L."Posting Date";
+          PosEntry_G."Total Period No." := ServShipmLine_L.Quantity;
+          PosEntry_G."Realized Period No." := InvoicedQty_P;
+          PosEntry_G."Original Amount" := CalcAmount(PositionDate_P,ServShipmLine_L.Quantity,
+            ServShipmLine_L."Unit Price",ServShipmLine_L."Line Discount %",ServShipmHeader_L."Currency Code");
+          // --> 20110823-8061050-CMB6.00.10.01-FEC07
+          PosEntry_G."Global Dimension 1 Code" := ServShipmLine_L."Shortcut Dimension 1 Code";
+          PosEntry_G."Global Dimension 2 Code" := ServShipmLine_L."Shortcut Dimension 2 Code";
+          // <-- 20110823-8061050-CMB6.00.10.01-FEC07
+
+          // --> 20140106-8061050-CMB6.00.10.09-1404-FEC05
+          PosEntry_G."Order / Return No" := ServShipmHeader_L."Order No.";
+          PosEntry_G."Doc. Line Type" := ServShipmLine_L.Type;
+          PosEntry_G."Doc. Line No." := ServShipmLine_L."No.";
+          PosEntry_G."Doc. Line Description" := ServShipmLine_L.Description;
+          // --< 20140106-8061050-CMB6.00.10.09-1404-FEC05
+
+        END;
+        // --> 20120125-8061050-CMB6.00.10.01-FEC01
+        DATABASE::"Sales Invoice Line" : BEGIN
+          PosEntry_G."Position Source" := PosEntry_G."Position Source"::"Sales Inv. Line";
+          SalesInvHeader_L.GET(PosEntry_G."Document No.");
+          SalesInvLine_L.GET(PosEntry_G."Document No.",PosEntry_G."Document Line No.");
+          PosEntry_G."Customer / Vendor" := PosEntry_G."Customer / Vendor"::Customer;
+          PosEntry_G."Cust. / Vendor No." := SalesInvLine_L."Bill-to Customer No.";
+          PosEntry_G."Posting Date" := SalesInvLine_L."Posting Date";
+          PosEntry_G."Total Period No." := SalesInvLine_L.Quantity;
+          PosEntry_G."Realized Period No." := InvoicedQty_P;
+          PosEntry_G."Original Amount" := CalcAmount(PositionDate_P,SalesInvLine_L.Quantity,
+            SalesInvLine_L."Unit Price",SalesInvLine_L."Line Discount %",SalesInvHeader_L."Currency Code");
+          PosEntry_G."Global Dimension 1 Code" := SalesInvLine_L."Shortcut Dimension 1 Code";
+          PosEntry_G."Global Dimension 2 Code" := SalesInvLine_L."Shortcut Dimension 2 Code";
+          PosEntry_G."In Advance" := TRUE;
+        END;
+        DATABASE::"Sales Cr.Memo Line" : BEGIN
+          PosEntry_G."Position Source" := PosEntry_G."Position Source"::"Sales Cr. Line";
+          SalesCrMemoHeader_L.GET(PosEntry_G."Document No.");
+          SalesCrMemoLine_L.GET(PosEntry_G."Document No.",PosEntry_G."Document Line No.");
+          PosEntry_G."Customer / Vendor" := PosEntry_G."Customer / Vendor"::Customer;
+          PosEntry_G."Cust. / Vendor No." := SalesCrMemoLine_L."Bill-to Customer No.";
+          PosEntry_G."Posting Date" := SalesCrMemoLine_L."Posting Date";
+          PosEntry_G."Total Period No." := SalesCrMemoLine_L.Quantity;
+          PosEntry_G."Realized Period No." := InvoicedQty_P;
+          PosEntry_G."Original Amount" := CalcAmount(PositionDate_P,SalesCrMemoLine_L.Quantity,
+            SalesCrMemoLine_L."Unit Price",SalesCrMemoLine_L."Line Discount %",SalesCrMemoHeader_L."Currency Code");
+          PosEntry_G."Global Dimension 1 Code" := SalesCrMemoLine_L."Shortcut Dimension 1 Code";
+          PosEntry_G."Global Dimension 2 Code" := SalesCrMemoLine_L."Shortcut Dimension 2 Code";
+          PosEntry_G."In Advance" := TRUE;
+        END;
+        DATABASE::"Purch. Inv. Line" : BEGIN
+          PosEntry_G."Position Source" := PosEntry_G."Position Source"::"Purch. Inv. Line";
+          PurchInvHeader_L.GET(PosEntry_G."Document No.");
+          PurchInvLine_L.GET(PosEntry_G."Document No.",PosEntry_G."Document Line No.");
+          PosEntry_G."Customer / Vendor" := PosEntry_G."Customer / Vendor"::Vendor;
+          PosEntry_G."Cust. / Vendor No." := PurchInvLine_L."Buy-from Vendor No.";
+          PosEntry_G."Posting Date" := PurchInvLine_L."Posting Date";
+          PosEntry_G."Total Period No." := PurchInvLine_L.Quantity;
+          PosEntry_G."Realized Period No." := InvoicedQty_P;
+          PosEntry_G."Original Amount" := CalcAmount(PositionDate_P,PurchInvLine_L.Quantity,
+            PurchInvLine_L."Direct Unit Cost",PurchInvLine_L."Line Discount %",PurchInvHeader_L."Currency Code");
+          PosEntry_G."Global Dimension 1 Code" := PurchInvLine_L."Shortcut Dimension 1 Code";
+          PosEntry_G."Global Dimension 2 Code" := PurchInvLine_L."Shortcut Dimension 2 Code";
+          PosEntry_G."In Advance" := TRUE;
+        END;
+        DATABASE::"Purch. Cr. Memo Line" : BEGIN
+          PosEntry_G."Position Source" := PosEntry_G."Position Source"::"Purch. Cr. Line";
+          PurchCrMemoHeader_L.GET(PosEntry_G."Document No.");
+          PurchCrMemoLine_L.GET(PosEntry_G."Document No.",PosEntry_G."Document Line No.");
+          PosEntry_G."Customer / Vendor" := PosEntry_G."Customer / Vendor"::Vendor;
+          PosEntry_G."Cust. / Vendor No." := PurchCrMemoLine_L."Buy-from Vendor No.";
+          PosEntry_G."Posting Date" := PurchCrMemoLine_L."Posting Date";
+          PosEntry_G."Total Period No." := PurchCrMemoLine_L.Quantity;
+          PosEntry_G."Realized Period No." := InvoicedQty_P;
+          PosEntry_G."Original Amount" := CalcAmount(PositionDate_P,PurchCrMemoLine_L.Quantity,
+            PurchCrMemoLine_L."Unit Cost",PurchCrMemoLine_L."Line Discount %",PurchCrMemoHeader_L."Currency Code");
+          PosEntry_G."Global Dimension 1 Code" := PurchCrMemoLine_L."Shortcut Dimension 1 Code";
+          PosEntry_G."Global Dimension 2 Code" := PurchCrMemoLine_L."Shortcut Dimension 2 Code";
+          PosEntry_G."In Advance" := TRUE;
+        END;
+        DATABASE::"Service Invoice Line" : BEGIN
+          PosEntry_G."Position Source" := PosEntry_G."Position Source"::"Serv. Inv. Line";
+          ServInvHeader_L.GET(PosEntry_G."Document No.");
+          ServInvLine_L.GET(PosEntry_G."Document No.",PosEntry_G."Document Line No.");
+          PosEntry_G."Customer / Vendor" := PosEntry_G."Customer / Vendor"::Customer;
+          PosEntry_G."Cust. / Vendor No." := ServInvLine_L."Bill-to Customer No.";
+          PosEntry_G."Posting Date" := ServInvLine_L."Posting Date";
+          PosEntry_G."Total Period No." := ServInvLine_L.Quantity;
+          PosEntry_G."Realized Period No." := InvoicedQty_P;
+          PosEntry_G."Original Amount" := CalcAmount(PositionDate_P,ServInvLine_L.Quantity,
+            ServInvLine_L."Unit Price",ServInvLine_L."Line Discount %",ServInvHeader_L."Currency Code");
+          PosEntry_G."Global Dimension 1 Code" := ServInvLine_L."Shortcut Dimension 1 Code";
+          PosEntry_G."Global Dimension 2 Code" := ServInvLine_L."Shortcut Dimension 2 Code";
+          PosEntry_G."In Advance" := TRUE;
+        END;
+        // <-- 20120125-8061050-CMB6.00.10.01-FEC01
+      END;
+
+      PosEntry_G."Remaining Period No." := PosEntry_G."Total Period No." - PosEntry_G."Realized Period No.";
+      PosEntry_G.VALIDATE("Cust. / Vendor No.");
+      // -->20131009-FINA16-CMC02.02.00-BRA01
+      CASE PosEntry_G."Customer / Vendor" OF
+       PosEntry_G."Customer / Vendor"::Customer:
+       BEGIN
+        Cust_L.GET(PosEntry_G."Cust. / Vendor No.");
+        IF Cust_L."Intra Group" THEN
+          PosEntry_G."Intra Group Code" := Cust_L."Intra Group Code";
+       END;
+       PosEntry_G."Customer / Vendor"::Vendor:
+       BEGIN
+        Vend_L.GET(PosEntry_G."Cust. / Vendor No.");
+        IF Vend_L."Intra Group" THEN
+          PosEntry_G."Intra Group Code" := Vend_L."Intra Group Code";
+       END;
+
+      END;
+      // <--20131009-FINA16-CMC02.02.00-BRA01
+
+      PosEntry_G.Description := FORMAT(PosEntry_G."Position Source");
+      // --> 20110207-8061050-CMB6.00.10-FEC11
+      PosEntry_G."Entry Type" := PosEntry_G."Entry Type"::Position;
+      // <-- 20110207-8061050-CMB6.00.10-FEC11
+
+      SetPositionAccountNo(PosEntry_G);
+      CalcVATAmount(PosEntry_G);
+      PosEntry_G.INSERT;
+
+      CopyPostedDocDimToLedgEntryDim(SourceTableID,DocNo_P,DocLine_P,DATABASE::"Position Entry",PosEntry_G."Entry No.");
+    END;
+
+    PROCEDURE InsertSalesShipInvEntry@8061940(SalesShipLine_P@8061936 : Record 111;SalesInvHeaderNo_P@8061935 : Code[20];SalesInvLineNo_P@8061934 : Integer;InvQty_P@8061933 : Decimal;PostingDate_P@8061932 : Date);
+    VAR
+      ShipInvEntry_L@8061937 : Record 8061934;
+    BEGIN
+      // --> 20110131-8061050-CMB6.00.01-FEC02
+      {BEFORE
+      WITH ShipInvEntry_L DO BEGIN
+        INIT;
+        "Transaction Type" := "Transaction Type"::Sales;
+        "Inv./Cr. Memo Doc. No." := SalesInvHeaderNo_P;
+        "Inv./Cr. Memo Line No." := SalesInvLineNo_P;
+        "Ship./Receipt Doc. No." := SalesShipLine_P."Document No.";
+        "Ship./Receipt Line No." := SalesShipLine_P."Line No.";
+        "Invoiced Qty" := InvQty_P;
+        "Invoice Posting Date" := PostingDate_P;
+        "Ship./Receipt Posting Date" := SalesShipLine_P."Posting Date";
+        "User ID" := USERID;
+        INSERT;
+      END;
+      AFTER}
+      WITH ShipInvEntry_L DO BEGIN
+        IF GET("Transaction Type"::Sales,SalesInvHeaderNo_P,SalesInvLineNo_P,
+                SalesShipLine_P."Document No.",SalesShipLine_P."Line No.") THEN BEGIN
+          "Invoiced Qty" := "Invoiced Qty" + InvQty_P;
+          MODIFY;
+        END ELSE BEGIN
+          INIT;
+          "Transaction Type" := "Transaction Type"::Sales;
+          "Inv./Cr. Memo Doc. No." := SalesInvHeaderNo_P;
+          "Inv./Cr. Memo Line No." := SalesInvLineNo_P;
+          "Ship./Receipt Doc. No." := SalesShipLine_P."Document No.";
+          "Ship./Receipt Line No." := SalesShipLine_P."Line No.";
+          "Invoiced Qty" := InvQty_P;
+          "Invoice Posting Date" := PostingDate_P;
+          "Ship./Receipt Posting Date" := SalesShipLine_P."Posting Date";
+          "User ID" := USERID;
+          INSERT;
+        END;
+      END;
+      // <-- 20110131-8061050-CMB6.00.01-FEC02
+    END;
+
+    PROCEDURE InsertSalesReturnInvEntry@8061939(ReturnReceiptLine_P@8061936 : Record 6661;SalesCrMemoHeaderNo_P@8061935 : Code[20];CrMemoLineNo_P@8061934 : Integer;InvQty_P@8061933 : Decimal;PostingDate_P@8061932 : Date);
+    VAR
+      ShipInvEntry_L@8061937 : Record 8061934;
+    BEGIN
+      // --> 20110131-8061050-CMB6.00.01-FEC03
+      {BEFORE
+      WITH ShipInvEntry_L DO BEGIN
+        INIT;
+        "Transaction Type" := "Transaction Type"::"Sales Return";
+        "Inv./Cr. Memo Doc. No." := SalesCrMemoHeaderNo_P;
+        "Inv./Cr. Memo Line No." := CrMemoLineNo_P;
+        "Ship./Receipt Doc. No." := ReturnReceiptLine_P."Document No.";
+        "Ship./Receipt Line No." := ReturnReceiptLine_P."Line No.";
+        "Invoiced Qty" := InvQty_P;
+        "Invoice Posting Date" := PostingDate_P;
+        "Ship./Receipt Posting Date" := ReturnReceiptLine_P."Posting Date";
+        "User ID" := USERID;
+        INSERT;
+      END;
+      AFTER}
+      WITH ShipInvEntry_L DO BEGIN
+        IF GET("Transaction Type"::"Sales Return",SalesCrMemoHeaderNo_P,CrMemoLineNo_P,
+                ReturnReceiptLine_P."Document No.",ReturnReceiptLine_P."Line No.") THEN BEGIN
+          "Invoiced Qty" := "Invoiced Qty" + InvQty_P;
+          MODIFY;
+        END ELSE BEGIN
+          INIT;
+          "Transaction Type" := "Transaction Type"::"Sales Return";
+          "Inv./Cr. Memo Doc. No." := SalesCrMemoHeaderNo_P;
+          "Inv./Cr. Memo Line No." := CrMemoLineNo_P;
+          "Ship./Receipt Doc. No." := ReturnReceiptLine_P."Document No.";
+          "Ship./Receipt Line No." := ReturnReceiptLine_P."Line No.";
+          "Invoiced Qty" := InvQty_P;
+          "Invoice Posting Date" := PostingDate_P;
+          "Ship./Receipt Posting Date" := ReturnReceiptLine_P."Posting Date";
+          "User ID" := USERID;
+          INSERT;
+        END;
+      END;
+      // <-- 20110131-8061050-CMB6.00.01-FEC03
+    END;
+
+    PROCEDURE InsertPurchReceiptInvEntry@8061938(PurchReceiptLine_P@8061936 : Record 121;PurchInvHeaderNo_P@8061935 : Code[20];PurchInvLineNo_P@8061934 : Integer;InvQty_P@8061933 : Decimal;PostingDate_P@8061932 : Date);
+    VAR
+      ShipInvEntry_L@8061937 : Record 8061934;
+    BEGIN
+      // --> 20110131-8061050-CMB6.00.01-FEC04
+      {BEFORE
+      WITH ShipInvEntry_L DO BEGIN
+        INIT;
+        "Transaction Type" := "Transaction Type"::Purchase;
+        "Inv./Cr. Memo Doc. No." := PurchInvHeaderNo_P;
+        "Inv./Cr. Memo Line No." := PurchInvLineNo_P;
+        "Ship./Receipt Doc. No." := PurchReceiptLine_P."Document No.";
+        "Ship./Receipt Line No." := PurchReceiptLine_P."Line No.";
+        "Invoiced Qty" := InvQty_P;
+        "Invoice Posting Date" := PostingDate_P;
+        "Ship./Receipt Posting Date" := PurchReceiptLine_P."Posting Date";
+        "User ID" := USERID;
+        INSERT;
+      END;
+      AFTER}
+      WITH ShipInvEntry_L DO BEGIN
+        IF GET("Transaction Type"::Purchase,PurchInvHeaderNo_P,PurchInvLineNo_P,
+                PurchReceiptLine_P."Document No.",PurchReceiptLine_P."Line No.") THEN BEGIN
+          "Invoiced Qty" := "Invoiced Qty" + InvQty_P;
+          MODIFY;
+        END ELSE BEGIN
+          INIT;
+          "Transaction Type" := "Transaction Type"::Purchase;
+          "Inv./Cr. Memo Doc. No." := PurchInvHeaderNo_P;
+          "Inv./Cr. Memo Line No." := PurchInvLineNo_P;
+          "Ship./Receipt Doc. No." := PurchReceiptLine_P."Document No.";
+          "Ship./Receipt Line No." := PurchReceiptLine_P."Line No.";
+          "Invoiced Qty" := InvQty_P;
+          "Invoice Posting Date" := PostingDate_P;
+          "Ship./Receipt Posting Date" := PurchReceiptLine_P."Posting Date";
+          "User ID" := USERID;
+          INSERT;
+        END;
+      END;
+      // <-- 20110131-8061050-CMB6.00.01-FEC04
+    END;
+
+    PROCEDURE InsertPurchReturnInvEntry@8061937(ReturnReceiptLine_P@8061936 : Record 6651;PurchCrMemoHeaderNo_P@8061935 : Code[20];CrMemoLineNo_P@8061934 : Integer;InvQty_P@8061933 : Decimal;PostingDate_P@8061932 : Date);
+    VAR
+      ShipInvEntry_L@8061937 : Record 8061934;
+    BEGIN
+      // --> 20110131-8061050-CMB6.00.01-FEC05
+      {BEFORE
+      WITH ShipInvEntry_L DO BEGIN
+        INIT;
+        "Transaction Type" := "Transaction Type"::"Purchase Return";
+        "Inv./Cr. Memo Doc. No." := PurchCrMemoHeaderNo_P;
+        "Inv./Cr. Memo Line No." := CrMemoLineNo_P;
+        "Ship./Receipt Doc. No." := ReturnReceiptLine_P."Document No.";
+        "Ship./Receipt Line No." := ReturnReceiptLine_P."Line No.";
+        "Invoiced Qty" := InvQty_P;
+        "Invoice Posting Date" := PostingDate_P;
+        "Ship./Receipt Posting Date" := ReturnReceiptLine_P."Posting Date";
+        "User ID" := USERID;
+        INSERT;
+      END;
+      AFTER}
+      WITH ShipInvEntry_L DO BEGIN
+        IF GET("Transaction Type"::"Purchase Return",PurchCrMemoHeaderNo_P,CrMemoLineNo_P,
+                ReturnReceiptLine_P."Document No.",ReturnReceiptLine_P."Line No.") THEN BEGIN
+          "Invoiced Qty" := "Invoiced Qty" + InvQty_P;
+          MODIFY;
+        END ELSE BEGIN
+          INIT;
+          "Transaction Type" := "Transaction Type"::"Purchase Return";
+          "Inv./Cr. Memo Doc. No." := PurchCrMemoHeaderNo_P;
+          "Inv./Cr. Memo Line No." := CrMemoLineNo_P;
+          "Ship./Receipt Doc. No." := ReturnReceiptLine_P."Document No.";
+          "Ship./Receipt Line No." := ReturnReceiptLine_P."Line No.";
+          "Invoiced Qty" := InvQty_P;
+          "Invoice Posting Date" := PostingDate_P;
+          "Ship./Receipt Posting Date" := ReturnReceiptLine_P."Posting Date";
+          "User ID" := USERID;
+          INSERT;
+        END;
+      END;
+      // <-- 20110131-8061050-CMB6.00.01-FEC05
+    END;
+
+    PROCEDURE InsertServiceShipInvEntry@8061936(ServShipLine_P@8061936 : Record 5991;ServInvHeaderNo_P@8061935 : Code[20];ServInvLineNo_P@8061934 : Integer;InvQty_P@8061933 : Decimal;PostingDate_P@8061932 : Date);
+    VAR
+      ShipInvEntry_L@8061937 : Record 8061934;
+    BEGIN
+      // --> 20110131-8061050-CMB6.00.01-FEC06
+      {BEFORE
+      WITH ShipInvEntry_L DO BEGIN
+        INIT;
+        "Transaction Type" := "Transaction Type"::"Service Sales";
+        "Inv./Cr. Memo Doc. No." := ServInvHeaderNo_P;
+        "Inv./Cr. Memo Line No." := ServInvLineNo_P;
+        "Ship./Receipt Doc. No." := ServShipLine_P."Document No.";
+        "Ship./Receipt Line No." := ServShipLine_P."Line No.";
+        "Invoiced Qty" := InvQty_P;
+        "Invoice Posting Date" := PostingDate_P;
+        "Ship./Receipt Posting Date" := ServShipLine_P."Posting Date";
+        "User ID" := USERID;
+        INSERT;
+      END;
+      AFTER}
+      WITH ShipInvEntry_L DO BEGIN
+        IF GET("Transaction Type"::"Service Sales",ServInvHeaderNo_P,ServInvLineNo_P,
+                ServShipLine_P."Document No.",ServShipLine_P."Line No.") THEN BEGIN
+          "Invoiced Qty" := "Invoiced Qty" + InvQty_P;
+          MODIFY;
+        END ELSE BEGIN
+          INIT;
+          "Transaction Type" := "Transaction Type"::"Service Sales";
+          "Inv./Cr. Memo Doc. No." := ServInvHeaderNo_P;
+          "Inv./Cr. Memo Line No." := ServInvLineNo_P;
+          "Ship./Receipt Doc. No." := ServShipLine_P."Document No.";
+          "Ship./Receipt Line No." := ServShipLine_P."Line No.";
+          "Invoiced Qty" := InvQty_P;
+          "Invoice Posting Date" := PostingDate_P;
+          "Ship./Receipt Posting Date" := ServShipLine_P."Posting Date";
+          "User ID" := USERID;
+          INSERT;
+        END;
+      END;
+      // <-- 20110131-8061050-CMB6.00.01-FEC06
+    END;
+
+    PROCEDURE CopyPostedDocDimToLedgEntryDim@8061935(FromTableID_P@8061936 : Integer;FromDocNo_P@8061935 : Code[20];FromDocLineNo_P@8061934 : Integer;ToTableID_P@8061933 : Integer;ToEntryNo_P@8061932 : Integer);
+    VAR
+      FromPostedDocDim_L@8061938 : Record 359;
+      ToLedgEntryDim_L@8061937 : Record 355;
+    BEGIN
+      WITH FromPostedDocDim_L DO BEGIN
+        SETRANGE("Table ID",FromTableID_P);
+        SETRANGE("Document No.",FromDocNo_P);
+        SETRANGE("Line No.",FromDocLineNo_P);
+        IF FINDSET THEN BEGIN
+          REPEAT
+            ToLedgEntryDim_L."Table ID" := ToTableID_P;
+            ToLedgEntryDim_L."Entry No." := ToEntryNo_P;
+            ToLedgEntryDim_L."Dimension Code" := "Dimension Code";
+            ToLedgEntryDim_L."Dimension Value Code" := "Dimension Value Code";
+
+            // --> 20140106-8061050-CMB6.00.10.09-1217-BDN
+            ToLedgEntryDim_L.Type := Type;
+            ToLedgEntryDim_L."Allocation %" := "Allocation %";
+            ToLedgEntryDim_L."Allocation Amount" := "Allocation Amount";
+            // <-- 20140106-8061050-CMB6.00.10.09-1217-BDN
+
+            ToLedgEntryDim_L.INSERT;
+          UNTIL NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE GetCustVendFromGLEntry@8061934(GLEntryNo_P@8061934 : Integer;VAR CustVendor_P@8061933 : ' ,Customer,Vendor';VAR CustVendNo_P@8061932 : Code[20]);
+    VAR
+      CustLedgerEntry_L@8061937 : Record 21;
+      VendLedgerEntry_L@8061936 : Record 25;
+      GLEntry_L@8061935 : Record 17;
+    BEGIN
+      GLEntry_L.GET(GLEntryNo_P);
+
+      CustLedgerEntry_L.RESET;
+      CustLedgerEntry_L.SETCURRENTKEY("Transaction No.");
+      CustLedgerEntry_L.SETRANGE("Transaction No.",GLEntry_L."Transaction No.");
+      IF CustLedgerEntry_L.FINDSET THEN BEGIN
+        CustVendor_P := CustVendor_P::Customer;
+        CustVendNo_P := CustLedgerEntry_L."Customer No.";
+      END;
+
+      VendLedgerEntry_L.RESET;
+      VendLedgerEntry_L.SETCURRENTKEY("Transaction No.");
+      VendLedgerEntry_L.SETRANGE("Transaction No.",GLEntry_L."Transaction No.");
+      IF VendLedgerEntry_L.FINDSET THEN BEGIN
+        CustVendor_P := CustVendor_P::Vendor;
+        CustVendNo_P := VendLedgerEntry_L."Vendor No.";
+      END;
+    END;
+
+    PROCEDURE CalcAmount@8061933(PositionDate_P@8061936 : Date;Quantity_P@8061935 : Decimal;UnitPriceCost_P@8061934 : Decimal;LineDiscount_P@8061933 : Decimal;CurrencyCode_P@8061932 : Code[20]) : Decimal;
+    VAR
+      Amount_L@8061939 : Decimal;
+      Currency_L@8061938 : Record 4;
+      CurrExchRate_L@8061937 : Record 330;
+    BEGIN
+      // Calcul du montant
+      Amount_L := CurrExchRate_L.ExchangeAmtFCYToFCY(PositionDate_P,CurrencyCode_P,'',Quantity_P * UnitPriceCost_P);
+
+      // Remise ligne
+      IF LineDiscount_P <> 0 THEN
+        Amount_L := Amount_L * ((100 - LineDiscount_P) / 100);
+
+      // Arrondi
+      IF NOT Currency_L.GET(CurrencyCode_P) THEN
+        Currency_L.InitRoundingPrecision;
+      Amount_L := ROUND(Amount_L,Currency_L."Amount Rounding Precision");
+
+      EXIT(Amount_L);
+    END;
+
+    PROCEDURE InsertCommitPosEntry@80706(SourceTable_P@80705 : 'Sales Order,Sales Return,Purchase Order,Purchase Return,Service Order';GLAccountNo_P@80704 : Code[20];PositionDate_P@80703 : Date;PositionAmount_P@80702 : Decimal;DocNo_P@80700 : Code[20];DocLine_P@80701 : Integer);
+    VAR
+      SalesHeader_L@80709 : Record 36;
+      SalesLine_L@80710 : Record 37;
+      PurchLine_L@80708 : Record 39;
+      ServLine_L@80706 : Record 5902;
+      PostedDocDim_L@80711 : Record 359;
+      Currency_L@80717 : Record 4;
+      SourceTableID_L@80712 : Integer;
+      SourceDocType_L@80707 : Integer;
+    BEGIN
+      IF PositionAmount_P = 0 THEN
+        EXIT;
+
+      GLSetup_G.GET;
+
+      PosEntry_G.INIT;
+      PosEntry_G."Entry No." := GetNextEntryNo;
+      PosEntry_G."Position Date" := PositionDate_P;
+      PosEntry_G."Position Amount" := PositionAmount_P;
+      PosEntry_G."G/L Account No." := GLAccountNo_P;
+      PosEntry_G."Document No." := DocNo_P;
+      PosEntry_G."Document Line No." := DocLine_P;
+
+      CASE SourceTable_P OF
+        SourceTable_P::"Sales Order" : BEGIN
+          PosEntry_G."Position Source" := PosEntry_G."Position Source"::"Sales Order Line";
+          SalesLine_L.GET(SalesLine_L."Document Type"::Order,PosEntry_G."Document No.",PosEntry_G."Document Line No.");
+          SourceTableID_L := DATABASE::"Sales Line";
+          SourceDocType_L := SalesLine_L."Document Type";
+          PosEntry_G."Customer / Vendor" := PosEntry_G."Customer / Vendor"::Customer;
+          PosEntry_G."Cust. / Vendor No." := SalesLine_L."Bill-to Customer No.";
+          PosEntry_G."Original Amount" := CalcAmount(PositionDate_P,SalesLine_L.Quantity,
+            SalesLine_L."Unit Price",SalesLine_L."Line Discount %",SalesLine_L."Currency Code");
+          // -->  20110823-8061050-CMB6.00.10.01-FEC08
+          PosEntry_G."Global Dimension 1 Code" := SalesLine_L."Shortcut Dimension 1 Code";
+          PosEntry_G."Global Dimension 2 Code" := SalesLine_L."Shortcut Dimension 2 Code";
+          // <--  20110823-8061050-CMB6.00.10.01-FEC08
+        END;
+        SourceTable_P::"Sales Return" : BEGIN
+          PosEntry_G."Position Source" := PosEntry_G."Position Source"::"Sales Return Line";
+          SalesLine_L.GET(SalesLine_L."Document Type"::"Return Order",PosEntry_G."Document No.",PosEntry_G."Document Line No.");
+          SourceTableID_L := DATABASE::"Sales Line";
+          SourceDocType_L := SalesLine_L."Document Type";
+          PosEntry_G."Customer / Vendor" := PosEntry_G."Customer / Vendor"::Customer;
+          PosEntry_G."Cust. / Vendor No." := SalesLine_L."Bill-to Customer No.";
+          PosEntry_G."Original Amount" := CalcAmount(PositionDate_P,SalesLine_L.Quantity,
+            SalesLine_L."Unit Price",SalesLine_L."Line Discount %",SalesLine_L."Currency Code");
+          // -->  20110823-8061050-CMB6.00.10.01-FEC09
+          PosEntry_G."Global Dimension 1 Code" := SalesLine_L."Shortcut Dimension 1 Code";
+          PosEntry_G."Global Dimension 2 Code" := SalesLine_L."Shortcut Dimension 2 Code";
+          // <--  20110823-8061050-CMB6.00.10.01-FEC09
+        END;
+        SourceTable_P::"Purchase Order" : BEGIN
+          PosEntry_G."Position Source" := PosEntry_G."Position Source"::"Purch. Order Line";
+          PurchLine_L.GET(PurchLine_L."Document Type"::Order,PosEntry_G."Document No.",PosEntry_G."Document Line No.");
+          SourceTableID_L := DATABASE::"Purchase Line";
+          SourceDocType_L := PurchLine_L."Document Type";
+          PosEntry_G."Customer / Vendor" := PosEntry_G."Customer / Vendor"::Vendor;
+          PosEntry_G."Cust. / Vendor No." := PurchLine_L."Pay-to Vendor No.";
+          PosEntry_G."Original Amount" := CalcAmount(PositionDate_P,PurchLine_L.Quantity,
+            PurchLine_L."Unit Cost",PurchLine_L."Line Discount %",PurchLine_L."Currency Code");
+          // -->  20110823-8061050-CMB6.00.10.01-FEC10
+          PosEntry_G."Global Dimension 1 Code" := PurchLine_L."Shortcut Dimension 1 Code";
+          PosEntry_G."Global Dimension 2 Code" := PurchLine_L."Shortcut Dimension 2 Code";
+          // <--  20110823-8061050-CMB6.00.10.01-FEC10
+        END;
+        SourceTable_P::"Purchase Return" : BEGIN
+          PosEntry_G."Position Source" := PosEntry_G."Position Source"::"Purch. Return Line";
+          PurchLine_L.GET(PurchLine_L."Document Type"::"Return Order",PosEntry_G."Document No.",PosEntry_G."Document Line No.");
+          SourceTableID_L := DATABASE::"Purchase Line";
+          SourceDocType_L := PurchLine_L."Document Type";
+          PosEntry_G."Customer / Vendor" := PosEntry_G."Customer / Vendor"::Vendor;
+          PosEntry_G."Cust. / Vendor No." := PurchLine_L."Pay-to Vendor No.";
+          PosEntry_G."Original Amount" := CalcAmount(PositionDate_P,PurchLine_L.Quantity,
+            PurchLine_L."Unit Cost",PurchLine_L."Line Discount %",PurchLine_L."Currency Code");
+          // -->  20110823-8061050-CMB6.00.10.01-FEC11
+          PosEntry_G."Global Dimension 1 Code" := PurchLine_L."Shortcut Dimension 1 Code";
+          PosEntry_G."Global Dimension 2 Code" := PurchLine_L."Shortcut Dimension 2 Code";
+          // <--  20110823-8061050-CMB6.00.10.01-FEC11
+        END;
+        SourceTable_P::"Service Order" : BEGIN
+          PosEntry_G."Position Source" := PosEntry_G."Position Source"::"Service Order Line";
+          ServLine_L.GET(ServLine_L."Document Type"::Order,PosEntry_G."Document No.",PosEntry_G."Document Line No.");
+          SourceTableID_L := DATABASE::"Service Line";
+          SourceDocType_L := ServLine_L."Document Type";
+          PosEntry_G."Customer / Vendor" := PosEntry_G."Customer / Vendor"::Customer;
+          PosEntry_G."Cust. / Vendor No." := ServLine_L."Bill-to Customer No.";
+          PosEntry_G."Original Amount" := CalcAmount(PositionDate_P,ServLine_L.Quantity,
+            ServLine_L."Unit Price",ServLine_L."Line Discount %",ServLine_L."Currency Code");
+          // -->  20110823-8061050-CMB6.00.10.01-FEC12
+          PosEntry_G."Global Dimension 1 Code" := ServLine_L."Shortcut Dimension 1 Code";
+          PosEntry_G."Global Dimension 2 Code" := ServLine_L."Shortcut Dimension 2 Code";
+          // <--  20110823-8061050-CMB6.00.10.01-FEC12
+        END;
+      END;
+
+      PosEntry_G.VALIDATE("Cust. / Vendor No.");
+      PosEntry_G.Description := FORMAT(PosEntry_G."Position Source");
+      // --> 20110207-8061050-CMB6.00.10-FEC12
+      PosEntry_G."Entry Type" := PosEntry_G."Entry Type"::Commitment;
+      // --< 20110207-8061050-CMB6.00.10-FEC12
+
+      SetCommitPositionAccountNo(PosEntry_G);
+      IF GLSetup_G."Post VAT on Commitm." THEN
+        CalcVATAmount(PosEntry_G);
+      PosEntry_G.INSERT;
+
+      CopyDocDimToLedgEntryDim(SourceTableID_L,SourceDocType_L,DocNo_P,DocLine_P,DATABASE::"Position Entry",PosEntry_G."Entry No.");
+    END;
+
+    PROCEDURE CopyDocDimToLedgEntryDim@80720(FromTableID_P@1001 : Integer;FromDocType_P@80702 : Integer;FromDocNo_P@80700 : Code[20];FromDocLineNo_P@80701 : Integer;ToTableID_P@1002 : Integer;ToEntryNo_P@1003 : Integer);
+    VAR
+      FromDocDim_L@1004 : Record 357;
+      ToLedgEntryDim_L@1005 : Record 355;
+    BEGIN
+      WITH FromDocDim_L DO BEGIN
+        SETRANGE("Table ID",FromTableID_P);
+        SETRANGE("Document Type",FromDocType_P);
+        SETRANGE("Document No.",FromDocNo_P);
+        SETRANGE("Line No.",FromDocLineNo_P);
+        IF FINDSET THEN BEGIN
+          REPEAT
+            ToLedgEntryDim_L."Table ID" := ToTableID_P;
+            ToLedgEntryDim_L."Entry No." := ToEntryNo_P;
+            ToLedgEntryDim_L."Dimension Code" := "Dimension Code";
+            ToLedgEntryDim_L."Dimension Value Code" := "Dimension Value Code";
+
+            // --> 20140106-8061050-CMB6.00.10.09-1217-BDN
+            ToLedgEntryDim_L.Type := Type;
+            ToLedgEntryDim_L."Allocation %" := "Allocation %";
+            ToLedgEntryDim_L."Allocation Amount" := "Allocation Amount";
+            // <-- 20140106-8061050-CMB6.00.10.09-1217-BDN
+
+            ToLedgEntryDim_L.INSERT;
+          UNTIL NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE SetCommitPositionAccountNo@80723(VAR PosEntry_P@60004 : Record 8061932);
+    VAR
+      VATPostingSetup_L@60002 : Record 325;
+      GLAccount_L@80703 : Record 15;
+      SalesLine_L@80701 : Record 37;
+      PurchLine_L@80700 : Record 39;
+      ServLine_L@80702 : Record 5902;
+      VATBusPostingGroup_L@60001 : Code[20];
+      VATProdPostingGroup_L@60005 : Code[20];
+      GenPostingType_L@60007 : ' ,Purchase,Sale,Settlement';
+      ISAccountNo_L@1180250007 : Code[20];
+      Cust_L@1180250006 : Record 18;
+      Vend_L@1180250005 : Record 23;
+      CustPostingGroup_L@1180250004 : Record 92;
+      VendPostingGroup_L@1180250003 : Record 93;
+    BEGIN
+      GLSetup_G.GET;
+
+      WITH PosEntry_P DO BEGIN
+
+        GLAccount_L.GET(PosEntry_G."G/L Account No.");
+
+        PosEntry_P."Bal. Sheet G/L Account No." := GLAccount_L."BS Commitm. Acc. No.";
+
+        IF PosEntry_P."Bal. Sheet G/L Account No." = '' THEN
+          IF PosEntry_P."Cust. / Vendor No." <> '' THEN BEGIN
+            IF PosEntry_P."Customer / Vendor" = PosEntry_P."Customer / Vendor"::Customer THEN BEGIN
+              Cust_L.GET(PosEntry_P."Cust. / Vendor No.");
+              CustPostingGroup_L.GET(Cust_L."Customer Posting Group");
+              PosEntry_P."Bal. Sheet G/L Account No." := CustPostingGroup_L."Commitm. Acc. No.";
+            END ELSE BEGIN
+              Vend_L.GET(PosEntry_P."Cust. / Vendor No.");
+              VendPostingGroup_L.GET(Vend_L."Vendor Posting Group");
+              PosEntry_P."Bal. Sheet G/L Account No." := VendPostingGroup_L."Commitm. Acc. No.";
+            END;
+          END;
+
+        IF PosEntry_P."Bal. Sheet G/L Account No." = '' THEN BEGIN
+          IF COPYSTR(GLAccount_L."No.",1,1) = '7' THEN BEGIN
+            GLSetup_G.TESTFIELD("BS Prod. Commitm. Acc. No.");
+            PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Prod. Commitm. Acc. No.";
+          END ELSE BEGIN
+            GLSetup_G.TESTFIELD("BS Charge Commitm. Acc. No.");
+            PosEntry_P."Bal. Sheet G/L Account No." := GLSetup_G."BS Charge Commitm. Acc. No.";
+          END;
+        END;
+
+        IF GLAccount_L."IS Commitm. Acc. No." <> '' THEN
+          "Income Stat. G/L Account No." := GLAccount_L."IS Commitm. Acc. No."
+        ELSE
+          "Income Stat. G/L Account No." := PosEntry_G."G/L Account No.";
+
+        IF GLSetup_G."Post VAT on Commitm." THEN BEGIN
+
+          CASE PosEntry_P."Position Source" OF
+            PosEntry_P."Position Source"::"Sales Order Line" : BEGIN
+              SalesLine_L.GET(SalesLine_L."Document Type"::Order,PosEntry_P."Document No.",PosEntry_P."Document Line No.");
+              VATBusPostingGroup_L := SalesLine_L."VAT Bus. Posting Group";
+              VATProdPostingGroup_L := SalesLine_L."VAT Prod. Posting Group";
+              GenPostingType_L := GenPostingType_L::Sale;
+            END;
+            PosEntry_P."Position Source"::"Sales Return Line" : BEGIN
+              SalesLine_L.GET(SalesLine_L."Document Type"::"Return Order",PosEntry_P."Document No.",PosEntry_P."Document Line No.");
+              VATBusPostingGroup_L := SalesLine_L."VAT Bus. Posting Group";
+              VATProdPostingGroup_L := SalesLine_L."VAT Prod. Posting Group";
+              GenPostingType_L := GenPostingType_L::Sale;
+            END;
+            PosEntry_P."Position Source"::"Purch. Order Line" : BEGIN
+              PurchLine_L.GET(PurchLine_L."Document Type"::Order,PosEntry_P."Document No.",PosEntry_P."Document Line No.");
+              VATBusPostingGroup_L := PurchLine_L."VAT Bus. Posting Group";
+              VATProdPostingGroup_L := PurchLine_L."VAT Prod. Posting Group";
+              GenPostingType_L := GenPostingType_L::Purchase;
+            END;
+            PosEntry_P."Position Source"::"Purch. Return Line" : BEGIN
+              PurchLine_L.GET(PurchLine_L."Document Type"::"Return Order",PosEntry_P."Document No.",PosEntry_P."Document Line No.");
+              VATBusPostingGroup_L := PurchLine_L."VAT Bus. Posting Group";
+              VATProdPostingGroup_L := PurchLine_L."VAT Prod. Posting Group";
+              GenPostingType_L := GenPostingType_L::Purchase;
+            END;
+            PosEntry_P."Position Source"::"Service Order Line" : BEGIN
+              ServLine_L.GET(ServLine_L."Document Type"::Order,PosEntry_P."Document No.",PosEntry_P."Document Line No.");
+              VATBusPostingGroup_L := ServLine_L."VAT Bus. Posting Group";
+              VATProdPostingGroup_L := ServLine_L."VAT Prod. Posting Group";
+              GenPostingType_L := GenPostingType_L::Sale;
+            END;
+          END;
+
+          VATPostingSetup_L.GET(VATBusPostingGroup_L,VATProdPostingGroup_L);
+
+          CASE GenPostingType_L OF
+            GenPostingType_L::Sale : BEGIN
+              VATPostingSetup_L.TESTFIELD("Sales Commit. Account");
+              PosEntry_P."VAT G/L Account No." := VATPostingSetup_L."Sales Commit. Account";
+            END;
+            GenPostingType_L::Purchase : BEGIN
+              VATPostingSetup_L.TESTFIELD("Purch. Commit. Account");
+              PosEntry_P."VAT G/L Account No." := VATPostingSetup_L."Purch. Commit. Account";
+            END;
+          END;
+          PosEntry_P."VAT Rate" := VATPostingSetup_L."VAT %";
+
+        END;
+
+      END;
+    END;
+
+    PROCEDURE DisplayDocument@80709(PositionEntry_P@80700 : Record 8061932);
+    VAR
+      SalesShipHeader_L@80701 : Record 110;
+      ReturnRcptHeader_L@80702 : Record 6660;
+      PurchRcptHeader_L@80703 : Record 120;
+      ReturnShipHeader_L@80704 : Record 6650;
+      ServShipHeader_L@80705 : Record 5990;
+      SalesHeader_L@80706 : Record 36;
+      PurchHeader_L@80707 : Record 38;
+      ServHeader_L@80708 : Record 5900;
+      Text80700@80709 : TextConst 'FRA=Le document n''existe plus dans la base de donn'es.';
+      SalesInvHeader_L@80714 : Record 112;
+      SalesCredMemoHeader_L@80710 : Record 114;
+      PurchInvHeader_L@80711 : Record 122;
+      PurchCredMemHeader_L@80712 : Record 124;
+      ServInvHeader_L@80713 : Record 5992;
+    BEGIN
+      WITH PositionEntry_P DO
+        CASE "Position Source" OF
+          "Position Source"::"Sales Shipment Line" :
+            IF SalesShipHeader_L.GET("Document No.") THEN
+              FORM.RUNMODAL(FORM::"Posted Sales Shipment",SalesShipHeader_L)
+            ELSE
+              ERROR(Text80700);
+          "Position Source"::"Return Receipt Line" :
+            IF ReturnRcptHeader_L.GET("Document No.") THEN
+              FORM.RUNMODAL(FORM::"Posted Return Receipt",ReturnRcptHeader_L)
+            ELSE
+              ERROR(Text80700);
+          "Position Source"::"Purch. Rcpt. Line" :
+            IF PurchRcptHeader_L.GET("Document No.") THEN
+              FORM.RUNMODAL(FORM::"Posted Purchase Receipt",PurchRcptHeader_L)
+            ELSE
+              ERROR(Text80700);
+          "Position Source"::"Return Shipment Line" :
+            IF ReturnShipHeader_L.GET("Document No.") THEN
+              FORM.RUNMODAL(FORM::"Posted Return Shipment",ReturnShipHeader_L)
+            ELSE
+              ERROR(Text80700);
+          "Position Source"::"Service Shipment Line" :
+            IF ServShipHeader_L.GET("Document No.") THEN
+              FORM.RUNMODAL(FORM::"Posted Service Shipment",ServShipHeader_L)
+            ELSE
+              ERROR(Text80700);
+          "Position Source"::"Sales Order Line" :
+            IF SalesHeader_L.GET(SalesHeader_L."Document Type"::Order,"Document No.") THEN
+              FORM.RUNMODAL(FORM::"Sales Order",SalesHeader_L)
+            ELSE
+              ERROR(Text80700);
+          "Position Source"::"Sales Return Line" :
+            IF SalesHeader_L.GET(SalesHeader_L."Document Type"::"Return Order","Document No.") THEN
+              FORM.RUNMODAL(FORM::"Sales Return Order",SalesHeader_L)
+            ELSE
+              ERROR(Text80700);
+          "Position Source"::"Purch. Order Line" :
+            IF PurchHeader_L.GET(PurchHeader_L."Document Type"::Order,"Document No.") THEN
+              FORM.RUNMODAL(FORM::"Purchase Order",PurchHeader_L)
+            ELSE
+              ERROR(Text80700);
+          "Position Source"::"Purch. Return Line" :
+            IF PurchHeader_L.GET(PurchHeader_L."Document Type"::"Return Order","Document No.") THEN
+              FORM.RUNMODAL(FORM::"Purchase Return Order",PurchHeader_L)
+            ELSE
+              ERROR(Text80700);
+          "Position Source"::"Service Order Line" :
+            IF ServHeader_L.GET(ServHeader_L."Document Type"::Order,"Document No.") THEN
+              FORM.RUNMODAL(FORM::"Service Order",ServHeader_L)
+            ELSE
+              ERROR(Text80700);
+          // --> 20120125-8061050-CMB6.00.10.01-FEC02
+          "Position Source"::"Sales Inv. Line" :
+            IF SalesInvHeader_L.GET("Document No.") THEN
+              FORM.RUNMODAL(FORM::"Posted Sales Invoice",SalesInvHeader_L)
+            ELSE
+              ERROR(Text80700);
+          "Position Source"::"Sales Cr. Line" :
+            IF SalesCredMemoHeader_L.GET("Document No.") THEN
+              FORM.RUNMODAL(FORM::"Posted Sales Credit Memo",SalesCredMemoHeader_L)
+            ELSE
+              ERROR(Text80700);
+          "Position Source"::"Purch. Inv. Line" :
+            IF PurchInvHeader_L.GET("Document No.") THEN
+              FORM.RUNMODAL(FORM::"Posted Purchase Invoice",PurchInvHeader_L)
+            ELSE
+              ERROR(Text80700);
+          "Position Source"::"Purch. Cr. Line" :
+            IF PurchCredMemHeader_L.GET("Document No.") THEN
+              FORM.RUNMODAL(FORM::"Posted Purchase Credit Memo",PurchCredMemHeader_L)
+            ELSE
+              ERROR(Text80700);
+          "Position Source"::"Serv. Inv. Line" :
+            IF ServInvHeader_L.GET("Document No.") THEN
+              FORM.RUNMODAL(FORM::"Posted Service Invoice",ServInvHeader_L)
+            ELSE
+              ERROR(Text80700);
+          // <-- 20120125-8061050-CMB6.00.10.01-FEC02
+        END;
+    END;
+
+    PROCEDURE CheckPosDateSource@8061932(VAR SourceCode_P@8061932 : Code[10];PosStartingDate_P@8061934 : Date);
+    VAR
+      Source_L@8061933 : Record 230;
+    BEGIN
+      IF PosStartingDate_P <> 0D THEN BEGIN
+        Source_L.GET(SourceCode_P);
+        Source_L.TESTFIELD("Forbid Position Date Update",FALSE);
+      END;
+    END;
+
+    PROCEDURE CheckProcessPosDate@8061964(PositionDate_G@8061932 : Date);
+    VAR
+      PositionDate_L@8061933 : Record 8061935;
+    BEGIN
+      IF PositionDate_G = 0D THEN
+          ERROR(Text8061939);
+
+      PositionDate_L.GET(PositionDate_G);
+      PositionDate_L.TESTFIELD(Closed,FALSE);
+    END;
+
+    PROCEDURE CheckSalesDocDimOnRelease@8061965(SalesHeader_P@8061932 : Record 36);
+    VAR
+      SalesLine_L@8061933 : Record 37;
+      i_L@8061946 : Integer;
+      TableID_L@8061945 : ARRAY [10] OF Integer;
+      No_L@8061944 : ARRAY [10] OF Code[20];
+      TempDimBuf2_L@8061937 : TEMPORARY Record 360;
+      DimErr_L@8061935 : Text[250];
+      DocDim_L@8061934 : Record 357;
+      DimMgt_L@8061936 : Codeunit 408;
+      GenPostingSetup_L@8061938 : Record 252;
+      GLAccountNo_L@8061939 : Code[20];
+    BEGIN
+      IF NOT (SalesHeader_P."Document Type" IN [SalesHeader_P."Document Type"::Order,SalesHeader_P."Document Type"::"Return Order"])
+      THEN
+        EXIT;
+
+      SalesLine_L.RESET;
+      SalesLine_L.SETRANGE("Document Type",SalesHeader_P."Document Type");
+      SalesLine_L.SETRANGE("Document No.",SalesHeader_P."No.");
+      IF SalesLine_L.FINDSET THEN
+        REPEAT
+
+          IF SalesLine_L.Type <> SalesLine_L.Type::" " THEN BEGIN
+
+            TempDimBuf2_L.RESET;
+            TempDimBuf2_L.DELETEALL;
+
+            DocDim_L.RESET;
+            DocDim_L.SETRANGE("Table ID",DATABASE::"Sales Line");
+            DocDim_L.SETRANGE("Document Type",SalesLine_L."Document Type");
+            DocDim_L.SETRANGE("Document No.",SalesLine_L."Document No.");
+            DocDim_L.SETRANGE("Line No.",SalesLine_L."Line No.");
+            IF DocDim_L.FINDSET THEN
+              REPEAT
+
+                DimErr_L := DimMgt_L.DocRelCheckDimValue(DocDim_L."Dimension Code",
+                                                         DocDim_L."Dimension Value Code");
+
+                TempDimBuf2_L.INIT;
+                TempDimBuf2_L."Table ID" := DATABASE::"Document Dimension";
+                TempDimBuf2_L."Entry No." := i_L;
+                TempDimBuf2_L."Dimension Code" := DocDim_L."Dimension Code";
+                TempDimBuf2_L."Dimension Value Code" := DocDim_L."Dimension Value Code";
+                TempDimBuf2_L.INSERT;
+                i_L := i_L + 1;
+              UNTIL DocDim_L.NEXT = 0;
+
+            IF SalesLine_L.Type = SalesLine_L.Type::"G/L Account" THEN
+              GLAccountNo_L := SalesLine_L."No."
+            ELSE BEGIN
+              GenPostingSetup_L.GET(SalesLine_L."Gen. Bus. Posting Group",SalesLine_L."Gen. Prod. Posting Group");
+              GenPostingSetup_L.TESTFIELD("Sales Account");
+              GLAccountNo_L := GenPostingSetup_L."Sales Account";
+            END;
+
+            TableID_L[1] := DATABASE::"G/L Account";
+            No_L[1] := GLAccountNo_L;
+
+            DimErr_L := DimMgt_L.DocRelDimCheckValuePosting(TableID_L,No_L,TempDimBuf2_L);
+            IF DimErr_L <> '' THEN
+              ERROR(DimErr_L);
+
+          END;
+
+        UNTIL SalesLine_L.NEXT = 0;
+    END;
+
+    PROCEDURE CheckPurchDocDimOnRelease@8061966(PurchHeader_P@8061932 : Record 38);
+    VAR
+      PurchLine_L@8061933 : Record 39;
+      i_L@8061946 : Integer;
+      TableID_L@8061945 : ARRAY [10] OF Integer;
+      No_L@8061944 : ARRAY [10] OF Code[20];
+      TempDimBuf2_L@8061937 : TEMPORARY Record 360;
+      DimErr_L@8061935 : Text[250];
+      DocDim_L@8061934 : Record 357;
+      DimMgt_L@8061936 : Codeunit 408;
+      GenPostingSetup_L@8061938 : Record 252;
+      GLAccountNo_L@8061939 : Code[20];
+    BEGIN
+      IF NOT (PurchHeader_P."Document Type" IN [PurchHeader_P."Document Type"::Order,PurchHeader_P."Document Type"::"Return Order"])
+      THEN
+        EXIT;
+
+      PurchLine_L.RESET;
+      PurchLine_L.SETRANGE("Document Type",PurchHeader_P."Document Type");
+      PurchLine_L.SETRANGE("Document No.",PurchHeader_P."No.");
+      IF PurchLine_L.FINDSET THEN
+        REPEAT
+
+          IF PurchLine_L.Type <> PurchLine_L.Type::" " THEN BEGIN
+
+            TempDimBuf2_L.RESET;
+            TempDimBuf2_L.DELETEALL;
+
+            DocDim_L.RESET;
+            DocDim_L.SETRANGE("Table ID",DATABASE::"Purchase Line");
+            DocDim_L.SETRANGE("Document Type",PurchLine_L."Document Type");
+            DocDim_L.SETRANGE("Document No.",PurchLine_L."Document No.");
+            DocDim_L.SETRANGE("Line No.",PurchLine_L."Line No.");
+            IF DocDim_L.FINDSET THEN
+              REPEAT
+
+                DimErr_L := DimMgt_L.DocRelCheckDimValue(DocDim_L."Dimension Code",
+                                                         DocDim_L."Dimension Value Code");
+
+                TempDimBuf2_L.INIT;
+                TempDimBuf2_L."Table ID" := DATABASE::"Document Dimension";
+                TempDimBuf2_L."Entry No." := i_L;
+                TempDimBuf2_L."Dimension Code" := DocDim_L."Dimension Code";
+                TempDimBuf2_L."Dimension Value Code" := DocDim_L."Dimension Value Code";
+                TempDimBuf2_L.INSERT;
+                i_L := i_L + 1;
+              UNTIL DocDim_L.NEXT = 0;
+
+            IF PurchLine_L.Type = PurchLine_L.Type::"G/L Account" THEN
+              GLAccountNo_L := PurchLine_L."No."
+            ELSE BEGIN
+              GenPostingSetup_L.GET(PurchLine_L."Gen. Bus. Posting Group",PurchLine_L."Gen. Prod. Posting Group");
+              GenPostingSetup_L.TESTFIELD("Purch. Account");
+              GLAccountNo_L := GenPostingSetup_L."Purch. Account";
+            END;
+
+            TableID_L[1] := DATABASE::"G/L Account";
+            No_L[1] := GLAccountNo_L;
+
+            DimErr_L := DimMgt_L.DocRelDimCheckValuePosting(TableID_L,No_L,TempDimBuf2_L);
+            IF DimErr_L <> '' THEN
+              ERROR(DimErr_L);
+
+          END;
+
+        UNTIL PurchLine_L.NEXT = 0;
+    END;
+
+    PROCEDURE InsertECDPosEntry@1000000000(VAR PurchECDEntry_P@8061936 : Record 8053088;PositionDate_P@8061935 : Date;PositionAmount_P@8061934 : Decimal;TransferDatas_P@8061933 : ARRAY [8] OF Decimal;DiscountCode_P@1000000002 : Code[10];GLAccountNo_P@1000000000 : Code[20];VendorNo_P@1000000001 : Code[20];OrderNo_P@1000000004 : Code[20]);
+    VAR
+      Vend_L@8061301 : Record 23;
+      Item_L@1000000003 : Record 27;
+    BEGIN
+      // --> 20140523-APP33-CMC02.02.00-2159-FEC01
+
+      IF PositionAmount_P = 0 THEN
+        EXIT;
+
+      PosEntry_G.INIT;
+      PosEntry_G."Entry No." := GetNextEntryNo;
+      PosEntry_G."Position Source" := PosEntry_G."Position Source"::"ECD Entry";
+      PosEntry_G."G/L Entry No." := PurchECDEntry_P."Entry No.";
+      PosEntry_G."Discount Code" := DiscountCode_P;
+      PosEntry_G."Position Date" := PositionDate_P;
+      PosEntry_G."Position Amount" := PositionAmount_P;
+      PosEntry_G.Description := PurchECDEntry_P.Description;
+      PosEntry_G."G/L Account No." := GLAccountNo_P;
+      PosEntry_G."In Advance" := FALSE;
+      PosEntry_G."Customer / Vendor" := PosEntry_G."Customer / Vendor"::Vendor;
+      PosEntry_G."Cust. / Vendor No." := VendorNo_P;
+      IF Vend_L.GET(VendorNo_P) THEN
+        PosEntry_G."Cust. / Vendor Name" := Vend_L.Name;
+      PosEntry_G."Posted Amount" := TransferDatas_P[2];
+      PosEntry_G."Realized Amount" := TransferDatas_P[1];
+      PosEntry_G."Entry Type" := PosEntry_G."Entry Type"::Position;
+      PosEntry_G."Global Dimension 1 Code" := PurchECDEntry_P."Global Dimension 1 Code";
+      PosEntry_G."Global Dimension 2 Code" := PurchECDEntry_P."Global Dimension 2 Code";
+      PosEntry_G."Document No." := PurchECDEntry_P."Document No.";
+      PosEntry_G."Doc. Line Type" := PosEntry_G."Doc. Line Type" ::Item;
+      PosEntry_G."Doc. Line No." := PurchECDEntry_P."Item No.";
+      Item_L.GET(PurchECDEntry_P."Item No.");
+      PosEntry_G."Doc. Line Description" := Item_L.Description;
+      PosEntry_G."Total Period No." := PurchECDEntry_P."Valued Quantity";
+      PosEntry_G."Posting Date" := PurchECDEntry_P."Posting Date";
+      PosEntry_G."Order / Return No" := OrderNo_P;
+      PosEntry_G."CMC Campaign No." := PurchECDEntry_P."Campaign No.";
+      SetPositionAccountNo(PosEntry_G);
+      // --> 20151228-APP33-ADV01.01.00-2613-CJY01
+      FctFindVATInfo(PurchECDEntry_P);
+      // <-- 20151228-APP33-ADV01.01.00-2613-CJY01
+      CalcVATAmount(PosEntry_G);
+      PosEntry_G.INSERT;
+
+      // --> 20150609-APP33-CMC02.02.00-3053-FEC01
+      {BEFORE
+      DimMgt_G.CopyLedgEntryDimToLedgEntryDim(DATABASE::"Item Ledger Entry",PosEntry_G."G/L Entry No.",
+                                              DATABASE::"Position Entry",PosEntry_G."Entry No.");
+      AFTER}
+      DimMgt_G.CopyLedgEntryDimToLedgEntryDim(DATABASE::"Value Entry",PurchECDEntry_P."Value Entry No.",
+                                              DATABASE::"Position Entry",PosEntry_G."Entry No.");
+      // <-- 20150609-APP33-CMC02.02.00-3053-FEC01
+    END;
+
+    PROCEDURE FctFindVATInfo@1000000002(VAR RecPurchRfcLedgerEntry_P@1000000000 : Record 8053088);
+    VAR
+      RecCroisementTva_L@1000000001 : Record 325;
+    BEGIN
+      // The function Manage the VAT
+      // Input:
+      //   - RecPurchRfcLedgerEntry_P
+      // Output:
+      //   - PosEntry_G."VAT Rate" and PosEntry_G."VAT G/L Account No."
+
+
+      // --> 20151228-APP33-ADV01.01.00-2613-CJY01
+      IF RecCroisementTva_L.GET(RecPurchRfcLedgerEntry_P."VAT Bus. Posting Group",
+                            RecPurchRfcLedgerEntry_P."VAT Prod. Posting Group") THEN BEGIN
+             IF RecCroisementTva_L."VAT Calculation Type" <> RecCroisementTva_L."VAT Calculation Type"::"Reverse Charge VAT" THEN
+                PosEntry_G."VAT Rate" := RecCroisementTva_L."VAT %";
+             // --> 20151229-APP33-ADV01.01.00-2613-CJY02
+             //BEFORE
+             //IF RecCroisementTva_L."VAT %" <> 0 THEN BEGIN
+             //AFTER
+             IF PosEntry_G."VAT Rate" <> 0 THEN BEGIN
+             // <-- 20151229-APP33-ADV01.01.00-2613-CJY02
+               PosEntry_G."VAT G/L Account No." := RecCroisementTva_L."Purch. Position Account";
+             END;
+      END;
+
+      // <-- 20151228-APP33-ADV01.01.00-2613-CJY01
+    END;
+
+    PROCEDURE DeleteAllSheetPosEntry@1000000003(VAR PosEntry_P@8061932 : Record 8061932);
+    VAR
+      LedgerEntryDim_L@8061933 : Record 355;
+    BEGIN
+      // The function delete all entries not posted for one sheet
+      // Input:
+      //   - PosEntry_P
+      // Output:
+      //
+
+
+      IF CONFIRM(Text60000,FALSE) THEN
+        IF PosEntry_P.FINDFIRST THEN
+          REPEAT
+            LedgerEntryDim_L.RESET;
+            LedgerEntryDim_L.SETRANGE("Table ID",DATABASE::"Position Entry");
+            LedgerEntryDim_L.SETRANGE("Entry No.",PosEntry_P."Entry No.");
+            LedgerEntryDim_L.DELETEALL;
+            PosEntry_P.DELETE;
+          UNTIL PosEntry_P.NEXT = 0;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20100604-8061050-CMB6.00.01-FEC01 : ADDOBJ(Nouvel objet).
+      20100712-8061050-CMB6.00.01-FEC01 : MODFUNC(passage en VAR d'un paramŠtres des fonctions PostPosEntryToGL).
+      20100712-8061050-CMB6.00.01-FEC02 : ADDCODE(Passage de fonction pour 'viter les contr"les sur date situation).
+      20100712-8061050-CMB6.00.01-FEC03 : MODCODE(Correction d'affichage d'un message).
+      20100712-8061050-CMB6.00.01-FEC04 : MODCODE(Correction d'affichage d'un message).
+      20100712-8061050-CMB6.00.01-FEC05 : MODCODE(Suppression du marquage de l''criture).
+      20100712-8061050-CMB6.00.01-FEC06 : MODCODE(Suppression du marquage de l''criture).
+      20101021-8061050-CMB6.00.01-FEC01 : ADDCODE(Gestion du client dans l''criture situation).
+      20101021-8061050-CMB6.00.01-FEC02 : ADDFUNC(InsertDocPosEntry).
+      20101021-8061050-CMB6.00.01-FEC03 : ADDFUNC(InsertSalesShipInvEntry).
+      20101021-8061050-CMB6.00.01-FEC04 : ADDFUNC(InsertSalesReturnInvEntry).
+      20101021-8061050-CMB6.00.01-FEC05 : ADDFUNC(InsertPurchReceiptInvEntry).
+      20101021-8061050-CMB6.00.01-FEC06 : ADDFUNC(InsertPurchReturnInvEntry).
+      20101021-8061050-CMB6.00.01-FEC07 : ADDFUNC(InsertServiceShipInvEntry).
+      20101021-8061050-CMB6.00.01-FEC08 : ADDFUNC(CopyPostedDocDimToLedgEntryDim).
+      20101021-8061050-CMB6.00.01-FEC09 : ADDFUNC(GetCustVendFromGLEntry).
+      20101021-8061050-CMB6.00.01-FEC10 : MODCODE(Nouvelle gestion des comptes de situation).
+      20101021-8061050-CMB6.00.01-FEC11 : ADDCODE(Gestion des comptes pour les documents).
+      20101021-8061050-CMB6.00.01-FEC12 : MODCODE(Gestion des comptes pour les documents).
+      20101021-8061050-CMB6.00.01-FEC13 : MODCODE(Suppression d'un GET inutile).
+      20101021-8061050-CMB6.00.01-FEC14 : ADDFUNC(Ajout de la fonction CalcAmount).
+      20101105-8061050-CMB6.00.01-FEC01 : MODCODE(D'sactivation du code).
+      20101105-8061050-CMB6.00.01-FEC02 : MODCODE(D'placement de l'alimentation du compte de tiers).
+      20101119-8061050-CMB6.00.01-FEC01 : MODCODE(Message d'avertissement . l'utilisateur).
+      20101210-8061050-CMB6.00.01-PRD01 : RENUMBERING
+      20110131-8061050-CMB6.00.01-FEC01 : ADDFUNC(InsertCommitPosEntry,CopyDocDimToLedgEntryDim,
+                                                      SetCommitPositionAccountNo,DisplayDocument)
+      20110131-8061050-CMB6.00.01-FEC02 : MODCODE(Correction bug li' . l'utilisation de la traÎabilit').
+      20110131-8061050-CMB6.00.01-FEC03 : MODCODE(Correction bug li' . l'utilisation de la traÎabilit').
+      20110131-8061050-CMB6.00.01-FEC04 : MODCODE(Correction bug li' . l'utilisation de la traÎabilit').
+      20110131-8061050-CMB6.00.01-FEC05 : MODCODE(Correction bug li' . l'utilisation de la traÎabilit').
+      20110131-8061050-CMB6.00.01-FEC06 : MODCODE(Correction bug li' . l'utilisation de la traÎabilit').
+      20110201-8061050-CMB6.00.01-FEC01 : UPDATEVL(Mise . jour Version List PCK012.03.01.00 > CMB6.00.01).
+      20110207-8061050-CMB6.00.10-FEC01 : MODTEXT(Ajout des caption anglais sur les textconstants).
+      20110207-8061050-CMB6.00.10-FEC02 : ADDCODE(Alimentation du champs "Entry Type").
+      20110207-8061050-CMB6.00.10-FEC03 : ADDCODE(Alimentation du champs "Entry Type").
+      20110207-8061050-CMB6.00.10-FEC04 : ADDCODE(Gestion du code journal stock').
+      20110207-8061050-CMB6.00.10-FEC05 : ADDCODE(AccSs au GLSetup).
+      20110207-8061050-CMB6.00.10-FEC06 : ADDCODE(V'rification des dates de situation).
+      20110207-8061050-CMB6.00.10-FEC07 : ADDCODE(Gestion de l'interdiction de modification).
+      20110207-8061050-CMB6.00.10-FEC08 : ADDCODE(Gestion du journal).
+      20110207-8061050-CMB6.00.10-FEC09 : ADDCODE(Alimentation du code journal).
+      20110207-8061050-CMB6.00.10-FEC10 : MODCODE(Changement li' . l'alimentation du code journal).
+      20110207-8061050-CMB6.00.10-FEC11 : MODCODE(Alimentation du type d''criture).
+      20110207-8061050-CMB6.00.10-FEC12 : MODCODE(Alimentation du type d''criture).
+      20110207-8061050-CMB6.00.10-FEC13 : ADDFUNC(CheckPosDateSource).
+      20110207-8061050-CMB6.00.10-FEC14 : ADDFUNC(CheckProcessPosDate).
+      20110228-8061050-CMB6.00.10-FEC01 : MODFUNC(Dans InsertPurchReceiptInvEntry,PurchInvHeaderNo_P pass' de 10 . 20 char.).
+      20110228-8061050-CMB6.00.10-FEC02 : MODTEXT(Text8061932 & Text8061932 : "date abonnement" devient "date situation").
+      20110228-8061050-CMB6.00.10-FEC03 : ADDCODE(V'rification du param'trage).
+      20110304-8061050-CMB6.00.10-FEC01 : ADDFUNC(CheckSalesDocDimOnRelease & CheckPurchDocDimOnRelease).
+      20110317-8061050-CMB6.00.10-FEC01 : ADDCODE(Gestion de l'analytique sur toutes les 'critures).
+      20110317-8061050-CMB6.00.10-FEC02 : ADDCODE(Gestion de l'analytique sur toutes les 'critures).
+      20110823-8061050-CMB6.00.10.01-FEC01 : ADDCODE(Ajout des axes principaux dans les 'critures situation).
+      20110823-8061050-CMB6.00.10.01-FEC02 : ADDCODE(Ajout des axes principaux dans les 'critures situation).
+      20110823-8061050-CMB6.00.10.01-FEC03 : ADDCODE(Ajout des axes principaux dans les 'critures situation).
+      20110823-8061050-CMB6.00.10.01-FEC04 : ADDCODE(Ajout des axes principaux dans les 'critures situation).
+      20110823-8061050-CMB6.00.10.01-FEC05 : ADDCODE(Ajout des axes principaux dans les 'critures situation).
+      20110823-8061050-CMB6.00.10.01-FEC06 : ADDCODE(Ajout des axes principaux dans les 'critures situation).
+      20110823-8061050-CMB6.00.10.01-FEC07 : ADDCODE(Ajout des axes principaux dans les 'critures situation).
+      20110823-8061050-CMB6.00.10.01-FEC08 : ADDCODE(Ajout des axes principaux dans les 'critures situation).
+      20110823-8061050-CMB6.00.10.01-FEC09 : ADDCODE(Ajout des axes principaux dans les 'critures situation).
+      20110823-8061050-CMB6.00.10.01-FEC10 : ADDCODE(Ajout des axes principaux dans les 'critures situation).
+      20110823-8061050-CMB6.00.10.01-FEC11 : ADDCODE(Ajout des axes principaux dans les 'critures situation).
+      20110823-8061050-CMB6.00.10.01-FEC12 : ADDCODE(Ajout des axes principaux dans les 'critures situation).
+      20110824-8061050-CMB6.00.10.01-FEC01 : ADDCODE(Ajout des axes principaux dans les 'critures comptables).
+      20110824-8061050-CMB6.00.10.01-FEC02 : ADDCODE(Ajout des axes principaux dans les 'critures comptables).
+      20110824-8061050-CMB6.00.10.01-FEC03 : ADDCODE(Gestion des libell's comptables).
+      20120125-8061050-CMB6.00.10.01-FEC01 : ADDCODE(Gestion des factures dans les documents).
+      20120125-8061050-CMB6.00.10.01-FEC02 : ADDCODE(Affichage des documents suppl'mentaires).
+      20120316-8061050-CMB6.00.10.01-FEC01 : ADDCODE(Debug gestion de la TVA intracommunautaire).
+      20120316-8061050-CMB6.00.10.01-FEC02 : ADDCODE(Debug gestion de la TVA intracommunautaire).
+      20130930-FINA16-CMC02.02.00-KEM01 : ADDCODE(Affectation Code journal).
+      20130930-FINA16-CMC02.02.00-KEM02 : ADDCODE(Affectation Intra Group Code).
+      20131009-FINA16-CMC02.02.00-BRA01 : ADDCODE (Affectation code intragroupe cas des documents)
+      20131219-8061050-CMB6.00.10.09-BDN : MODCODE (Affectation des comptes g'n'raux pour les documents fa/av selon parametres)
+      20140106-8061050-CMB6.00.10.09-1404-FEC01..FEC05 : ADDCODE (Alimentation de champs suppl'mentaires).
+      20140106-8061050-CMB6.00.10.09-1217-BDN : ADDCODE(Analytique 'tendue . la cr'ation des 'critures situations: document/ligne feuille)
+      20140123-8061050-CMB6.00.10.01-1107-BDN01 : ADDCODE(Test si taux TVA <> 0 avant testfield des comptes)
+      20140523-APP33-CMC02.02.00-2159-FEC01 : ADDFUNC(InsertECDPosEntry).
+      20140523-APP33-CMC02.02.00-2159-FEC02 : ADDFUNC(InsertECDPosEntry).
+      20150122-8061050-CMB6.00.10.01-2680-KEM01 : ADDCODE(renseigner campagne pour les documents).
+      20150423-WI00-CMC02.02.00-2912-NLN01 : ADDCODE (Contr"le ligne T355)
+      20150601-8061050-CMB6.00.10.01-3013-NLN01 : ADDCODE (Message d'erreur si code intra groupe = vide)
+      20150601-8061050-CMB6.00.10.01-3021-NLN01 : MODECODE (R'cup'rer compte IG pour CCA et PCA)
+      20150609-APP33-CMC02.02.00-3053-FEC01 : MODCODE.
+      20150615-8061050-CMB6.00.10.01-3013-BRA01 : MODCODE(Modif suite renommage champ T15 WI00-CMC02.02.00-2947-BRA01)
+      20151228-APP33-ADV01.01.00-2613-CJY01 : MODCODE (Prise en compte de la TVA sur le lignes RFC Achat)
+      20151229-APP33-ADV01.01.00-2613-CJY02 : MODCODE (pas de compte TVA si pas de TVA calcul')
+      20160226-APP33-ADV01.01.00-2658-CJY01 : ADDFUNC (DeleteAllSheetPosEntry)
+      20160428-WI00-ADV01.01.00-2944-CJY01 : MODCODE (Prise en compte du compte de bilan RFC achat)
+      20160531-WI00-ADV01.01.00-3022-JCD01 : ADDCODE (Param'trage pour prendre les piSces . z'ro)
+      20160929-WI00-ADV01.01.00-21924-JCD01 : ADDCODE (Chargement Axes principaux quand compression 'critures de situation)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

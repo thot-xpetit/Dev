@@ -1,0 +1,187 @@
+OBJECT Codeunit 8052991 CMC Log. Tour-Sales Release
+{
+  OBJECT-PROPERTIES
+  {
+    Date=24/03/20;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,TER01.01.00,SP3472;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      G_recLogTourRqst@8053000 : Record 8053044;
+      G_recSalesLine@8053001 : Record 37;
+      G_recLocation@8053002 : Record 14;
+      G_DocumentType@8053003 : ' ,Sales Order,Sales Return Order,Purchase Order,Purchase Return Order,Transfert,Delivery';
+
+    PROCEDURE Release@1(P_recSalesHeader@1000 : Record 36);
+    VAR
+      L_LogTourType@1001 : 'Inbound,Outbound';
+      recSetup_L@8053000 : Record 8052982;
+    BEGIN
+      // --> 20150429-Wi00-CMC02.02.00-2961-FHS01
+      recSetup_L.GET();
+      IF recSetup_L."Deactivate Tour-Sales" = TRUE THEN
+        EXIT;
+      // <-- 20150429-Wi00-CMC02.02.00-2961-FHS01
+      WITH P_recSalesHeader DO BEGIN
+        CASE "Document Type" OF
+          "Document Type"::Order:          G_DocumentType := G_recLogTourRqst."Source Document Type"::"Sales Order";
+          "Document Type"::"Return Order": G_DocumentType := G_recLogTourRqst."Source Document Type"::"Sales Return Order";
+          ELSE
+            EXIT;
+        END;
+
+        G_recLogTourRqst.RESET;
+        G_recLogTourRqst.SETRANGE("Source Document Type", G_DocumentType);
+        G_recLogTourRqst.SETRANGE("Source Document No.", P_recSalesHeader."No.");
+        G_recLogTourRqst.DELETEALL;
+
+        G_recSalesLine.SETCURRENTKEY("Document Type", "Document No.");
+        G_recSalesLine.SETRANGE("Document Type", "Document Type");
+        G_recSalesLine.SETRANGE("Document No.", "No.");
+        G_recSalesLine.SETRANGE(Type, G_recSalesLine.Type::Item);
+        G_recSalesLine.SETRANGE("Drop Shipment", FALSE);
+        G_recSalesLine.SETRANGE("Job No.", '');
+        IF G_recSalesLine.FINDSET THEN BEGIN
+          REPEAT
+            IF ((("Document Type" = "Document Type":: Order)         AND (G_recSalesLine."Outstanding Quantity" <> 0)) OR
+              (("Document Type" = "Document Type"::"Return Order") AND (G_recSalesLine."Outstanding Quantity"<> 0))) AND
+               (G_recSalesLine.Adduction=FALSE)
+            THEN BEGIN
+              IF (("Document Type" = "Document Type":: Order)         AND (G_recSalesLine.Quantity >= 0)) OR
+                 (("Document Type" = "Document Type"::"Return Order") AND (G_recSalesLine.Quantity < 0))
+            THEN BEGIN
+              L_LogTourType := L_LogTourType::Outbound;
+      // --> 20140716-APP12-TER01.01.00-ENS01
+              CreateLogTourRqst(P_recSalesHeader, L_LogTourType);
+      // <-- 20140716-APP12-TER01.01.00-ENS01
+              END ELSE
+                // Les enlogements ne sont pas pris en charge pour la gestion de Tourn'e
+                L_LogTourType := L_LogTourType::Inbound;
+            END;
+          UNTIL G_recSalesLine.NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE Reopen@2(P_recSalesHeader@1000 : Record 36);
+    VAR
+      L_recLogTourRqst@1001 : Record 8053044;
+      L_LogTourType@8053000 : 'Inbound,Outbound';
+      recSetup_L@8053001 : Record 8052982;
+    BEGIN
+      // --> 20150429-Wi00-CMC02.02.00-2961-FHS01
+      recSetup_L.GET();
+      IF recSetup_L."Deactivate Tour-Sales" = TRUE THEN
+        EXIT;
+      // <-- 20150429-Wi00-CMC02.02.00-2961-FHS01
+      WITH P_recSalesHeader DO BEGIN
+        CASE "Document Type" OF
+          "Document Type"::Order:          G_DocumentType := G_recLogTourRqst."Source Document Type"::"Sales Order";
+          "Document Type"::"Return Order": G_DocumentType := G_recLogTourRqst."Source Document Type"::"Sales Return Order";
+          ELSE
+            EXIT;
+        END;
+
+        G_recLogTourRqst.RESET;
+        G_recLogTourRqst.SETCURRENTKEY("Source Document Type","Source Document No.","Source Document Line No.");
+        G_recLogTourRqst.SETRANGE("Source Document Type", G_DocumentType);
+        G_recLogTourRqst.SETRANGE("Source Document No.", "No.");
+        G_recLogTourRqst.MODIFYALL("Document Status", G_recLogTourRqst."Document Status"::Open, TRUE);
+      END;
+    END;
+
+    LOCAL PROCEDURE CreateLogTourRqst@3(VAR P_recSalesHeader@1000 : Record 36;P_LogTourType@8053000 : 'Inbound,Outbound');
+    VAR
+      L_recSalesLine2@1001 : Record 37;
+      L_recItem@8053001 : Record 27;
+      L_recLocation@8053002 : Record 14;
+      L_recActivityDeliveryArea@8053003 : Record 8053047;
+      L_recPostCode@8053004 : Record 225;
+    BEGIN
+      IF ((P_LogTourType = P_LogTourType::Outbound) AND (G_recLocation.RequireShipment(G_recSalesLine."Location Code") OR
+        G_recLocation.RequirePicking(G_recSalesLine."Location Code"))) OR ((P_LogTourType = P_LogTourType::Inbound) AND
+        (G_recLocation.RequireReceive(G_recSalesLine."Location Code") OR G_recLocation.RequirePutaway(G_recSalesLine."Location Code")))
+      THEN BEGIN
+        L_recSalesLine2.COPY(G_recSalesLine);
+
+        L_recSalesLine2.SETRANGE("Location Code", G_recSalesLine."Location Code");
+
+        L_recItem.GET(L_recSalesLine2."No.");
+
+        G_recLogTourRqst.RESET;
+        G_recLogTourRqst.INIT;
+        G_recLogTourRqst."Source Document Type" := G_DocumentType;
+        G_recLogTourRqst."Source Document No."  := P_recSalesHeader."No.";
+        G_recLogTourRqst."Source Document Line No." := L_recSalesLine2."Line No.";
+        G_recLogTourRqst."External Document No." := P_recSalesHeader."External Document No.";
+        G_recLogTourRqst."Post Code" := P_recSalesHeader."Ship-to Post Code";
+        G_recLogTourRqst.City := P_recSalesHeader."Ship-to City";
+        G_recLogTourRqst."Promised Delivery Date" := L_recSalesLine2."Planned Delivery Date";
+        G_recLogTourRqst."Requested Delivery Date" := L_recSalesLine2."Requested Delivery Date";
+        //--> 20140723-APP30-TER01.01.00-PDC01
+        G_recLogTourRqst."Latest Req. Deliv. Date" := P_recSalesHeader."Latest Req. Deliv. Date";
+        //<-- 20140723-APP30-TER01.01.00-PDC01
+        G_recLogTourRqst."Departure Location Code" := L_recSalesLine2."Location Code";
+        G_recLogTourRqst."Destination Type" := G_recLogTourRqst."Destination Type"::Customer;
+        G_recLogTourRqst."Destination No." := P_recSalesHeader."Sell-to Customer No.";
+        G_recLogTourRqst."Destination Name" := P_recSalesHeader."Sell-to Customer Name";
+        G_recLogTourRqst."Item No." := L_recSalesLine2."No.";
+        G_recLogTourRqst."Variant Code" := L_recSalesLine2."Variant Code";
+        G_recLogTourRqst."Item Description" := L_recSalesLine2.Description;
+        G_recLogTourRqst.Adduction := L_recSalesLine2.Adduction;
+        G_recLogTourRqst."Order Quantity" := ABS(L_recSalesLine2.Quantity);
+        G_recLogTourRqst."Outstanding Quantity" := ABS(L_recSalesLine2."Outstanding Quantity");
+        G_recLogTourRqst."Unit of Measure Code" := L_recSalesLine2."Unit of Measure Code";
+        G_recLogTourRqst."Pallet Quantity" := 0;
+        G_recLogTourRqst."Available Quantity" := 0;
+        G_recLogTourRqst."Activity Code" := L_recItem."Activity Code";
+        G_recLogTourRqst.Type := P_LogTourType;
+        G_recLogTourRqst."Document Status" := P_recSalesHeader.Status::Released;
+        G_recLogTourRqst."Logistic Grouping" := L_recItem."Logistic Grouping Code";
+        G_recLogTourRqst."Build Kit" := L_recSalesLine2."Build Kit";
+        //--> 20200324-WI00-ADV01.01.00-3472-SCR01
+        G_recLogTourRqst."Delivery Method Code" := L_recSalesLine2."Delivery Method Code";
+        //<-- 20200324-WI00-ADV01.01.00-3472-SCR01
+
+        IF L_recLocation.GET(L_recSalesLine2."Location Code") THEN
+          G_recLogTourRqst."Logistic Area Code" := L_recLocation."Logistic Area Code";
+
+        IF L_recPostCode.GET(P_recSalesHeader."Ship-to Post Code",P_recSalesHeader."Ship-to City" ) THEN BEGIN
+          IF L_recActivityDeliveryArea.GET(L_recItem."Activity Code", L_recPostCode."INSEE No.") THEN
+          G_recLogTourRqst."Delivery Area Code" := L_recActivityDeliveryArea."Delivery Area Code";
+        END;
+
+        IF NOT G_recLogTourRqst.INSERT THEN
+          IF G_recLogTourRqst."Outstanding Quantity" <> 0 THEN
+            G_recLogTourRqst.MODIFY
+          ELSE
+            IF G_recLogTourRqst.FIND('=') THEN
+              G_recLogTourRqst.DELETE(TRUE);
+      END;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+
+      20110601-Wi00-CMC01.04 : Version RTM 01.04 - NavAgri
+      20120517-Wi00-CMC02.01.00-SD : ADDCODE (Correction de beug)
+      20140716-APP12-TER01.01.00-ENS01 : GESTION DES TOURN?ES AJOUT S?LECTION / FILTRE SUR CONDITION DE LIVRAISON
+                                         (Code commented in "Release")
+      20140723-APP30-TER01.01.00-PDC01: ADDCODE (CreateLogTourRqst)
+      20150429-Wi00-CMC02.02.00-2961-FHS01 : ADDCODE (Permet de d'sactiver cette fonctionnalit')
+      20200324-WI00-ADV01.01.00-3472-SCR01 : ADDCODE (CreateLogTourRst, Ajout MAJ "Delivery Method Code")
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

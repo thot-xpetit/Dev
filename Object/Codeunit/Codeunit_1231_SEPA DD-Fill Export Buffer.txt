@@ -1,0 +1,136 @@
+OBJECT Codeunit 1231 SEPA DD-Fill Export Buffer
+{
+  OBJECT-PROPERTIES
+  {
+    Date=30/10/14;
+    Heure=00:00:00;
+    Liste versions=TFS288071,CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    TableNo=1226;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      HasErrorsErr@1002 : TextConst 'ENU=The file export has one or more errors. For each of the lines to be exported, resolve any errors that are displayed in the File Export Errors FactBox.;FRA=L''exportation de fichier comporte une ou plusieurs erreurs. Pour chacune des lignes . exporter, corrigez les erreurs affich'es dans le r'capitulatif des erreurs d''exportation de fichier.';
+
+    PROCEDURE FillExportBuffer@3(VAR DirectDebitCollectionEntry@1013 : Record 1208;VAR PaymentExportData@1001 : Record 1226);
+    VAR
+      BankAccount@1010 : Record 270;
+      Customer@1009 : Record 18;
+      CustomerBankAccount@1006 : Record 287;
+      DirectDebitCollection@1004 : Record 1207;
+      GLSetup@1005 : Record 98;
+      SEPADirectDebitMandate@1002 : Record 1230;
+      TempDirectDebitCollectionEntry@1000 : TEMPORARY Record 1208;
+    BEGIN
+      TempDirectDebitCollectionEntry.COPYFILTERS(DirectDebitCollectionEntry);
+      CODEUNIT.RUN(CODEUNIT::"SEPA DD-Prepare Source",TempDirectDebitCollectionEntry);
+
+      IF NOT TempDirectDebitCollectionEntry.FINDSET THEN
+        EXIT;
+
+      DirectDebitCollection.GET(TempDirectDebitCollectionEntry."Direct Debit Collection No.");
+      REPEAT
+        CODEUNIT.RUN(CODEUNIT::"SEPA DD-Check Line",TempDirectDebitCollectionEntry);
+      UNTIL TempDirectDebitCollectionEntry.NEXT = 0;
+
+      IF DirectDebitCollection.HasPaymentFileErrors THEN BEGIN
+        COMMIT;
+        ERROR(HasErrorsErr);
+      END;
+
+      GLSetup.GET;
+      GLSetup.TESTFIELD("LCY Code");
+      BankAccount.GET(DirectDebitCollection."To Bank Account No.");
+
+      TempDirectDebitCollectionEntry.FINDSET;
+      WITH PaymentExportData DO BEGIN
+        RESET;
+        IF FINDLAST THEN;
+        REPEAT
+          INIT;
+          TempDirectDebitCollectionEntry.CALCFIELDS("Applies-to Entry Document No.","Applies-to Entry Description");
+          "Entry No." += 1;
+          SetBankAsSenderBank(BankAccount);
+          SetCreditorIdentifier(BankAccount);
+          "SEPA Direct Debit Mandate ID" := TempDirectDebitCollectionEntry."Mandate ID";
+          SEPADirectDebitMandate.GET(TempDirectDebitCollectionEntry."Mandate ID");
+          "SEPA DD Mandate Signed Date" := SEPADirectDebitMandate."Date of Signature";
+
+          TempDirectDebitCollectionEntry."Sequence Type" := UpdateSourceEntrySequenceType(TempDirectDebitCollectionEntry);
+
+          VALIDATE("SEPA Direct Debit Seq. Type",TempDirectDebitCollectionEntry."Sequence Type");
+          "Transfer Date" := TempDirectDebitCollectionEntry."Transfer Date";
+          "Document No." := TempDirectDebitCollectionEntry."Applies-to Entry Document No.";
+          Amount := TempDirectDebitCollectionEntry."Transfer Amount";
+          "Currency Code" := GLSetup.GetCurrencyCode(TempDirectDebitCollectionEntry."Currency Code");
+
+          Customer.GET(TempDirectDebitCollectionEntry."Customer No.");
+          CustomerBankAccount.GET(Customer."No.",SEPADirectDebitMandate."Customer Bank Account Code");
+          SetCustomerAsRecipient(Customer,CustomerBankAccount);
+
+          VALIDATE("SEPA Partner Type",Customer."Partner Type");
+          VALIDATE("SEPA Instruction Priority","SEPA Instruction Priority"::NORMAL);
+          VALIDATE("SEPA Payment Method","SEPA Payment Method"::TRF);
+          VALIDATE("SEPA Charge Bearer","SEPA Charge Bearer"::SLEV);
+
+          "SEPA Batch Booking" := FALSE;
+          "SEPA Message ID" := DirectDebitCollection."Message ID";
+          "SEPA Payment Information ID" := TempDirectDebitCollectionEntry."Transaction ID";
+          // --> 20141022-WI00-CMC02.02.00-2546-BRA01
+          //BEFORE
+          //"SEPA End-to-End ID" := TempDirectDebitCollectionEntry."Transaction ID";
+          //AFTER
+          "SEPA End-to-End ID" := Customer."No.";
+          // <-- 20141022-WI00-CMC02.02.00-2546-BRA01
+          "Message to Recipient 1" := TempDirectDebitCollectionEntry."Applies-to Entry Description";
+           // --> 20140625-WI00-CMC02.02.00-2204-AKH01
+           "Due Date" := TempDirectDebitCollectionEntry."Due Date";
+           // <-- 20140625-WI00-CMC02.02.00-2204-AKH01
+           // --> 20141022-WI00-CMC02.02.00-2546-BRA01
+           Reference := TempDirectDebitCollectionEntry.Reference;
+           // <-- 20141022-WI00-CMC02.02.00-2546-BRA01
+           INSERT(TRUE);
+        UNTIL TempDirectDebitCollectionEntry.NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE UpdateSourceEntrySequenceType@1(TempDirectDebitCollectionEntry@1000 : TEMPORARY Record 1208) : Integer;
+    VAR
+      DirectDebitCollectionEntry@1001 : Record 1208;
+      SEPADirectDebitMandate@1002 : Record 1230;
+    BEGIN
+      WITH DirectDebitCollectionEntry DO
+        IF TempDirectDebitCollectionEntry.Status = Status::New THEN BEGIN
+          DirectDebitCollectionEntry := TempDirectDebitCollectionEntry;
+          SEPADirectDebitMandate.GET("Mandate ID");
+          IF FIND THEN BEGIN
+            "Sequence Type" := SEPADirectDebitMandate.GetSequenceType;
+            MODIFY;
+          END;
+          // --> 20140903-Wi00-CMC02.02.00-2407-ASA01
+          //SEPADirectDebitMandate.UpdateCounter;
+          //  <-- 20140903-Wi00-CMC02.02.00-2407-ASA01
+          EXIT("Sequence Type");
+        END;
+      EXIT(TempDirectDebitCollectionEntry."Sequence Type");
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+
+      20140625-WI00-CMC02.02.00-2204-AKH01 : ADDCODE (alimenter le champs "Due Date")
+      20140903-Wi00-CMC02.02.00-2407-ASA01 : MODCODE (D'sactivation de la M.j du compteur de pr'levement)
+      20141022-WI00-CMC02.02.00-2546-BRA01 : ADDCODE (Alimenter REFERENCE, et END TO END ID =Customer No.)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,1003 @@
+OBJECT Report 60096 CMC Sales Invoicing Batch New
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02/03/26;
+    Heure=00:00:00;
+    Liste versions=ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Sales Invoicing Batch;
+               FRA=G'n'rer facture vente];
+    ProcessingOnly=Oui;
+    OnPreReport=BEGIN
+                  IF (PostingDateReq_G = 0D) OR (DocDateReq_G=0D) THEN
+                   ERROR(Text8053004);
+
+                  RecCMCSetup_G.GET;
+
+                  RecCMCSetup_G.TESTFIELD("Sales Ship. Item Charge");
+                  RecCMCSetup_G.TESTFIELD("Item Charge (sales Refaction)");
+                END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table18;
+        DataItemTableView=SORTING(No.);
+        OnPreDataItem=BEGIN
+                        WindowText_G := Text8053005 + Text8053006 + Text8053007 + '\' + Text60001;
+                        Dialog_G.OPEN(WindowText_G);
+                        Dialog_G.UPDATE(4, Text8053009);
+                        Dialog_G.UPDATE(5, Text8053008);
+                        Dialog_G.UPDATE(6, Text8053010);
+                        Dialog_G.UPDATE(8, Text60000);
+                        CustCount_G := COUNT;
+                        CurrentCustCount_G := 0;
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           CurrentCustCount_G += 1;
+                           Dialog_G.UPDATE(1,ROUND((CurrentCustCount_G/CustCount_G)*10000,1));
+                           Dialog_G.UPDATE(2,0);
+                           Dialog_G.UPDATE(3,0);
+                           Dialog_G.UPDATE(7,0);
+                         END;
+
+        OnPostDataItem=BEGIN
+                         CreateInvoice;
+
+                         Dialog_G.CLOSE;
+
+                         MESSAGE(Text8053011, InvCount_G,CrMemoCount_G,CountError_G);
+                       END;
+
+        ReqFilterFields=No.;
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=1;
+        DataItemTable=Table8053012;
+        DataItemTableView=SORTING(Customer No.,Status,Species Code)
+                          WHERE(Invoice Type=CONST(TBRI),
+                                Status=CONST(Locked));
+        OnPreDataItem=BEGIN
+                        ContractCount_G := COUNT;
+                        CurrentContractCount_G := 0;
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           CurrentContractCount_G += 1;
+                           Dialog_G.UPDATE(2,ROUND((CurrentContractCount_G/ContractCount_G)*10000,1));
+                           Dialog_G.UPDATE(3,0);
+                           Dialog_G.UPDATE(7,0);
+                           IF RecItem_G.GET("Item No.") THEN;
+
+                           CLEAR(RecGroupingCereales_G);
+                           RecGroupingCereales_G.SETRANGE("Campaign No.","Campaign No.");
+                           RecGroupingCereales_G.SETRANGE("Species Code","Species Code");
+                           RecGroupingCereales_G.SETRANGE("Item No.","Item No.");
+                           IF RecGroupingCereales_G.FINDFIRST THEN;
+                         END;
+
+        ReqFilterFields=No.,Campaign No.,Species Code;
+        DataItemLink=Customer No.=FIELD(No.);
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=2;
+        DataItemTable=Table8053014;
+        DataItemTableView=SORTING(Customer No.,Contract No.,Customer Delivery Date)
+                          ORDER(Ascending)
+                          WHERE(Delivery Type=FILTER(Delivery|Resumption),
+                                Invoiced=FILTER(Non),
+                                Status=FILTER(Released),
+                                Exclude Invoice Batch=FILTER(Non),
+                                Canceled=FILTER(Non),
+                                Sales Document No.=FILTER(''),
+                                Item Ledger Entry No.=FILTER(<>0),
+                                Product Type=FILTER(<>Oilseed));
+        OnPreDataItem=BEGIN
+                        DeliveryCount_G := COUNT;
+                        CurrentDeliveryCount_G := 0;
+                        ReturnCount_G := COUNT;
+                        CurrentReturnCount_G := 0;
+                        // --> 20180109-WI00-ADV01.01.00-2804-NED
+                        CMCPostedDeliveryQty_G := 0;
+                        CMCPostedDeliveryNetWeight_G := 0;
+                        CMCPostedDeliveryStandWeight_G := 0;
+                        // <-- 20180109-WI00-ADV01.01.00-2804-NED
+                      END;
+
+        OnAfterGetRecord=VAR
+                           RecPostedReturn_L@8053000 : Record 8053014;
+                         BEGIN
+                           IF ("Delivery Type" = "Delivery Type":: Resumption) THEN BEGIN
+                             IF NOT UsePostedReturn_G THEN
+                               CurrReport.SKIP;
+                             IF "Related Posted Delivery No." <> '' THEN
+                               CurrReport.SKIP;
+                           END;
+                           IF "Delivery Type" = "Delivery Type"::Delivery THEN BEGIN
+                             CurrentDeliveryCount_G += 1;
+                             Dialog_G.UPDATE(3,ROUND((CurrentDeliveryCount_G/DeliveryCount_G)*10000,1));
+                           END ELSE BEGIN
+                             CurrentReturnCount_G += 1;
+                             Dialog_G.UPDATE(7,ROUND((CurrentReturnCount_G/ReturnCount_G)*10000,1));
+                           END;
+
+                           MakeInvoice_G:=FALSE;
+
+                           IF OneInvPerDueDate_G AND (OldDate_G <> "Customer Delivery Date") THEN
+                             MakeInvoice_G := TRUE;
+
+                           IF OldContract_G <> "CMC Sales Contract"."No." THEN
+                             MakeInvoice_G := TRUE;
+
+                           IF NOT "CMC Posted Delivery"."Cancellation Delivery" THEN BEGIN
+                             CMCPostedDeliveryQty_G := Quantity;
+                             // --> 20180109-WI00-ADV01.01.00-2804-NED
+                             IF "Invoicing Weight" <> 0 THEN BEGIN
+                               CMCPostedDeliveryNetWeight_G := "Invoicing Weight";
+                               CMCPostedDeliveryStandWeight_G := "Invoicing Weight";
+                             END ELSE BEGIN
+                             // <-- 20180109-WI00-ADV01.01.00-2804-NED
+                               CMCPostedDeliveryNetWeight_G := "Net Weight";
+                               CMCPostedDeliveryStandWeight_G := "Standard Weight";
+                             END;
+                           END ELSE BEGIN
+                             CMCPostedDeliveryQty_G := - Quantity;
+                           // --> 20180109-WI00-ADV01.01.00-2804-NED
+                             CMCPostedDeliveryNetWeight_G := Quantity;
+                             CMCPostedDeliveryStandWeight_G := "Standard Weight";
+                           END;
+
+                           IF "Delivery Type" = "Delivery Type":: Resumption THEN BEGIN
+                             CMCPostedDeliveryNetWeight_G := - CMCPostedDeliveryNetWeight_G;
+                             CMCPostedDeliveryStandWeight_G := - CMCPostedDeliveryStandWeight_G;
+                           END;
+                           // <-- 20180109-WI00-ADV01.01.00-2804-NED
+                           IF ("Delivery Type" = "Delivery Type"::Delivery) AND ("Related Posted Delivery No." <> '') THEN BEGIN
+                             IF RecPostedReturn_L.GET(RecPostedReturn_L."Delivery Type"::Resumption,"Related Posted Delivery No.") THEN BEGIN
+                               CMCPostedDeliveryQty_G += RecPostedReturn_L.Quantity;
+                               CMCPostedDeliveryNetWeight_G += RecPostedReturn_L."Net Weight";
+                               CMCPostedDeliveryStandWeight_G += RecPostedReturn_L."Standard Weight";
+                             END;
+                           END;
+                           IF CMCPostedDeliveryQty_G <> 0 THEN
+                             CreateTempDoc
+                           ELSE
+                             UpdateDelivStatusCancelByResum("No.");
+
+                           OldDate_G     := "CMC Posted Delivery"."Customer Delivery Date";
+                           OldContract_G := "CMC Sales Contract"."No.";
+                         END;
+
+        ReqFilterFields=No.,Posting Date,Customer Delivery Date,Cancellation Delivery,Delivery Type,Controled,Product Type;
+        DataItemLink=Contract No.=FIELD(No.);
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=9020;
+      Height=3410;
+    }
+    CONTROLS
+    {
+      { 1000000000;TextBox;4840 ;550  ;1700 ;440  ;SourceExpr=PostingDateReq_G }
+      { 1000000001;Label  ;1430 ;550  ;3300 ;440  ;ParentControl=1000000000;
+                                                   CaptionML=FRA=Date compta }
+      { 1000000002;TextBox;4840 ;1210 ;1700 ;440  ;SourceExpr=DocDateReq_G }
+      { 1000000003;Label  ;1430 ;1210 ;3300 ;440  ;ParentControl=1000000002;
+                                                   CaptionML=FRA=Date document }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 8053000; ;Container ;
+                  Name=Filters;
+                  CaptionML=FRA=Filtres;
+                  ContainerType=ContentArea }
+
+      { 8053004;1;Field     ;
+                  Name=PostingDate;
+                  CaptionML=[ENU=Posting Date;
+                             FRA=Date de comptabilisation];
+                  SourceExpr=PostingDateReq_G }
+
+      { 8053003;1;Field     ;
+                  Name=DocumentDate;
+                  CaptionML=[ENU=Document Date;
+                             FRA=Date de document];
+                  SourceExpr=DocDateReq_G }
+
+      { 8053002;1;Field     ;
+                  Name=OneInvoicePerDate;
+                  CaptionML=[ENU=One Invoice Per Date;
+                             FRA=Une facture par date];
+                  SourceExpr=OneInvPerDueDate_G }
+
+      { 8053001;1;Field     ;
+                  Name=GroupingCode;
+                  CaptionML=[ENU=Grouping Code;
+                             FRA=Code de regroupement];
+                  SourceExpr=GroupingCode_G;
+                  TableRelation="CMC Grouping Code" }
+
+      { 8053005;1;Field     ;
+                  Name=UsePostedReturn;
+                  CaptionML=[ENU=Use Posted Return;
+                             FRA=Utiliser bons de retour valid'];
+                  SourceExpr=UsePostedReturn_G }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      RecCMCSetup_G@8053000 : Record 8052982;
+      RecSalesHeader_G@8053001 : Record 36;
+      RecSalesLine_G@8053002 : Record 37;
+      RecItem_G@8053003 : Record 27;
+      CduReleaseSalesDoc_G@8053004 : Codeunit 414;
+      RecSalesHeaderTmp_G@8053005 : TEMPORARY Record 36;
+      RecPostedDeliveryTmp_G@8053006 : TEMPORARY Record 8053014;
+      RecSalesLineTmp_G@8053007 : TEMPORARY Record 37;
+      RecGroupingCereales_G@8053049 : Record 60040;
+      PostingDateReq_G@8053008 : Date;
+      DocDateReq_G@8053009 : Date;
+      WindowText_G@8053010 : Text[250];
+      Dialog_G@8053011 : Dialog;
+      CustCount_G@8053012 : Integer;
+      CurrentCustCount_G@8053013 : Integer;
+      InvCount_G@8053014 : Integer;
+      CrMemoCount_G@8053015 : Integer;
+      ContractCount_G@8053047 : Integer;
+      CurrentContractCount_G@8053048 : Integer;
+      DeliveryCount_G@8053016 : Integer;
+      CurrentDeliveryCount_G@8053017 : Integer;
+      MakeInvoice_G@8053018 : Boolean;
+      OldCustomer_G@8053019 : Code[20];
+      OneInvPerDueDate_G@8053020 : Boolean;
+      OldDate_G@8053021 : Date;
+      OldContract_G@8053022 : Code[20];
+      OneInvPerContract_G@8053023 : Boolean;
+      NbTempHeader_G@8053024 : Integer;
+      GroupingCode_G@8053025 : Code[10];
+      Text8053000@8053026 : TextConst 'FRA=Bon sortie %1 livraison %2';
+      Text8053001@8053027 : TextConst 'ENU=Majoration %1 %2;FRA=Majoration  : %1 %2 x %3';
+      Text8053002@8053028 : TextConst 'FRA=p'riode';
+      Text8053003@8053029 : TextConst 'FRA=p'riodes';
+      Text8053004@8053030 : TextConst 'ENU=Posting Date and Document Date must not be blank!;FRA=Vous devez saisir une date de comptabilisation et une date de document !';
+      Text8053005@8053031 : TextConst 'ENU=Customer No.      @1@@@@@@@@@@@@@@@@@@@@@@@@@@@@\;FRA=#4############# @1@@@@@@@@@@@@@@@@@@@@@@@@@@@@\';
+      Text8053006@8053037 : TextConst 'ENU=Contract no.       @2@@@@@@@@@@@@@@@@@@@@@@@@@@@@\;FRA=#5############# @2@@@@@@@@@@@@@@@@@@@@@@@@@@@@\';
+      Text8053007@8053032 : TextConst 'ENU=Delivery No.       @3@@@@@@@@@@@@@@@@@@@@@@@@@@@@;FRA=#6############# @3@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      Text8053008@8053046 : TextConst 'ENU=Contracts;FRA=Contrats';
+      Text8053009@8053033 : TextConst 'ENU=Customers;FRA=Clients';
+      Text8053010@8053034 : TextConst 'ENU=Deliveries Card;FRA=Bons de sortie';
+      Text8053011@8053035 : TextConst 'ENU=Documents Creation Finished.\\%1 Invoice(s) created and %2 Credit Memo(s) created. %3 error(s) occured;FRA=G'n'ration des documents termin'e.\\%1 Facture(s) et %2 Avoirs(s) g'n'r'(es). %3 erreur(s).';
+      Text8053012@8053036 : TextConst 'ENU=Application N› %1;FRA=N› application %1';
+      Text8053015@8053038 : TextConst 'ENU=TMP%1%2;FRA=TMP%1%2';
+      UsePostedReturn_G@8053044 : Boolean;
+      ReturnCount_G@8053043 : Integer;
+      CurrentReturnCount_G@8053042 : Integer;
+      CMCPostedDeliveryNetWeight_G@8053041 : Decimal;
+      CMCPostedDeliveryStandWeight_G@8053040 : Decimal;
+      iter_G@8053039 : Integer;
+      CMCPostedDeliveryQty_G@8053045 : Decimal;
+      Text8053016@8053051 : TextConst 'ENU=Positives lines equal negatives lines, Contract No. %1, no document created.;FRA=La somme des lignes positives est 'gale . la somme des lignes n'gatives,contrat N› %1. Aucun document n''a 't' g'n'r'.';
+      Text60000@60000 : TextConst 'ENU=Return Card;FRA=Bons de retour';
+      Text60001@60001 : TextConst 'ENU=Return No.         @7@@@@@@@@@@@@@@@@@@@@@@@@@@@@;FRA=#8############# @7@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+      Text60002@60002 : TextConst 'FRA=Bon retour %1 livraison %2';
+      Text60003@60003 : TextConst 'FRA=Quantit' contrat %1 T';
+      Text60004@60004 : TextConst 'FRA=Quantit' d'j. factur'e %1 T';
+      Text60005@60005 : TextConst 'FRA=Quantit' de la facture %1 T';
+      Text60006@60006 : TextConst 'FRA=Quantit' restante . facturer %1 T';
+      Text60007@60007 : TextConst 'FRA=Quantit' de l''avoir %1 T';
+      Text60008@60008 : TextConst 'ENU=Transport Parity;FRA=Parit' Transport';
+      Text60009@60009 : TextConst 'ENU=You must enter the Partity G/L account in NavAgri Setup;FRA=Vous devez renseigner le num'ro de compte comptable parit' dans les paramStres';
+      CountError_G@8053050 : Integer;
+      ArianeMgt_G@1000000000 : Codeunit 60125;
+
+    LOCAL PROCEDURE CreateTempDoc@8053012();
+    VAR
+      ShipmentLineNo_L@8053000 : Integer;
+    BEGIN
+      IF MakeInvoice_G OR (RecSalesHeaderTmp_G."No." = '' )THEN BEGIN
+        // Si besoin d'ajouter . une entete d'ja existante, c'est . dire rupture sur champ qui n'est pas dans la clef de tri,
+        // inserer ici la fonction
+        CreateTempHeader();
+      END;
+
+      ShipmentLineNo_L := CreateTempShipmentLine;
+      CreateTempTransportLine(ShipmentLineNo_L);
+      CreateTempRaiseLine(ShipmentLineNo_L);
+      CreateTempReductionLine(ShipmentLineNo_L);
+      CreateTempParityLine(ShipmentLineNo_L);
+    END;
+
+    LOCAL PROCEDURE CreateTempHeader@8053011();
+    BEGIN
+      // creation of invoice header
+      NbTempHeader_G += 1;
+      CLEAR(RecSalesHeaderTmp_G);
+      RecSalesHeaderTmp_G.INIT;
+
+      RecSalesHeaderTmp_G."Document Type" := RecSalesHeaderTmp_G."Document Type" :: Invoice;
+      RecSalesHeaderTmp_G."No." := STRSUBSTNO(Text8053015, FORMAT(TODAY, 0, '<Year4><Month,2><Day,2>'),
+        FORMAT(TIME, 0, '<Hours24><Minutes,2><Seconds,2>')) + FORMAT(NbTempHeader_G);
+      RecSalesHeaderTmp_G."Posting Date" := PostingDateReq_G;
+      RecSalesHeaderTmp_G."Document Date" := DocDateReq_G;
+      RecSalesHeaderTmp_G."Invoice Type" := RecSalesHeaderTmp_G."Invoice Type" :: Cereal;
+      RecSalesHeaderTmp_G."CMC Campaign No." := "CMC Sales Contract"."Campaign No.";
+      RecSalesHeaderTmp_G."Sell-to Customer No." := Customer."No.";
+      RecSalesHeaderTmp_G."Sales Contract No.":= "CMC Sales Contract"."No.";
+      RecSalesHeaderTmp_G."Your Reference" := "CMC Sales Contract"."Customer Reference";
+      RecSalesHeaderTmp_G."Activity Code" := RecItem_G."Activity Code";
+      RecSalesHeaderTmp_G."Grouping Code" := GroupingCode_G;
+      RecSalesHeaderTmp_G."Commercial Type" := "CMC Sales Contract"."Commercial Type";
+      RecSalesHeaderTmp_G."Grouping cereal code" := RecGroupingCereales_G."Grouping Cereal Code";
+      RecSalesHeaderTmp_G.INSERT;
+    END;
+
+    LOCAL PROCEDURE CreateTempShipmentLine@8053000() : Integer;
+    VAR
+      NextLineNo_L@8053003 : Integer;
+      RecLocation_L@8053000 : Record 14;
+    BEGIN
+      // creation of invoice line from sales contract deliveries
+      NextLineNo_L := GetNextInvLineNo(RecSalesHeaderTmp_G);
+      RecSalesLineTmp_G.INIT;
+      RecSalesLineTmp_G."Document Type" := RecSalesLineTmp_G."Document Type" :: Invoice;
+      RecSalesLineTmp_G."Document No." := RecSalesHeaderTmp_G."No.";
+      RecSalesLineTmp_G."Line No." := NextLineNo_L;
+      IF "CMC Posted Delivery"."Delivery Type" = "CMC Posted Delivery"."Delivery Type"::Delivery THEN
+        RecSalesLineTmp_G.Description:=STRSUBSTNO(Text8053000,"CMC Posted Delivery"."No.","CMC Posted Delivery"."Customer Delivery Date"
+      )
+      ELSE
+        RecSalesLineTmp_G.Description:=STRSUBSTNO(Text60002,"CMC Posted Delivery"."No.","CMC Posted Delivery"."Customer Delivery Date");
+      IF "CMC Posted Delivery".Application <> '' THEN
+        RecSalesLineTmp_G."Description 2":= STRSUBSTNO(Text8053012, "CMC Posted Delivery".Application);
+      RecSalesLineTmp_G."Posted Delivery No." := "CMC Posted Delivery"."No.";
+      RecSalesLineTmp_G.INSERT();
+
+      CreateTempCommentLine;
+
+      NextLineNo_L := GetNextInvLineNo(RecSalesHeaderTmp_G);
+      RecSalesLineTmp_G.INIT;
+      RecSalesLineTmp_G."Document Type" := RecSalesLineTmp_G."Document Type" :: Invoice;
+      RecSalesLineTmp_G."Document No." := RecSalesHeaderTmp_G."No.";
+      RecSalesLineTmp_G."Line No." := NextLineNo_L;
+      RecSalesLineTmp_G."Sell-to Customer No.":= RecSalesHeaderTmp_G."Sell-to Customer No.";
+      RecSalesLineTmp_G.Type := RecSalesLineTmp_G.Type :: Item;
+      RecSalesLineTmp_G."No." := "CMC Posted Delivery"."Item No.";
+      RecSalesLineTmp_G."Location Code" := "CMC Posted Delivery"."Location Code";
+      RecSalesLineTmp_G.Quantity := CMCPostedDeliveryQty_G;
+      RecSalesLineTmp_G."Unit Price" := "CMC Posted Delivery"."Unit Price" - "CMC Posted Delivery"."Shipping Unit Price";
+      RecSalesLineTmp_G."Line Amount" := RecSalesLineTmp_G.Quantity * RecSalesLineTmp_G."Unit Price";
+      RecSalesLineTmp_G."Posted Delivery No." := "CMC Posted Delivery"."No.";
+      RecSalesLineTmp_G."Unloading Method Code" := "CMC Posted Delivery"."Unloading Method Code";
+      IF "CMC Posted Delivery"."Delivery Type" = "CMC Posted Delivery"."Delivery Type"::Delivery THEN BEGIN
+        RecSalesLineTmp_G."Total Net Weight" := CMCPostedDeliveryNetWeight_G;
+        RecSalesLineTmp_G."Total Recalc. Standard Weight" := CMCPostedDeliveryStandWeight_G;
+      END ELSE BEGIN
+        RecSalesLineTmp_G."Total Net Weight" := - CMCPostedDeliveryNetWeight_G;
+        RecSalesLineTmp_G."Total Recalc. Standard Weight" := - CMCPostedDeliveryStandWeight_G;
+      END;
+      RecLocation_L.GET("CMC Posted Delivery"."Location Code");
+      RecSalesLineTmp_G."Shortcut Dimension 1 Code" := RecLocation_L."Analytic Section";
+
+      RecSalesLineTmp_G.INSERT();
+
+      EXIT(RecSalesLineTmp_G."Line No." );
+    END;
+
+    LOCAL PROCEDURE CreateTempTransportLine@8053002(ShipmentLineNo_P@8053002 : Integer);
+    VAR
+      RecItem_L@8053000 : Record 27;
+      NextLineNo_L@8053001 : Integer;
+    BEGIN
+      // creation of transport invoice line
+      IF ("CMC Posted Delivery"."Shipping Type" = "CMC Posted Delivery"."Shipping Type"::Company) AND
+         ("CMC Posted Delivery"."Shipping Unit Price" <> 0)
+      THEN BEGIN
+        RecItem_L.GET("CMC Posted Delivery"."Item No.");
+        NextLineNo_L := GetNextInvLineNo(RecSalesHeaderTmp_G);
+        RecSalesLineTmp_G.INIT;
+        RecSalesLineTmp_G."Document Type" := RecSalesHeaderTmp_G."Document Type";
+        RecSalesLineTmp_G."Document No.":= RecSalesHeaderTmp_G."No.";
+        RecSalesLineTmp_G."Line No." := NextLineNo_L;
+        RecSalesLineTmp_G.Type := RecSalesLineTmp_G.Type :: "Charge (Item)";
+        RecSalesLineTmp_G."No." := RecCMCSetup_G."Sales Ship. Item Charge";
+        RecSalesLineTmp_G."Location Code" := "CMC Posted Delivery"."Location Code";
+        RecSalesLineTmp_G.Quantity := CMCPostedDeliveryQty_G;
+        RecSalesLineTmp_G."Item Charge Type" := RecSalesLineTmp_G."Item Charge Type" :: Shipping;
+        RecSalesLineTmp_G."CMC Sales Line No." := ShipmentLineNo_P;
+        RecSalesLineTmp_G."Posted Delivery No." := "CMC Posted Delivery"."No.";
+        RecSalesLineTmp_G."Unit Price" := "CMC Posted Delivery"."Shipping Unit Price";
+        RecSalesLineTmp_G."Unit of Measure Code" := RecItem_L."Sales Unit of Measure";
+        RecSalesLineTmp_G."Line Amount" := RecSalesLineTmp_G.Quantity * RecSalesLineTmp_G."Unit Price";
+        RecSalesLineTmp_G.INSERT();
+      END;
+    END;
+
+    LOCAL PROCEDURE CreateTempRaiseLine@8053003(ShipmentLineNo_P@8053003 : Integer);
+    VAR
+      CduCMCManagement_L@8053001 : Codeunit 8052982;
+      NoOfSteps_L@8053002 : Integer;
+      NextLineNo_L@8053004 : Integer;
+    BEGIN
+      // creation of Price raise invoice line
+      IF ("CMC Sales Contract"."Raise Starting Date" <> 0D) AND
+           ("CMC Posted Delivery"."Customer Delivery Date" >= "CMC Sales Contract"."Raise Starting Date") AND
+             ("CMC Sales Contract"."Raise Unit Amount"<>0) THEN BEGIN
+
+        NoOfSteps_L:= CduCMCManagement_L.ReturnNbPeriod("CMC Sales Contract"."Raise Starting Date",
+          "CMC Posted Delivery"."Customer Delivery Date", "CMC Sales Contract"."Raise Period");
+        NextLineNo_L := GetNextInvLineNo(RecSalesHeaderTmp_G);
+        RecSalesLineTmp_G.INIT;
+        RecSalesLineTmp_G."Document Type" := RecSalesHeaderTmp_G."Document Type";
+        RecSalesLineTmp_G."Document No.":= RecSalesHeaderTmp_G."No.";
+        RecSalesLineTmp_G."Line No." := NextLineNo_L;
+        RecSalesLineTmp_G.Type := RecSalesLineTmp_G.Type :: Item;
+        RecSalesLineTmp_G."No." := "CMC Posted Delivery"."Item No.";
+        RecSalesLineTmp_G."Location Code" := "CMC Posted Delivery"."Location Code";
+        RecSalesLineTmp_G.Quantity := CMCPostedDeliveryQty_G;
+        RecSalesLineTmp_G."Item Charge Type" := RecSalesLineTmp_G."Item Charge Type" :: "Price Raise";
+        RecSalesLineTmp_G."CMC Sales Line No." := ShipmentLineNo_P;
+        RecSalesLineTmp_G."Posted Delivery No." := "CMC Posted Delivery"."No.";
+        RecSalesLineTmp_G."Unit Price" := ROUND("CMC Sales Contract"."Raise Unit Amount"*NoOfSteps_L,0.001);
+        RecSalesLineTmp_G."Line Amount" := RecSalesLineTmp_G.Quantity * RecSalesLineTmp_G."Unit Price";
+        IF NoOfSteps_L = 1 THEN
+          RecSalesLineTmp_G.Description:=STRSUBSTNO(Text8053001,NoOfSteps_L,Text8053002,"CMC Sales Contract"."Raise Unit Amount" )
+        ELSE
+          RecSalesLineTmp_G.Description:=STRSUBSTNO(Text8053001,NoOfSteps_L,Text8053003,"CMC Sales Contract"."Raise Unit Amount");
+        RecSalesLineTmp_G.INSERT();
+        END;
+    END;
+
+    LOCAL PROCEDURE CreateTempReductionLine@8053005(ShipmentLineNo_P@8053000 : Integer);
+    VAR
+      NextLineNo_L@8053001 : Integer;
+    BEGIN
+      // creation of price reduction invoice line
+      IF "CMC Posted Delivery"."Requested Discount" <> 0 THEN
+        BEGIN
+          NextLineNo_L := GetNextInvLineNo(RecSalesHeaderTmp_G);
+          RecSalesLineTmp_G.INIT;
+          RecSalesLineTmp_G."Document Type" := RecSalesHeaderTmp_G."Document Type";
+          RecSalesLineTmp_G."Document No." := RecSalesHeaderTmp_G."No.";
+          RecSalesLineTmp_G."Line No." := NextLineNo_L;
+          RecSalesLineTmp_G.Type := RecSalesLineTmp_G.Type :: "Charge (Item)";
+          RecSalesLineTmp_G."No." := RecCMCSetup_G."Item Charge (sales Refaction)";
+          RecSalesLineTmp_G.Quantity := CMCPostedDeliveryQty_G;
+          RecSalesLineTmp_G."Item Charge Type" := RecSalesLineTmp_G."Item Charge Type" :: "Price Reduction";
+          RecSalesLineTmp_G."CMC Sales Line No." := ShipmentLineNo_P;
+          RecSalesLineTmp_G."Posted Delivery No." := "CMC Posted Delivery"."No.";
+          RecSalesLineTmp_G."Unit Price" := -"CMC Posted Delivery"."Requested Discount";
+          RecSalesLineTmp_G."Line Amount" := RecSalesLineTmp_G.Quantity * RecSalesLineTmp_G."Unit Price";
+          RecSalesLineTmp_G.INSERT();
+        END;
+    END;
+
+    PROCEDURE CreateTempCommentLine@60000();
+    VAR
+      NextLineNo_L@8053000 : Integer;
+    BEGIN
+      // creation of comment invoice line
+      IF "CMC Posted Delivery".Comment <> '' THEN BEGIN
+        NextLineNo_L := GetNextInvLineNo(RecSalesHeaderTmp_G);
+        RecSalesLineTmp_G.INIT;
+        RecSalesLineTmp_G."Document Type" := RecSalesHeaderTmp_G."Document Type";
+        RecSalesLineTmp_G."Document No." := RecSalesHeaderTmp_G."No.";
+        RecSalesLineTmp_G."Line No." := NextLineNo_L;
+        RecSalesLineTmp_G.Description := "CMC Posted Delivery".Comment;
+        RecSalesLineTmp_G."Description 2":= '';
+        RecSalesLineTmp_G."Posted Delivery No." := "CMC Posted Delivery"."No.";
+        RecSalesLineTmp_G.INSERT();
+      END;
+    END;
+
+    PROCEDURE CreateTempParityLine@60001(ShipmentLineNo_P@8053002 : Integer);
+    VAR
+      RecTranspMethSetup_L@8053001 : Record 60023;
+      RecDefaultDim_L@8053005 : Record 352;
+      RecGLSetup_L@8053004 : Record 98;
+      RecLocation_L@8053003 : Record 14;
+      NextLineNo_L@8053000 : Integer;
+    BEGIN
+      IF "CMC Posted Delivery"."Shipping Type" <> "CMC Posted Delivery"."Shipping Type"::Customer THEN
+        EXIT;
+      IF "CMC Posted Delivery"."Parity amount" = 0 THEN
+        EXIT;
+
+      IF RecCMCSetup_G."Partity G/L account" = '' THEN
+        ERROR(Text60009);
+
+      IF NOT RecTranspMethSetup_L.GET("CMC Posted Delivery"."Transport Method") THEN
+        EXIT;
+      IF NOT RecTranspMethSetup_L."Invoice Parity" THEN
+       EXIT;
+
+      NextLineNo_L := GetNextInvLineNo(RecSalesHeaderTmp_G);
+      RecSalesLineTmp_G.INIT;
+      RecSalesLineTmp_G."Document Type" := RecSalesHeaderTmp_G."Document Type";
+      RecSalesLineTmp_G."Document No." := RecSalesHeaderTmp_G."No.";
+      RecSalesLineTmp_G."Line No." := NextLineNo_L;
+      RecSalesLineTmp_G.Type := RecSalesLineTmp_G.Type :: "G/L Account";
+      RecSalesLineTmp_G."No." := RecCMCSetup_G."Partity G/L account";
+      RecSalesLineTmp_G.Quantity := CMCPostedDeliveryQty_G;
+      RecSalesLineTmp_G."CMC Sales Line No." := ShipmentLineNo_P;
+      RecSalesLineTmp_G."Posted Delivery No." := "CMC Posted Delivery"."No.";
+      RecSalesLineTmp_G."Unit Price" := "CMC Posted Delivery"."Parity amount";
+      RecSalesLineTmp_G.Description:= Text60008;
+      RecSalesLineTmp_G."Location Code" := "CMC Posted Delivery"."Location Code";
+      RecLocation_L.GET("CMC Posted Delivery"."Location Code");
+      RecSalesLineTmp_G."Shortcut Dimension 1 Code" := RecLocation_L."Analytic Section";
+      RecGLSetup_L.GET;
+      CLEAR(RecDefaultDim_L);
+      RecDefaultDim_L.SETRANGE("Table ID",DATABASE::Item);
+      RecDefaultDim_L.SETRANGE("No.","CMC Posted Delivery"."Item No.");
+      RecDefaultDim_L.SETRANGE("Dimension Code",RecGLSetup_L."Global Dimension 2 Code");
+      IF RecDefaultDim_L.FINDFIRST THEN
+        RecSalesLineTmp_G."Shortcut Dimension 2 Code" := RecDefaultDim_L."Dimension Value Code";
+
+      RecSalesLineTmp_G.INSERT();
+    END;
+
+    LOCAL PROCEDURE CreateInvoice@8053004();
+    VAR
+      RecSalesHeader_L@8053000 : Record 36;
+      RecBatchLog_L@8053001 : Record 8053505;
+      Error_L@8053002 : Boolean;
+    BEGIN
+
+      RecSalesHeaderTmp_G.RESET;
+      IF RecSalesHeaderTmp_G.FINDSET THEN BEGIN
+        REPEAT
+          Error_L := NOT CreateSalesHeader;
+          IF Error_L THEN BEGIN
+              //Insertion du log
+            RecBatchLog_L.CreateLog(RecBatchLog_L."Source Type"::Customer, Customer."No.",
+                                    STRSUBSTNO(Text8053016,RecSalesHeaderTmp_G."Sales Contract No."),
+                                    RecBatchLog_L."Process Type"::"Create Collect Invoice");
+            CountError_G += 1;
+          END ELSE BEGIN
+            CreateSalesLine;
+            CreateSalesComment(RecSalesHeader_G);
+            CLEAR(CduReleaseSalesDoc_G);
+            CduReleaseSalesDoc_G.RUN(RecSalesHeader_G);
+          END;
+        UNTIL RecSalesHeaderTmp_G.NEXT = 0;
+        RecSalesHeaderTmp_G.DELETEALL;
+        RecSalesLineTmp_G.DELETEALL;
+        COMMIT;
+      END;
+    END;
+
+    LOCAL PROCEDURE CreateSalesHeader@8053006() : Boolean;
+    VAR
+      LineAmount_L@8053000 : Decimal;
+    BEGIN
+
+      // Avoir ou facture
+      RecSalesLineTmp_G.RESET;
+      RecSalesLineTmp_G.SETRANGE("Document No.",RecSalesHeaderTmp_G."No.");
+      IF RecSalesLineTmp_G.FINDSET THEN
+        REPEAT
+          LineAmount_L += RecSalesLineTmp_G."Line Amount";
+        UNTIL RecSalesLineTmp_G.NEXT = 0;
+      RecSalesHeader_G.INIT;
+      RecSalesLine_G.INIT;
+
+      CASE TRUE OF
+        LineAmount_L > 0 :
+          BEGIN
+            RecSalesHeader_G.VALIDATE("Document Type",RecSalesHeader_G."Document Type" :: Invoice);
+            InvCount_G += 1;
+          END;
+        LineAmount_L < 0 :
+          BEGIN
+            RecSalesHeader_G.VALIDATE("Document Type",RecSalesHeader_G."Document Type" :: "Credit Memo");
+            CrMemoCount_G +=1;
+          END;
+        LineAmount_L = 0 :
+          EXIT(FALSE);
+      END;
+
+      RecSalesHeader_G."No.":='';
+      RecSalesHeader_G.INSERT(TRUE);
+      RecSalesHeader_G.SetHideCollectifChoice(TRUE);
+      RecSalesHeader_G.VALIDATE("Posting Date",RecSalesHeaderTmp_G."Posting Date");
+      RecSalesHeader_G.VALIDATE("Document Date",RecSalesHeaderTmp_G."Document Date");
+      RecSalesHeader_G.VALIDATE("Invoice Type",RecSalesHeaderTmp_G."Invoice Type");
+      RecSalesHeader_G.VALIDATE("CMC Campaign No.", RecSalesHeaderTmp_G."CMC Campaign No.");
+      RecSalesHeader_G.VALIDATE("Sell-to Customer No.",RecSalesHeaderTmp_G."Sell-to Customer No.");
+      RecSalesHeader_G.VALIDATE("Sales Contract No.", RecSalesHeaderTmp_G."Sales Contract No.");
+      RecSalesHeader_G."Your Reference" := RecSalesHeaderTmp_G."Your Reference";
+      RecSalesHeader_G.VALIDATE("Activity Code",RecSalesHeaderTmp_G."Activity Code");
+      RecSalesHeader_G."Grouping Code" := RecSalesHeaderTmp_G."Grouping Code";
+      RecSalesHeader_G."Commercial Type" := RecSalesHeaderTmp_G."Commercial Type";
+      RecSalesHeader_G."Grouping cereal code" := RecSalesHeaderTmp_G."Grouping cereal code";
+      // --> 20260224-WI00-ADV01.01.00-42635-IJI
+      RecSalesHeader_G."Send to Approved Platform" := ArianeMgt_G.SalesHeaderSendAP(RecSalesHeader_G);
+      // <-- 20260224-WI00-ADV01.01.00-42635-IJI
+      RecSalesHeader_G.MODIFY(TRUE);
+      EXIT(TRUE);
+    END;
+
+    LOCAL PROCEDURE CreateSalesLine@8053007();
+    VAR
+      RecPostedDelivery_L@8053001 : Record 8053014;
+      Multiplicateur_L@8053000 : Integer;
+    BEGIN
+      RecSalesLineTmp_G.RESET;
+      RecSalesLineTmp_G.SETRANGE("Document No.",RecSalesHeaderTmp_G."No.");
+      IF RecSalesHeader_G."Document Type" = RecSalesHeader_G."Document Type"::"Credit Memo" THEN
+        Multiplicateur_L := -1
+      ELSE
+        Multiplicateur_L := 1;
+      IF RecSalesLineTmp_G.FINDSET THEN REPEAT
+        RecSalesLine_G.INIT;
+        RecSalesLine_G.VALIDATE("Document Type",RecSalesHeader_G."Document Type");
+        RecSalesLine_G.VALIDATE("Document No.",RecSalesHeader_G."No.");
+        RecSalesLine_G."Line No." := RecSalesLineTmp_G."Line No.";
+        RecSalesLine_G.VALIDATE(Type,RecSalesLineTmp_G.Type);
+        CASE TRUE OF
+          RecSalesLineTmp_G.Type = RecSalesLineTmp_G.Type::" " :
+            BEGIN
+              RecSalesLine_G.Description := RecSalesLineTmp_G.Description;
+              RecSalesLine_G."Description 2" := RecSalesLineTmp_G."Description 2";
+              RecSalesLine_G.VALIDATE("Posted Delivery No.",RecSalesLineTmp_G."Posted Delivery No.");
+              RecSalesLine_G.INSERT(TRUE);
+            END;
+          RecSalesLineTmp_G.Type = RecSalesLineTmp_G.Type::Item :
+            BEGIN
+              RecSalesLine_G.VALIDATE("Sell-to Customer No.",RecSalesLineTmp_G."Sell-to Customer No.");
+              RecSalesLine_G.VALIDATE("No.",RecSalesLineTmp_G."No.");
+              RecSalesLine_G.VALIDATE("Posted Delivery No.",RecSalesLineTmp_G."Posted Delivery No.");
+              RecSalesLine_G.VALIDATE("Location Code",RecSalesLineTmp_G."Location Code");
+              RecSalesLine_G.VALIDATE(Quantity,RecSalesLineTmp_G.Quantity*Multiplicateur_L) ;
+              RecSalesLine_G.VALIDATE("Unit Price", RecSalesLineTmp_G."Unit Price");
+              RecSalesLine_G.VALIDATE("Posted Delivery No.",RecSalesLineTmp_G."Posted Delivery No.");
+              RecSalesLine_G.VALIDATE("Unloading Method Code",RecSalesLineTmp_G."Unloading Method Code");
+              // --> 20170328-WI00-ADV01.01.00-2804-NED
+              //RecSalesLine_G."Total Net Weight" := CMCPostedDeliveryNetWeight_G;
+              //RecSalesLine_G."Total Recalc. Standard Weight" := CMCPostedDeliveryStandWeight_G;
+              // <-- 20170328-WI00-ADV01.01.00-2804-NED
+
+              IF RecSalesLineTmp_G."Item Charge Type" <> RecSalesLineTmp_G."Item Charge Type"::" " THEN BEGIN
+                // Price raise invoice line
+                RecSalesLine_G.VALIDATE("Item Charge Type",RecSalesLineTmp_G."Item Charge Type");
+                RecSalesLine_G.VALIDATE("CMC Sales Line No.",RecSalesLineTmp_G."CMC Sales Line No.");
+                RecSalesLine_G.Description := RecSalesLineTmp_G.Description;
+                RecSalesLine_G."Description 2" := RecSalesLineTmp_G."Description 2";
+              END
+              ELSE BEGIN
+                // --> 20170328-WI00-ADV01.01.00-2804-NED
+                //RecSalesLine_G."Total Net Weight" := CMCPostedDeliveryNetWeight_G;
+                //RecSalesLine_G."Total Recalc. Standard Weight" := CMCPostedDeliveryStandWeight_G;
+                RecSalesLine_G."Total Net Weight" := RecSalesLineTmp_G."Total Net Weight"; //CMCPostedDeliveryNetWeight_G;
+                RecSalesLine_G."Total Recalc. Standard Weight" := RecSalesLineTmp_G."Total Recalc. Standard Weight";
+                // <-- 20170328-WI00-ADV01.01.00-2804-NED
+              END;
+              RecSalesLine_G.INSERT(TRUE);
+              IF RecSalesLineTmp_G."Shortcut Dimension 1 Code" <> '' THEN BEGIN
+                RecSalesLine_G.VALIDATE("Shortcut Dimension 1 Code", RecSalesLineTmp_G."Shortcut Dimension 1 Code");
+                RecSalesLine_G.MODIFY;
+              END;
+      // -- > 20210510-CC12872-JML
+      {BEFORE
+              RecPostedDelivery_L.SETRANGE("No.", RecSalesLineTmp_G."Posted Delivery No.");
+              IF RecPostedDelivery_L.FINDSET THEN
+                RecPostedDelivery_L.CreateUnitPriceVariation(RecSalesLine_G);
+      AFTER}
+              IF RecSalesLine_G."Item Charge Type" <> RecSalesLine_G."Item Charge Type"::"Price Raise"  THEN BEGIN
+                RecPostedDelivery_L.SETRANGE("No.", RecSalesLineTmp_G."Posted Delivery No.");
+                IF RecPostedDelivery_L.FINDSET THEN
+                 RecPostedDelivery_L.CreateUnitPriceVariation(RecSalesLine_G);
+              END;
+      // < -- 20210510-CC12872-JML
+              // Mise . jour du bon de sortie Valid'
+              UpdateDeliveryStatus(RecSalesLineTmp_G."Posted Delivery No.");
+            END;
+          RecSalesLineTmp_G.Type = RecSalesLineTmp_G.Type::"G/L Account":
+            BEGIN
+              RecSalesLine_G.VALIDATE("No.",RecSalesLineTmp_G."No.");
+              RecSalesLine_G.VALIDATE(Quantity,RecSalesLineTmp_G.Quantity*Multiplicateur_L);
+              RecSalesLine_G.VALIDATE("CMC Sales Line No.",RecSalesLineTmp_G."CMC Sales Line No.");
+              RecSalesLine_G.VALIDATE("Posted Delivery No.",RecSalesLineTmp_G."Posted Delivery No.");
+              RecSalesLine_G.VALIDATE("Unit Price",RecSalesLineTmp_G."Unit Price");
+              RecSalesLine_G.Description:= RecSalesLineTmp_G.Description;
+              RecSalesLine_G.INSERT(TRUE);
+              RecSalesLine_G.VALIDATE("Location Code",RecSalesLineTmp_G."Location Code");
+              RecSalesLine_G.VALIDATE("Shortcut Dimension 1 Code",RecSalesLineTmp_G."Shortcut Dimension 1 Code");
+              IF RecSalesLineTmp_G."Shortcut Dimension 2 Code" <> '' THEN
+                RecSalesLine_G.VALIDATE("Shortcut Dimension 2 Code",RecSalesLineTmp_G."Shortcut Dimension 2 Code");
+              RecSalesLine_G.MODIFY;
+            END;
+          RecSalesLineTmp_G.Type = RecSalesLineTmp_G.Type::"Charge (Item)":
+            BEGIN
+              RecSalesLine_G.VALIDATE("No.",RecSalesLineTmp_G."No.");
+              RecSalesLine_G.VALIDATE(Quantity,RecSalesLineTmp_G.Quantity*Multiplicateur_L);
+              RecSalesLine_G.VALIDATE("Item Charge Type",RecSalesLineTmp_G."Item Charge Type");
+              RecSalesLine_G.VALIDATE("CMC Sales Line No.",RecSalesLineTmp_G."CMC Sales Line No.");
+              RecSalesLine_G.VALIDATE("Posted Delivery No.",RecSalesLineTmp_G."Posted Delivery No.");
+              RecSalesLine_G.VALIDATE("Unit Price",RecSalesLineTmp_G."Unit Price");
+              RecSalesLine_G.INSERT(TRUE);
+              // apply assignement of sales item charge
+              CreateItemChargeAssgnt(RecSalesLine_G);
+            END;
+        END;
+      UNTIL RecSalesLineTmp_G.NEXT = 0
+    END;
+
+    PROCEDURE CreateItemChargeAssgnt@5801(RecSalesLine_P@8053000 : Record 37);
+    VAR
+      RecSalesShipLine_L@8053001 : Record 37;
+      L_SalesHeader@8053002 : Record 36;
+      RecItemChargeAssigmtSales_L@8053003 : Record 5809;
+      RecCurrency_L@8053004 : Record 4;
+    BEGIN
+      // create item charge assignment for current sales line
+      WITH RecSalesLine_P DO
+        BEGIN
+          TESTFIELD(Type,Type::"Charge (Item)");
+          TESTFIELD("No.");
+          TESTFIELD(Quantity);
+          RecSalesShipLine_L.GET("Document Type","Document No.","CMC Sales Line No.");
+          RecItemChargeAssigmtSales_L.RESET;
+          RecItemChargeAssigmtSales_L.SETRANGE("Document Type","Document Type");
+          RecItemChargeAssigmtSales_L.SETRANGE("Document No.","Document No.");
+          RecItemChargeAssigmtSales_L.SETRANGE("Document Line No.","Line No.");
+          RecItemChargeAssigmtSales_L.SETRANGE("Item Charge No.","No.");
+          IF NOT RecItemChargeAssigmtSales_L.FINDLAST THEN BEGIN
+            RecItemChargeAssigmtSales_L."Document Type" := "Document Type";
+            RecItemChargeAssigmtSales_L."Document No." := "Document No.";
+            RecItemChargeAssigmtSales_L."Document Line No." := "Line No.";
+            RecItemChargeAssigmtSales_L."Line No." := 10000;
+            RecItemChargeAssigmtSales_L."Item Charge No." := "No.";
+            RecItemChargeAssigmtSales_L."Item No." := RecSalesShipLine_L."No.";
+            RecItemChargeAssigmtSales_L.Description := RecSalesShipLine_L.Description;
+            RecItemChargeAssigmtSales_L."Applies-to Doc. Type" := "Document Type";
+            RecItemChargeAssigmtSales_L."Applies-to Doc. No." := "Document No.";
+            RecItemChargeAssigmtSales_L."Applies-to Doc. Line No." := "CMC Sales Line No.";
+            //L_SalesHeader.GET("Document Type","Document No.");
+            IF RecSalesHeader_G."Currency Code" <> '' THEN
+              RecCurrency_L.GET(L_SalesHeader."Currency Code");
+            IF ("Inv. Discount Amount" = 0) AND
+               ("Line Discount Amount" = 0) AND
+               (NOT RecSalesHeader_G."Prices Including VAT")
+              THEN
+                RecItemChargeAssigmtSales_L."Unit Cost" := "Unit Price"
+              ELSE
+                IF RecSalesHeader_G."Prices Including VAT" THEN
+                  RecItemChargeAssigmtSales_L."Unit Cost" :=
+                    ROUND(
+                         ("Line Amount" - "Inv. Discount Amount") / Quantity / (1 + "VAT %" / 100),
+                         RecCurrency_L."Unit-Amount Rounding Precision")
+                ELSE
+                  RecItemChargeAssigmtSales_L."Unit Cost" :=
+                    ROUND(
+                         ("Line Amount" - "Inv. Discount Amount") / Quantity,
+                         RecCurrency_L."Unit-Amount Rounding Precision");
+        END;
+
+        RecItemChargeAssigmtSales_L.VALIDATE("Qty. to Assign", Quantity);
+        IF NOT RecItemChargeAssigmtSales_L.INSERT(TRUE) THEN
+          RecItemChargeAssigmtSales_L.MODIFY;
+       END;
+    END;
+
+    LOCAL PROCEDURE UpdateDeliveryStatus@8053009(PostedDeliveryNo_P@8053000 : Code[20]);
+    VAR
+      RecPostedDelivery_L@8053001 : Record 8053014;
+      RecPostedReturn_L@8053002 : Record 8053014;
+    BEGIN
+
+      // --------------------------------------------------------------------
+      // Mise . jour du bon de sortie Valid'
+      // --------------------------------------------------------------------
+      RecPostedDelivery_L.SETRANGE("No.",PostedDeliveryNo_P);
+      IF RecPostedDelivery_L.FINDFIRST THEN BEGIN
+        IF RecSalesHeader_G."Document Type" = RecSalesHeader_G."Document Type"::Invoice THEN
+          RecPostedDelivery_L."Sales Document Type" := RecPostedDelivery_L."Sales Document Type"::Invoice
+        ELSE
+          RecPostedDelivery_L."Sales Document Type" := RecPostedDelivery_L."Sales Document Type"::"Credit Memo";
+        RecPostedDelivery_L."Sales Document No." := RecSalesHeader_G."No.";
+        RecPostedDelivery_L.MODIFY;
+
+        IF RecPostedDelivery_L."Delivery Type" = RecPostedDelivery_L."Delivery Type"::Delivery THEN BEGIN
+          IF RecPostedDelivery_L."Related Posted Delivery No." <> '' THEN BEGIN
+            IF RecPostedReturn_L.GET(RecPostedReturn_L."Delivery Type"::Resumption,
+                                    RecPostedDelivery_L."Related Posted Delivery No.") THEN BEGIN
+               RecPostedReturn_L."Sales Document Type" := RecPostedDelivery_L."Sales Document Type";
+               RecPostedReturn_L."Sales Document No." := RecPostedDelivery_L."Sales Document No.";
+               RecPostedReturn_L.MODIFY;
+            END;
+          END;
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE UpdateDelivStatusCancelByResum@60005(PostedDeliveryNo_P@8053000 : Code[20]);
+    VAR
+      RecPostedDelivery_L@8053001 : Record 8053014;
+      RecPostedReturn_L@8053002 : Record 8053014;
+    BEGIN
+
+      // --------------------------------------------------------------------
+      // Mise . jour du bon de sortie Valid' si annul' par une reprise
+      // --------------------------------------------------------------------
+      RecPostedDelivery_L.SETRANGE("No.",PostedDeliveryNo_P);
+      IF RecPostedDelivery_L.FINDFIRST THEN BEGIN
+        RecPostedDelivery_L.Invoiced := TRUE;
+        RecPostedDelivery_L.MODIFY;
+
+        IF RecPostedDelivery_L."Delivery Type" = RecPostedDelivery_L."Delivery Type"::Delivery THEN BEGIN
+          IF RecPostedDelivery_L."Related Posted Delivery No." <> '' THEN BEGIN
+            IF RecPostedReturn_L.GET(RecPostedReturn_L."Delivery Type"::Resumption,
+                                    RecPostedDelivery_L."Related Posted Delivery No.") THEN BEGIN
+              RecPostedReturn_L.Invoiced := TRUE;
+              RecPostedReturn_L.MODIFY;
+              RecPostedReturn_L.MODIFY;
+            END;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE GetNextInvLineNo@8053001(RecSalesHeader_P@8053000 : Record 36) : Integer;
+    VAR
+      LineNo_L@8053001 : Integer;
+    BEGIN
+      RecSalesLineTmp_G.SETRANGE("Document Type",RecSalesHeader_P."Document Type");
+      RecSalesLineTmp_G.SETRANGE("Document No.",RecSalesHeader_P."No.");
+      IF RecSalesLineTmp_G.FINDLAST THEN
+        LineNo_L := RecSalesLineTmp_G."Line No." + 10000
+      ELSE
+        LineNo_L := 10000;
+      EXIT(LineNo_L);
+    END;
+
+    PROCEDURE CreateSalesComment@60002(RecSalesHeader_P@1000000000 : Record 36);
+    VAR
+      DocumentQtytxt_L@1000000001 : Text[250];
+      QtyToInvoice_L@1000000002 : Decimal;
+      RecSalesContract_L@1000000003 : Record 8053012;
+    BEGIN
+      IF NOT RecCMCSetup_G."Save Qty Com. In Sales Invoice" THEN
+        EXIT;
+      QtyToInvoice_L := 0;
+      DocumentQtytxt_L := '';
+
+      RecSalesContract_L.GET(RecSalesHeader_P."Sales Contract No.");
+      RecSalesContract_L.CALCFIELDS("Invoiced Quantity");
+      RecSalesHeader_P.CALCFIELDS("Total Net Weight");
+      // --> 20171011-WI00-ADV01.01.00-2804-NED
+      //QtyToInvoice_L := RecSalesContract_L.Quantity - RecSalesContract_L."Invoiced Quantity" - RecSalesHeader_P."Total Net Weight";
+      IF RecSalesHeader_P."Document Type" = RecSalesHeader_P."Document Type"::Invoice THEN BEGIN
+        DocumentQtytxt_L := Text60005;
+        QtyToInvoice_L := RecSalesContract_L.Quantity - RecSalesContract_L."Invoiced Quantity" - ABS(RecSalesHeader_P."Total Net Weight"
+      );
+
+      END ELSE
+      IF RecSalesHeader_P."Document Type" = RecSalesHeader_P."Document Type"::"Credit Memo" THEN BEGIN
+        DocumentQtytxt_L := Text60007;
+        QtyToInvoice_L := RecSalesContract_L.Quantity - RecSalesContract_L."Invoiced Quantity" + ABS(RecSalesHeader_P."Total Net Weight"
+      );
+
+      END;
+      // <-- 20171011-WI00-ADV01.01.00-2804-NED
+
+      FOR iter_G := 1 TO 4 DO BEGIN
+        CASE iter_G OF
+          1 : CreateSalesCommentLines(RecSalesHeader_P,STRSUBSTNO(Text60003,RecSalesContract_L.Quantity));
+          2 : CreateSalesCommentLines(RecSalesHeader_P,STRSUBSTNO(Text60004,RecSalesContract_L."Invoiced Quantity"));
+          3 : CreateSalesCommentLines(RecSalesHeader_P,STRSUBSTNO(DocumentQtytxt_L,RecSalesHeader_P."Total Net Weight"));
+          4 : CreateSalesCommentLines(RecSalesHeader_P,STRSUBSTNO(Text60006,QtyToInvoice_L));
+        END;
+      END;
+    END;
+
+    PROCEDURE CreateSalesCommentLines@60003(RecSalesHeader_P@1000000003 : Record 36;Comment_P@1000000004 : Text[80]);
+    VAR
+      RecSalesCommentLine_L@1000000000 : Record 44;
+    BEGIN
+      WITH RecSalesCommentLine_L DO BEGIN
+        INIT;
+        "Document Type" := RecSalesHeader_P."Document Type";
+        "No." := RecSalesHeader_P."No.";
+        "Document Line No." := 0;
+        "Line No." := IncSalesCommentLines(RecSalesHeader_P);
+        Date := WORKDATE;
+        Comment := Comment_P;
+        Type := Type::Commercial;
+        INSERT;
+      END;
+    END;
+
+    PROCEDURE IncSalesCommentLines@60004(RecSalesHeader_P@1000000001 : Record 36) LineNo_Res : Integer;
+    VAR
+      RecSalesCommentLine_L@1000000000 : Record 44;
+    BEGIN
+      CLEAR(RecSalesCommentLine_L);
+      RecSalesCommentLine_L.SETRANGE("Document Type",RecSalesHeader_P."Document Type");
+      RecSalesCommentLine_L.SETRANGE("No.",RecSalesHeader_P."No.");
+      RecSalesCommentLine_L.SETRANGE("Document Line No.",0);
+      IF RecSalesCommentLine_L.FINDLAST THEN
+        LineNo_Res := RecSalesCommentLine_L."Line No." + 10000
+      ELSE
+        LineNo_Res := 10000;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20161202-WI00-ADV01.01.00-2804-FBE : MODOBJECT (Refonte du report)
+      20170328-WI00-ADV01.01.00-2804-NED : ADDCODE (Calcul poids total et total poids aux normes calcul')
+      20171011-WI00-ADV01.01.00-2804-NED : MODFUNCT (CreateSalesComment : Correction ligne commentaire)
+      20180109-WI00-ADV01.01.00-2804-NED : MODCODE (Calcul poids total et total poids aux normes calcul')
+      20210510-CC12872-JML               : MODCODE (Price Raise)
+      20260224-WI00-ADV01.01.00-42635-IJI : ADDCODE (A transmettre . la Plateforme Agr'e)
+      // <-- 3LI BEGIN
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

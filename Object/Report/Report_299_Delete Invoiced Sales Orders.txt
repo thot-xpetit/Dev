@@ -1,0 +1,367 @@
+OBJECT Report 299 Delete Invoiced Sales Orders
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09/10/25;
+    Heure=00:00:00;
+    Liste versions=NAVW16.00,KITNA6.00.01,LSW16.20.01,CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Delete Invoiced Sales Orders;
+               FRA=Supprimer cdes vente factur'es];
+    ProcessingOnly=Oui;
+    OnPostReport=VAR
+                   BatchLog_L@1000000000 : Record 8053505;
+                 BEGIN
+                   // --> 20250926-WI00-ADV01.01.00-3586-CJY01
+                   EndDateTime_G := CREATEDATETIME(TODAY,TIME);
+                   BatchLog_L.CreateLog(BatchLog_L."Source Type"::Customer,'',
+                         STRSUBSTNO(Text60000,StartDateTime_G,EndDateTime_G),BatchLog_L."Process Type"::"delete invoiced sales order");
+
+                   // <-- 20250926-WI00-ADV01.01.00-3586-CJY01
+                 END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table36;
+        DataItemTableView=SORTING(Document Type,No.)
+                          WHERE(Document Type=CONST(Order));
+        ReqFilterHeadingML=[ENU=Sales Order;
+                            FRA=Commande vente];
+        OnPreDataItem=BEGIN
+                        IF GUIALLOWED THEN //LS6.20.01-01
+                          Window.OPEN(Text000);
+                        // --> 20130904-Wi00-CMC02.02.00-BRA01
+                        SalesSetup_G.GET;
+                        // <-- 20130904-Wi00-CMC02.02.00-BRA01
+                        // --> 20250926-WI00-ADV01.01.00-3586-CJY01
+                        IF StartDateTime_G = 0DT THEN
+                         StartDateTime_G := CREATEDATETIME(TODAY,TIME);
+                        // <-- 20250926-WI00-ADV01.01.00-3586-CJY01
+                      END;
+
+        OnAfterGetRecord=VAR
+                           ReserveSalesLine@1000 : Codeunit 99000832;
+                           "<-- 3LI LOCALS -->"@8053000 : Integer;
+                           cduLSRetailPermission_L@8053001 : Codeunit 8053005;
+                           ArchiveMgt_L@8053002 : Codeunit 5063;
+                           cduSalesPriceDiscMgt_L@8053003 : Codeunit 8053017;
+                           CMCDetailsSalesLine_L@1000000000 : Record 8053475;
+                           CMCSalesLineCerealContract_L@1000000001 : Record 8053232;
+                           CMCCustDocDistribution_L@1000000002 : Record 60004;
+                           KitLines_L@1000000004 : Record 25000;
+                           KitMgt_L@1000000003 : Codeunit 25000;
+                           KitArchive_L@1000000005 : Record 25003;
+                           CMCSalesDocItemMix_L@1000000006 : Record 8053190;
+                         BEGIN
+                           IF GUIALLOWED THEN //LS6.20.01-01
+                             Window.UPDATE(1,"No.");
+
+                           AllLinesDeleted := TRUE;
+                           DocDim.RESET;
+                           DocDim.SETRANGE("Document Type","Document Type");
+                           DocDim.SETRANGE("Document No.","No.");
+                           ItemChargeAssgntSales.RESET;
+                           ItemChargeAssgntSales.SETRANGE("Document Type","Document Type");
+                           ItemChargeAssgntSales.SETRANGE("Document No.","No.");
+                           SalesOrderLine.RESET;
+                           SalesOrderLine.SETRANGE("Document Type","Document Type");
+                           SalesOrderLine.SETRANGE("Document No.","No.");
+                           SalesOrderLine.SETFILTER("Quantity Invoiced",'<>0');
+                           IF SalesOrderLine.FIND('-') THEN BEGIN
+                             SalesOrderLine.SETRANGE("Quantity Invoiced");
+                             SalesOrderLine.SETFILTER("Outstanding Quantity",'<>0');
+                             IF NOT SalesOrderLine.FIND('-') THEN BEGIN
+                               SalesOrderLine.SETRANGE("Outstanding Quantity");
+                               SalesOrderLine.SETFILTER("Qty. Shipped Not Invoiced",'<>0');
+                               IF NOT SalesOrderLine.FIND('-') THEN BEGIN
+                                 SalesOrderLine.LOCKTABLE;
+                                 IF NOT SalesOrderLine.FIND('-') THEN BEGIN
+                                   SalesOrderLine.SETRANGE("Qty. Shipped Not Invoiced");
+                                   DocDim.SETRANGE("Table ID",DATABASE::"Sales Line");
+                                   IF SalesOrderLine.FIND('-') THEN
+                                   // --> 20130904-Wi00-CMC02.02.00-BRA01
+                                   BEGIN
+                                     IF SalesSetup_G."Archive Quotes and Orders" THEN BEGIN
+                                       CLEAR(ArchiveMgt_L);
+                                       ArchiveMgt_L.StoreSalesDocument("Sales Header",FALSE);
+                                       // --> 20220207-WI00-ADV01.01.00-3586-CJY01
+                                       //gestion de la supression des archive ant'rieures
+                                       VersionNo_G := 0;
+                                       ArchiveMgt_L.GetArchiveInfo(VersionNo_G,Occurence_No_G);
+                                       CleaningArchive("Sales Header",VersionNo_G,Occurence_No_G);
+                                       // <-- 20220207-WI00-ADV01.01.00-3586-CJY01
+                                     END;
+                                   // <-- 20130904-Wi00-CMC02.02.00-BRA01
+                                     REPEAT
+                                       SalesOrderLine.CALCFIELDS("Qty. Assigned");
+                                       IF (SalesOrderLine."Qty. Assigned" = SalesOrderLine."Quantity Invoiced") OR
+                                          (SalesOrderLine.Type <> SalesOrderLine.Type::"Charge (Item)")
+                                       THEN BEGIN
+                                         DocDim.SETRANGE("Line No.",SalesOrderLine."Line No.");
+                                         // --> 20150529-Wi00-CMC02.02.00-2963-FHS01
+                                         IF NOT(DocDim.ISEMPTY) THEN
+                                         // <-- 20150529-Wi00-CMC02.02.00-2963-FHS01
+                                           DocDim.DELETEALL;
+                                         IF SalesOrderLine.Type = SalesOrderLine.Type::"Charge (Item)" THEN BEGIN
+                                           ItemChargeAssgntSales.SETRANGE("Document Line No.",SalesOrderLine."Line No.");
+                                           // --> 20150529-Wi00-CMC02.02.00-2963-FHS01
+                                           IF NOT(ItemChargeAssgntSales.ISEMPTY) THEN
+                                           // <-- 20150529-Wi00-CMC02.02.00-2963-FHS01
+                                             ItemChargeAssgntSales.DELETEALL;
+                                         END;
+                                         // --> 20250811-WI00-ADV01.01.00-3586-CJY01
+                                         //archive
+                                         IF VersionNo_G > 0 THEN BEGIN
+                                           KitLines_L.SETRANGE("Document Type",SalesOrderLine."Document Type");
+                                           KitLines_L.SETRANGE("Document No.",SalesOrderLine."Document No.");
+                                           KitLines_L.SETRANGE("Document Line No.",SalesOrderLine."Line No.");
+                                           IF KitLines_L.FINDSET THEN REPEAT
+                                             KitArchive_L.INIT;
+                                             KitArchive_L.TRANSFERFIELDS(KitLines_L);
+                                             KitArchive_L."Doc. No. Occurrence" := "Doc. No. Occurrence";
+                                             KitArchive_L."Version No." := VersionNo_G;
+
+                                             // --> 20251117-WI00-ADV01.01.00-3586-CJY01
+                                             IF NOT KitArchive_L.INSERT THEN
+                                                KitArchive_L.MODIFY;
+                                             // <-- 20251117-WI00-ADV01.01.00-3586-CJY01
+                                           UNTIL KitLines_L.NEXT = 0;
+                                         END;
+                                         KitMgt_L.DeleteKitSales(SalesOrderLine,TRUE);
+                                         // <-- 20250811-WI00-ADV01.01.00-3586-CJY01
+
+                                         IF SalesOrderLine.HASLINKS THEN
+                                           SalesOrderLine.DELETELINKS;
+                                         // --> 20130911-APP19-CMC02.02.00-BSI01
+                                         cduSalesPriceDiscMgt_L.DeleteSalesDocDisc(SalesOrderLine);
+                                         // <-- 20130911-APP19-CMC02.02.00-BSI01
+                                         SalesOrderLine.DELETE;
+                                       END ELSE
+                                         AllLinesDeleted := FALSE;
+
+                                     UNTIL SalesOrderLine.NEXT = 0;
+                                   // --> 20130904-Wi00-CMC02.02.00-BRA01
+                                   END;
+                                   // <-- 20130904-Wi00-CMC02.02.00-BRA01
+
+                                   IF AllLinesDeleted THEN BEGIN
+                                     SalesPost.DeleteHeader(
+                                       "Sales Header",SalesShptHeader,SalesInvHeader,SalesCrMemoHeader,ReturnRcptHeader,
+                                       PrepmtSalesInvHeader,PrepmtSalesCrMemoHeader);
+
+                                     ReserveSalesLine.DeleteInvoiceSpecFromHeader("Sales Header");
+
+                                     SalesCommentLine.SETRANGE("Document Type","Document Type");
+                                     SalesCommentLine.SETRANGE("No.","No.");
+                                     // --> 20150529-Wi00-CMC02.02.00-2963-FHS01
+                                     IF NOT(SalesCommentLine.ISEMPTY) THEN
+                                     // <-- 20150529-Wi00-CMC02.02.00-2963-FHS01
+                                       SalesCommentLine.DELETEALL;
+
+                                     // --> 20220209-WI00-ADV01.01.00-3586-CJY01
+                                     CMCSalesDocItemMix_L.RESET;
+                                     CMCSalesDocItemMix_L.SETRANGE("Document Type","Document Type");
+                                     CMCSalesDocItemMix_L.SETRANGE("Document No.","No.");
+                                     IF NOT CMCSalesDocItemMix_L.ISEMPTY THEN
+                                       CMCSalesDocItemMix_L.DELETEALL(TRUE);
+                                     // <-- 20220209-WI00-ADV01.01.00-3586-CJY01
+                                     DocDim.SETRANGE("Table ID",DATABASE::"Sales Header");
+                                     DocDim.SETRANGE("Line No.",0);
+                                     // --> 20150529-Wi00-CMC02.02.00-2963-FHS01
+                                     IF NOT(DocDim.ISEMPTY) THEN
+                                     // <-- 20150529-Wi00-CMC02.02.00-2963-FHS01
+                                       DocDim.DELETEALL;
+
+                                     WhseRequest.SETRANGE("Source Type",DATABASE::"Sales Line");
+                                     WhseRequest.SETRANGE("Source Subtype","Document Type");
+                                     WhseRequest.SETRANGE("Source No.","No.");
+                                     // --> 20150529-Wi00-CMC02.02.00-2963-FHS01
+                                     IF NOT(WhseRequest.ISEMPTY) THEN
+                                     // <-- 20150529-Wi00-CMC02.02.00-2963-FHS01
+                                       WhseRequest.DELETEALL(TRUE);
+
+                                     // --> 20220207-WI00-ADV01.01.00-3586-CJY01
+                                     // --> 20250811-WI00-ADV01.01.00-3586-CJY01
+                                     KitLines_L.SETRANGE("Document Type","Document Type");
+                                     KitLines_L.SETRANGE("Document No.","No.");
+                                     KitLines_L.SetSkipPricing;
+                                     KitLines_L.SuspendQtyShippedCheck(TRUE);
+                                     KitLines_L.SuspendStatusCheck(TRUE);
+                                     IF KitLines_L.FINDSET THEN
+                                       REPEAT
+                                         KitLines_L.DELETE(TRUE);
+                                       UNTIL KitLines_L.NEXT = 0;
+                                     // <-- 20250811-WI00-ADV01.01.00-3586-CJY01
+                                     //gestion suppression cascade tables Navagri
+                                     //lignes ventes d'tails CMC
+                                     CMCDetailsSalesLine_L.SETRANGE("Document Type","Document Type");
+                                     CMCDetailsSalesLine_L.SETRANGE("Document No.","No.");
+                                     IF NOT(CMCDetailsSalesLine_L.ISEMPTY) THEN
+                                       CMCDetailsSalesLine_L.DELETEALL(TRUE);
+                                     //lignes contrat c'r'ales
+                                     CMCSalesLineCerealContract_L.SETRANGE("Document Type","Document Type");
+                                     CMCSalesLineCerealContract_L.SETRANGE("Document No.","No.");
+                                     IF NOT(CMCSalesLineCerealContract_L.ISEMPTY) THEN
+                                       CMCSalesLineCerealContract_L.DELETEALL(TRUE);
+
+                                     // <-- 20220207-WI00-ADV01.01.00-3586-CJY01
+                                     // --> 20250519-WI00-ADV01.01.00-3586-CJY01
+                                     //gestion de la suppression des ecr r'partition
+                                     CMCCustDocDistribution_L.RESET;
+                                     CMCCustDocDistribution_L.SETRANGE("Document Type",CMCCustDocDistribution_L."Document Type"::Order);
+                                     CMCCustDocDistribution_L.SETRANGE("Document No.","No.");
+                                     IF NOT CMCCustDocDistribution_L.ISEMPTY THEN
+                                       CMCCustDocDistribution_L.DELETEALL(TRUE);
+
+                                     // <-- 20250519-WI00-ADV01.01.00-3586-CJY01
+
+                                     //LS -
+                                     LSSalesPaymenLines.SETRANGE("Document Type","Document Type");
+                                     LSSalesPaymenLines.SETRANGE("Document No.","No.");
+                                     // --> 20150529-Wi00-CMC02.02.00-2963-FHS01
+                                     IF NOT(LSSalesPaymenLines.ISEMPTY) THEN
+                                     // <-- 20150529-Wi00-CMC02.02.00-2963-FHS01
+                                       LSSalesPaymenLines.DELETEALL;
+
+                                     LSTransOrdHdr.SETCURRENTKEY("Order No.");
+                                     LSTransOrdHdr.SETRANGE("Order No.","No.");
+                                     LSTransOrdHdr.SETRANGE(Processed,FALSE);
+                                     IF LSTransOrdHdr.FINDFIRST THEN BEGIN
+                                       LSTransOrdHdr.MODIFYALL("Error in Process",FALSE);
+                                       LSTransOrdHdr.MODIFYALL(Processed,TRUE);
+                                     END;
+                                     //LS +
+
+                                     IF HASLINKS THEN
+                                       DELETELINKS;
+                                     DELETE;
+                                     // --> 20130801-Wi00-CMC02.02.00-DRN01
+                                     IF cduLSRetailPermission_L.isLSRetail THEN
+                                     // <-- 20130801-Wi00-CMC02.02.00-DRN01
+                                       //LS6.20.01-02 -
+                                       IF BOUtils.IsInStorePermitted THEN BEGIN
+                                         InStoreMgt.SendSalesDocDelete("Sales Header");
+                                       END;
+                                       //LS6.20.01-02 +
+                                   END;
+                                   COMMIT;
+                                 END;
+                               END;
+                             END;
+                           END;
+                         END;
+
+        ReqFilterFields=No.,Sell-to Customer No.,Bill-to Customer No.;
+      }
+      SECTIONS
+      {
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=Processing sales orders #1##########;FRA=Traitement des commandes vente #1##########';
+      SalesOrderLine@1001 : Record 37;
+      SalesShptHeader@1009 : Record 110;
+      SalesInvHeader@1010 : Record 112;
+      SalesCrMemoHeader@1011 : Record 114;
+      ReturnRcptHeader@1012 : Record 6660;
+      PrepmtSalesInvHeader@1013 : Record 112;
+      PrepmtSalesCrMemoHeader@1014 : Record 114;
+      SalesCommentLine@1002 : Record 44;
+      DocDim@1003 : Record 357;
+      ItemChargeAssgntSales@1007 : Record 5809;
+      WhseRequest@1008 : Record 5765;
+      SalesPost@1005 : Codeunit 80;
+      Window@1004 : Dialog;
+      AllLinesDeleted@1006 : Boolean;
+      LSSalesPaymenLines@1100409000 : Record 10012727;
+      LSTransOrdHdr@1100409001 : Record 10012703;
+      BOUtils@1100409004 : Codeunit 99001452;
+      InStoreMgt@1100409002 : Codeunit 10001320;
+      "<-- 3LI GLOBALS -->"@8053000 : Integer;
+      SalesSetup_G@8053001 : Record 311;
+      VersionNo_G@1000000000 : Integer;
+      Occurence_No_G@1000000001 : Integer;
+      StartDateTime_G@1000000002 : DateTime;
+      EndDateTime_G@1000000003 : DateTime;
+      Text60000@1000000004 : TextConst 'FRA=D'but traitement 'puration vente : %1, fin du traitement %2';
+
+    PROCEDURE CleaningArchive@1000000012(SalesHeader_P@1000000000 : Record 36;Version_P@1000000001 : Integer;Occurence_P@1000000002 : Integer);
+    VAR
+      LastVersionToDelete_L@1000000003 : Integer;
+      SalesArchiveHeader_L@1000000004 : Record 5107;
+    BEGIN
+      // --> 20220207-WI00-ADV01.01.00-3586-CJY01
+      IF Version_P > 1 THEN BEGIN
+        LastVersionToDelete_L := Version_P - 1;
+        SalesArchiveHeader_L.SETRANGE("Document Type",SalesHeader_P."Document Type");
+        SalesArchiveHeader_L.SETRANGE("No.",SalesHeader_P."No.");
+        SalesArchiveHeader_L.SETRANGE("Doc. No. Occurrence",Occurence_P);
+        SalesArchiveHeader_L.SETFILTER("Version No.",'..%1',LastVersionToDelete_L);
+        IF NOT SalesArchiveHeader_L.ISEMPTY THEN
+
+              SalesArchiveHeader_L.DELETEALL(TRUE);
+      END;
+      //on tag notre archive issue d''puration
+      IF SalesArchiveHeader_L.GET(SalesHeader_P."Document Type",SalesHeader_P."No.",Occurence_P,Version_P) THEN BEGIN
+        SalesArchiveHeader_L."original deleted by report" := TRUE;
+        SalesArchiveHeader_L.MODIFY(TRUE);
+      END;
+      // <-- 20220207-WI00-ADV01.01.00-3586-CJY01
+    END;
+
+    BEGIN
+    {
+      LS  Changes made by LS Retail.
+
+      LS6.20.01-01 StK #9365# 12.04.2011 - Run SPO actions directly in Scheduler
+      LS6.20.01-02 StK #8984# 16.05.2011 - Support SPO in Standalone Store.
+
+      // --> 3LI BEGIN
+      20130801-Wi00-CMC02.02.00-0681-DRN01 : Gestion des permissions Retail
+      20130904-Wi00-CMC02.02.00-BRA01 : ADDCODE (Archivage avant suppression)
+      20130911-APP19-CMC02.02.00-BSI01 : ADDCODE (Delete document discounts)
+      20150529-Wi00-CMC02.02.00-2963-FHS01 : MODCODE (Optimisation)
+      20220207-WI00-ADV01.01.00-3586-CJY01 : ADDCODE (Gestion suppression archivage ant'rieur lors de l''puration)
+      20220207-WI00-ADV01.01.00-3586-CJY01 : NEWFUNC (CleaningArchive)
+      20250519-WI00-ADV01.01.00-3586-CJY01 : ADDCODE (prise en compte suppression r'partition)
+      20250811-WI00-ADV01.01.00-3586-CJY01 : MODCODE (correction concernant les kits)
+      20250926-WI00-ADV01.01.00-3586-CJY01 : MODCODE (gestion journal traitement)
+      20220209-WI00-ADV01.01.00-3586-CJY01 : ADDCODE (gestion delete en cascade archives lignes contrat c'r'ales)
+      20220209-WI00-ADV01.01.00-3586-CJY01 : ADDCODE (gestion delete en cascade archives lignes MIX)
+      20251117-WI00-ADV01.01.00-3586-CJY01 : ADDCODE (gestion bug ligne kit)
+
+      // <-- 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

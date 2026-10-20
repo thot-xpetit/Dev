@@ -1,0 +1,1414 @@
+OBJECT Codeunit 60200 New Logaviv Test et Debug
+{
+  OBJECT-PROPERTIES
+  {
+    Date=14/12/22;
+    Heure=00:00:00;
+    Liste versions=SP3561;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            "<-- 3LI LOCALS -->"@1000000004 : Integer;
+            CodeUnit_L@1000000007 : Integer;
+            TableSetupMaj_L@1000000002 : Record 8053421;
+            Result_L@1000000006 : Text[256];
+            ConnectorName_L@1000000013 : Code[20];
+            ImpExpFolder_L@1000000012 : Text[250];
+            LogFolder_L@1000000011 : Text[250];
+            FileLogName_L@1000000010 : Text[250];
+            ExtensionFile_L@1000000009 : Text[10];
+            PrefixFile_L@1000000008 : Text[10];
+            HoroDernierModifContrat_L@1000000001 : DateTime;
+            HoroDernierModifOrdre_L@1000000000 : DateTime;
+          BEGIN
+            //code unit a utiliser dans le moteur interface
+            CodeUnit_L := 60048;
+            MoteurInterface_G.GetParameter(CodeUnit_L, ConnectorName_L, ImpExpFolder_L, LogFolder_L, ExtensionFile_L, PrefixFile_L);
+            MoteurInterface_G.GetTemplatesCode(ConnectorName_L,ItemTemplateCode_G, CustomerTemplateCode_G, VendorTemplateCode_G,
+              ContactTemplateCode_G, AccountTemplateCode_G, GlobalTemplateCode_G);
+
+            ToolsFile_G.LogInit(LogFolder_L, 'LOGAVIV');
+            ToolsFile_G.LogInitCodeUnit(CodeUnit_L);
+
+            IF NOT TableGeneralSetup_G.FINDFIRST THEN
+              ToolsFile_G.LogWriteErreur(Text60001);
+
+
+            IF NOT TableImportSetup_G.FINDFIRST THEN
+              ToolsFile_G.LogWriteErreur(Text60000);
+
+            IF NOT TableExportSetup_G.FINDFIRST THEN
+              ToolsFile_G.LogWriteErreur(Text60002);
+
+
+            IF TableGeneralSetup_G.Active THEN BEGIN
+              //----------------------------------------------
+              //Import table d'interface vers NavAgri
+              //----------------------------------------------
+              IF TableImportSetup_G.ActiveContract THEN BEGIN
+                LogInfo_G := TableGeneralSetup_G.NiveauLog;
+                Result_L := ImportContractOpenNav();
+                IF Result_L <> '' THEN BEGIN
+                  ToolsFile_G.LogWriteErreur('ERREUR ImportContractOpenNav()');
+                END ELSE BEGIN
+                  COMMIT;
+
+                END;
+                Result_L := ImportContractPrixFermeNav2();
+                IF Result_L <> '' THEN BEGIN
+                  ToolsFile_G.LogWriteErreur('ERREUR ImportContractPrixFermeNav2()');
+                END ELSE BEGIN
+                  COMMIT;
+                END;
+
+                IF TableImportSetup_G.ActiveContractOption THEN BEGIN
+                  Result_L := ImportContractOptionNav();
+                  IF Result_L <> '' THEN BEGIN
+                    ToolsFile_G.LogWriteErreur('ERREUR ImportContractOptionNav()');
+                  END ELSE BEGIN
+                    COMMIT;
+                  END;
+                END;
+
+
+              END;
+
+
+              IF TableImportSetup_G.ActiveOrder THEN BEGIN
+                Result_L := ImportOrderNavInit();
+                IF Result_L <> '' THEN BEGIN
+                  ToolsFile_G.LogWriteErreur('ERREUR ImportOrderNav()');
+                END ELSE BEGIN
+                  COMMIT;
+                END;
+                Result_L := CreerContratNav();
+                IF Result_L <> '' THEN BEGIN
+                  ToolsFile_G.LogWriteErreur('ERREUR CreerContratNav()');
+                END ELSE BEGIN
+                  COMMIT;
+                END;
+
+                {
+                //non actif au moment de la reprise du code de CDL la 20210903
+                //on laisse donc la mise en commentaire mais on conserve le bloc pour info
+                Result_L := ImportOrderOptionNav();
+                IF Result_L <> '' THEN BEGIN
+                  ToolsFile_G.LogWriteErreur('ERREUR ImportOrderOptionNav()');
+                END ELSE BEGIN
+                  COMMIT;
+                END;
+                }
+              END;
+
+
+              IF TableImportSetup_G.ActiveDeliveryWhs THEN BEGIN
+                Result_L := ImportBLNavInit();
+                IF Result_L <> '' THEN BEGIN
+                  ToolsFile_G.LogWriteErreur('ERREUR ImportBLNavInit()');
+                END ELSE BEGIN
+                  COMMIT;
+                END;
+              END;
+
+
+
+            END;
+
+            FileLogName_L := ToolsFile_G.LogName;
+            ToolsFile_G.LogClose();
+
+            // Pour g'rer le ROLLBACK.
+            IF ToolsFile_G.LogErreurType() = 'E' THEN BEGIN
+              ERROR('ERREUR ' + FileLogName_L);
+            END ELSE BEGIN
+              IF ToolsFile_G.LogErreurType() = 'I' THEN BEGIN
+                MoteurInterface_G.InsertLog(CodeUnit_L, FileLogName_L);
+              END ELSE BEGIN
+                MoteurInterface_G.InsertOk(CodeUnit_L);
+              END;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      "<-- 3LI GLOBALS -->"@1000000000 : Integer;
+      ToolsFile_G@1000000001 : Codeunit 8053405;
+      "<-- 3LI TEXT GLOBALS -->"@1000000003 : TextConst;
+      Text0001@1000000006 : TextConst 'FRA=Erreur enregistrement "%1" dans "%2" : "%3".';
+      Text0002@1000000008 : TextConst 'FRA="""%1"" : %2 trait'(s)."';
+      Text0003@1000000002 : TextConst 'ENU=Error Cash Setup was not exist;FRA=Erreur param'trage inexistant';
+      Text0004@1000000004 : TextConst 'ENU=ERROR : Authentification;FRA=Erreur authentification.';
+      MoteurInterface_G@1000000016 : Codeunit 8061230;
+      TableCrop_G@1000000005 : Record 8053422;
+      Text0005@1000000007 : TextConst 'ENU=Error field %1 : Record %2;FRA="Erreur zone ""%1""=""%2"" : non valide. (%3)"';
+      Text0006@1000000009 : TextConst 'FRA="Erreur zone ""%1""=""%2"" longeur maximale %3 : non valide."';
+      Text0007@1000000010 : TextConst 'FRA=Erreur enregistrement "%1/%2" dans "%3".';
+      Text0008@1000000011 : TextConst 'FRA=Erreur "%1" inexistant dans table "%2" : Enregistrement "%3-%4".';
+      Text0009@1000000012 : TextConst 'FRA=Erreur "%1" d'j. existant dans table "%2" : Enregistrement "%3-%4".';
+      Text0010@1000000013 : TextConst 'FRA=Erreur N› logaviv "%1" ne correspond pas . "%2" valeur "%3" : Enregistrement "%4 - type %5".';
+      Text0011@1000000014 : TextConst 'FRA=Erreur contrat "%1" non trouv' dans "%2" : Enregistrement "%3- type %4" modifi'.';
+      TableLogEncod_G@1000000024 : Record 8053270;
+      ItemTemplateCode_G@1000000022 : Code[20];
+      CustomerTemplateCode_G@1000000021 : Code[20];
+      VendorTemplateCode_G@1000000020 : Code[20];
+      ContactTemplateCode_G@1000000019 : Code[20];
+      AccountTemplateCode_G@1000000018 : Code[20];
+      GlobalTemplateCode_G@1000000017 : Code[20];
+      Text0012@1000000025 : TextConst 'FRA=Erreur Quotit' . 0 pour "%1" type %2.';
+      Text0013@1000000023 : TextConst 'FRA=Correspondance "%1" : "%2" non param'tr' pour "%3-%4".';
+      Text0014@1000000026 : TextConst 'FRA="Erreur ""%1""=""%2"" invalide pour ""%3-%4""."';
+      Text0015@1000000027 : TextConst 'FRA=Erreur "%1" "%2" doit ^tre . l'''tat "%3" : Enregistrement "%4-%5".';
+      Text0016@1000000028 : TextConst 'FRA=INFO: Annulation contrat "%1" jamais int'gr' (Ne sera plus trait').';
+      Text0017@1000000029 : TextConst 'FRA=INFO: Annulation contrat "%1" limitation au nombre fix' ou vendu %2 passe . %3.';
+      Text0018@1000000030 : TextConst 'FRA=Erreur zone BL "%1" N› ligne non num'ric : Enregistrement "%4-%5".';
+      Text0019@1000000031 : TextConst 'FRA=Erreur quantit' %1 non multiple de quotit' %2 : Enregistrement "%3-%4".';
+      Text0020@1000000035 : TextConst 'FRA=Erreur pas assez de contrat "%1" pour traiter l''ordre "%2" : %3 sur %4.';
+      Text0021@1000000039 : TextConst 'FRA=Erreur int'gration "%1/%2" (%3).';
+      Text0022@1000000038 : TextConst 'FRA=Ordre "%1/%2" int'gr'e, Ordre "%3:%4" (%5).';
+      Text0023@1000000036 : TextConst 'FRA=BL "%1/%2" int'gr'e, BL "%3".';
+      Text0024@1000000040 : TextConst 'FRA=Erreur Cr'ation contrat achat "%1/%2" (%3).';
+      Text0025@1000000037 : TextConst 'FRA=Ordre "%1/%2" contrat achat cr'', Ordre "%3:%4" (%5).';
+      Text9998@1000000033 : TextConst 'FRA=%1 : Appel fonction %2.';
+      Text9999@1000000032 : TextConst 'FRA=Contrat option No %1.';
+      LogInfo_G@1000000034 : Integer;
+      Text0026@1000000041 : TextConst 'FRA=ERREUR 0026:Le type de vente n''est pas valide. Il doit ^tre Vente par lots OU Vente globale pour le contrat %1, type %2, de la campagne %3.';
+      Text0027@1000000042 : TextConst 'FRA=ERREUR 0027: Le type de vente : Vente par Lots ou Vente globale n''est pas renseign' pour le contrat %1, type %2,  de la campagne %3.';
+      Text0028@1000000043 : TextConst 'FRA=ERREUR 0028: Lors d''une vente par lots, la quotit' ne peut ^tre 'gale . 0 pour le contrat %1 de la campagne %2.';
+      Text0029@1000000044 : TextConst 'FRA="ERREUR 0029: Un contrat MNF ne peut ^tre int'gr' que s''il existe un contrat march' pour le contrat %1, type %2, de la campagne %3. "';
+      Text0030@1000000045 : TextConst 'FRA=ERREUR 0030: La campagne id %1 n''existe pas pour le contrat %2 dans la table %3';
+      ERR001@1000000053 : TextConst 'FRA=ERR001: Pas de contrat march' trouv' pour le no de contrat %1 (TABLE %2).';
+      ERR002@1000000052 : TextConst 'FRA=ERR002: Le contrat collecte no %1 n''a pas 't' trouv' (TABLE %2)';
+      ERR003@1000000051 : TextConst 'FRA=ERR003: Le contrat open no %1 n''a pas 't' trouv' (TABLE %2)';
+      ERR004@1000000050 : TextConst 'FRA=ERR004: Le contrat collecte no %1 n''a pas 't' trouv' (TABLE %2)';
+      ERR005@1000000049 : TextConst 'FRA=ERR005: Le contrat collecte no %1 n''a pas 't' supprim' (TABLE %2)';
+      ERR006@1000000048 : TextConst 'FRA=ERR006: Le bon de r'ception valid'e no %1 n''a pas 't' trouv' (TABLE %2)';
+      ERR007@1000000047 : TextConst 'FRA=ERR006: Le contrat no %1  n''a pas 't' affact' . la ligne de bon de r'ception valid'e no %2  - %3 n''a pas 't' trouv' (TABLE %4)';
+      INF001@1000000046 : TextConst 'FRA=INF001: Affecation des bons du contrat collecte %1 cers le contrat collecte %2.';
+      ERR008@1000000054 : TextConst 'FRA=ERR008: Pas de contrat march' trouv' pour le no de contrat open %1 (TABLE %2).';
+      ERR009@1000000055 : TextConst 'FRA=ERR009: Le nombre de lots du contrat march' open %1 (%2 lot(s)) est diff'rent du nombre de lots du contrat march' vente %3 (%4 lot(s)).';
+      ERR010@1000000056 : TextConst 'FRA=ERR010: Il n''y pas (plus) de contrat collecte MNF de disponible pour le contrat %1 (TABLE %2).';
+      TableAdvitam_G@1000000057 : Record 8053450;
+      TableGeneralSetup_G@1000000058 : Record 60137;
+      Text60000@1000000060 : TextConst 'ENU=Error Cash Setup was not exist;FRA=Erreur param'trage Import inexistant';
+      Text60001@1000000059 : TextConst 'ENU=Error Cash Setup was not exist;FRA=Erreur param'trage G'n'ral inexistant';
+      TableImportSetup_G@1000000061 : Record 60138;
+      TableExportSetup_G@1000000062 : Record 60139;
+      Text60002@1000000063 : TextConst 'ENU=Error Cash Setup was not exist;FRA=Erreur param'trage Export inexistant';
+      Text9001@1000000015 : TextConst 'FRA=Erreur suppression "%1" dans "%2" : "%3".';
+      TextQtMax@1000000064 : TextConst 'FRA=La quantit' maximale que vous pouver saisir est %1.';
+      TextTypMvt@1000000065 : TextConst 'FRA=Type mouvement "%1" non pris en charge : "%2".';
+      Text60003@1000000066 : TextConst 'FRA=Impossible de cr'er ou de modifier l''ordre interne %1 de type 2, il existe d'j. dans la table %2 avec une date d''int'gration.';
+      Text60004@1000000067 : TextConst 'FRA=Trait'';
+      Text60005@1000000068 : TextConst 'FRA=Impossible de convertir le num'ro d''ordre interne en entier (%1).';
+
+    PROCEDURE ImportContractOpenNav@1000000004() Result_L : Text[256];
+    VAR
+      "<-- 3LI LOCALS -->"@1000000009 : Integer;
+      TableContrat_L@1000000001 : Record 8053423;
+      TableContratNav_L@1000000000 : Record 8053268;
+      TableLogavivCrop_L@1000000002 : Record 8053422;
+      TableCorrespondance_L@1000000008 : Record 8061233;
+      TableOrdre_L@1000000017 : Record 8053426;
+      TableUtility_L@1000000019 : Record 8053434;
+      ContratNavExiste_L@1000000004 : Boolean;
+      Erreur_L@1000000005 : Boolean;
+      IdFarmExtNum_L@1000000006 : Integer;
+      IdSiloExtNum_L@1000000007 : Integer;
+      I_L@1000000003 : Integer;
+      Txt_temp_L@1000000010 : Text[250];
+      Temp_L@1000000015 : Text[30];
+      Term_L@1000000011 : Text[20];
+      ErreurLigne_L@1000000012 : Boolean;
+      Species_L@1000000013 : Text[30];
+      Modele_L@1000000014 : Text[30];
+      Position_L@1000000016 : Integer;
+      NbOrdre_L@1000000018 : Integer;
+      Vendor_L@1000000020 : Code[20];
+      IdContractExtInteger_L@1000000021 : Integer;
+    BEGIN
+      TraceInfo(5, 'ImportContractOpenNav');
+
+      Result_L := '';
+
+      // Traiter tous les contrats Open Logaviv en attente.
+      TableContrat_L.SETRANGE(HoroIntegration, 0DT);
+      TableContrat_L.SETRANGE(IdOfferType, 1);
+      IF TableContrat_L.FINDSET THEN BEGIN
+        REPEAT
+          Erreur_L := FALSE;
+          IF NOT TableLogavivCrop_L.GET(TableContrat_L.IdCrop) THEN BEGIN
+            Erreur_L := TRUE;
+            ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text0008, TableContrat_L.IdCrop, TableLogavivCrop_L.TABLECAPTION,
+              TableContrat_L.IdContractInt,TableContrat_L.TypeContract), 1, MAXSTRLEN(Result_L)));
+          END ELSE BEGIN
+            // Contrat d'j. int'gr' ?
+            IF TableContrat_L.RefNavAgri = '' THEN BEGIN
+              // En cr'ation de contrat : N› Logaviv ne doit pas exister.
+              ContratNavExiste_L := FALSE;
+              //ICI controle existence num'ro contrat Interface dans table Interface Nav
+              TableContratNav_L.SETRANGE(Type, TableContratNav_L.Type::Open);
+              TableContratNav_L.SETRANGE("Reference interface contract", FORMAT(TableContrat_L.IdContractInt));
+              IF TableContratNav_L.FINDFIRST THEN BEGIN
+                Erreur_L := TRUE;
+                ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text0009, TableContrat_L.IdContractInt, TableContratNav_L.TABLECAPTION,
+                  TableContrat_L.IdContractInt,TableContrat_L.TypeContract), 1, MAXSTRLEN(Result_L)));
+              END;
+              TableContratNav_L.SETRANGE("Reference interface contract");
+              TableContratNav_L.SETRANGE(Type);
+            END ELSE BEGIN
+              // En Modification de contrat : On doit retrouver le contrat avec le m^me N›.
+              ContratNavExiste_L := TRUE;
+              IF NOT TableContratNav_L.GET(TableContrat_L.RefNavAgri) THEN BEGIN
+                Erreur_L := TRUE;
+                ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text0011, TableContrat_L.RefNavAgri, TableContratNav_L.TABLECAPTION,
+                  TableContrat_L.IdContractInt,TableContrat_L.TypeContract), 1, MAXSTRLEN(Result_L)));
+              END ELSE BEGIN
+                IF (FORMAT(TableContrat_L.IdContractInt) <> TableContratNav_L."Reference interface contract") THEN BEGIN
+                  Erreur_L := TRUE;
+                  ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text0010, TableContrat_L.IdContractInt,
+                    TableContratNav_L.FIELDCAPTION(TableContratNav_L."Reference interface contract"),
+                    TableContratNav_L."Reference interface contract", TableContrat_L.IdContractInt,
+                    TableContrat_L.TypeContract), 1, MAXSTRLEN(Result_L)));
+                END;
+              END;
+            END;
+          END;
+          // Annulation sans contrat : V'rifi' qu'il n'y a pas de fixation non enregistr'.
+          TableOrdre_L.SETRANGE(IdContractInt, TableContrat_L.IdContractInt);
+          // --> 20221013-WI00-ADV01.01.00-3561-CJY01
+          TableOrdre_L.SETRANGE("Type Contract Linked", TableContrat_L.TypeContract);
+          // <-- 20221013-WI00-ADV01.01.00-3561-CJY01
+          TableOrdre_L.SETFILTER(IdOrderStatut, '<> 3');
+          CLEAR(NbOrdre_L);
+          IF TableOrdre_L.FINDSET THEN BEGIN
+            REPEAT
+              IF TableOrdre_L.Quotit <> 0 THEN BEGIN
+                NbOrdre_L += (TableOrdre_L.Quantity / TableOrdre_L.Quotit);
+              END;
+            UNTIL TableOrdre_L.NEXT = 0;
+          END;
+          IF NOT Erreur_L THEN BEGIN
+            // les contr"les (pas de contr"le si jamais int'gr' & annulation.
+            ErreurLigne_L := FALSE;
+            IF (TableContrat_L.IdOrderStatut <> 3) OR (ContratNavExiste_L) THEN BEGIN
+              IF NOT TableLogEncod_G.GET(FORMAT(TableContrat_L.IdProduct), TableContrat_L.IdQualityExt) THEN BEGIN
+                ToolsFile_G.LogWriteInfo(STRSUBSTNO(Text0013, TableContrat_L.FIELDCAPTION(TableContrat_L.IdQualityExt),
+                  FORMAT(TableContrat_L.IdProduct) + '-' + TableContrat_L.IdQualityExt, TableContrat_L.IdContractInt) + '-1');
+                ErreurLigne_L := TRUE;
+              END ELSE BEGIN
+                Species_L := TableLogEncod_G."Species Code";
+                Modele_L := TableLogEncod_G."NavAgri Template Contract No."
+              END;
+
+              TableCorrespondance_L.SETRANGE("Template code", GlobalTemplateCode_G);
+              TableCorrespondance_L.SETRANGE(Table, 8053107);
+              TableCorrespondance_L.SETRANGE(Fields, 1);
+              TableCorrespondance_L.SETFILTER("NAV Value", '%1', Species_L + 'Ø*');
+              TableCorrespondance_L.SETRANGE("Interface Value", FORMAT(TableContrat_L.IdExpiry));
+              IF NOT TableCorrespondance_L.FINDFIRST() THEN BEGIN
+                CLEAR(Term_L);
+              END ELSE BEGIN
+                Position_L := 1;
+                Txt_temp_L := ToolsFile_G.TexteTrim(TableCorrespondance_L."NAV Value", 'D');
+                Temp_L := ToolsFile_G.ExtractTextCsv(Txt_temp_L, Position_L, 'Ø', 30);
+                Term_L := ToolsFile_G.ExtractTextCsv(Txt_temp_L, Position_L, 'Ø', 30);
+              END;
+              IF (Term_L = '') THEN BEGIN
+                ToolsFile_G.LogWriteInfo(STRSUBSTNO(Text0013, TableContrat_L.FIELDCAPTION(TableContrat_L.IdExpiry),
+                  Species_L + '-' + FORMAT(TableContrat_L.IdExpiry), TableContrat_L.IdContractInt) + '-2');
+                ErreurLigne_L := TRUE;
+              END;
+              IF TableContrat_L.Quotit = 0 THEN BEGIN
+                ToolsFile_G.LogWriteInfo(STRSUBSTNO(Text0012, TableContrat_L.IdContractInt,TableContrat_L.TypeContract));
+                ErreurLigne_L := TRUE;
+              END;
+
+              IF TableUtility_L.GET(TableGeneralSetup_G.IdMember, TableContrat_L.IdFarmExt) THEN BEGIN
+                Vendor_L := TableUtility_L."Id NavAgri";
+              END ELSE BEGIN
+                ToolsFile_G.LogWriteInfo(STRSUBSTNO(Text0008, TableContrat_L.IdFarmExt, TableUtility_L.TABLECAPTION,
+                  TableContrat_L.IdContractInt,TableContrat_L.TypeContract));
+                ErreurLigne_L := TRUE;
+              END;
+            END;
+
+            //===================================================
+            // Mise . jour si OK : G'n'ration Contrat
+            //===================================================
+            IF NOT ErreurLigne_L THEN BEGIN
+              //3561 : gestion annulation attention nb lot
+              // Si annulation
+              IF (TableContrat_L.IdOrderStatut = 3) AND (NOT ContratNavExiste_L) THEN BEGIN
+                TraceInfo(15, COPYSTR(STRSUBSTNO(Text0016, TableContrat_L.IdContractInt), 1, MAXSTRLEN(Result_L)));
+                TableContrat_L.HoroIntegration := CURRENTDATETIME;
+                IF NOT TableContrat_L.MODIFY(TRUE) THEN BEGIN
+                  ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0001, TableContrat_L.IdContractInt, TableContrat_L.TABLECAPTION), 1,
+                    MAXSTRLEN(Result_L)));
+                  EXIT('FALSE');
+                END;
+              END ELSE BEGIN
+                IF NOT ContratNavExiste_L THEN BEGIN
+                  CLEAR(TableContratNav_L);
+                  IF NOT TableContratNav_L.INSERT(TRUE) THEN BEGIN
+                    ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0001, TableContratNav_L."No.", TableContratNav_L.TABLECAPTION), 1,
+                      MAXSTRLEN(Result_L)));
+                    EXIT('FALSE');
+                  END;
+                  TableContratNav_L."No. 2" := TableContrat_L.IdContractExt;
+                  TableContratNav_L."Reference interface contract" := FORMAT(TableContrat_L.IdContractInt);
+                END;
+                TableContratNav_L.Type := TableContratNav_L.Type::Open;
+                TableContratNav_L."Offer Type" := TableContratNav_L."Offer Type"::Interface;
+                TableContratNav_L."Campaign No." := FORMAT(TableLogavivCrop_L.Crop);
+
+                IF STRLEN(TableContrat_L.IdSiloExt) < 3 THEN BEGIN
+                  // Avant code num'ric sur 3 ==> sans les 0 non significatif.
+                  IF EVALUATE(IdSiloExtNum_L, TableContrat_L.IdSiloExt) THEN BEGIN
+                    TableContratNav_L."Delivery Location Code" := FORMAT(IdSiloExtNum_L, 0, '<Integer,3><Filler Character,0>');
+                  END ELSE BEGIN
+                    TableContratNav_L."Delivery Location Code" := TableContrat_L.IdSiloExt;
+                  END;
+                END ELSE BEGIN
+                  TableContratNav_L."Delivery Location Code" := TableContrat_L.IdSiloExt;
+                END;
+                TableContratNav_L."Vendor No." := Vendor_L;
+
+                TableContratNav_L."Number Of Lots" := TableContrat_L.Quantity / TableContrat_L.Quotit;
+                IF (TableContrat_L.IdOrderStatut = 3) AND (TableContratNav_L."Number Of Lots" > NbOrdre_L) THEN BEGIN
+                  ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text0017, TableContratNav_L."No.", TableContratNav_L."Number Of Lots",
+                    NbOrdre_L), 1, MAXSTRLEN(Result_L)));
+                  TableContratNav_L."Number Of Lots" := NbOrdre_L;
+                END;
+
+
+                TableContratNav_L."Delivery date" := DT2DATE(TableContrat_L.HoroDelivery);
+                TableContratNav_L."Contract Base Negociated" :=TableContrat_L.BaseNegociee;
+                TableContratNav_L."Prime Amount" := TableContrat_L.PrimeBaseMoyenne;
+                TableContratNav_L.Margin := TableContrat_L.MarginAmount;
+
+                IF TableContrat_L.BaseNegociee <> 0 THEN
+                BEGIN
+                  TableContratNav_L."Base Offer" := TableContrat_L.PrimeBaseMoyenne + TableContrat_L.MarginAmount;
+
+                END ELSE BEGIN
+                TableContratNav_L."Base Offer" := TableContrat_L.BaseAmount;
+                END;
+
+                TableContratNav_L."Coll. Template Contract No." := Modele_L;
+                TableContratNav_L."MATIF Species Code" := Species_L;
+                TableContratNav_L."MATIF Term" := Term_L;
+                TableContratNav_L."Deadline Fixing" := DT2DATE(TableContrat_L.HoroDeadLineFixation);
+                TableContratNav_L.Status := TableContratNav_L.Status::Release;
+
+                // Pas de Validate sur le MODIFY sinon problSme
+                IF NOT TableContratNav_L.MODIFY() THEN BEGIN
+                  ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0001, TableContratNav_L."No.", TableContratNav_L.TABLECAPTION), 1,
+                    MAXSTRLEN(Result_L)));
+                  EXIT('FALSE');
+                END ELSE BEGIN
+
+                  IF TableContrat_L.RefNavAgri = '' THEN BEGIN
+                    TableContrat_L.RefNavAgri := TableContratNav_L."No.";
+                  END;
+
+                  IF ((TableContrat_L.FL_VenteGlobale  OR TableContrat_L.FL_VenteParLot) AND (NOT ContratNavExiste_L)) THEN BEGIN
+                    // --> 20210802-WI00-ADV01.01.00-SP3551-MRU01
+                    {BEFORE
+                    Result_L := ImportContractMNFNav(TableContrat_L);
+                    AFTER}
+                    Result_L := ImportContractMNFNav(TableContrat_L, TableContratNav_L);
+                    // <-- 20210802-WI00-ADV01.01.00-SP3551-MRU01
+                    // --> 20221003-WI00-ADV01.01.00-3561-CJY01
+                    // Gestion de la fixation et de la vente dans le cas du matif directe
+                    IF EVALUATE(IdContractExtInteger_L,TableContrat_L.IdContractExt) THEN
+                      IF (TableContrat_L.IdContractInt = IdContractExtInteger_L) AND (TableContrat_L.PrixOffrePropose <> 0) AND
+                        (TableContrat_L.IdOfferType = 1) AND (TableContrat_L.NoLot = '') THEN BEGIN
+                         //on doit cr'er notre propre ordre de type 2 . la place de logaviv
+                         Result_L := CreateOrderForLogaviv(TableContrat_L);
+                        END;
+                    // <-- 20221003-WI00-ADV01.01.00-3561-CJY01
+                  END;
+
+                  IF Result_L = '' THEN BEGIN
+                    // Toper enregistrement comme int'gr'.
+                    TableContrat_L.HoroIntegration := CURRENTDATETIME;
+                    IF NOT TableContrat_L.MODIFY(TRUE) THEN BEGIN
+                      ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0001, TableContrat_L.IdContractInt, TableContrat_L.TABLECAPTION)
+      ,
+                        1, MAXSTRLEN(Result_L)));
+                      EXIT('FALSE');
+                    END;
+                  END ELSE BEGIN
+                      EXIT('FALSE');
+                  END;
+                END;
+              END;
+            END;
+          END;
+        UNTIL TableContrat_L.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE ImportContractOptionNav@1000000013() Result_L : Text[256];
+    VAR
+      "<-- 3LI LOCALS -->"@1000000009 : Integer;
+      TableContrat_L@1000000001 : Record 8053423;
+      TableContratNav_L@1000000000 : Record 8053065;
+      TableLogavivCrop_L@1000000002 : Record 8053422;
+      TableUtility_L@1000000015 : Record 8053434;
+      IdFarmExtNum_L@1000000004 : Integer;
+      Erreur_L@1000000003 : Boolean;
+      Species_L@1000000005 : Text[30];
+      ContratNavExiste_L@1000000006 : Boolean;
+      NbLot_L@1000000007 : Integer;
+      I_L@1000000008 : Integer;
+      Txt_temp_L@1000000014 : Text[250];
+      Temp_L@1000000013 : Text[30];
+      Term_L@1000000011 : Text[20];
+      Position_L@1000000012 : Integer;
+      StatusMgt_L@1000000010 : Codeunit 8052985;
+      Vendor_L@1000000016 : Code[20];
+    BEGIN
+      TraceInfo(5, 'ImportContractOptionNav');
+
+      Result_L := ''; //TRUE;
+      // Traiter tous les contrats option Logaviv en attente.
+      TableContrat_L.SETRANGE(HoroIntegration, 0DT);
+      TableContrat_L.SETRANGE(IdOfferType, 3);
+      IF TableContrat_L.FINDSET THEN BEGIN
+        REPEAT
+          Erreur_L := FALSE;
+          IF NOT TableLogavivCrop_L.GET(TableContrat_L.IdCrop) THEN BEGIN
+            Erreur_L := TRUE;
+            ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text0008, TableContrat_L.IdCrop, TableLogavivCrop_L.TABLECAPTION,
+              TableContrat_L.IdContractInt,TableContrat_L.TypeContract), 1, MAXSTRLEN(Result_L)));
+          END ELSE BEGIN
+            // Ech'ance logaviv pour un article & une 'ch'ance NAvAgri
+            Txt_temp_L := MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G, 'CMC MATIF Species Link', 'Species Code',
+              FORMAT(TableContrat_L.IdExpiry), TRUE, TRUE);
+            IF Txt_temp_L = '' THEN BEGIN
+              ToolsFile_G.LogWriteInfo(STRSUBSTNO(Text0013, TableContrat_L.FIELDCAPTION(IdExpiry),
+                FORMAT(TableContrat_L.IdProduct) + '-' + TableContrat_L.IdQualityExt, TableContrat_L.IdContractInt) + '-3');
+              Erreur_L := TRUE;
+            END ELSE BEGIN
+              Position_L := 1;
+              Species_L := ToolsFile_G.ExtractTextCsv(Txt_temp_L, Position_L, 'Ø', 30);
+              Term_L := ToolsFile_G.ExtractTextCsv(Txt_temp_L, Position_L, 'Ø', 30);
+              IF Species_L = '' THEN BEGIN
+                ToolsFile_G.LogWriteInfo(STRSUBSTNO(Text0013, TableContrat_L.FIELDCAPTION(IdProduct),
+                  FORMAT(TableContrat_L.IdExpiry), TableContrat_L.IdContractInt) + '-4');
+                Erreur_L := TRUE;
+              END;
+              IF Term_L = '' THEN BEGIN
+                ToolsFile_G.LogWriteInfo(STRSUBSTNO(Text0013, TableContrat_L.FIELDCAPTION(IdExpiry),
+                  FORMAT(TableContrat_L.IdExpiry), TableContrat_L.IdContractInt) + '-5');
+                Erreur_L := TRUE;
+              END;
+            END;
+            IF TableContrat_L.Quotit = 0 THEN BEGIN
+              ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text0005, TableContrat_L.FIELDCAPTION(TableContrat_L.Quotit),
+                TableContrat_L.Quotit, TableContrat_L.IdContractInt), 1, MAXSTRLEN(Result_L)));
+              Erreur_L := TRUE;
+            END;
+          END;
+          IF ((TableContrat_L.Quantity MOD TableContrat_L.Quotit) <> 0) THEN BEGIN
+            ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text0019, TableContrat_L.Quantity, TableContrat_L.Quotit,
+              TableContrat_L.Quotit, TableContrat_L.IdContractInt), 1, MAXSTRLEN(Result_L)));
+            Erreur_L := TRUE;
+          END ELSE BEGIN
+            NbLot_L := TableContrat_L.Quantity / TableContrat_L.Quotit;
+          END;
+          IF TableUtility_L.GET(TableGeneralSetup_G.IdMember, TableContrat_L.IdFarmExt) THEN BEGIN
+            Vendor_L := TableUtility_L."Id NavAgri";
+          END ELSE BEGIN
+            ToolsFile_G.LogWriteInfo(STRSUBSTNO(Text0008, TableContrat_L.IdFarmExt, TableUtility_L.TABLECAPTION,
+              TableContrat_L.IdContractInt,TableContrat_L.TypeContract));
+            Erreur_L := TRUE;
+          END;
+
+
+          IF NOT Erreur_L THEN BEGIN
+            // Contrat d'j. int'gr' ? : N› Logaviv ne doit pas exister.
+            ContratNavExiste_L := FALSE;
+            //ICI controle existence num'ro contrat Interface dans table Interface Nav
+            //possible qu'on ai reÎu un num'ro identique pour un offre type = 3 et un offre type = 1 ?
+            TableContratNav_L.SETRANGE("Ref Interface Contract", FORMAT(TableContrat_L.IdContractInt));
+            IF TableContratNav_L.FINDFIRST THEN BEGIN
+              Erreur_L := TRUE;
+              ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text0009, TableContrat_L.IdContractExt, TableContratNav_L.TABLECAPTION,
+                TableContrat_L.IdContractInt,TableContrat_L.TypeContract), 1, MAXSTRLEN(Result_L)));
+            END;
+            TableContratNav_L.SETRANGE("Ref Interface Contract");
+          END;
+
+          IF NOT Erreur_L THEN BEGIN
+            FOR I_L := 0 TO (NbLot_L - 1) DO BEGIN
+              // Contr"ler si existe avec le sous N› ????????????????????????????????????????????????????????????????????????
+              IF NOT ContratNavExiste_L THEN BEGIN
+                CLEAR(TableContratNav_L);
+
+                IF NOT TableContratNav_L.INSERT(TRUE) THEN BEGIN
+                  ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0001, TableContratNav_L."No.", TableContratNav_L.TABLECAPTION), 1,
+                    MAXSTRLEN(Result_L)));
+                  EXIT('FALSE');
+                END;
+              END;
+              TableContratNav_L.VALIDATE("Creation Date", TODAY);
+              TableContratNav_L.VALIDATE(Description, COPYSTR(STRSUBSTNO(Text9999, TableContrat_L.IdContractExt),
+                1, MAXSTRLEN(Result_L)));
+              TableContratNav_L.VALIDATE("Species Code", Species_L);
+              TableContratNav_L.VALIDATE("Campaign No.", FORMAT(TableLogavivCrop_L.Crop));
+              TableContratNav_L.VALIDATE(Type, TableContratNav_L.Type::Option);
+              TableContratNav_L.VALIDATE(Way, TableContratNav_L.Way::Purchase);
+              IF TableContrat_L.CallPut = 'C' THEN BEGIN
+                TableContratNav_L.VALIDATE(Option, TableContratNav_L.Option::Call);
+              END ELSE BEGIN
+                TableContratNav_L.VALIDATE(Option, TableContratNav_L.Option::Put);
+              END;
+              TableContratNav_L.VALIDATE(Price, TableContrat_L.Prime + TableContrat_L.BaseAmount);
+              TableContratNav_L.VALIDATE(Quantity, TableContrat_L.Quotit);
+              //TableContratNav_L.VALIDATE("Gain/Loss",
+              TableContratNav_L.VALIDATE(Strike, TableContrat_L.Strike);
+              TableContratNav_L.VALIDATE("Lot Number", 1);
+              TableContratNav_L.VALIDATE(Strategy, TableImportSetup_G."Import Option Strategy");
+
+              TableContratNav_L.VALIDATE("Sign-Off Date", DT2DATE(TableContrat_L.HoroContract));
+              TableContratNav_L.VALIDATE("Due Date", DT2DATE(TableContrat_L.HoroPaiement));
+      //      TableContratNav_L.Middleman :=
+              TableContratNav_L.VALIDATE("Order No.", TableContrat_L.IdContractExt);
+      //      TableContratNav_L."Account No." :=
+      //      TableContratNav_L.Committe :=
+      //      TableContratNav_L.Counterpart :=
+      //      TableContratNav_L.Status
+      //      TableContratNav_L.Complete
+              TableContratNav_L.VALIDATE("Referency Market", Species_L);
+              TableContratNav_L.VALIDATE("MATIF Terms Code", Term_L);
+      //      TableContratNav_L."Broker No."
+              TableContratNav_L.VALIDATE("Option Cost", TableContrat_L.Prime + TableContrat_L.BaseAmount);
+
+      //      TableContratNav_L."Sales Contract Link" :=
+      //      TableContratNav_L."MATIF Prime Contract Link" :=
+      //      TableContratNav_L.Complete :=
+      //      TableContratNav_L."No. Series" :=
+              TableContratNav_L.VALIDATE("Farmer Price", TableContratNav_L.Price);
+
+              TableContratNav_L.VALIDATE(Farmer, Vendor_L);
+
+              TableContratNav_L.VALIDATE("Ref Interface Contract", FORMAT(TableContrat_L.IdContractInt));
+
+              IF NOT TableContratNav_L.MODIFY(TRUE) THEN BEGIN
+                ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0001, TableContratNav_L."No.", TableContratNav_L.TABLECAPTION), 1,
+                  MAXSTRLEN(Result_L)));
+                EXIT('FALSE');
+              END;
+              StatusMgt_L.LockMATIFContract(TableContratNav_L);
+              IF NOT TableContratNav_L.MODIFY(TRUE) THEN BEGIN
+                ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0001, TableContratNav_L."No.", TableContratNav_L.TABLECAPTION), 1,
+                  MAXSTRLEN(Result_L)));
+                EXIT('FALSE');
+              END;
+            END;
+            // Toper enregistrement comme int'gr'.
+            TableContrat_L.HoroIntegration := CURRENTDATETIME;
+            IF TableContrat_L.RefNavAgri = '' THEN BEGIN
+              TableContrat_L.RefNavAgri := 'MULTIPLE'; // TableContratNav_L."No.";
+            END;
+            IF NOT TableContrat_L.MODIFY(TRUE) THEN BEGIN
+              ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0001, TableContrat_L.IdContractInt, TableContrat_L.TABLECAPTION), 1,
+                MAXSTRLEN(Result_L)));
+              EXIT('FALSE');
+            END;
+          END;
+        UNTIL TableContrat_L.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE ImportContractPrixFermeNav2@1000000011() Result_L : Text[256];
+    VAR
+      "<-- 3LI LOCALS -->"@1000000009 : Integer;
+      TableContrat_L@1000000001 : Record 8053423;
+      TableContrat2_L@1000000022 : Record 8053423;
+      TableContratNav_L@1000000000 : Record 8052983;
+      TableLogavivCrop_L@1000000002 : Record 8053422;
+      TableContratNavModele_L@1000000006 : Record 8052983;
+      TableLogavivEncoding_L@1000000008 : Record 8053270;
+      TableContractQualityModele_L@1000000011 : Record 8052984;
+      TableContractQuality_L@1000000012 : Record 8052984;
+      TableContactSales_L@1000000010 : Record 8053160;
+      TableItem_L@1000000019 : Record 27;
+      TableVendor_L@1000000021 : Record 23;
+      IdFarmExtNum_L@1000000003 : Integer;
+      IdSiloExtNum_L@1000000007 : Integer;
+      Erreur_L@1000000004 : Boolean;
+      ContratNavExiste_L@1000000005 : Boolean;
+      CvLedgerManag_L@1000000013 : Codeunit 8053377;
+      CvLedgerManag_Which_L@1000000014 : 'Customer,Vendor,Bank';
+      Contact_L@1000000015 : Code[20];
+      Jour_L@1000000016 : Integer;
+      Mois_L@1000000017 : Integer;
+      An_L@1000000018 : Integer;
+      Vendor_L@1000000020 : Code[20];
+    BEGIN
+      TraceInfo(5, 'ImportContractPrixFermeNav');
+
+      Result_L := ''; //TRUE;
+      TableContrat_L.SETRANGE(HoroIntegration, 0DT);
+      TableContrat_L.SETRANGE(IdOfferType, 6);
+      IF TableContrat_L.FINDSET THEN BEGIN
+        REPEAT
+          TraceInfo(0, 'ImportContractPrixFermeNav : ' + FORMAT(TableContrat_L.IdContractInt));
+
+          // Pour traiter avec COMMIT et ROLLBACK par Exp'dition
+          IF NOT CODEUNIT.RUN(TableImportSetup_G.ContractCodeUnit, TableContrat_L) THEN BEGIN
+            ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0021, TableContrat_L.IdContractInt, TableContrat_L.IdContractExt,
+              TableContrat_L.IdOrderStatut), 1, MAXSTRLEN(Result_L)));
+            ToolsFile_G.LogWriteErreur(COPYSTR(GETLASTERRORTEXT, 1, MAXSTRLEN(Result_L)));
+          END ELSE BEGIN
+            COMMIT;
+            // --> 20221013-WI00-ADV01.01.00-3561-CJY01
+            {BEFORE
+            IF TableContrat2_L.GET(TableContrat_L.IdContractInt) THEN BEGIN
+            END;
+            AFTER}
+            IF TableContrat2_L.GET(TableContrat_L.IdContractInt,TableContrat_L.TypeContract) THEN BEGIN
+            END;
+            // <-- 20221013-WI00-ADV01.01.00-3561-CJY01
+            TraceInfo(15, COPYSTR(STRSUBSTNO(Text0022, TableContrat_L.IdContractInt, TableContrat_L.IdContractExt,
+              TableContrat2_L.RefNavAgri, '', TableContrat_L.IdOrderStatut), 1, MAXSTRLEN(Result_L)));
+          END;
+        UNTIL TableContrat_L.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE ImportOrderNavInit@1000000007() Result_L : Text[256];
+    VAR
+      "<-- 3LI LOCALS -->"@1000000005 : Integer;
+      TableOrdre_L@1000000004 : Record 8053426;
+      TableOrdre2_L@1000000000 : Record 8053426;
+      TableContratNav_L@1000000003 : Record 8053268;
+      TableContratFixNav_L@1000000006 : Record 8053268;
+      Erreur_L@1000000001 : Boolean;
+      OrdreNavExiste_L@1000000002 : Boolean;
+      TypeOrdre_L@1000000007 : 'Fixation,Vente,Annulation';
+    BEGIN
+      TraceInfo(5, 'ImportOrderNavInit');
+
+      Result_L := '';
+
+      // Traiter En deux fois :
+      // 1 - FIXE : Fixation : Ordre fix' ou Ordre Vente non d'j. int'gr' dans NavAgri donc manque la fixation
+      // 2 - AUTRES : Les ventes, les annulations, ....
+      // Traiter tous les ordres Logaviv en attente.
+      TableOrdre_L.SETRANGE(HoroIntegration, 0DT);
+      TableOrdre_L.SETFILTER(IdOfferType, '1|4');
+      IF TableOrdre_L.FINDSET THEN BEGIN
+        REPEAT
+          // Pour traiter avec COMMIT et ROLLBACK par Exp'dition
+          IF NOT CODEUNIT.RUN(TableImportSetup_G.OrderCodeUnit, TableOrdre_L) THEN BEGIN
+            ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0021, TableOrdre_L.IdOrdreInterne, TableOrdre_L.IdOrdreExterne,
+              TableOrdre_L.OrdreStatutLibelle), 1, MAXSTRLEN(Result_L)));
+            ToolsFile_G.LogWriteErreur(COPYSTR(GETLASTERRORTEXT, 1, MAXSTRLEN(Result_L)));
+          END ELSE BEGIN
+            COMMIT;
+            // --> 20221013-WI00-ADV01.01.00-3561-CJY01
+            {BEFORE
+            IF TableOrdre2_L.GET(TableOrdre_L.IdOrdreInterne) THEN BEGIN
+            END;
+            AFTER}
+            IF TableOrdre2_L.GET(TableOrdre_L.IdOrdreInterne,TableOrdre_L.TypeOrder) THEN BEGIN
+            END;
+
+            // <-- 20221013-WI00-ADV01.01.00-3561-CJY01
+            TraceInfo(15, COPYSTR(STRSUBSTNO(Text0022, TableOrdre_L.IdOrdreInterne, TableOrdre_L.IdOrdreExterne,
+              TableOrdre2_L.RefNavAgriFixe, TableOrdre2_L.RefNafAgriVente, TableOrdre_L.OrdreStatutLibelle), 1, MAXSTRLEN(Result_L)));
+          END;
+        UNTIL TableOrdre_L.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE ImportBLNavInit@1000000005() Result_L : Text[256];
+    VAR
+      "<-- 3LI LOCALS -->"@1000000001 : Integer;
+      TableBL_L@1000000000 : Record 8053427;
+      TableBL2_L@1000000002 : Record 8053427;
+    BEGIN
+      //-->CDAL20140605
+      TraceInfo(5, 'ImportBLNavInit');
+
+      Result_L := '';
+
+      TableBL_L.SETRANGE(HoroIntegration, 0DT);
+      IF TableBL_L.FINDSET THEN BEGIN
+        REPEAT
+          // Pour traiter avec COMMIT et ROLLBACK par Exp'dition
+          IF NOT CODEUNIT.RUN(TableImportSetup_G.DeliveryWhsCodeUnit, TableBL_L) THEN BEGIN
+            ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0021, TableBL_L.IdContractInt, TableBL_L.IdBlInterne,
+              TableBL_L.IdContractExt + '-' + TableBL_L.IdBlExterne), 1, MAXSTRLEN(Result_L)));
+            ToolsFile_G.LogWriteErreur(COPYSTR(GETLASTERRORTEXT, 1, MAXSTRLEN(Result_L)));
+          END ELSE BEGIN
+            COMMIT;
+            IF TableBL2_L.GET(TableBL_L.IdContractInt, TableBL_L.IdBlInterne) THEN BEGIN
+            END;
+            TraceInfo(15, COPYSTR(STRSUBSTNO(Text0023, TableBL_L.IdContractInt, TableBL_L.IdBlInterne,
+              TableBL_L.RefNavAgri), 1, MAXSTRLEN(Result_L)));
+          END;
+        UNTIL TableBL_L.NEXT = 0;
+      END;
+      //<--CDAL20140605
+    END;
+
+    PROCEDURE CreerContratNav@1000000010() Result_L : Text[256];
+    VAR
+      "<-- 3LI LOCALS -->"@1000000005 : Integer;
+      TableOrdre_L@1000000004 : Record 8053426;
+      TableOrdre2_L@1000000000 : Record 8053426;
+      TableContratNav_L@1000000003 : Record 8053268;
+      TableContratFixNav_L@1000000006 : Record 8053268;
+      Erreur_L@1000000001 : Boolean;
+      OrdreNavExiste_L@1000000002 : Boolean;
+      TypeOrdre_L@1000000007 : 'Fixation,Vente,Annulation';
+    BEGIN
+      TraceInfo(5, 'CreerContratNav');
+
+      Result_L := '';
+
+      TableOrdre_L.SETFILTER(HoroIntegration, '<> %1', 0DT);
+      TableOrdre_L.SETRANGE(HoroIntegrationCtrAch, 0DT);
+      TableOrdre_L.SETFILTER(RefNafAgriVente, '<> %1', '');
+      IF TableOrdre_L.FINDSET THEN BEGIN
+        REPEAT
+          // Pour traiter avec COMMIT et ROLLBACK par Exp'dition
+          IF NOT CODEUNIT.RUN(TableImportSetup_G.OrderCodeUnit, TableOrdre_L) THEN BEGIN
+            ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0024, TableOrdre_L.IdOrdreInterne, TableOrdre_L.IdOrdreExterne,
+              TableOrdre_L.OrdreStatutLibelle), 1, MAXSTRLEN(Result_L)));
+            ToolsFile_G.LogWriteErreur(COPYSTR(GETLASTERRORTEXT, 1, MAXSTRLEN(Result_L)));
+          END ELSE BEGIN
+            COMMIT;
+            // --> 20221013-WI00-ADV01.01.00-3561-CJY01
+            {BEFORE
+            IF TableOrdre2_L.GET(TableOrdre_L.IdOrdreInterne) THEN BEGIN
+            END;
+            AFTER}
+            IF TableOrdre2_L.GET(TableOrdre_L.IdOrdreInterne,TableOrdre_L.TypeOrder) THEN BEGIN
+            END;
+
+            // <-- 20221013-WI00-ADV01.01.00-3561-CJY01
+            TraceInfo(15, COPYSTR(STRSUBSTNO(Text0025, TableOrdre_L.IdOrdreInterne, TableOrdre_L.IdOrdreExterne,
+              TableOrdre2_L.RefNavAgriFixe, TableOrdre2_L.RefNafAgriVente, TableOrdre_L.OrdreStatutLibelle), 1, MAXSTRLEN(Result_L)));
+            IF TableOrdre_L.IdOfferType <> 4 THEN BEGIN
+              AffecterBonsContratAchatNav(TableOrdre_L);
+            END;
+          END;
+        UNTIL TableOrdre_L.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE TraceInfo@1000000009(Niveau_P@1000000000 : Integer;Message_P@1000000001 : Text[256]);
+    VAR
+      "<-- 3LI LOCALS -->"@1000000003 : Integer;
+      Result_L@1000000002 : Text[250];
+    BEGIN
+      IF Niveau_P >= LogInfo_G THEN BEGIN
+        ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text9998, CURRENTDATETIME, Message_P), 1, MAXSTRLEN(Result_L)));
+      END;
+    END;
+
+    PROCEDURE CreateMNFContract@1000000015(TableContrat_P@1000000000 : Record 8053423;NoLot_P@1000000002 : Integer;Quantite_P@1000000003 : Integer;CMCMarketContract_P@1000000007 : Record 8053268) Result_L : Text[256];
+    VAR
+      TableLogavivCrop_L@1000000001 : Record 8053422;
+      ContratNavExiste_L@1000000031 : Boolean;
+      TableContratNav_L@1000000030 : Record 8052983;
+      TableLogavivEncoding_L@1000000029 : Record 8053270;
+      TableContratNavModele_L@1000000028 : Record 8052983;
+      TableUtility_L@1000000027 : Record 8053434;
+      Vendor_L@1000000026 : Code[20];
+      Erreur_L@1000000025 : Boolean;
+      TableVendor_L@1000000024 : Record 23;
+      TableItem_L@1000000023 : Record 27;
+      Contact_L@1000000022 : Code[20];
+      CvLedgerManag_L@1000000021 : Codeunit 8053377;
+      CvLedgerManag_Which_L@1000000020 : 'Customer,Vendor,Bank';
+      TableContractQualityModele_L@1000000019 : Record 8052984;
+      TableContractQuality_L@1000000018 : Record 8052984;
+      TableContactSales_L@1000000017 : Record 8053160;
+      TableCorrespondance_L@1000000004 : Record 8061233;
+      Species_L@1000000005 : Text[30];
+    BEGIN
+      Result_L := ''; //TRUE;
+
+      Erreur_L := FALSE;
+      IF NOT TableLogavivCrop_L.GET(TableContrat_P.IdCrop) THEN BEGIN
+        Erreur_L := TRUE;
+        ERROR(Text0030, TableContrat_P.IdCrop, TableContrat_P.IdContractInt, TableLogavivCrop_L.TABLECAPTION);
+      END ELSE BEGIN
+        // Contrat OPEN int'gr'  ?
+        IF TableContrat_P.RefNavAgri = '' THEN BEGIN
+          // Si pas de contrat march' int'gr' alors on n'intSgre pas le contrat MNF
+          Erreur_L := TRUE;
+          ERROR(Text0029, TableContrat_P.IdContractInt,TableContrat_P.TypeContract, TableContrat_P.IdCrop);
+        END;
+
+        TableLogavivEncoding_L.SETRANGE("LOGAVIV Production", FORMAT(TableContrat_P.IdProduct));
+        TableLogavivEncoding_L.SETRANGE("LOGAVIV Quality Code", TableContrat_P.IdQualityExt);
+        IF NOT TableLogavivEncoding_L.FINDFIRST THEN BEGIN
+          Erreur_L := TRUE;
+          ERROR(Text0008, FORMAT(TableContrat_P.IdProduct) + '-' + TableContrat_P.IdQualityExt,
+            TableLogavivEncoding_L.TABLECAPTION, TableContrat_P.IdContractInt,TableContrat_P.TypeContract);
+        END ELSE BEGIN
+          TableCorrespondance_L.SETRANGE("Template code", GlobalTemplateCode_G);
+          TableCorrespondance_L.SETRANGE(Table, 8053270);
+          TableCorrespondance_L.SETRANGE(Fields, 0);
+          TableCorrespondance_L.SETFILTER("NAV Value", '%1', FORMAT(TableContrat_P.IdProduct) + 'Ø' + TableContrat_P.IdQualityExt);
+
+          IF NOT TableCorrespondance_L.FINDFIRST() THEN BEGIN
+            ToolsFile_G.LogWriteInfo(STRSUBSTNO(Text0013, TableContrat_P.FIELDCAPTION(TableContrat_P.IdExpiry),
+              Species_L + '-' + FORMAT(TableContrat_P.IdExpiry), TableContrat_P.IdContractInt) + '-6');
+            Erreur_L := TRUE;
+          END ELSE BEGIN
+
+            IF NOT TableContratNavModele_L.GET(TableCorrespondance_L."Interface Value") THEN BEGIN
+              Erreur_L := TRUE;
+              ERROR(Text0008, TableLogavivEncoding_L."NavAgri Template Contract No.",
+                TableContratNavModele_L.TABLECAPTION, TableContrat_P.IdContractInt,TableContrat_P.TypeContract);
+            END;
+          END;
+        END;
+      END;
+
+      // Contr"le fournisseur existe.
+      IF TableUtility_L.GET(TableGeneralSetup_G.IdMember, TableContrat_P.IdFarmExt) THEN BEGIN
+        Vendor_L := TableUtility_L."Id NavAgri";
+      END ELSE BEGIN
+        Erreur_L := TRUE;
+        ERROR(Text0008, Vendor_L, TableUtility_L.TABLECAPTION, TableContrat_P.IdContractInt,TableContrat_P.TypeContract);
+      END;
+      IF NOT TableVendor_L.GET(Vendor_L) THEN BEGIN
+        Erreur_L := TRUE;
+        ERROR(Text0008, Vendor_L, TableVendor_L.TABLECAPTION, TableContrat_P.IdContractInt,TableContrat_P.TypeContract);
+      END;
+
+      IF NOT Erreur_L THEN BEGIN
+        IF NOT ContratNavExiste_L THEN BEGIN
+          CLEAR(TableContratNav_L);
+          // --> 20220601-WI00-ADV01.01.00-3561-CJY01
+          {BEFORE
+          IF TableContrat_P.FL_VenteGlobale THEN BEGIN
+            TableContratNav_L.VALIDATE(TableContratNav_L."No.", TableContrat_P.RefNavAgri);
+          END ELSE BEGIN
+            TableContratNav_L.VALIDATE(TableContratNav_L."No.", TableContrat_P.RefNavAgri + FORMAT(NoLot_P));
+          END;
+          AFTER}
+          TableContratNav_L.VALIDATE(TableContratNav_L."No.", TableContrat_P.RefNavAgri);
+          // <-- 20220601-WI00-ADV01.01.00-3561-CJY01
+
+          IF NOT TableContratNav_L.INSERT(TRUE) THEN BEGIN
+            ERROR(Text0001, TableContratNav_L."No.", TableContratNav_L.TABLECAPTION);
+            EXIT('FALSE');
+          END;
+          TableContratNav_L.VALIDATE("Paper Reference Contract No.", TableContrat_P.IdContractExt);
+          TableContratNav_L.VALIDATE("External Contract No.", FORMAT(TableContrat_P.IdContractInt));
+          TableContratNav_L.VALIDATE("Creation Date", TODAY);
+        END;
+
+        TableContratNav_L.VALIDATE(Type, TableContratNav_L.Type::Contract);
+        // Initialiser la campagne avant l'espSce sinon elle est initialis' . la premiSre ouverte.
+        TableContratNav_L.VALIDATE("Campaign No.", FORMAT(TableLogavivCrop_L.Crop));
+        TableContratNav_L.VALIDATE("Species Code", TableLogavivEncoding_L."Species Code");
+        TableContratNav_L."Template No." := TableContratNavModele_L."No.";
+        TableContratNav_L.VALIDATE("Quotation Type", TableLogavivEncoding_L."Cotation Type");
+
+        TableContratNav_L.Description := TableContratNavModele_L.Description;
+        TableContratNav_L."Contract Type" := TableContratNavModele_L."Contract Type";
+        TableContratNav_L."Collection Type" := TableContratNavModele_L."Collection Type";
+        TableContratNav_L."Item No." := TableContratNavModele_L."Item No.";
+        IF TableItem_L.GET(TableContratNav_L."Item No.") THEN BEGIN
+          TableContratNav_L."Unit of Measure Code" := TableItem_L."Base Unit of Measure";
+          TableContratNav_L."Unit Code Price" := TableItem_L."Sales Unit of Measure";
+          TableContratNav_L."Brand Name" := TableItem_L.Description;
+        END;
+
+        TableContratNav_L."Bonis Refaction Code" := TableContratNavModele_L."Bonis Refaction Code";
+        TableContratNav_L.VALIDATE("Vendor No.", Vendor_L);
+
+        TableContratNav_L.Quantity := Quantite_P;
+
+        TableContratNav_L."Unit of Measure Code" := TableGeneralSetup_G."Unit of Measure Code";
+        TableContratNav_L.VALIDATE("Last Modification Date", TODAY);
+
+        TableContratNav_L.Status := TableContratNav_L.Status::Open;
+        Contact_L := CvLedgerManag_L.GetContNoFromCustVentNo(TableContratNav_L."Vendor No.", CvLedgerManag_Which_L::Vendor);
+        TableContactSales_L.SETRANGE("Contact Code", Contact_L);
+        TableContactSales_L.SETRANGE("Prod. Activity Code", TableExportSetup_G.ExportRegionPrdAct);
+        TableContactSales_L.SETRANGE("Sales Network Code", TableExportSetup_G.ExportRegionSalNet);
+        IF TableContactSales_L.FINDFIRST THEN BEGIN
+          TableContratNav_L.VALIDATE("Salesperson Code", TableContactSales_L."Salesperson Code");
+        END;
+        IF TableContratNavModele_L."Brand Name" = '' THEN BEGIN
+          TableContratNav_L.VALIDATE("Brand Name", TableContratNavModele_L."Brand Name");
+        END;
+
+        TableContratNav_L.VALIDATE("Blocking Characteristics", TableContratNavModele_L."Blocking Characteristics");
+
+        //-->24/11/2017 - YPR: logaviv Lot 2
+        TableContratNav_L."Prime Amount" := TableContrat_P.PrimeBaseMoyenne;
+
+        IF TableContrat_P.BaseNegociee <> 0 THEN
+        BEGIN
+          TableContratNav_L."Normative Margin" := TableContrat_P.PrimeBaseMoyenne + TableContrat_P.MarginAmount;
+
+        END ELSE BEGIN
+          TableContratNav_L."Normative Margin" := TableContrat_P.BaseAmount;
+        END;
+        //--<24/11/2017 - YPR: logaviv Lot 2
+
+        // --> 20210802-WI00-ADV01.01.00-SP3551-MRU01
+        TableContratNav_L."Negociated basis" := CMCMarketContract_P."Contract Base Negociated";
+        TableContratNav_L."Default Location Code" := CMCMarketContract_P."Delivery Location Code";
+        TableContratNav_L."MATIF Term" := CMCMarketContract_P."MATIF Term";
+        TableContratNav_L."MATIF Species Code" := CMCMarketContract_P."MATIF Species Code";
+        // <-- 20210802-WI00-ADV01.01.00-SP3551-MRU01
+
+        IF NOT TableContratNav_L.MODIFY(TRUE) THEN BEGIN
+          ERROR(Text0001, TableContratNav_L."No.", TableContratNav_L.TABLECAPTION);
+          EXIT('FALSE');
+        END ELSE BEGIN
+          // Remplir les qualit's . partir de celle du modSle.
+          TableContractQualityModele_L.SETRANGE("Contract No.", TableContratNav_L."Template No.");
+          IF TableContractQualityModele_L.FINDSET THEN BEGIN
+            REPEAT
+              IF NOT TableContractQuality_L.GET(TableContratNav_L."No.", TableContractQualityModele_L."Analysis Code") THEN BEGIN
+                TableContractQuality_L."Contract No." := TableContratNav_L."No.";
+                TableContractQuality_L."Analysis Code" := TableContractQualityModele_L."Analysis Code";
+                TableContractQuality_L.Sign := TableContractQualityModele_L.Sign;
+                TableContractQuality_L.Value := TableContractQualityModele_L.Value;
+                TableContractQuality_L."Value Type" := TableContractQualityModele_L."Value Type";
+                TableContractQuality_L.Blocking := TableContractQualityModele_L.Blocking;
+                TableContractQuality_L."Min Range Value" := TableContractQualityModele_L."Min Range Value";
+                TableContractQuality_L."Max Range Value" := TableContractQualityModele_L."Max Range Value";
+                TableContractQuality_L."B-R Exception" := TableContractQualityModele_L."B-R Exception";
+                TableContractQuality_L."Departure Value" := TableContractQualityModele_L."Departure Value";
+                TableContractQuality_L."Option Value Type" := TableContractQualityModele_L."Option Value Type";
+                IF NOT TableContractQuality_L.INSERT(TRUE) THEN BEGIN
+                  ERROR(Text0001, TableContrat_P.IdContractInt, TableContractQuality_L.TABLECAPTION);
+                  EXIT('FALSE');
+                END;
+              END;
+            UNTIL TableContractQualityModele_L.NEXT = 0;
+          END;
+          TableContratNav_L.Status := TableContratNav_L.Status::Locked;
+          IF NOT TableContratNav_L.MODIFY() THEN BEGIN
+            ERROR(Text0001, TableContratNav_L."No.", TableContratNav_L.TABLECAPTION);
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE ImportContractMNFNav@1000000016(TableContrat_P@1000000000 : Record 8053423;CMCMarketContract_P@1000000005 : Record 8053268) Result_L : Text[256];
+    VAR
+      TableContrat_L@1000000001 : Record 8053423;
+      TableContratLot_L@1000000002 : Record 8053423;
+      Nb_Contrats_L@1000000003 : Integer;
+      Nb_Lots_L@1000000004 : Integer;
+    BEGIN
+      TraceInfo(5, 'ImportContractMNFNav');
+
+      Result_L := '';
+
+      // On v'rifie que au moins une des ventes est coch'e
+      IF NOT TableContrat_P.FL_VenteGlobale AND NOT TableContrat_P.FL_VenteParLot THEN BEGIN
+        ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text0027, TableContrat_P.IdContractInt,
+          TableContrat_P.TypeContract,TableContrat_P.IdCrop), 1, MAXSTRLEN(Result_L)));
+      END;
+
+      // On v'rifie que les 2 choix ne sont pas coch's
+      IF TableContrat_P.FL_VenteGlobale AND TableContrat_P.FL_VenteParLot THEN BEGIN
+        ToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text0026, TableContrat_P.IdContractInt,
+        TableContrat_P.TypeContract,TableContrat_P.IdCrop), 1, MAXSTRLEN(Result_L)));
+      END;
+
+
+      //On v'rifie si on est en vente totale ou en vente par lot
+      IF TableContrat_P.FL_VenteGlobale THEN BEGIN
+        // Vente globale , on cr'e un seul contrat collecte MNF
+        // --> 20210802-WI00-ADV01.01.00-SP3551-MRU01
+        {BEFORE
+        Result_L := CreateMNFContract(TableContrat_P, 0, TableContrat_P.Quantity);
+        AFTER}
+        Result_L := CreateMNFContract(TableContrat_P, 0, TableContrat_P.Quantity, CMCMarketContract_P);
+        // <-- 20210802-WI00-ADV01.01.00-SP3551-MRU01
+      END;
+
+      IF TableContrat_P.FL_VenteParLot THEN BEGIN
+
+        CLEAR(TableContratLot_L);
+
+        IF TableContrat_P.Quotit <> 0 THEN BEGIN
+          Nb_Lots_L := TableContrat_P.Quantity / TableContrat_P.Quotit;
+        END ELSE BEGIN
+          ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0028, TableContrat_P.IdContractInt, TableContrat_P.IdContractExt,
+            TableContrat_P.IdOrderStatut), 1, MAXSTRLEN(Result_L)));
+          ToolsFile_G.LogWriteErreur(COPYSTR(GETLASTERRORTEXT, 1, MAXSTRLEN(Result_L)));
+        END;
+        // --> 20220601-WI00-ADV01.01.00-3561-CJY01
+        {BEFORE
+        IF Nb_Lots_L > 10 THEN BEGIN
+          ToolsFile_G.LogWriteInfo('ERR011: Le nombre de lots doit ^tre inf'rieur ou 'gal . 10.  '+
+            'Contrat externe : ' + TableContrat_P.IdContractExt + ' - Code Adriculteur '+
+           TableContrat_P.IdFarmExt + '.');
+
+        END ELSE BEGIN
+
+          WHILE (Nb_Lots_L > Nb_Contrats_L) DO BEGIN
+            // Vente par lot, on cr'e un contrat collecte MNF par lot
+            // --> 20210802-WI00-ADV01.01.00-SP3551-MRU01
+            {BEFORE
+            Result_L := CreateMNFContract(TableContrat_P, Nb_Contrats_L, TableContrat_P.Quotit);
+            AFTER}
+            Result_L := CreateMNFContract(TableContrat_P, Nb_Contrats_L, TableContrat_P.Quotit, CMCMarketContract_P);
+            // <-- 20210802-WI00-ADV01.01.00-SP3551-MRU01
+
+            Nb_Contrats_L := Nb_Contrats_L + 1;
+          END;
+        END;
+        AFTER}
+        Result_L := CreateMNFContract(TableContrat_P, 0, TableContrat_P.Quantity, CMCMarketContract_P);
+
+        // <-- 20220601-WI00-ADV01.01.00-3561-CJY01
+      END;
+    END;
+
+    PROCEDURE AffecterBonsContratAchatNav@1000000017(TableOrdre_P@1000000000 : Record 8053426) Result_L : Text[256];
+    VAR
+      TableContract_L@1000000001 : Record 8053423;
+      TableContratMarket_L@1000000002 : Record 8053268;
+      ContractNo_L@1000000003 : Code[20];
+      TableContratMarketOpen_L@1000000004 : Record 8053268;
+      TableCollectionContractMNF_L@1000000005 : Record 8052983;
+      CMCStatusMgt_L@1000000006 : Codeunit 8052985;
+      ContractCollectionMNFNo_L@1000000007 : Code[20];
+      NbLotVendu_L@1000000008 : Integer;
+    BEGIN
+      //Rechercher le contrat march' de type vente pour r'cup'rer le no de contrat collecte CTA
+      CLEAR(TableContratMarket_L);
+      TableContratMarket_L.SETRANGE(TableContratMarket_L."No.",TableOrdre_P.RefNafAgriVente);
+
+      IF NOT TableContratMarket_L.FINDFIRST THEN BEGIN
+
+        ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(ERR001,TableOrdre_P.RefNafAgriVente,
+          TableContratMarket_L.TABLECAPTION), 1, MAXSTRLEN(Result_L)));
+
+      END ELSE BEGIN
+        ContractNo_L := TableContratMarket_L."Collection  Contrat No.";
+      END;
+
+      // R'cup'rer l'information vente par Lot ou globale
+      TableContract_L.SETRANGE(TableContract_L.RefNavAgri,TableContratMarket_L."Open Contract No.");
+      IF NOT TableContract_L.FINDFIRST THEN BEGIN
+        ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(ERR003,TableContratMarket_L."Open Contract No.",
+          TableContract_L.TABLECAPTION), 1, MAXSTRLEN(Result_L)));
+      END ELSE BEGIN
+        IF TableContract_L.FL_VenteGlobale THEN BEGIN
+          //Rechercher le contrat march' de type open pour r'cup'rer le nombre de lot
+          CLEAR(TableContratMarketOpen_L);
+          TableContratMarketOpen_L.SETRANGE(TableContratMarketOpen_L."No.",TableContratMarket_L."Open Contract No.");
+
+          IF NOT TableContratMarketOpen_L.FINDFIRST THEN BEGIN
+
+            ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(ERR008,TableContratMarket_L."Open Contract No.",
+              TableContratMarketOpen_L.TABLECAPTION), 1, MAXSTRLEN(Result_L)));
+
+          END ELSE BEGIN
+            // Si le nombre de lot du contrat march' open est diff'rent du nombre de lot du contrat de vente
+            // on ne peut pas affecter les bons
+            IF TableContratMarket_L."Number Of Lots" = TableContratMarketOpen_L."Number Of Lots" THEN BEGIN
+              MiseAJourBons(TableContratMarketOpen_L."No.",TableContratMarket_L."Collection  Contrat No.");
+
+              AnnulationContratCollecteMNF(TableContratMarketOpen_L."No.");
+              COMMIT;
+            END ELSE BEGIN
+              ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(ERR009,TableContratMarketOpen_L."No.",
+                TableContratMarketOpen_L."Number Of Lots", TableContratMarket_L."No.",
+                TableContratMarket_L."Number Of Lots"), 1, MAXSTRLEN(Result_L)));
+
+            END;
+
+          END;
+
+        END ELSE BEGIN
+          // Si nb lots contrat MNF vente = 1 alors vente par lot "classique"
+          // Sinon prendre les bons des n contrats open (n = nb lots vendus)
+          IF TableContratMarket_L."Number Of Lots" = 1 THEN BEGIN
+            CLEAR(ContractCollectionMNFNo_L);
+
+
+            ContractCollectionMNFNo_L := RechercheContratCollecteMNF(TableContratMarket_L."Open Contract No.");
+
+            IF ContractCollectionMNFNo_L = '' THEN BEGIN
+              ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(ERR010,TableContratMarket_L."Open Contract No.",
+                TableCollectionContractMNF_L.TABLECAPTION), 1, MAXSTRLEN(Result_L)));
+            END;
+
+
+            MiseAJourBons(ContractCollectionMNFNo_L,TableContratMarket_L."Collection  Contrat No.");
+
+            AnnulationContratCollecteMNF(ContractCollectionMNFNo_L);
+
+            COMMIT;
+          END ELSE BEGIN
+            NbLotVendu_L := TableContratMarket_L."Number Of Lots";
+
+            WHILE NbLotVendu_L > 0 DO BEGIN
+              CLEAR(ContractCollectionMNFNo_L);
+
+              ContractCollectionMNFNo_L := RechercheContratCollecteMNF(TableContratMarket_L."Open Contract No.");
+
+              IF ContractCollectionMNFNo_L = '' THEN BEGIN
+                ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(ERR010,TableContratMarket_L."Open Contract No.",
+                  TableCollectionContractMNF_L.TABLECAPTION), 1, MAXSTRLEN(Result_L)));
+              END;
+
+              MiseAJourBons(ContractCollectionMNFNo_L,TableContratMarket_L."Collection  Contrat No.");
+
+              AnnulationContratCollecteMNF(ContractCollectionMNFNo_L);
+
+              COMMIT;
+
+              NbLotVendu_L := NbLotVendu_L-1;
+            END;
+
+
+          END;
+
+        END;
+      END;
+    END;
+
+    PROCEDURE MiseAJourBons@1000000021(ContractCollectionMNFNo_P@1000000000 : Code[20];ContractCollectionNo_P@1000000001 : Code[20]) Result_L : Text[256];
+    VAR
+      TableReceipt_L@1000000004 : Record 8052995;
+      TableReceiptLine_L@1000000003 : Record 8053104;
+      CMCStatusMgt_L@1000000002 : Codeunit 8052985;
+    BEGIN
+      Result_L := ''; //TRUE;
+      CLEAR( TableReceiptLine_L);
+      {
+      ToolsFile_G.LogWriteInfo('INF006: Recherche des bons affect's du contrat collecte '+
+        ContractCollectionMNFNo_P + '.');
+      }
+      TableReceiptLine_L.SETRANGE(TableReceiptLine_L."Contract No.",ContractCollectionMNFNo_P);
+
+      IF TableReceiptLine_L.FINDSET THEN BEGIN
+      REPEAT
+        CLEAR(TableReceipt_L);
+        {
+        ToolsFile_G.LogWriteInfo('INF007: Affectation '+ TableReceiptLine_L."No." + ' - '
+          + FORMAT(TableReceiptLine_L."Line No.") + ' du bon au contrat collecte '
+          + ContractCollectionNo_P + '.');
+        }
+
+        TableReceipt_L.SETRANGE(TableReceipt_L."No.",TableReceiptLine_L."No.");
+        IF NOT TableReceipt_L.FINDFIRST THEN BEGIN
+          ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(ERR006,TableReceiptLine_L."No.",
+            TableReceipt_L.TABLECAPTION), 1, MAXSTRLEN(Result_L)));
+        END ELSE BEGIN
+          CMCStatusMgt_L.OpenPostedReceipt(TableReceipt_L);
+
+          TableReceiptLine_L.VALIDATE("Contract No.",ContractCollectionNo_P);
+          IF NOT TableReceiptLine_L.MODIFY(TRUE) THEN BEGIN
+            ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(ERR007,ContractCollectionNo_P,
+              TableReceiptLine_L."No.",TableReceiptLine_L."Line No.",
+              TableReceiptLine_L.TABLECAPTION), 1, MAXSTRLEN(Result_L)));
+          END;
+
+          // Pour recalculer quantit' affect'e
+          CMCStatusMgt_L.ReleasePostedReceipt(TableReceipt_L);
+        END;
+
+
+      UNTIL TableReceiptLine_L.NEXT = 0;
+      //COMMIT;
+      END;
+    END;
+
+    PROCEDURE RechercheContratCollecteMNF@1000000023(ContractCollectionMNFNo_P@1000000000 : Code[20]) ContractCollectionMNFNo_R : Code[20];
+    VAR
+      Session_L@1000000005 : Record 2000000009;
+      SQLConnection_L@1000000004 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlConnection";
+      SQLCommand_L@1000000003 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlCommand";
+      CmdType_L@1000000002 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.CommandType";
+      SQLDbReader_L@1000000001 : DotNet "'System.Data, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Data.SqlClient.SqlDataReader";
+    BEGIN
+      ContractCollectionMNFNo_R := '';
+      IF ISSERVICETIER THEN BEGIN
+        IF TableAdvitam_G.FINDFIRST THEN BEGIN
+        //<--20151203-INT08-CMC02.02.00-ADVITAM-CDL010
+          Session_L.SETRANGE("Ma session",TRUE);
+          IF Session_L.FINDFIRST THEN;
+
+            SQLConnection_L := SQLConnection_L.SqlConnection(ToolsFile_G.GetConnectionString(TableAdvitam_G.BddNavision,
+              Session_L."Nom de la base de donn'es", '',''));
+
+            SQLConnection_L.Open;
+
+            SQLCommand_L := SQLCommand_L.SqlCommand();
+            SQLCommand_L.CommandText := 'SELECT TOP 1 No_ FROM ['+COMPANYNAME+'$CMC Collection Contract] '+
+              'WHERE [No_] LIKE ''%'+ContractCollectionMNFNo_P+'%'' AND Cancelled = 0';
+
+            SQLCommand_L.Connection := SQLConnection_L;
+            CmdType_L := SQLCommand_L.CommandType;
+            SQLCommand_L.CommandType := CmdType_L.Parse(CmdType_L.GetType(),'Text');
+            SQLCommand_L.CommandTimeout := 0;
+
+            SQLDbReader_L := SQLCommand_L.ExecuteReader();
+
+            WHILE SQLDbReader_L.Read() DO BEGIN
+              ContractCollectionMNFNo_R := FORMAT(SQLDbReader_L.GetSqlValue(SQLDbReader_L.GetOrdinal('No_')));
+            END;
+
+            SQLDbReader_L.Close();
+            SQLDbReader_L.Dispose();
+
+            SQLCommand_L.Dispose();
+
+            SQLConnection_L.Close();
+            SQLConnection_L.Dispose();
+        END;
+      END;
+    END;
+
+    PROCEDURE AnnulationContratCollecteMNF@1000000032(ContractCollectionMNFNo_P@1000000000 : Code[20]) Result_L : Text[256];
+    VAR
+      TableCollectionContractMNF_L@1000000001 : Record 8052983;
+      CMCStatusMgt_L@1000000002 : Codeunit 8052985;
+    BEGIN
+
+      CLEAR(TableCollectionContractMNF_L);
+      TableCollectionContractMNF_L.SETRANGE(TableCollectionContractMNF_L."No.", ContractCollectionMNFNo_P);
+
+      IF NOT TableCollectionContractMNF_L.FINDFIRST THEN BEGIN
+        ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(ERR004,ContractCollectionMNFNo_P,
+          TableCollectionContractMNF_L.TABLECAPTION), 1, MAXSTRLEN(Result_L)));
+      END ELSE BEGIN
+
+        //CMCStatusMgt_L.OpenContract(TableCollectionContractMNF_L);
+        TableCollectionContractMNF_L.VALIDATE(Status,TableCollectionContractMNF_L.Status :: Open);
+
+        IF NOT TableCollectionContractMNF_L.MODIFY(TRUE) THEN BEGIN
+        END;
+        TableCollectionContractMNF_L.Cancelled := TRUE;
+
+        IF NOT TableCollectionContractMNF_L.MODIFY(TRUE) THEN BEGIN
+        END;
+      END;
+    END;
+
+    PROCEDURE CreateOrderForLogaviv@1000000018(TableContrat_P@1000000019 : Record 8053423) Result_L : Text[256];
+    VAR
+      "<-- 3LI LOCALS -->"@1000000005 : Integer;
+      TableOrdre_L@1000000004 : Record 8053426;
+      TableContratNavOrd_L@1000000003 : Record 8053268;
+      TableContratNavRef_L@1000000010 : Record 8053268;
+      TableContratNavMaj_L@1000000006 : Record 8053268;
+      TableContratNavCon_L@1000000017 : Record 8053268;
+      TableFinancial_L@1000000011 : Record 8053280;
+      Erreur_L@1000000001 : Boolean;
+      OrdreNavExiste_L@1000000002 : Boolean;
+      ATraiter_L@1000000012 : Boolean;
+      TypeTraitement_L@1000000007 : 'Fixation,Vente,Annulation';
+      TypeOrdre_L@1000000009 : 'Fixation,Vente,Annulation';
+      RefNavAgri_L@1000000008 : Code[20];
+      IdSiloExtNum_L@1000000014 : Integer;
+      IdSilo_L@1000000015 : Code[10];
+      QteAvant_L@1000000016 : Decimal;
+      TableContrat_L@1000000018 : Record 8053423;
+      OrderInterneTxt_L@1000000013 : Text[20];
+      OrderInterneInt_L@1000000020 : Integer;
+      OrderExist_L@1000000000 : Boolean;
+    BEGIN
+      // --> 20221003-WI00-ADV01.01.00-3561-CJY01
+
+      TraceInfo(5, 'CreateOrderForLogaviv');
+
+      Result_L := '';
+      //d'termination du num'ro d'ordre = Num'ro de contrat interne + 01
+      OrderInterneTxt_L := STRSUBSTNO('%1',TableContrat_P.IdContractInt) + '01';
+      IF NOT EVALUATE(OrderInterneInt_L,OrderInterneTxt_L) THEN BEGIN
+        //Text60005
+        ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text60005), 1,
+          MAXSTRLEN(Result_L)));
+        EXIT('FALSE');
+
+      END;
+
+      IF TableOrdre_L.GET(OrderInterneInt_L,2) THEN BEGIN
+        IF TableOrdre_L.HoroIntegration <> 0DT THEN BEGIN
+          ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text60003, OrderInterneInt_L,TableOrdre_L.TABLECAPTION), 1,
+            MAXSTRLEN(Result_L)));
+          EXIT('FALSE');
+        END;
+      END;
+
+      TableOrdre_L.IdOrdreInterne := OrderInterneInt_L;
+      TableOrdre_L.TypeOrder := 2;
+      TableOrdre_L.IdOrdreExterne := TableContrat_P.IdContractExt;
+      TableOrdre_L.IdContractInt := TableContrat_P.IdContractInt;
+      TableOrdre_L.IdContractExt := TableContrat_P.IdContractExt;
+      TableOrdre_L.IdOrdreType := 2;
+      TableOrdre_L."IdOrdreAchat/Vente" := 1;
+      TableOrdre_L.IdOfferType := 1;
+      TableOrdre_L.IdMember := TableContrat_P.IdMember;
+      TableOrdre_L.IdExpiry := TableContrat_P.IdExpiry;
+      TableOrdre_L.IdProduct := TableContrat_P.IdProduct;
+      TableOrdre_L.IdOrderStatut := 2;
+      TableOrdre_L.OrdreStatutLibelle := Text60004;
+      TableOrdre_L.IdCrop := TableContrat_P.IdCrop;
+      TableOrdre_L.Quantity := TableContrat_P.Quantity;
+      TableOrdre_L.Quotit := TableContrat_P.Quotit;
+      TableOrdre_L.Strike := 0;
+      TableOrdre_L.Prime := 0;
+      TableOrdre_L.PrimeStorage := 0;
+      TableOrdre_L.ObjectifPrice := 0;
+      TableOrdre_L.MarketPrice := 0;
+      TableOrdre_L.FixedPrice := TableContrat_P.Price;
+      TableOrdre_L.Gain := 0;
+      TableOrdre_L.OrderDate := TableContrat_P.HoroContract;
+      TableOrdre_L.BeginDate := TableContrat_P.HoroContract;
+      TableOrdre_L.EndDate := TableContrat_P.HoroDeadLineFixation;
+      TableOrdre_L.HoroModified := CURRENTDATETIME;
+      TableOrdre_L.HoroCreated := CURRENTDATETIME;
+      TableOrdre_L.HoroLastUpdate := CURRENTDATETIME;
+      TableOrdre_L.FixedDate := TableContrat_P.HoroDeadLineFixation;
+      TableOrdre_L.DeliveryDate := TableContrat_P.HoroDelivery;
+      TableOrdre_L.DeliveryPlannedDate := TableContrat_P.HoroDelivery;
+      TableOrdre_L.BaseAmount := TableContrat_P.BaseAmount;
+      TableOrdre_L.IdSilo := TableContrat_P.IdSilo;
+      TableOrdre_L.IdSiloExt := TableContrat_P.IdSiloExt;
+      TableOrdre_L.MontantFraisTran := TableContrat_P.ValueTransportCost;
+      TableOrdre_L.IncreaseAmount := TableContrat_P.IncreaseAmount;
+      TableOrdre_L.DatePaiement := TableContrat_P.HoroPaiement;
+      TableOrdre_L.IdContractorInt := TableContrat_P.IdContractorInt;
+      TableOrdre_L.IdContractorExt := TableContrat_P.IdContractorExt;
+      TableOrdre_L."Type Contract Linked" := TableContrat_P.TypeContract;
+
+      IF NOT TableOrdre_L.INSERT THEN
+        TableOrdre_L.MODIFY;
+      // <-- 20221003-WI00-ADV01.01.00-3561-CJY01
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20210712-WI00-ADV01.01.00-3561-CJY01 : CREATE Object (bas' sur une copie du CU original de CDL 8053435 pour la partie int'gration)
+      20210802-WI00-ADV01.01.00-SP3551-MRU01 : Gestion replication champs (reprise du code livr‚ en Prod pendant les recette du Sp3561)
+      20220601-WI00-ADV01.01.00-3561-CJY01 : MODCODE (Refonte contrat open par lot)
+      20221003-WI00-ADV01.01.00-3561-CJY01 : MODCODE (Gestion de la "vente matif directe")
+      20221013-WI00-ADV01.01.00-3561-CJY01 : MODCODE (prise en compte modification cl's primaire contrat et ordre)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

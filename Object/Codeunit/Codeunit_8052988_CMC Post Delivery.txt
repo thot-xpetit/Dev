@@ -1,0 +1,2941 @@
+OBJECT Codeunit 8052988 CMC Post Delivery
+{
+  OBJECT-PROPERTIES
+  {
+    Date=14/11/24;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,TER01.01.00,ADV01.01.00,SP3358,SP3484;
+  }
+  PROPERTIES
+  {
+    TableNo=8053013;
+    Permissions=TableData 8053012=m,
+                TableData 8053265=m;
+    OnRun=VAR
+            L_recSalesContract@8053003 : Record 8053012;
+            L_Iter@8053000 : Integer;
+            L_TotalIter@8053001 : Integer;
+            L_wDialog@8053002 : Dialog;
+            L_SalesStatusMgt@8053004 : Codeunit 8052987;
+            cduWeighingManagement_L@8053005 : Codeunit 8053010;
+            cduAdvancedSetupManagement_L@8053006 : Codeunit 8061290;
+            Inervention_L@8053010 : Record 8053034;
+            IntervationType_L@8053009 : Record 8053033;
+            CellsLocation_L@8053008 : Record 8053031;
+            IntervJnlPostLine_L@8053007 : Codeunit 8052998;
+            TransportMeth_L@8053013 : Record 259;
+            i@8053015 : Integer;
+            DeliveryAnalysis_L@8053016 : Record 8053030;
+            CMCManagement_L@8053017 : Codeunit 8052982;
+            QualitySTRD_L@8053018 : Record 8052992;
+            ShippingOrder_L@8053023 : Record 8053265;
+            PurchLine_L@8053022 : Record 39;
+            TransportPurchLine_L@8053021 : Record 39;
+            TransportPurchHeader_L@8053020 : Record 38;
+            PostPurchCu_L@8053019 : Codeunit 90;
+            PostZeroPoint_L@8053011 : Codeunit 8053002;
+            DistributionCells_L@8053030 : Record 8053315;
+            CduICInOutboxMgt_L@8053025 : Codeunit 427;
+            SharedSiloAndIcFlux_L@1000000000 : Boolean;
+            NumSeqTrans_L@8053012 : Integer;
+            RecLocation_L@1000000002 : Record 14;
+            Text60000@60001 : TextConst 'ENU=For a transfer order which destination location it''s maritime, a Shipping Order No. is required;FRA=Pour un ordre de transfert dont le silo de destination est portuaire maritime, un num'ro d''ordre de chargement est obligatoire';
+            RecCharterLine_L@60000 : Record 8053265;
+            RecShippingAgent_L@60002 : Record 291;
+            RecLocation2_L@60003 : Record 14;
+            RecTransMethodSetup_L@60004 : Record 60023;
+            RecItemLedgerEntry_L@1000000001 : Record 32;
+            IcFlux_L@60005 : Boolean;
+            RecMCLocation_L@1000000004 : Record 8053083;
+            "<-- SP3484"@1000000006 : Integer;
+            ManSealLocSpecies_L@1000000003 : Record 60049;
+            CMCSpeciesSetup_L@1000000005 : Record 8053323;
+            "-->"@1000000007 : Integer;
+            CollectionReceipt_L@1000000008 : Record 8052993;
+          BEGIN
+            G_RecDelivery := Rec;
+            G_RecDelivery.VALIDATE(Status,Status::Released);
+
+            G_CMCSetup.GET;
+
+            // -------------------------------------------------------------------------------
+            // V'rification PRE-VALIDATION
+            // -------------------------------------------------------------------------------
+            // --> 20140917-CER28-TER01.01.00-SCF01
+            //IF NOT "Ownership Transfer" THEN BEGIN
+            // --> 20150331-CER28-TER01.01.00-233-BSI01
+            {before
+            IF (NOT "Ownership Transfer") AND( NOT G_CMCSetup."Disable Trucker Name") THEN BEGIN
+            after}
+            IF RecShippingAgent_L.GET(G_RecDelivery."Shipping Agent Code") THEN
+              IF (NOT "Ownership Transfer") AND (NOT RecShippingAgent_L."Transporter Code Not Mandatory") THEN BEGIN
+              // <-- 20150331-CER28-TER01.01.00-233-BSI01
+              // <-- 20140917-CER28-TER01.01.00-SCF01
+                G_RecDelivery.TESTFIELD("Trucker Name");
+                //G_RecDelivery.TESTFIELD("Truck Registration No.");
+              END;
+            // --> 20150623-CER28-TER01.01.00-467-SDE01
+              IF G_RecDelivery."Ownership Transfer"=FALSE THEN //20160204-wi00-ADV01.01.00-SP2721-JLT01
+                G_RecDelivery.TESTFIELD("Trailers Registration No.");
+            // --> 20150623-CER28-TER01.01.00-467-SDE01
+            // --> 20150526-CER154-TER01.01.00-375-BSI01
+            IF G_RecDelivery."Shipping Agent Code" = '' THEN
+              IF (G_RecDelivery."Delivery Type" <> G_RecDelivery."Delivery Type"::Transfert) AND
+                 (G_RecDelivery."Shipping Type" = G_RecDelivery."Shipping Type"::Customer) THEN
+                IF NOT G_CMCSetup."Trucker Name Not Oblig. Deliv." THEN
+                  G_RecDelivery.TESTFIELD("Trucker Name");
+            // <-- 20150526-CER154-TER01.01.00-375-BSI01
+
+            // --> 20150424-CER28-TER01.01.00-233-BSI01
+            IF NOT RecTransMethodSetup_L.GET(G_RecDelivery."Transport Method") THEN
+              CLEAR(RecTransMethodSetup_L);
+            CASE G_RecDelivery."Shipping Type" OF
+              G_RecDelivery."Shipping Type"::Customer : BEGIN //D'part
+                IF RecTransMethodSetup_L."Cust.Registration No.Mandatory" THEN BEGIN
+                  G_RecDelivery.TESTFIELD("Trucks Registration");
+                  //IF G_CMCSetup."Trailer Reg. Mandatory Deliv." THEN
+                  //  G_RecDelivery.TESTFIELD("Trucks Registration");
+                END;
+              END;
+              G_RecDelivery."Shipping Type"::Company : BEGIN
+                IF (RecShippingAgent_L.Internal AND RecTransMethodSetup_L."Comp.Registration No.Mandatory") OR
+                ((NOT RecShippingAgent_L.Internal) AND (RecTransMethodSetup_L."External Comp.Reg No.Mandatory")) THEN BEGIN
+
+                  G_RecDelivery.TESTFIELD("Trucks Registration");
+                  //IF G_CMCSetup."Trailer Reg. Mandatory Deliv." THEN BEGIN
+                  //  G_RecDelivery.TESTFIELD("Trucks Registration");
+                  //END;
+                END;
+              END;
+            END; // END CASE
+            // <-- 20150424-CER28-TER01.01.00-233-BSI01
+
+            G_RecDelivery.TESTFIELD("Posting Date");
+            G_RecDelivery.TESTFIELD("Sales Date");
+
+            // --> 20240718-WI00-ADV01.01.00-3665-IJI
+            IF G_RecDelivery."Linked Receipt No." <> '' THEN
+            BEGIN
+              CollectionReceipt_L.GET(CollectionReceipt_L."Receipt Type"::Receipt,"Linked Receipt No.");
+              CollectionReceipt_L.VALIDATE("Shipping Agent Code",G_RecDelivery."Shipping Agent Code");
+              CollectionReceipt_L.MODIFY;
+            END;
+            // <-- 20240718-WI00-ADV01.01.00-3665-IJI
+
+
+            // --> 20200629-WI00-ADV01.01.00-3484-SCR01
+            IF  G_RecDelivery."Delivery Type" = G_RecDelivery."Delivery Type"::Delivery THEN BEGIN
+              CLEAR(ManSealLocSpecies_L);
+              ManSealLocSpecies_L.SETRANGE("Location No.",G_RecDelivery."Location Code");
+              ManSealLocSpecies_L.SETRANGE("Species code",G_RecDelivery."Species Code");
+              IF ManSealLocSpecies_L.FINDSET(FALSE,FALSE) THEN
+                G_RecDelivery.TESTFIELD("Seal No.")
+              ELSE BEGIN
+                Location_G.GET(G_RecDelivery."Location Code");
+                IF Location_G."Mandatory Seal" THEN
+                  G_RecDelivery.TESTFIELD("Seal No.")
+                ELSE  BEGIN
+                  CMCSpeciesSetup_L.GET("Species Code");
+                  IF CMCSpeciesSetup_L."Mandatory Seal" THEN
+                    G_RecDelivery.TESTFIELD("Seal No.");
+                END;
+              END;
+            END;
+            // <-- 20200629-WI00-ADV01.01.00-3484-SCR01
+
+            IF NOT "Ownership Transfer" THEN BEGIN
+              // Mode de transport obligatoire
+              G_RecDelivery.TESTFIELD("Transport Method");
+              IF G_RecDelivery."Linked Receipt No." = '' THEN
+              G_RecDelivery.TESTFIELD(Area);
+              // Code transport obligatoire sur transfert selon param. avanc'
+              IF AdSetupMan_G.GetAdvancedParameterValueBool('CER-LIVR-CTRANSOBLIG') AND
+                (G_RecDelivery."Delivery Type" = G_RecDelivery."Delivery Type"::Transfert)
+              THEN
+                G_RecDelivery.TESTFIELD("Shipping Agent Code");
+                // --> 20141006-CER46-TER01.01.00-PSC02
+                // --> 20141016-CER46-TER01.01.00-PSC03
+                // BEFORE
+                {
+                TESTFIELD("Terminated Control",TRUE) ;
+                TESTFIELD("Loading Method","Loading Method"::Accepted);
+                }
+                // AFTER
+                IF NOT ("Delivery Type" = "Delivery Type"::Resumption) THEN BEGIN
+                  TESTFIELD("Terminated Control",TRUE) ;
+                  TESTFIELD("Loading Method","Loading Method"::Accepted);
+                END;
+                // <-- 20141006-CER46-TER01.01.00-PSC02
+                // <-- 20141016-CER46-TER01.01.00-PSC03
+            END;
+            // --> 20141016-CER46-TER01.01.00-PSC03
+            // BEFORE
+            {
+            IF NOT "Ownership Transfer" THEN
+            }
+            // AFTER
+            IF (NOT "Ownership Transfer") AND (NOT ("Delivery Type" = "Delivery Type"::Resumption)) THEN
+            // <-- 20141016-CER46-TER01.01.00-PSC03
+              IF AdSetupMan_G.GetAdvancedParameterValueBool('CER-LIVR-CONTPROPRE') THEN
+                // --> 20141006-CER46-TER01.01.00-PSC02
+                // BEFORE
+                {
+                G_RecDelivery.TESTFIELD("Clean Containing");
+                }
+                // AFTER
+                IF NOT ("Delivery Type" = "Delivery Type"::Resumption) THEN
+                  G_RecDelivery.TESTFIELD("Clean Containing");
+                // <-- 20141006-CER46-TER01.01.00-PSC02
+
+            // --> 20150624-CER170-TER01.01.00-448-FBE01
+            IF (G_RecDelivery."Delivery Type" IN [G_RecDelivery."Delivery Type"::Transfert,G_RecDelivery."Delivery Type"::Delivery]) AND
+              (G_RecDelivery.Disinsectization = G_RecDelivery.Disinsectization::" ") AND NOT G_RecDelivery."Ownership Transfer" THEN
+                ERROR(Text60001,G_RecDelivery.FIELDCAPTION(Disinsectization));
+            IF(G_RecDelivery."Delivery Type" IN [G_RecDelivery."Delivery Type"::Transfert,G_RecDelivery."Delivery Type"::Delivery]) AND
+              (G_RecDelivery.Disinsectization = G_RecDelivery.Disinsectization::Yes) AND NOT G_RecDelivery."Ownership Transfer" AND
+              (G_RecDelivery."Disinsectization Output"  = G_RecDelivery."Disinsectization Output"::" ") THEN
+                ERROR(Text60001,G_RecDelivery.FIELDCAPTION("Disinsectization Output"));
+            // <-- 20150624-CER170-TER01.01.00-448-FBE01
+
+            IF G_RecDelivery."Disinsectization Output" IN [G_RecDelivery."Disinsectization Output"::Output,
+              G_RecDelivery."Disinsectization Output"::"In Harvest "]
+            THEN BEGIN
+              IF NOT (((G_RecDelivery."Delivery Type" = G_RecDelivery."Delivery Type"::Delivery) OR
+                ((G_RecDelivery."Delivery Type" = G_RecDelivery."Delivery Type"::Transfert) AND (G_RecDelivery."Independent Transfer"))) AND
+                (G_RecDelivery."Disinsectization Output" = G_RecDelivery."Disinsectization Output"::"In Harvest "))
+              THEN BEGIN
+                G_RecDelivery.TESTFIELD("Pump Code");
+                G_RecDelivery.TESTFIELD("Disinsectization Code Output");
+                G_RecDelivery.TESTFIELD("Disinsectization Dosage Output");
+                G_RecDelivery.TESTFIELD("Disinsectization Period Output");
+              END;
+            END;
+
+            // --> 20150416-CER106-TER01.01.00-310-BSI01
+            IF G_RecDelivery."Delivery Type" IN [G_RecDelivery."Delivery Type"::Delivery,G_RecDelivery."Delivery Type"::Resumption] THEN
+              IF G_CMCSetup."Mandatory Manual Voucher No." THEN BEGIN
+                RecLocation2_L.GET(G_RecDelivery."Location Code");
+                IF NOT RecLocation2_L."Computer Link Site/Siege" THEN
+                  G_RecDelivery.TESTFIELD("Manual Voucher No.");
+              END;
+            // <-- 20150416-CER106-TER01.01.00-310-BSI01
+
+            //--> 20141022-APP27-TER01.01.00-BSI02
+            IF G_RecDelivery."Independent Transfer" THEN BEGIN
+              // --> 20150416-CER106-TER01.01.00-310-BSI01
+              IF G_CMCSetup."Mandatory Manual Voucher No." THEN BEGIN
+                RecLocation2_L.GET(G_RecDelivery."Location Code");
+                IF NOT RecLocation2_L."Computer Link Site/Siege" THEN
+                  G_RecDelivery.TESTFIELD("Manual Voucher No.");
+              END;
+              // <-- 20150416-CER106-TER01.01.00-310-BSI01
+              // <-- 20160513-GEN15/001-ADV01.01.00-2813-FBE
+              IF NOT "On Behalf Of Adjustment" THEN
+              // --> 20160513-GEN15/001-ADV01.01.00-2813-FBE
+              IF G_CMCSetup."Charter No Mandatory Ind Trans" THEN BEGIN
+                // --> 20160513-Gen15/001-ADV01.01.00-2813-NED
+                //RecLocation_L.GET(G_RecDelivery."Transfer-to Code");
+                //RecMCLocation_L.GET(G_RecDelivery."Transfer-to Code"); //20171024-Wi00-ADV01.01.00-ID30404-JLT01
+                RecLocation_L.GET(G_RecDelivery."Transfer-to Code");     //20171024-Wi00-ADV01.01.00-ID30404-JLT01
+                // <-- 20160513-Gen15/001-ADV01.01.00-2813-NED
+
+                // --> 20160513-GEN15/001-ADV01.01.00-2993-NED
+                //IF RecLocation_L.Port = RecLocation_L.Port::"Maritime " THEN
+                IF (RecLocation_L.Port = RecLocation_L.Port :: "Maritime ") AND ("IC Partner Code" = '') THEN
+                // <-- 20160513-GEN15/001-ADV01.01.00-2993-NED
+                  G_RecDelivery.TESTFIELD("Charter No.");
+              END;
+            END;
+            //<-- 20141022-APP27-TER01.01.00-BSI02
+
+
+            IF G_RecDelivery."Independent Transfer" THEN BEGIN
+              IF NOT "Ownership Transfer" THEN
+                G_RecDelivery.TESTFIELD("Manual Transfer No.");
+
+              // --> 20141022-CER64-TER01.01.00-RMZ01
+              // <-- 20160513-GEN15/001-ADV01.01.00-2813-FBE
+              IF NOT "On Behalf Of Adjustment" THEN
+              // --> 20160513-GEN15/001-ADV01.01.00-2813-FBE
+              // --> 20150216-APP27-TER01.01.00-246-BSI01
+              {before
+              IF G_CMCSetup."Ship. Order Mand. for Sea Loc." THEN BEGIN
+              after}
+              IF G_CMCSetup."Charter No Mandatory Ind Trans" THEN BEGIN
+              // <-- 20150216-APP27-TER01.01.00-246-BSI01
+                // --> 20160513-Gen15/001-ADV01.01.00-2813-NED
+                //RecLocation_L.GET(G_RecDelivery."Transfer-to Code");
+                // RecMCLocation_L.GET(G_RecDelivery."Transfer-to Code"); //20171024-Wi00-ADV01.01.00-ID30404-JLT01
+                RecLocation_L.GET(G_RecDelivery."Transfer-to Code");      //20171024-Wi00-ADV01.01.00-ID30404-JLT01
+                // <-- 20160513-Gen15/001-ADV01.01.00-2813-NED
+
+                // --> 20160513-GEN15/001-ADV01.01.00-2993-NED
+                //IF RecLocation_L.Port = RecLocation_L.Port::"Maritime " THEN
+                IF (RecLocation_L.Port = RecLocation_L.Port::"Maritime ") AND ("IC Partner Code" = '') THEN
+                // <-- 20160513-GEN15/001-ADV01.01.00-2993-NED
+                  IF G_RecDelivery."Shipping Order No." = '' THEN
+                    ERROR(Text60000);
+              END;
+              // <-- 20141022-CER64-TER01.01.00-RMZ01
+            END;
+
+            IF (G_CMCSetup."Use Max Tonn. By Transp. Meth.") AND NOT "Ownership Transfer" THEN BEGIN
+              TransportMeth_L.GET(G_RecDelivery."Transport Method");
+              IF (TransportMeth_L."Maximum Quantity" <> 0) AND (G_RecDelivery."Net Weight" > TransportMeth_L."Maximum Quantity") THEN
+                ERROR(Text8053000,TransportMeth_L.Description,TransportMeth_L."Maximum Quantity");
+            END;
+            IF NOT "Ownership Transfer" THEN
+              IF NOT((G_RecDelivery."Delivery Type"="Delivery Type"::Delivery) AND (G_RecDelivery."IC Partner Code" <>'') AND
+                 (G_RecDelivery."IC Direction" = G_RecDelivery."IC Direction"::Incoming) AND
+                (G_RecDelivery."IC Status" = G_RecDelivery."IC Status"::New))
+              THEN
+                TestAnalysisValue(Rec);
+
+            //test sur le pre stockage en sortie transfert
+            IF (G_RecDelivery."Delivery Type" = "Delivery Type"::Transfert) AND NOT "Ownership Transfer" THEN BEGIN
+              // --> 20150812-CER66-ADV01.01.00-2119-FHS01
+              DeliveryAnalysis_L.SETCURRENTKEY("Delivery Type", "Delivery No.");
+              DeliveryAnalysis_L.SETRANGE("Delivery Type", DeliveryAnalysis_L."Delivery Type"::Transfert);
+              QualitySTRD_L.SETRANGE("Campain No.",G_RecDelivery."Campaign No.");
+              QualitySTRD_L.SETRANGE("Item No.",G_RecDelivery."Item No.");
+              QualitySTRD_L.SETRANGE("Pre-Stockage",TRUE);
+              // <-- 20150812-CER66-ADV01.01.00-2119-FHS01
+              DeliveryAnalysis_L.SETRANGE("Delivery No.",G_RecDelivery."No.");
+              IF DeliveryAnalysis_L.FINDSET THEN
+                REPEAT
+                  // --> 20150812-CER66-ADV01.01.00-2119-FHS01
+                  //BEFORE
+                  //QualitySTRD_L.SETRANGE("Campain No.",G_RecDelivery."Campaign No.");
+                  //QualitySTRD_L.SETRANGE("Item No.",G_RecDelivery."Item No.");
+                  //QualitySTRD_L.SETRANGE("Pre-Stockage",TRUE);
+                  //AFTER
+                  // <-- 20150812-CER66-ADV01.01.00-2119-FHS01
+                  QualitySTRD_L.SETRANGE("Analysis Code",DeliveryAnalysis_L."Analysis Code");
+                  IF QualitySTRD_L.FINDFIRST THEN
+                    IF DeliveryAnalysis_L.Value>QualitySTRD_L."Pre-Stockage Mini Value" THEN
+                      G_RecDelivery.TESTFIELD(G_RecDelivery."Pre-Stockage Duration")
+                UNTIL DeliveryAnalysis_L.NEXT= 0;
+            END;
+
+            IF (CellsLocation_L.GET(G_RecDelivery."Location Code",G_RecDelivery."Cell Code") AND CellsLocation_L."Distribution Cell")
+              AND NOT "Ownership Transfer"
+              // --> 20150730-CER35/001-ADV01.01.00-1987-SDE01
+              AND ("Use Lot No."='')
+              // <-- 20150730-CER35/001-ADV01.01.00-1987-SDE01
+            THEN BEGIN
+              DistributionCells_L.RESET;
+              DistributionCells_L.SETRANGE("Delivery No.",G_RecDelivery."No.");
+              // --> 20150730-CER35/001-ADV01.01.00-1987-SDE01
+              //DistributionCells_L.FINDFIRST;
+              IF DistributionCells_L.ISEMPTY THEN
+                ERROR(Text60002);
+              // <-- 20150730-CER35/001-ADV01.01.00-1987-SDE01
+            END;
+
+            IF NOT "Ownership Transfer" THEN BEGIN
+              IF (G_RecDelivery."Weighing 1" <> 0) OR (G_RecDelivery."Weighing 2" <> 0) THEN BEGIN
+                G_RecDelivery.TESTFIELD("Weighing 1");
+                G_RecDelivery.TESTFIELD("Weighing 2");
+              END;
+              // --> 20150217-LOG10-CMC02.02.00-2748-DRN01
+              //BEFORE
+              //IF G_RecDelivery."Weighing 2 No." = '' THEN
+              //IF cduAdvancedSetupManagement_L.GetAdvancedParameterValueBool('CER-LIVR-TICKMAOBLIG')THEN
+              //  TESTFIELD("Manual Weighing No.");
+              //AFTER
+              IF cduAdvancedSetupManagement_L.GetAdvancedParameterValueBool('CER-LIVR-TICKMAOBLIG') THEN BEGIN
+                  TESTFIELD("Manual Weighing No.");
+                TESTFIELD("Notebook Weighing No.");
+              END;
+              // <-- 20150217-LOG10-CMC02.02.00-2748-DRN01
+            END;
+
+            IF G_CMCSetup.IstGoodDate(G_RecDelivery."Sales Date") THEN BEGIN
+              G_RecDelivery."Posting Date":=G_RecDelivery."Sales Date";
+              G_RecDelivery.MODIFY;
+            END ELSE BEGIN
+              G_RecDelivery."Posting Date":=WORKDATE;
+              G_RecDelivery.MODIFY;
+            END;
+
+            // -------------------------------------------------------------------------------
+            // TRAITEMENT DE VALIDATION
+            // -------------------------------------------------------------------------------
+            IF GUIALLOWED THEN BEGIN
+              L_Iter := 1;
+              L_TotalIter := 3;
+
+              L_wDialog.OPEN('#1##########################' + '\' +
+                             '@2@@@@@@@@@@@@@@@@@@@@@@@@@@');
+
+              L_wDialog.UPDATE(1, Text8053001);
+              L_wDialog.UPDATE(2, ROUND(L_Iter / L_TotalIter * 10000,1));
+            END;
+
+            IF NOT "Ownership Transfer" THEN BEGIN
+              DistributionCells_L.RESET;
+              DistributionCells_L.SETRANGE("Delivery No.",G_RecDelivery."No.");
+              IF DistributionCells_L.FINDFIRST THEN
+                PostDistributions(G_RecDelivery);
+            END;
+
+            // -------------------------------------------------------------------------------
+            // CREATION DU DOCUMENT VALID'
+            // -------------------------------------------------------------------------------
+            G_RecPostedDelivery.INIT;
+            G_RecPostedDelivery.TRANSFERFIELDS(G_RecDelivery);
+
+            // --> 20140917-CER26-TER01.01.00-SCF01
+            IF G_RecPostedDelivery."Contract No." <> '' THEN BEGIN
+              IF L_recSalesContract.GET(G_RecPostedDelivery."Contract No.") THEN BEGIN
+                G_RecPostedDelivery."Shipping Price Include" := L_recSalesContract."Shipping Price Include";
+              END;
+            END;
+            // <-- 20140917-CER26-TER01.01.00-SCF01
+            // --> 20140926-CER51-TER01.01.00-SCF01
+            G_RecPostedDelivery."Raise Unit Amount" := L_recSalesContract."Raise Unit Amount";
+            // <-- 20140926-CER51-TER01.01.00-SCF01
+
+            IF CellsLocation_L.GET("Location Code", "Cell Code") THEN
+              G_RecPostedDelivery."Lot No.":=CellsLocation_L."Active Lot No.";
+
+            // --> 20150730-CER35/001-ADV01.01.00-1987-SDE01
+            IF "Use Lot No."<>'' THEN
+              G_RecPostedDelivery."Lot No.":="Use Lot No.";
+
+            // <-- 20150730-CER35/001-ADV01.01.00-1987-SDE01
+
+            G_RecPostedDelivery."Clean Containing" := G_RecDelivery."Clean Containing";
+
+            IF G_RecDelivery."Posted Delivery No." <> '' THEN
+              G_RecPostedDelivery."No." := G_RecDelivery."Posted Delivery No."
+            ELSE BEGIN
+              IF (G_CMCSetup."Collection Posted Delivery Nos" <> G_CMCSetup."Collection Delivery Nos.") THEN BEGIN
+                G_RecPostedDelivery."No." := G_NoSeriesMgt.GetNextNo(G_CMCSetup."Collection Posted Delivery Nos", WORKDATE, TRUE);
+                G_RecDelivery."Posted Delivery No." := G_RecPostedDelivery."No.";
+                G_RecDelivery.MODIFY;
+              END;
+            END;
+            G_RecPostedDelivery.INSERT;
+
+            IF G_RecDelivery."Disinsectization Output" = G_RecDelivery."Disinsectization Output"::Output THEN BEGIN
+              G_CMCSetup.GET;
+              IF G_CMCSetup."Desinc. Intervent Auto On Shpt" THEN BEGIN
+                IntervationType_L.SETRANGE(IntervationType_L.Disinsectization,TRUE);
+                IntervationType_L.FINDFIRST;
+                Inervention_L.INIT;
+                Inervention_L."Location Code" := G_RecDelivery."Location Code";
+                Inervention_L."Campaign No."  := G_RecDelivery."Campaign No.";
+                Inervention_L."Intervention Date" := G_RecDelivery."Posting Date";
+                Inervention_L."Intervention Time" := TIME;
+                Inervention_L."Intervention Code" := IntervationType_L.Code;
+                Inervention_L."Cell No." := G_RecDelivery."Cell Code";
+                CellsLocation_L.GET(G_RecDelivery."Location Code",G_RecDelivery."Cell Code");
+                Inervention_L."Lot No." := CellsLocation_L."Active Lot No.";
+                Inervention_L."Disinsectization Code"   := G_RecDelivery."Disinsectization Code Output";
+                Inervention_L."Disinsectization Dosage" := G_RecDelivery."Disinsectization Dosage Output";
+                Inervention_L."Disinsectization Period" := G_RecDelivery."Disinsectization Period Output";
+                Inervention_L."Source Document No." :=  G_RecPostedDelivery."No.";
+                Inervention_L."Pump Code" := G_RecDelivery."Pump Code";
+                Inervention_L.Quantity := G_RecDelivery."Net Weight";
+                IntervJnlPostLine_L.RUN(Inervention_L);
+              END;
+            END;
+
+            G_RecPostedDelivery."Weighing No." := cduWeighingManagement_L.PostWeighingRec(G_RecPostedDelivery."Weighing No.",
+              G_RecPostedDelivery."No.");
+
+            G_RecPostedDelivery.VALIDATE(Status,G_RecPostedDelivery.Status :: Released);
+            G_RecPostedDelivery."User Id" := USERID;
+            G_RecPostedDelivery."Creation Date":= CREATEDATETIME(WORKDATE,TIME);
+            // --> 20150427-CER98-TER01.01.00-058-RMZ01
+            // Before
+            //G_RecPostedDelivery.Quantity:="Net Weight";
+            // After
+            G_RecPostedDelivery.Quantity := "Standard Weight";
+            // <-- 20150427-CER98-TER01.01.00-058-RMZ01
+            // --> 20150406-CER98-TER01.01.00-058-RMZ01
+            // Before
+            //G_RecPostedDelivery."Standard Weight":="Net Weight";
+            // After
+            G_RecPostedDelivery."Standard Weight" := G_RecDelivery."Standard Weight";
+            G_RecPostedDelivery."Weight Standards Already" := G_RecDelivery."Weight Standards Already";
+            // <-- 20150406-CER98-TER01.01.00-058-RMZ01
+
+            IF "Delivery Type" = "Delivery Type"::Transfert THEN
+              G_RecPostedDelivery."Standard Weight" := "Standard Weight";
+
+            // --> 20150430-GEN15/001-CMC02.02.00-2944-FBE01
+            // --> 20160513-Gen15/001-ADV01.01.00-2813-FBE
+            //IF ("Delivery Type" = "Delivery Type"::Delivery) AND "Shared Silo" AND (G_RecDelivery."IC Partner Code" <> '') THEN
+            IF ("Delivery Type" = "Delivery Type"::Delivery) AND "On Behalf Of" AND (G_RecDelivery."IC Partner Code" <> '') THEN
+            // <-- 20160513-Gen15/001-ADV01.01.00-2813-FBE
+              G_RecPostedDelivery."Source Standard Weight" := G_RecDelivery."Source Standard Weight";
+            // <-- 20150430-GEN15/001-CMC02.02.00-2944-FBE01
+            G_RecPostedDelivery.VALIDATE("Species Code");
+            G_RecPostedDelivery."Customer Delivery Date":="Sales Date";
+            IF NOT "Independent Transfer" THEN
+              G_RecPostedDelivery.VALIDATE("Transfer-to Code","Transfer-to Code");
+            G_RecPostedDelivery.VALIDATE("Shipping Unit Price", L_recSalesContract."Shipping Unit Price");
+            G_RecPostedDelivery.VALIDATE("Shipping Price Include", L_recSalesContract."Shipping Price Include");
+            IF (L_recSalesContract."Invoice Type" = L_recSalesContract."Invoice Type"::PrePayment) AND
+              (L_recSalesContract."Oilseed Prepayment" = 0)
+            THEN
+              G_RecPostedDelivery."Invoiced Pre-payment" := TRUE;
+
+            G_RecPostedDelivery."Weight out" := G_RecDelivery."Net Weight";
+            G_RecPostedDelivery.Consignment := G_RecDelivery.Consignment;
+            G_RecPostedDelivery.Application := G_RecDelivery.Application;
+            G_RecPostedDelivery.MODIFY;
+
+            // -------------------------------------------------------------------------------
+            // VALIDATION MOUVEMENT DE STOCK
+            // -------------------------------------------------------------------------------
+            IF GUIALLOWED THEN BEGIN
+              L_Iter += 1;
+              L_wDialog.UPDATE(1, Text8053003);
+              L_wDialog.UPDATE(2, ROUND(L_Iter / L_TotalIter * 10000,1));
+            END;
+
+            IF NOT "Independent Transfer" AND NOT "Ownership Transfer" THEN BEGIN
+              // --> 20150708-WI00-ADV01.01.00-1919-DRN01
+              //BEFORE
+              {
+              //  Si bon sortie en flux IC entrant on ne controle pas le stock sur le silo partag', cela a 't' fait dans la soci't' de gestion
+              IF (NOT ( ("Delivery Type" = "Delivery Type"::Delivery) AND "Shared Silo" AND
+                       ("IC Direction" = "IC Direction"::Incoming) AND (G_RecDelivery."IC Partner Code" <> '')))
+              // --> 20150624-CER164-TER01.01.00-423-BSI01
+                 AND (NOT (("Delivery Type" = "Delivery Type"::Resumption) AND (G_CMCSetup."Don't Propose Boni When Return")))
+              // <-- 20150624-CER164-TER01.01.00-423-BSI01
+              THEN
+                CheckCellInventoryAvailable(G_RecPostedDelivery);
+              }
+              //AFTER
+              IF BonisConfirmed_G THEN
+                PostBonis(G_RecPostedDelivery);
+              // < -- 20150708-WI00-ADV01.01.00-1919-DRN01
+
+              IF "Delivery Type"="Delivery Type"::Transfert THEN BEGIN
+                G_RecPostedDelivery.VALIDATE("Item Ledger Entry No.",
+                  CreateItemJnlLinesForTransfer(G_RecPostedDelivery,G_RecPostedDelivery."Posting Date")+1);
+
+                CreateItemWeightEntry(G_RecPostedDelivery."Item Ledger Entry No."-1,-G_RecPostedDelivery."Net Weight");
+
+                G_RecPostedDelivery.MODIFY;
+                CreateReceptDoc(G_RecPostedDelivery);
+              END ELSE BEGIN
+                // --> 20160513-Gen15/001-ADV01.01.00-2813-FBE
+                IF "On Behalf Of" AND ("IC Direction" = "IC Direction"::Incoming) AND NOT "Shared Silo" THEN
+                  BooOnBehalfOfIncoming_G := TRUE;
+                // --> 20160513-Gen15/001-ADV01.01.00-2813-FBE
+                G_RecPostedDelivery.VALIDATE("Item Ledger Entry No.",
+                // --> 20150809-CER35/001-ADV01.01.00-1987-SDE01
+                  //CreateItemJnlLine(G_RecPostedDelivery,G_RecPostedDelivery."Posting Date",FALSE,''));
+                  CreateItemJnlLine(G_RecPostedDelivery,G_RecPostedDelivery."Posting Date",FALSE,"Use Lot No."));
+                // <-- 20150809-CER35/001-ADV01.01.00-1987-SDE01
+                G_RecPostedDelivery.MODIFY;
+                // --> 20160513-Gen15/001-ADV01.01.00-2813-FBE
+                IF "On Behalf Of" AND ("IC Direction" = "IC Direction"::Outgoing) AND NOT "Shared Silo" THEN BEGIN
+                  BooOnBehalfOfOutgoing_G := TRUE;
+                  CreateItemJnlLine(G_RecPostedDelivery,G_RecPostedDelivery."Posting Date",FALSE,"Use Lot No.");
+                END;
+                BooOnBehalfOfOutgoing_G := FALSE;
+                BooOnBehalfOfIncoming_G := FALSE;
+                // <-- 20160513-Gen15/001-ADV01.01.00-2813-FBE
+                CreateItemWeightEntry(G_RecPostedDelivery."Item Ledger Entry No.",-G_RecPostedDelivery."Net Weight");
+
+            // --> 20150730-CER35/001-ADV01.01.00-1987-SDE01
+                  // si changeement de lot on annule le mouvement
+                  RecItemLedgerEntry_L.GET(G_RecPostedDelivery."Item Ledger Entry No.");
+                  CellsLocation_L.GET(G_RecPostedDelivery."Location Code",G_RecPostedDelivery."Cell Code");
+                  IF CellsLocation_L."Active Lot No." <> G_RecPostedDelivery."Lot No." THEN
+            // --> 20150915-CER35/001-ADV01.01.00-845-SDE01
+                    //CreateGapLedgerEntry(G_RecPostedDelivery,G_RecPostedDelivery."Posting Date",TRUE,
+                      CreateGapLedgerEntry(G_RecPostedDelivery,RecItemLedgerEntry_L."Posting Date",TRUE,
+            // <-- 20150915-CER35/001-ADV01.01.00-845-SDE01
+                      G_RecPostedDelivery."Lot No.",-RecItemLedgerEntry_L.Quantity);
+
+            // <-- 20150730-CER35/001-ADV01.01.00-1987-SDE01
+              END;
+            END ELSE BEGIN
+              //Transfert de propri't'
+              IF "Ownership Transfer" THEN BEGIN
+                IF (G_RecDelivery."IC Direction" = G_RecDelivery."IC Direction"::Outgoing) THEN BEGIN
+                  FOR i:= 1 TO 3 DO BEGIN
+                    G_RecPostedDelivery."Item Ledger Entry No." := PostItemJnlLinesForOwnShipTrsf(G_RecPostedDelivery,i);
+                  END;
+                END ELSE BEGIN
+                  FOR i:= 1 TO 2 DO BEGIN
+                    G_RecPostedDelivery."Item Ledger Entry No." := PostItemJnlLinesForOwnShipTrsf(G_RecPostedDelivery,i);
+                  END;
+                END;
+                G_RecPostedDelivery.MODIFY;
+              END ELSE
+                FOR i := 1 TO 2 DO BEGIN
+                  // Ne pas g'n'rer de mvt dans le TRANSIT quand il s'agit d'un envoi transfert IC
+                  // L''criture sur le transit est g'n'r'e dans l'it'ration 2
+                  // G'n'rer le mvt dans le magasin de compensation quand il s'agit d'un envoi transfert IC pour r'gule des apports
+                  // pour le compte de
+                  IF (i = 1) OR (i = 2) AND
+                    (NOT (G_RecDelivery."Send IC Document" AND (G_RecDelivery."IC Direction" = G_RecDelivery."IC Direction"::Outgoing)) OR
+                    (G_RecDelivery."Send IC Document" AND G_RecDelivery."On Behalf Of Adjustment" AND
+                    // Ne pas g'n'rer le mvt dans le magasin de compensation dans la soci't' de gestion du silo partag' si la r'gule
+                    // se fait entre 2 soci't's utilisatrices
+                    (G_RecDelivery."IC Direction" = G_RecDelivery."IC Direction"::Outgoing) AND (G_RecDelivery."IC Partner-From Code" = '')))
+                  THEN BEGIN
+                    IF i = 1 THEN
+                    G_RecPostedDelivery."Item Ledger Entry No." := PostItemJnlLinesForTransferInd(G_RecPostedDelivery,i,0)
+                    ELSE
+                    NumSeqTrans_L:=PostItemJnlLinesForTransferInd(G_RecPostedDelivery,i,0);
+                    G_RecPostedDelivery.MODIFY;
+
+                    IF i = 1 THEN
+                      CreateItemWeightEntry(G_RecPostedDelivery."Item Ledger Entry No.",-G_RecPostedDelivery."Net Weight");
+
+            // --> 20150820-CER35/001-ADV01.01.00-1987-SDE01
+                  // si changeement de lot on annule le mouvement
+                  IF i = 1 THEN BEGIN
+                   RecItemLedgerEntry_L.GET(G_RecPostedDelivery."Item Ledger Entry No.");
+                   CellsLocation_L.GET(G_RecPostedDelivery."Location Code",G_RecPostedDelivery."Cell Code");
+                   IF CellsLocation_L."Active Lot No." <> G_RecPostedDelivery."Lot No." THEN
+            // --> 20150915-CER35/001-ADV01.01.00-845-SDE01
+                    //CreateGapLedgerEntry(G_RecPostedDelivery,G_RecPostedDelivery."Posting Date",TRUE,
+                      CreateGapLedgerEntry(G_RecPostedDelivery,RecItemLedgerEntry_L."Posting Date",TRUE,
+            // <-- 20150915-CER35/001-ADV01.01.00-845-SDE01
+
+
+                      G_RecPostedDelivery."Lot No.",-RecItemLedgerEntry_L.Quantity);
+                 END;
+            // <-- 20150820-CER35/001-ADV01.01.00-1987-SDE01
+
+                  END;
+                END;
+            END;
+
+            // --> 20141210-APP27-TER01.01.00-BSI01
+            IF G_RecDelivery."Charter No." = '' THEN
+            // <-- 20141210-APP27-TER01.01.00-BSI01
+              IF NOT "Ownership Transfer" THEN
+                IF ShippingOrder_L.GET(G_RecPostedDelivery."Shipping Order No.") THEN BEGIN
+                  IF (ShippingOrder_L."Ship. Purchase Order No." <>'') AND (ShippingOrder_L."Ship. Purchase Order Line No."<>0) THEN BEGIN
+                    TransportPurchLine_L.GET(TransportPurchLine_L."Document Type"::Order,ShippingOrder_L."Ship. Purchase Order No.",
+                      ShippingOrder_L."Ship. Purchase Order Line No.");
+                    CLEAR(PostPurchCu_L);
+                    CASE ShippingOrder_L."Purchase Invoice Type" OF
+                      ShippingOrder_L."Purchase Invoice Type"::"Per Shipping (Qty=1)" :
+                        BEGIN
+                          PostPurchCu_L.PostTransportReceipt(TransportPurchLine_L,1,1,ShippingOrder_L."No."+'/'+FORMAT(
+                            ShippingOrder_L."Number of Achieved Units"+1));
+                        END;
+                      ShippingOrder_L."Purchase Invoice Type"::"Per Quantity" :
+                        BEGIN
+                          PostPurchCu_L.PostTransportReceipt(TransportPurchLine_L,G_RecPostedDelivery."Net Weight",
+                            G_RecPostedDelivery."Net Weight",ShippingOrder_L."No."+'/'+FORMAT(ShippingOrder_L."Number of Achieved Units"+1));
+                        END;
+                    END;
+                  END;
+                  ShippingOrder_L."Number of Achieved Units" +=1;
+                  ShippingOrder_L.MODIFY;
+                END;
+
+            IF GUIALLOWED THEN BEGIN
+              L_Iter += 1;
+              L_wDialog.UPDATE(1, Text8053004);
+              L_wDialog.UPDATE(2, ROUND(L_Iter / L_TotalIter * 10000,1));
+            END;
+
+            CopyComments(G_RecDelivery.TABLENAME,G_RecDelivery."No.",G_RecPostedDelivery.TABLENAME,G_RecPostedDelivery."No.");
+            // --> 20190513-WI00-ADV01.01.00-3358-MRU01
+            G_RecPostedDelivery.COPYLINKS(G_RecDelivery);
+            // <-- 20190513-WI00-ADV01.01.00-3358-MRU01
+            CopyLastLoadings(G_RecDelivery,G_RecPostedDelivery."No.");
+            CopyAnalysis(G_RecDelivery,G_RecPostedDelivery."No.");
+
+            // -------------------------------------------------------------------------------
+            // Mise . jour STATUT du Contrat
+            // -------------------------------------------------------------------------------
+
+            IF "Delivery Type" <> "Delivery Type"::Transfert THEN BEGIN
+              // --> 20160513-GEN15/001-ADV01.01.00-2813-FBE
+              IcFlux_L := ("Delivery Type" = "Delivery Type"::Delivery) AND "On Behalf Of" AND "Send IC Document" AND
+                                      ("IC Direction" = "IC Direction"::Outgoing) AND (G_RecDelivery."IC Partner Code" <> '');
+              //SharedSiloAndIcFlux_L := ("Delivery Type" = "Delivery Type"::Delivery) AND "Shared Silo" AND "Send IC Document" AND
+              //                        ("IC Direction" = "IC Direction"::Outgoing) AND (G_RecDelivery."IC Partner Code" <> '');
+              //IF NOT "Without Sales Contract" AND NOT SharedSiloAndIcFlux_L THEN BEGIN
+              // <-- 20160513-GEN15/001-ADV01.01.00-2813-FBE
+              IF NOT "Without Sales Contract" AND NOT IcFlux_L THEN BEGIN
+                L_recSalesContract.GET(G_RecDelivery."Contract No.");
+                L_recSalesContract.CALCFIELDS(L_recSalesContract."Delivered Quantity");
+                // --> 20140910-CER24-TER01.01.00-1550-SCF01
+            //IF L_recSalesContract."Delivered Quantity" + G_CMCSetup."Max Sales Contract Tonnage" > L_recSalesContract.Quantity THEN BEGIN
+                IF (L_recSalesContract."Delivered Quantity" + G_CMCSetup."Max Sales Contract Tonnage" > L_recSalesContract.Quantity) AND
+                  NOT G_CMCSetup."Disable Contract Aut.Closure" THEN BEGIN
+                // <-- 20140910-CER24-TER01.01.00-1550-SCF01
+                  L_recSalesContract.Status := L_recSalesContract.Status::Closed;
+                  L_recSalesContract.MODIFY;
+                END;
+              END;
+            END;
+            G_RecPostedDeliveryNo := G_RecPostedDelivery."No.";
+
+            // Envoi du flux IC de livraison collecte
+            IF G_RecDelivery."Send IC Document" AND (G_RecDelivery."IC Direction" = G_RecDelivery."IC Direction"::Outgoing)
+            THEN BEGIN
+              CduICInOutboxMgt_L.CreateOutboxDeliveryDocAction(G_RecPostedDelivery,DocActionType_G::Create);
+              G_RecPostedDelivery."IC Status" := G_RecPostedDelivery."IC Status"::Sent;
+              G_RecPostedDelivery.MODIFY;
+            END;
+
+            // --> 20160615-GEN15/001-ADV01.01.00-3092-FBE
+            IF NOT (G_RecDelivery."On Behalf Of Adjustment" AND G_RecDelivery."Ownership Transfer"
+                    AND (G_RecDelivery."IC Direction" = G_RecDelivery."IC Direction"::Incoming) ) THEN
+            // <-- 20160615-GEN15/001-ADV01.01.00-3092-FBE
+            // --> 20141022-APP27-TER01.01.00-BSI01
+            IF G_CMCSetup."Calc Transport Prices : Yes/No" THEN BEGIN
+              // --> 20150617-APP27-TER01.01.00-BSI01
+              G_RecPostedDelivery."Transport Order No." := CUCharterTransMgmt_G.CreateTransportPOForDelivery(G_RecDelivery,
+                                                                                                             G_RecPostedDelivery."No.");
+              G_RecPostedDelivery.MODIFY;
+              // <-- 20150617-APP27-TER01.01.00-BSI01
+            END;
+            // <-- 20141022-APP27-TER01.01.00-BSI01
+
+            // --> 20150325-APP27-TER01.01.00-249-BSI01
+            // --> 20150626-APP27-TER01.01.00-1748-DRN01
+            //BEFORE
+            //IF (G_RecDelivery."Linked Receipt No." = '') AND (G_RecDelivery."Shipping Order No." <> '') THEN BEGIN
+            //AFTER
+            IF (G_RecDelivery."Linked Receipt No." = '') AND (G_RecDelivery."Shipping Order No." <> '') AND
+               (G_RecDelivery."Charter No." <> '')
+            THEN BEGIN
+            // <-- 20150626-APP27-TER01.01.00-1748-DRN01
+              RecCharterLine_L.GET(G_RecDelivery."Shipping Order No.");
+              // --> 20150401-APP27-TER01.01.00-233-BSI01
+              RecCharterLine_L.VALIDATE("Realized Quantity",RecCharterLine_L."Realized Quantity" + G_RecDelivery."Net Weight");
+              // <-- 20150401-APP27-TER01.01.00-233-BSI01
+              RecCharterLine_L."Number of Achieved Units" += 1;
+              RecCharterLine_L."Remaining Nbr Of Shipping Type" := 0;
+              RecCharterLine_L.Status := RecCharterLine_L.Status::Released;
+              RecCharterLine_L.MODIFY;
+            END;
+            // <-- 20150325-APP27-TER01.01.00-249-BSI01
+
+            // --> 20141118-APP27-TER01.01.00-BSI01
+            IF G_RecDelivery."Linked Receipt No." <> '' THEN
+              IF CellsLocation_L.GET(G_RecPostedDelivery."Location Code",G_RecPostedDelivery."Cell Code") THEN BEGIN
+                CLEAR(PostZeroPoint_L);
+                PostZeroPoint_L.SetSourceDocNo(G_RecPostedDelivery."No.");
+                PostZeroPoint_L.GetParameters(G_RecPostedDelivery."Posting Date",'','','',FALSE,0);
+                PostZeroPoint_L.RUN(CellsLocation_L);
+              END;
+            // <-- 20141118-APP27-TER01.01.00-BSI01
+
+            G_RecDelivery.DELETE;
+            G_RecDelivery.DeleteComments;
+            G_RecDelivery.DeleteLastLoading;
+            G_RecDelivery.DeleteAnalyse;
+            cduWeighingManagement_L.DeleteWeighingRec(G_RecDelivery."Weighing No.");
+            G_RecDelivery.DeleteDistributionCell(Rec);
+
+            IF NOT "Ownership Transfer" THEN BEGIN
+              IF CellsLocation_L.GET(G_RecPostedDelivery."Location Code",G_RecPostedDelivery."Cell Code") AND
+                CellsLocation_L."Distribution Cell"
+              THEN BEGIN
+                CLEAR(PostZeroPoint_L);
+                PostZeroPoint_L.SetSourceDocNo(G_RecPostedDelivery."No.");
+                PostZeroPoint_L.GetParameters(G_RecPostedDelivery."Posting Date",'','','',FALSE,0);
+                PostZeroPoint_L.RUN(CellsLocation_L);
+              END;
+            END;
+            // --> 20150918-GEN15/001-TER01.01.00-2041-FBE01
+            // on recalcule le poids aux normes dans la soci't' de destination
+            IF (G_RecPostedDelivery."Delivery Type" = G_RecPostedDelivery."Delivery Type"::Delivery) AND
+              (G_RecDelivery."IC Partner Code" <> '') AND (G_RecPostedDelivery."IC Direction" = G_RecPostedDelivery."IC Direction"::Incoming)
+              AND (G_RecPostedDelivery."IC Status" = G_RecPostedDelivery."IC Status"::New)
+            THEN
+              CduICInOutboxMgt_L.ReCalcDeliveryWeight(G_RecPostedDelivery."No.",G_RecPostedDelivery."IC Partner Code",
+                  G_RecPostedDelivery."Delivery Type");
+            // <-- 20150918-GEN15/001-TER01.01.00-2041-FBE01
+
+            IF GUIALLOWED THEN
+              L_wDialog.CLOSE;
+
+            // --> 20150617-APP27-TER01.01.00-BSI01
+            COMMIT;
+            IF G_RecPostedDelivery."Transport Order No." <> '' THEN
+              CUCharterTransMgmt_G.PostTransportPurchOrder(G_RecPostedDelivery."Transport Order No.");
+            // <-- 20150617-APP27-TER01.01.00-BSI01
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      G_GeneralLedgerSetup@8053000 : Record 98;
+      G_CMCSetup@8053001 : Record 8052982;
+      G_RecDelivery@8053002 : Record 8053013;
+      G_RecPostedDelivery@8053003 : Record 8053014;
+      G_RecItemJnlLine@8053004 : Record 83;
+      G_TempJnlLineDim@8053005 : TEMPORARY Record 356;
+      G_PostItemJnlLine@8053006 : Codeunit 22;
+      G_NoSeriesMgt@8053007 : Codeunit 396;
+      G_RecPostedDeliveryNo@8053008 : Code[20];
+      Text8053000@8053021 : TextConst 'FRA=Le mode de transport  %1 ne permet pas de transporter plus que %2.;ENG=The tranport method %1 does not allow to transport more than %2 %3';
+      Text8053001@8053009 : TextConst 'ENU=Receipt Validation;FRA=Validation livraison';
+      Text8053003@8053010 : TextConst 'ENU=Inventory Entry;FRA=Mouvement de stock';
+      Text8053004@8053011 : TextConst 'ENU=Delivery Finalisation;FRA=Finalisation livraison';
+      Text8053005@8053012 : TextConst 'ENU=Receipt Finalisation;FRA=Voulez-vous livrer votre client . partir du magasin %1 ?';
+      Text8053006@8053013 : TextConst 'ENU=The customer delivery has already been posted.;FRA=La livraison client a d'j. 't' valid'e.';
+      G_CMCDimension@8053014 : Codeunit 8053004;
+      Text8053007@8053015 : TextConst 'ENU=L''article %1 ne figure pas en stock.;FRA=L''article %1 ne figure pas en stock.';
+      Text8053010@8053017 : TextConst 'ENU=Bonis sur transfert;FRA=Bonis sur transfert';
+      Text8053011@8053019 : TextConst 'ENU=L''article %1 ne figure pas en stock dans la cellule %2.\Il exsite des cellules dans votre magasin avec du stock suffisant.\Voulez-vous changer de cellule ?;FRA=L''article %1 ne figure pas en stock dans la cellule %2.\Il exsite des cellules dans votre magasin avec du stock suffisant.\Voulez-vous changer de cellule ?';
+      Text8053020@8053020 : TextConst 'ENU=Would you accept a zero point on the cell %1?;FRA=Voulez vous valider un point z'ro sur la cellule %1?';
+      AdSetupMan_G@8053023 : Codeunit 8061290;
+      DocActionType_G@8053022 : 'Create,Update,Delete,Cancel,Reconcile';
+      HideValidationDialog_G@8053024 : Boolean;
+      Confirmed_G@8053026 : Boolean;
+      IsCallFromPostICTransfer_G@8053027 : Boolean;
+      Text8053021@8053028 : TextConst 'ENU=You are not allowed to cancel the transfer as it was initiated by the partner %1.;FRA=Vous n''^tes pas autoris' . annuler le transfert car il a 't' initi' par le partenaire %1.';
+      cduCMCCVLedgerMgt_G@8053025 : Codeunit 8053377;
+      RecContact_G@8053029 : Record 5050;
+      CUCharterTransMgmt_G@1000000000 : Codeunit 60001;
+      Text8053022@8053030 : TextConst 'FRA=Ajust. 'cart poids rendu %1';
+      Text60001@60000 : TextConst 'ENU=%1 value must be completed.;FRA=La valeur de %1 doit ^tre renseign'e.';
+      BonisConfirmed_G@1000000001 : Boolean;
+      ForceSharedSilo_G@60001 : Boolean;
+      BooCancelOnBehalfOf_G@60002 : Boolean;
+      MovementType_G@60004 : ' ,E01,E02,E03,E04,E05,S03,S04,S05,S10,S20,T10,T20,T30,T11,S11,T21,T22';
+      WeightToPost_G@60003 : Decimal;
+      Text60002@60005 : TextConst 'ENU=Distribution celle must be completed.;FRA=Vous devez renseigner la distribution cellules.';
+      ForceCancelOnBehalfOf_G@60010 : Boolean;
+      BooOnBehalfOfOutgoing_G@60007 : Boolean;
+      BooOnBehalfOfIncoming_G@60006 : Boolean;
+      NotSharedSilo_G@60009 : Boolean;
+      OnBehalfOf_G@60008 : Boolean;
+      "<-- SP3484"@1000000003 : Integer;
+      Location_G@1000000002 : Record 14;
+      "-->"@1000000004 : Integer;
+
+    PROCEDURE CreateItemJnlLine@8053001(P_RecPostedDelivery@8053000 : Record 8053014;P_PostingDate@8053001 : Date;TreatmentMvt_P@8053008 : Boolean;LotNo_P@8053009 : Code[20]) : Integer;
+    VAR
+      L_recCustomer@8053002 : Record 18;
+      ShippingOrder_L@8053007 : Record 8053265;
+      PurchLine_L@8053006 : Record 39;
+      TransportPurchLine_L@8053005 : Record 39;
+      TransportPurchHeader_L@8053004 : Record 38;
+      PostPurchCu_L@8053003 : Codeunit 90;
+      SharedSiloAndIcFluxOut_L@1000000000 : Boolean;
+      SharedSiloAndIcFluxIn_L@1000000001 : Boolean;
+      RecIcPartner_L@60001 : Record 413;
+      RecCellLocation_L@60000 : Record 8053031;
+      IcFluxOut_L@60002 : Boolean;
+      IcFluxIn_L@60003 : Boolean;
+    BEGIN
+      G_GeneralLedgerSetup.GET;
+      //--------------------------------------------------------------------------------------
+      // Cr'ation ( SANS INSERT ) d'une Ligne Feuille Article
+      //--------------------------------------------------------------------------------------
+
+      SharedSiloAndIcFluxOut_L := P_RecPostedDelivery."Shared Silo" AND P_RecPostedDelivery."Send IC Document" AND
+              (P_RecPostedDelivery."IC Direction" = P_RecPostedDelivery."IC Direction"::Outgoing) AND
+              (P_RecPostedDelivery."IC Partner Code" <> '');
+      SharedSiloAndIcFluxIn_L := (P_RecPostedDelivery."Delivery Type" =P_RecPostedDelivery."Delivery Type"::Delivery) AND
+                  (P_RecPostedDelivery."IC Status" = P_RecPostedDelivery."IC Status"::New) AND
+                  (P_RecPostedDelivery."IC Direction" = P_RecPostedDelivery."IC Direction"::Incoming) AND
+                  (P_RecPostedDelivery."IC Partner Code" <> '');
+      IcFluxOut_L := NOT P_RecPostedDelivery."Shared Silo" AND P_RecPostedDelivery."On Behalf Of"
+                  AND P_RecPostedDelivery."Send IC Document" AND
+                  (P_RecPostedDelivery."IC Direction" = P_RecPostedDelivery."IC Direction"::Outgoing) AND
+                  (P_RecPostedDelivery."IC Partner Code" <> '');
+      IcFluxIn_L := NOT P_RecPostedDelivery."Shared Silo" AND P_RecPostedDelivery."On Behalf Of" AND
+                  (P_RecPostedDelivery."IC Direction" = P_RecPostedDelivery."IC Direction"::Incoming) AND
+                  (P_RecPostedDelivery."IC Partner Code" <> '');
+
+      G_RecItemJnlLine.INIT;
+      G_RecItemJnlLine."Movement Type":=G_RecItemJnlLine."Movement Type"::S10;
+
+      IF (RecContact_G.GET(cduCMCCVLedgerMgt_G.GetContNoFromCustVentNo(P_RecPostedDelivery."Customer No.",0)))
+        AND (RecContact_G."Contact Type"=RecContact_G."Contact Type"::Farm)
+        // --> 20150506-CER19-CMC02.02.00-2977-SDE01
+        AND (RecContact_G."Intra Group"=FALSE)
+        // <-- 20150506-CER19-CMC02.02.00-2977-SDE01
+      THEN
+        G_RecItemJnlLine."Movement Type":=G_RecItemJnlLine."Movement Type"::S11;
+
+      G_RecItemJnlLine."Line No." := GetNextItemJnlLineNo(G_RecItemJnlLine);
+      G_RecItemJnlLine.VALIDATE("Item No.",P_RecPostedDelivery."Item No.");
+      G_RecItemJnlLine.VALIDATE("Posting Date",P_PostingDate);
+      G_RecItemJnlLine.VALIDATE("Entry Type",G_RecItemJnlLine."Entry Type" :: Sale);
+      G_RecItemJnlLine.VALIDATE("Document No.",P_RecPostedDelivery."No.");
+      IF P_RecPostedDelivery."Transfer-to Code" = '' THEN
+        G_RecItemJnlLine.VALIDATE("Location Code",P_RecPostedDelivery."Location Code")
+      ELSE
+        G_RecItemJnlLine.VALIDATE("Location Code",P_RecPostedDelivery."Transfer-to Code");
+        // --> 20160513-Gen15/001-ADV01.01.00-2813-FBE
+      IF BooOnBehalfOfOutgoing_G THEN BEGIN
+        InitValuesOnBehalfOf(P_RecPostedDelivery."IC Partner Code",RecCellLocation_L,RecIcPartner_L);
+        G_RecItemJnlLine."Actual Location Code" := P_RecPostedDelivery."Location Code";
+        G_RecItemJnlLine.VALIDATE("Location Code", RecIcPartner_L."Set Off Location Code");
+      END;
+      IF BooOnBehalfOfIncoming_G THEN BEGIN
+        InitValuesOnBehalfOf(P_RecPostedDelivery."IC Partner Code",RecCellLocation_L,RecIcPartner_L);
+        G_RecItemJnlLine."Actual Location Code" := P_RecPostedDelivery."Actual Location Code";
+        G_RecItemJnlLine.VALIDATE("Location Code", RecIcPartner_L."Set Off Location Code");
+      END;
+      // <-- 20160513-Gen15/001-ADV01.01.00-2813-FBE
+      // --> 20160513-Gen15/001-ADV01.01.00-2813-NED
+      IF IcFluxIn_L THEN
+        G_RecItemJnlLine."Actual Location Code" := P_RecPostedDelivery."Actual Location Code";
+      // <-- 20160513-Gen15/001-ADV01.01.00-2813-NED
+      // --> 20150710-WI00-TER01.01.00-1834-FBE01
+      IF WeightToPost_G <> 0 THEN
+        G_RecItemJnlLine.VALIDATE(Quantity,WeightToPost_G)
+      ELSE
+      // <-- 20150710-WI00-TER01.01.00-1834-FBE01
+        // --> 20160513-Gen15/001-ADV01.01.00-2813-FBE
+        IF BooOnBehalfOfOutgoing_G THEN
+          G_RecItemJnlLine.VALIDATE(Quantity,-P_RecPostedDelivery."Standard Weight")
+        ELSE
+        // <-- 20160513-Gen15/001-ADV01.01.00-2813-FBE
+      G_RecItemJnlLine.VALIDATE(Quantity,P_RecPostedDelivery."Standard Weight");
+      G_RecItemJnlLine.VALIDATE("Invoiced Quantity",0);
+      G_RecItemJnlLine.VALIDATE("Invoiced Qty. (Base)",0);
+      G_RecItemJnlLine.VALIDATE("Unit Amount",P_RecPostedDelivery."Unit Price");
+      G_RecItemJnlLine.VALIDATE("Source Type",G_RecItemJnlLine."Source Type"::Customer);
+      G_RecItemJnlLine.VALIDATE("Source No.",P_RecPostedDelivery."Customer No.");
+      // --> 20160513-Gen15/001-ADV01.01.00-2813-FBE
+      //IF SharedSiloAndIcFluxOut_L THEN BEGIN
+      IF SharedSiloAndIcFluxOut_L OR IcFluxOut_L  THEN BEGIN
+      // <-- 20160513-Gen15/001-ADV01.01.00-2813-FBE
+        G_RecItemJnlLine."Sales Contract No." := P_RecPostedDelivery."Contract No." ;
+        IF NOT IcFluxOut_L THEN
+        G_RecItemJnlLine."IC Partner Code" := P_RecPostedDelivery."IC Partner Code";
+      END ELSE
+        G_RecItemJnlLine.VALIDATE("Sales Contract No.", P_RecPostedDelivery."Contract No.");
+      // --> 20160513-Gen15/001-ADV01.01.00-2813-FBE
+      IF BooOnBehalfOfOutgoing_G OR BooOnBehalfOfIncoming_G THEN
+        G_RecItemJnlLine.VALIDATE("Cell Code", RecCellLocation_L."Cell Code")
+      ELSE
+      // <-- 20160513-Gen15/001-ADV01.01.00-2813-FBE
+      G_RecItemJnlLine.VALIDATE("Cell Code",P_RecPostedDelivery."Cell Code");
+      G_RecItemJnlLine.VALIDATE("Shortcut Dimension 1 Code",P_RecPostedDelivery."Global Dimension 1 Code");
+      G_RecItemJnlLine.VALIDATE("Shortcut Dimension 2 Code",P_RecPostedDelivery."Global Dimension 2 Code");
+
+      L_recCustomer.GET(P_RecPostedDelivery."Customer No.");
+      G_RecItemJnlLine.VALIDATE("Source Posting Group",L_recCustomer."Customer Posting Group");
+      G_RecItemJnlLine.VALIDATE("Gen. Bus. Posting Group",L_recCustomer."Gen. Bus. Posting Group");
+
+      G_RecItemJnlLine."Movement Type":=G_RecItemJnlLine."Movement Type"::S10;
+      IF (RecContact_G.GET(cduCMCCVLedgerMgt_G.GetContNoFromCustVentNo(P_RecPostedDelivery."Customer No.",0)))
+        AND (RecContact_G."Contact Type"=RecContact_G."Contact Type"::Farm)
+        // --> 20150506-CER19-CMC02.02.00-SDE01
+        AND (RecContact_G."Intra Group"=FALSE)
+        // <-- 20150506-CER19-CMC02.02.00-2977-SDE01
+      THEN
+        G_RecItemJnlLine."Movement Type":=G_RecItemJnlLine."Movement Type"::S11;
+
+
+      G_RecItemJnlLine."Stock Type":=G_RecItemJnlLine."Stock Type"::Company;
+      G_RecItemJnlLine.VALIDATE("Campaign No.",P_RecPostedDelivery."Campaign No.");
+
+      G_RecItemJnlLine."Transaction Type" := P_RecPostedDelivery."Transaction Type";
+      G_RecItemJnlLine."Transport Method" := P_RecPostedDelivery."Transport Method";
+      G_RecItemJnlLine."Entry/Exit Point" := P_RecPostedDelivery."Exit Point";
+      G_RecItemJnlLine.Area := P_RecPostedDelivery.Area;
+      G_RecItemJnlLine."Transaction Specification" := P_RecPostedDelivery."Transaction Specification";
+      G_RecItemJnlLine."Country/Region Code" := P_RecPostedDelivery."Ship-to Country/Region Code";
+      G_RecItemJnlLine."Shared Silo" := SharedSiloAndIcFluxIn_L;
+      // --> 20160513-Gen15/001-ADV01.01.00-2813-FBE
+      IF BooOnBehalfOfOutgoing_G OR BooOnBehalfOfIncoming_G OR IcFluxIn_L THEN BEGIN
+        G_RecItemJnlLine."Shared Silo" := TRUE;
+        G_RecItemJnlLine."On Behalf Of":= TRUE;
+      END;
+      // <-- 20160513-Gen15/001-ADV01.01.00-2813-FBE
+      //--------------------------------------------------------------------------------------
+      // Cr'ation des Informations ANALYTIQUES ( Table TEMPORAIRE )
+      //--------------------------------------------------------------------------------------
+
+      // --> 20150809-CER35/001-ADV01.01.00-1987-SDE01
+      //G_RecItemJnlLine."Cereal Retreatment Mvt":=TreatmentMvt_P;
+      //G_RecItemJnlLine."Origin Lot No.":=LotNo_P;
+      IF LotNo_P<>'' THEN BEGIN
+        G_RecItemJnlLine."Cereal Retreatment Mvt":=TRUE;
+        G_RecItemJnlLine."Origin Lot No.":=LotNo_P;
+      END;
+      // --> 20150809-CER35/001-ADV01.01.00-1987-SDE01
+
+      G_TempJnlLineDim.DELETEALL;
+      CLEAR(G_PostItemJnlLine);
+      G_CMCDimension.DimFromItemJnl(G_TempJnlLineDim,G_RecItemJnlLine,TRUE);
+      G_PostItemJnlLine.RunWithCheck(G_RecItemJnlLine,G_TempJnlLineDim);
+
+      EXIT(G_RecItemJnlLine."Item Shpt. Entry No.");
+    END;
+
+    PROCEDURE GetNextItemJnlLineNo@8053002(P_ItemJnlLine@8053000 : Record 83) R_LineNo : Integer;
+    VAR
+      L_ItemJnlLine@8053001 : Record 83;
+    BEGIN
+      L_ItemJnlLine.SETCURRENTKEY("Journal Template Name","Journal Batch Name","Line No.");
+      L_ItemJnlLine.SETRANGE("Journal Template Name",P_ItemJnlLine."Journal Template Name");
+      L_ItemJnlLine.SETRANGE("Journal Batch Name",P_ItemJnlLine."Journal Batch Name");
+      IF L_ItemJnlLine.FINDLAST THEN
+        R_LineNo := L_ItemJnlLine."Line No." + 10000
+      ELSE
+        R_LineNo := 10000;
+    END;
+
+    PROCEDURE CopyComments@8053003(P_FromTableName@8053000 : Text[50];P_FromNo@8053001 : Code[20];P_ToTableName@8053002 : Text[50];P_ToNo@8053003 : Code[20]);
+    VAR
+      L_RecObjects@8053004 : Record 2000000001;
+      L_RecCMCComments@8053005 : Record 8052990;
+      L_FromTableID@8053006 : Integer;
+      L_ToTableID@8053007 : Integer;
+      L_RecCMCComments2@8053008 : Record 8052990;
+    BEGIN
+      L_RecObjects.SETCURRENTKEY(Type,"Company Name",ID);
+      L_RecObjects.SETRANGE(Type,L_RecObjects.Type :: Table);
+      L_RecObjects.SETRANGE(Name,P_FromTableName);
+      IF L_RecObjects.FINDLAST THEN
+        L_FromTableID := L_RecObjects.ID;
+      L_RecObjects.SETRANGE(Name,P_ToTableName);
+      IF L_RecObjects.FINDLAST THEN
+        L_ToTableID := L_RecObjects.ID;
+      IF (L_FromTableID <> 0) AND (L_ToTableID <> 0) THEN BEGIN
+        L_RecCMCComments.SETRANGE("Table No.",L_FromTableID);
+        L_RecCMCComments.SETRANGE("No.",P_FromNo);
+        IF L_RecCMCComments.FINDSET THEN
+          REPEAT
+            L_RecCMCComments2.TRANSFERFIELDS(L_RecCMCComments);
+            L_RecCMCComments2."Table No." := L_ToTableID;
+            L_RecCMCComments2."No." := P_ToNo;
+            L_RecCMCComments2.INSERT;
+          UNTIL L_RecCMCComments.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CancelItemLedgEntry@8053004(P_EntryNo@8053000 : Integer;P_Description@8053001 : Text[50];P_PostingDate@8053002 : Date;P_DocumentNo@8053003 : Code[20];P_Correction@8053004 : Boolean;P_Qte@1000000002 : Decimal;LotNo_P@8053007 : Code[20]) Res_EntryNo : Integer;
+    VAR
+      L_ItemLedgEntry@8053005 : Record 32;
+      L_recCustomer@8053006 : Record 18;
+    BEGIN
+      G_GeneralLedgerSetup.GET;
+
+      Res_EntryNo := 0;
+
+      IF L_ItemLedgEntry.GET(P_EntryNo) THEN BEGIN
+        IF P_DocumentNo = '' THEN
+          P_DocumentNo := L_ItemLedgEntry."Document No.";
+
+        //--------------------------------------------------------------------------------------
+        // Cr'ation ( SANS INSERT ) d'une Ligne Feuille Article
+        //--------------------------------------------------------------------------------------
+        G_RecItemJnlLine.INIT;
+        G_RecItemJnlLine."Movement Type":=L_ItemLedgEntry."Movement Type";
+        G_RecItemJnlLine.VALIDATE("Item No.",L_ItemLedgEntry."Item No.");
+        G_RecItemJnlLine.VALIDATE("Posting Date",P_PostingDate);
+        // --> 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+        IF BooCancelOnBehalfOf_G THEN BEGIN
+          IF P_Qte > 0 THEN
+            G_RecItemJnlLine.VALIDATE("Entry Type",G_RecItemJnlLine."Entry Type" :: "Positive Adjmt.")
+          ELSE
+            G_RecItemJnlLine.VALIDATE("Entry Type",G_RecItemJnlLine."Entry Type" :: "Negative Adjmt.")
+        END ELSE
+        // <-- 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+          G_RecItemJnlLine.VALIDATE("Entry Type",G_RecItemJnlLine."Entry Type" :: Sale);
+        G_RecItemJnlLine.VALIDATE(Description, P_Description);
+        G_RecItemJnlLine.VALIDATE("Document No.",P_DocumentNo);
+        G_RecItemJnlLine.VALIDATE("Location Code",L_ItemLedgEntry."Location Code");
+        G_RecItemJnlLine.VALIDATE(Correction,P_Correction);
+        G_RecItemJnlLine.VALIDATE(Quantity,L_ItemLedgEntry.Quantity);
+        IF P_Qte<>0 THEN
+          // --> 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+          IF BooCancelOnBehalfOf_G THEN
+            G_RecItemJnlLine.VALIDATE(Quantity,ABS(P_Qte))
+          ELSE
+          // <-- 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+            G_RecItemJnlLine.VALIDATE(Quantity,P_Qte);
+
+        // --> 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+        //BEFORE
+        //G_RecItemJnlLine.VALIDATE("Invoiced Quantity",0);
+        //G_RecItemJnlLine.VALIDATE("Invoiced Qty. (Base)",0);
+        //AFTER
+        IF BooCancelOnBehalfOf_G THEN BEGIN
+          G_RecItemJnlLine.VALIDATE("Invoiced Quantity",G_RecItemJnlLine.Quantity);
+          G_RecItemJnlLine.VALIDATE("Invoiced Qty. (Base)",G_RecItemJnlLine.Quantity);
+        END ELSE BEGIN
+          G_RecItemJnlLine.VALIDATE("Invoiced Quantity",0);
+          G_RecItemJnlLine.VALIDATE("Invoiced Qty. (Base)",0);
+        END;
+        // <-- 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+        IF P_Correction = TRUE THEN
+          G_RecItemJnlLine."Applies-to Entry" := P_EntryNo ;
+        // --> 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+        IF BooCancelOnBehalfOf_G THEN BEGIN
+          G_RecItemJnlLine.VALIDATE("Unit Amount",0);
+          G_RecItemJnlLine.VALIDATE("Unit Cost",0);
+          // --> 20160513-GEN15/001-ADV01.01.00-2813-NED
+          IF ForceSharedSilo_G THEN BEGIN
+            G_RecItemJnlLine.VALIDATE("Source Type",G_RecItemJnlLine."Source Type"::Customer);
+            G_RecItemJnlLine.VALIDATE("Source No.",L_ItemLedgEntry."Source No.");
+            L_recCustomer.GET(L_ItemLedgEntry."Source No.");
+            G_RecItemJnlLine.VALIDATE("Source Posting Group",L_recCustomer."Customer Posting Group");
+            G_RecItemJnlLine.VALIDATE("Gen. Bus. Posting Group",L_recCustomer."Gen. Bus. Posting Group");
+          END;
+          // <-- 20160513-GEN15/001-ADV01.01.00-2813-NED
+        END ELSE BEGIN
+        // <-- 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+          L_ItemLedgEntry.CALCFIELDS("Sales Amount (Expected)");
+          G_RecItemJnlLine.VALIDATE(Amount,-L_ItemLedgEntry."Sales Amount (Expected)");
+          G_RecItemJnlLine.VALIDATE("Source Type",G_RecItemJnlLine."Source Type"::Customer);
+          G_RecItemJnlLine.VALIDATE("Source No.",L_ItemLedgEntry."Source No.");
+          // --> 20160513-GEN15/001-ADV01.01.00-2813-NED
+          IF ForceCancelOnBehalfOf_G THEN
+            G_RecItemJnlLine."Sales Contract No." := L_ItemLedgEntry."Sales Contract No."
+          ELSE
+          // <-- 20160513-GEN15/001-ADV01.01.00-2813-NED
+          G_RecItemJnlLine.VALIDATE("Sales Contract No.",L_ItemLedgEntry."Sales Contract No.");
+        // --> 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+        END;
+        // <-- 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+        // --> 20160513-Gen15/001-ADV01.01.00-2813-NED
+        G_RecItemJnlLine."Actual Location Code" := L_ItemLedgEntry."Actual Location Code";
+        G_RecItemJnlLine.VALIDATE("Cell Code",L_ItemLedgEntry."Cell Code");
+        // <-- 20160513-Gen15/001-ADV01.01.00-2813-NED
+        // --> 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+        IF NOT BooCancelOnBehalfOf_G THEN BEGIN
+        // <-- 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+          L_recCustomer.GET(L_ItemLedgEntry."Source No.");
+          G_RecItemJnlLine.VALIDATE("Source Posting Group",L_recCustomer."Customer Posting Group");
+          G_RecItemJnlLine.VALIDATE("Gen. Bus. Posting Group",L_recCustomer."Gen. Bus. Posting Group");
+        // --> 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+        END;
+        // <-- 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+
+        G_RecItemJnlLine.VALIDATE("Shortcut Dimension 1 Code",L_ItemLedgEntry."Global Dimension 1 Code");
+        G_RecItemJnlLine.VALIDATE("Shortcut Dimension 2 Code",L_ItemLedgEntry."Global Dimension 2 Code");
+
+        // --> 20150710-WI00-TER01.01.00-1834-FBE01
+        IF BooCancelOnBehalfOf_G AND (MovementType_G <> MovementType_G::" ") THEN BEGIN
+          // --> 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+          //BEFORE
+          //G_RecItemJnlLine."Movement Type":= MovementType_G
+          //AFTER
+          G_RecItemJnlLine."Movement Type":= G_RecItemJnlLine."Movement Type"::T10;
+          IF G_RecItemJnlLine."Entry Type" = G_RecItemJnlLine."Entry Type"::"Negative Adjmt." THEN
+            G_RecItemJnlLine."Movement Type":= G_RecItemJnlLine."Movement Type"::T11;
+          // <-- 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+        END ELSE
+        // <-- 20150710-WI00-TER01.01.00-1834-FBE01
+          G_RecItemJnlLine."Movement Type":=L_ItemLedgEntry."Movement Type";
+
+        G_RecItemJnlLine."Stock Type":=L_ItemLedgEntry."Stock Type";
+        G_RecItemJnlLine.VALIDATE("Campaign No.",L_ItemLedgEntry."Campaign No.");
+
+        // --> 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+        // --> 20160513-GEN15/001-ADV01.01.00-2813-NED
+        //IF NOT BooCancelOnBehalfOf_G THEN BEGIN
+        IF NOT BooCancelOnBehalfOf_G OR ForceSharedSilo_G THEN BEGIN
+        // <-- 20160513-GEN15/001-ADV01.01.00-2813-NED
+        // <-- 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+          G_RecItemJnlLine."Transaction Type" := L_ItemLedgEntry."Transaction Type";
+          G_RecItemJnlLine."Transport Method" := L_ItemLedgEntry."Transport Method";
+          G_RecItemJnlLine."Entry/Exit Point" := L_ItemLedgEntry."Entry/Exit Point";
+          G_RecItemJnlLine.Area := L_ItemLedgEntry.Area;
+          G_RecItemJnlLine."Transaction Specification" := L_ItemLedgEntry."Transaction Specification";
+          G_RecItemJnlLine."Country/Region Code" := L_ItemLedgEntry."Country/Region Code";
+        // --> 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+        END;
+        // <-- 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+
+        G_RecItemJnlLine."Origin Lot No.":=LotNo_P;
+        G_RecItemJnlLine."Cereal Retreatment Mvt":=TRUE;
+        // --> 20150710-WI00-TER01.01.00-1834-FBE01
+        IF BooCancelOnBehalfOf_G OR ForceSharedSilo_G THEN  BEGIN
+          G_RecItemJnlLine."On Behalf Of" :=  TRUE ;
+          G_RecItemJnlLine."Shared Silo" := TRUE;
+        END;
+        // --> 20160513-GEN15/001-ADV01.01.00-2813-NED
+        IF NotSharedSilo_G THEN
+          G_RecItemJnlLine."Shared Silo" := FALSE;
+        // <-- 20160513-GEN15/001-ADV01.01.00-2813-NED
+        // <-- 20150710-WI00-TER01.01.00-1834-FBE01
+        //--------------------------------------------------------------------------------------
+        // Cr'ation des Informations ANALYTIQUES ( Table TEMPORAIRE )
+        //--------------------------------------------------------------------------------------
+        G_TempJnlLineDim.DELETEALL;
+        CLEAR(G_PostItemJnlLine);
+        G_CMCDimension.DimFromItemJnl(G_TempJnlLineDim,G_RecItemJnlLine,TRUE);
+        G_PostItemJnlLine.RunWithCheck(G_RecItemJnlLine, G_TempJnlLineDim);
+
+        Res_EntryNo := G_RecItemJnlLine."Item Shpt. Entry No.";
+      END;
+
+      EXIT(Res_EntryNo);
+    END;
+
+    PROCEDURE CreateAnnulationDelivery@8053005(P_PostedDeliveryToCancel@8053000 : Record 8053014;P_Description@8053001 : Text[50];VAR _P_CanceledItemLedgEntryNo@8053002 : Integer) R_DeliveryNo : Code[20];
+    VAR
+      L_CancelledDelivery@8053003 : Record 8053014;
+      L_AnalysisToCancel@8053004 : Record 8053015;
+      L_AnalysisCancellation@8053005 : Record 8053015;
+      L_PostingDate@1000000000 : Date;
+      RecCharterLine_L@1000000001 : Record 8053265;
+    BEGIN
+      // ----------------------------------------------------------------
+      // Create cancellation Delivery
+      // ----------------------------------------------------------------
+      L_PostingDate:=GetGoodDate(P_PostedDeliveryToCancel."Item Ledger Entry No.",WORKDATE);
+
+      G_CMCSetup.GET;
+      L_CancelledDelivery.INIT;
+      L_CancelledDelivery.TRANSFERFIELDS(P_PostedDeliveryToCancel);
+      L_CancelledDelivery."No." := '';
+      L_CancelledDelivery.VALIDATE("Cancellation Delivery",TRUE);
+      L_CancelledDelivery."No." := G_NoSeriesMgt.GetNextNo(G_CMCSetup."Collection Posted Delivery Nos",WORKDATE,TRUE);
+      L_CancelledDelivery."User Id" := USERID;
+      L_CancelledDelivery.VALIDATE("Creation Date",CREATEDATETIME(WORKDATE,TIME));
+      L_CancelledDelivery.VALIDATE(Status,L_CancelledDelivery.Status :: Released);
+      //20161024-Wi00-ADV-ID22680-JLT01 -->
+      {BEFORE
+      L_CancelledDelivery."Standard Weight" := -L_CancelledDelivery."Standard Weight";
+      AFTER}
+      L_CancelledDelivery."Standard Weight" := -L_CancelledDelivery.Quantity;
+      //<-- 20161024-Wi00-ADV-ID22680-JLT01
+      L_CancelledDelivery.Quantity := -L_CancelledDelivery."Standard Weight";
+      L_CancelledDelivery.VALIDATE("Sales Document Type", L_CancelledDelivery."Sales Document Type"::Quote);
+      L_CancelledDelivery.VALIDATE("Sales Document No.", '');
+      L_CancelledDelivery.VALIDATE("Posted Sales Document No", '');
+      // --> 20151009-Wi00-ADV01.01.00-2162-FHS01
+      L_CancelledDelivery.VALIDATE("Posted Credit Memo No.", '');
+      L_CancelledDelivery.VALIDATE("Posted Prepay Invoice Type", L_CancelledDelivery."Posted Prepay Invoice Type"::"Posted invoice");
+      L_CancelledDelivery.VALIDATE("Posted Credit Memo Type", L_CancelledDelivery."Posted Credit Memo Type"::"Posted invoice");
+      L_CancelledDelivery.VALIDATE("Prepay Invoice No.", '');
+      L_CancelledDelivery.VALIDATE("Posted Prepay Invoice No.", '');
+      // <-- 20151009-Wi00-ADV01.01.00-2162-FHS01
+      L_CancelledDelivery."Posting Date":=L_PostingDate;
+      L_CancelledDelivery."Sales Date":=L_PostingDate;
+      //On conserve les informations de pes'e mais le N› de pes'e est li' au document initial valid'
+      L_CancelledDelivery."Weighing No." := 0;
+
+      // ----------------------------------------------------------------
+      // Cancel item ledger entry
+      // ----------------------------------------------------------------
+      L_CancelledDelivery.VALIDATE("Item Ledger Entry No.", CancelItemLedgEntry(P_PostedDeliveryToCancel."Item Ledger Entry No.",
+          P_Description, L_PostingDate, L_CancelledDelivery."No.",FALSE,0,P_PostedDeliveryToCancel."Lot No."));
+      CreateItemWeightEntry(L_CancelledDelivery."Item Ledger Entry No.",P_PostedDeliveryToCancel."Net Weight");
+
+      L_CancelledDelivery.VALIDATE(Invoiced,FALSE);
+      L_CancelledDelivery.INSERT(TRUE);
+
+      // create analysis lines
+      L_AnalysisToCancel.SETRANGE(L_AnalysisToCancel."Delivery Type",P_PostedDeliveryToCancel."Delivery Type");
+      L_AnalysisToCancel.SETRANGE("Delivery No.",P_PostedDeliveryToCancel."No.");
+      IF L_AnalysisToCancel.FINDSET THEN
+        REPEAT
+          L_AnalysisCancellation.TRANSFERFIELDS(L_AnalysisToCancel);
+          L_AnalysisCancellation.VALIDATE("Delivery No.",L_CancelledDelivery."No.");
+          L_AnalysisCancellation.INSERT(TRUE);
+        UNTIL L_AnalysisToCancel.NEXT = 0;
+
+      // --> 20170316-APP27-TER01.01.00-ID24265-DDS01
+      // ----------------------------------------------------------------
+      // Update Shipping Order Qty
+      // ----------------------------------------------------------------
+      WITH P_PostedDeliveryToCancel DO BEGIN
+        IF ("Shipping Order No." <> '') THEN
+          IF RecCharterLine_L.GET("Shipping Order No.") THEN BEGIN
+            RecCharterLine_L."Number of Achieved Units" -= 1;
+            IF ("Charter No." <> '') THEN BEGIN
+              RecCharterLine_L.VALIDATE("Realized Quantity",RecCharterLine_L."Realized Quantity" - "Net Weight");
+              RecCharterLine_L.Status := RecCharterLine_L.Status::Open;
+            END;
+            RecCharterLine_L.MODIFY;
+          END;
+      END;
+      // <-- 20170316-APP27-TER01.01.00-ID24265-DDS01
+
+      // create comments
+      CopyComments(P_PostedDeliveryToCancel.TABLENAME,P_PostedDeliveryToCancel."No.",
+        L_CancelledDelivery.TABLENAME,L_CancelledDelivery."No.");
+
+      // --> 20150924-Wi00-ADV01.01.00-2304-SDE01
+      _P_CanceledItemLedgEntryNo:=L_CancelledDelivery."Item Ledger Entry No.";
+      // <-- 20150924-Wi00-ADV01.01.00-2304-SDE01
+      R_DeliveryNo := L_CancelledDelivery."No.";
+      EXIT(R_DeliveryNo);
+    END;
+
+    PROCEDURE GetPostedReceipt@8053006() RES_PostedReceiptNo : Code[20];
+    BEGIN
+      EXIT(G_RecPostedDeliveryNo);
+    END;
+
+    PROCEDURE CopyLastLoadings@8053007(P_RecDelivery@8053000 : Record 8053013;P_ToPostedDeliveryNo@8053001 : Code[20]);
+    VAR
+      L_recLastLoading@8053002 : Record 8053028;
+      L_recLastPostedLoading@8053003 : Record 8053029;
+    BEGIN
+      L_recLastLoading.SETCURRENTKEY("Delivery Type","Delivery No.","Line No.");
+      L_recLastLoading.SETRANGE("Delivery Type",P_RecDelivery."Delivery Type");
+      L_recLastLoading.SETRANGE("Delivery No.",P_RecDelivery."No.");
+      IF L_recLastLoading.FINDSET THEN
+        REPEAT
+          L_recLastPostedLoading.INIT;
+          L_recLastPostedLoading.TRANSFERFIELDS(L_recLastLoading);
+          L_recLastPostedLoading."Posted Delivery No." := P_ToPostedDeliveryNo;
+          L_recLastPostedLoading.INSERT(TRUE);
+        UNTIL L_recLastLoading.NEXT = 0;
+    END;
+
+    PROCEDURE CopyAnalysis@8053008(P_RecDelivery@8053000 : Record 8053013;P_ToPostedDeliveryNo@8053001 : Code[20]);
+    VAR
+      L_recDeliveryAnalysis@8053002 : Record 8053030;
+      L_recPostedDeliveryAnalysis@8053003 : Record 8053015;
+    BEGIN
+      L_recDeliveryAnalysis.SETCURRENTKEY("Delivery Type","Delivery No.","Analysis Code");
+      L_recDeliveryAnalysis.SETRANGE("Delivery Type",P_RecDelivery."Delivery Type");
+      L_recDeliveryAnalysis.SETRANGE("Delivery No.",P_RecDelivery."No.");
+      IF L_recDeliveryAnalysis.FINDSET THEN
+        REPEAT
+          L_recPostedDeliveryAnalysis.INIT;
+          L_recPostedDeliveryAnalysis.TRANSFERFIELDS(L_recDeliveryAnalysis);
+          L_recPostedDeliveryAnalysis."Delivery No." := P_ToPostedDeliveryNo;
+          L_recPostedDeliveryAnalysis.INSERT(TRUE);
+        UNTIL L_recDeliveryAnalysis.NEXT = 0;
+    END;
+
+    PROCEDURE CreateItemJnlLinesForTransfer@8053009(RecPostedDelivery_P@8053000 : Record 8053014;PostingDate_P@8053001 : Date) Res_EntryNo : Integer;
+    VAR
+      AppliedQty_L@8053003 : Decimal;
+      RecItemLdgEntry_L@8053004 : Record 32;
+      RecOldItemLdgEntry_L@8053005 : Record 32;
+      RecItem_L@8053006 : Record 27;
+      EntryFindMethod_L@8053007 : Text[1];
+      FirstApplication_L@8053008 : Boolean;
+      TotalRemQty_L@8053010 : Decimal;
+    BEGIN
+      //Splitter lignes de transfert en fonction du stock disponible
+      AppliedQty_L := RecPostedDelivery_P."Standard Weight";
+      FirstApplication_L := TRUE;
+      RecItemLdgEntry_L.SETCURRENTKEY("Item No.",Open,"Variant Code",Positive,"Location Code","Posting Date");
+      RecItemLdgEntry_L.SETRANGE("Item No.",RecPostedDelivery_P."Item No.");
+      RecItemLdgEntry_L.SETRANGE(Open,TRUE);
+      RecItemLdgEntry_L.SETRANGE(Positive,TRUE);
+      RecItemLdgEntry_L.SETRANGE("Location Code",RecPostedDelivery_P."Location Code");
+      IF RecItemLdgEntry_L.FINDSET THEN
+        REPEAT
+          RecItemLdgEntry_L.CALCFIELDS("Reserved Quantity");
+          TotalRemQty_L += RecItemLdgEntry_L."Remaining Quantity" - RecItemLdgEntry_L."Reserved Quantity"
+        UNTIL RecItemLdgEntry_L.NEXT = 0;
+      IF AppliedQty_L > TotalRemQty_L THEN
+        ERROR(Text8053007,RecPostedDelivery_P."Item No.");
+      RecItem_L.GET(RecPostedDelivery_P."Item No.");
+      REPEAT
+        IF FirstApplication_L THEN BEGIN
+          FirstApplication_L := FALSE;
+          IF RecItem_L."Costing Method" = RecItem_L."Costing Method"::LIFO THEN
+            EntryFindMethod_L := '+'
+          ELSE
+            EntryFindMethod_L := '-';
+          RecItemLdgEntry_L.FIND(EntryFindMethod_L);
+        END ELSE
+          CASE EntryFindMethod_L OF
+            '-':
+              IF RecItemLdgEntry_L.NEXT = 0 THEN
+                EXIT;
+            '+':
+              IF RecItemLdgEntry_L.NEXT(-1) = 0 THEN
+                EXIT;
+          END;
+        RecOldItemLdgEntry_L.COPY(RecItemLdgEntry_L);
+        RecOldItemLdgEntry_L.CALCFIELDS("Reserved Quantity");
+        //L''criture article . lettrer couvre la quantit' . transf'rer
+        IF AppliedQty_L <= RecOldItemLdgEntry_L."Remaining Quantity" - RecOldItemLdgEntry_L."Reserved Quantity" THEN BEGIN
+          //Validation du transfert sur la quantit' totale de l''criture article . lettrer
+          Res_EntryNo := PostItemJnlLinesForTransfer(RecPostedDelivery_P,AppliedQty_L,RecOldItemLdgEntry_L);
+          AppliedQty_L := 0;
+        END ELSE BEGIN
+          //Validation du transfert sur la quantit' restante de l''criture . lettrer
+          Res_EntryNo := PostItemJnlLinesForTransfer(RecPostedDelivery_P,
+            RecOldItemLdgEntry_L."Remaining Quantity" - RecOldItemLdgEntry_L."Reserved Quantity",RecOldItemLdgEntry_L);
+          //D'duction de la quantit' . lettrer
+          AppliedQty_L := AppliedQty_L - (RecOldItemLdgEntry_L."Remaining Quantity" - RecOldItemLdgEntry_L."Reserved Quantity");
+        END;
+      UNTIL FALSE OR (AppliedQty_L <= 0);
+    END;
+
+    PROCEDURE PostItemJnlLinesForTransfer@8053012(RecPostedDelivery_P@8053004 : Record 8053014;PostQty_P@8053005 : Decimal;RecOldItemLdgEntry_P@8053006 : Record 32) Res_EntryNo : Integer;
+    VAR
+      L_RecItemJnlLine@8053000 : Record 83;
+      L_TempJnlLineDim@8053001 : TEMPORARY Record 356;
+      L_PostItemJnlLine@8053002 : Codeunit 22;
+      L_recItem@8053003 : Record 27;
+    BEGIN
+      G_GeneralLedgerSetup.GET;
+
+      //--------------------------------------------------------------------------------------
+      // Cr'ation ( SANS INSERT ) des Ligne Feuille Article pour transfert vers magasin de transit
+      //--------------------------------------------------------------------------------------
+      WITH RecPostedDelivery_P DO BEGIN
+        L_RecItemJnlLine.INIT;
+        L_RecItemJnlLine."Posting Date" := "Posting Date";
+        L_RecItemJnlLine."Document Date" := "Posting Date";
+        L_RecItemJnlLine."Document No." := "No.";
+        L_RecItemJnlLine."Entry Type" := L_RecItemJnlLine."Entry Type"::Transfer;
+        L_RecItemJnlLine."Item No." := "Item No.";
+        L_RecItemJnlLine."Transfer No." := "No.";
+        L_RecItemJnlLine."Shortcut Dimension 1 Code" := "Global Dimension 1 Code";
+        L_RecItemJnlLine."New Shortcut Dimension 1 Code" := "Global Dimension 1 Code";
+        L_RecItemJnlLine."Shortcut Dimension 2 Code" := "Global Dimension 2 Code";
+        L_RecItemJnlLine."New Shortcut Dimension 2 Code" := "Global Dimension 2 Code";
+        L_RecItemJnlLine."Location Code" := "Location Code";
+        L_RecItemJnlLine."New Location Code" := "In-Transit Code";
+        L_RecItemJnlLine.Quantity := PostQty_P;
+        L_RecItemJnlLine."Invoiced Quantity" := L_RecItemJnlLine.Quantity;
+        L_RecItemJnlLine."Quantity (Base)" := L_RecItemJnlLine.Quantity;
+        L_RecItemJnlLine."Invoiced Qty. (Base)" := L_RecItemJnlLine.Quantity;
+        L_recItem.GET("Item No.");
+        L_RecItemJnlLine."Gen. Prod. Posting Group" := L_recItem."Gen. Prod. Posting Group";
+        L_RecItemJnlLine."Inventory Posting Group" := L_recItem."Inventory Posting Group";
+        L_RecItemJnlLine."Unit of Measure Code" := L_recItem."Base Unit of Measure";
+        L_RecItemJnlLine."Qty. per Unit of Measure" := 1;
+        L_RecItemJnlLine."Transaction Type" :=  "Transaction Type";
+        L_RecItemJnlLine."Transport Method" := "Transport Method";
+        L_RecItemJnlLine.Area := Area;
+        L_RecItemJnlLine."Transaction Specification" := "Transaction Specification";
+        L_RecItemJnlLine."Product Group Code" := L_recItem."Product Group Code";
+        L_RecItemJnlLine."Item Category Code" := L_recItem."Item Category Code";
+        L_RecItemJnlLine."Cell Code" := "Cell Code";
+        L_RecItemJnlLine."Movement Type":=L_RecItemJnlLine."Movement Type"::S05;
+        L_RecItemJnlLine."Stock Type" := RecOldItemLdgEntry_P."Stock Type";
+        L_RecItemJnlLine."Vendor Storage" := RecOldItemLdgEntry_P."Vendor Storage";
+        L_RecItemJnlLine."Collection Type" := RecOldItemLdgEntry_P."Collection Type";
+        L_RecItemJnlLine.VALIDATE("Campaign No.","Campaign No.");
+
+        //--------------------------------------------------------------------------------------
+        // Cr'ation des Informations ANALYTIQUES ( Table TEMPORAIRE )
+        //--------------------------------------------------------------------------------------
+        L_TempJnlLineDim.DELETEALL;
+        IF "Global Dimension 1 Code" <> '' THEN BEGIN
+          L_TempJnlLineDim.INIT;
+          L_TempJnlLineDim."Table ID" := DATABASE::"Item Ledger Entry";
+          L_TempJnlLineDim.VALIDATE("Dimension Code", G_GeneralLedgerSetup."Global Dimension 1 Code");
+          L_TempJnlLineDim.VALIDATE("Dimension Value Code","Global Dimension 1 Code");
+          L_TempJnlLineDim.VALIDATE("New Dimension Value Code","Global Dimension 1 Code");
+          L_TempJnlLineDim.INSERT(TRUE);
+        END;
+
+        IF "Global Dimension 2 Code" <> '' THEN BEGIN
+          L_TempJnlLineDim.INIT;
+          L_TempJnlLineDim."Table ID" := DATABASE::"Item Ledger Entry";
+          L_TempJnlLineDim.VALIDATE("Dimension Code", G_GeneralLedgerSetup."Global Dimension 2 Code");
+          L_TempJnlLineDim.VALIDATE("Dimension Value Code","Global Dimension 2 Code");
+          L_TempJnlLineDim.VALIDATE("New Dimension Value Code","Global Dimension 2 Code");
+          L_TempJnlLineDim.INSERT(TRUE);
+        END;
+
+        CLEAR(L_PostItemJnlLine);
+        G_CMCDimension.DimFromItemJnl(L_TempJnlLineDim,L_RecItemJnlLine,TRUE);
+        L_PostItemJnlLine.RunWithCheck(L_RecItemJnlLine,L_TempJnlLineDim);
+        Res_EntryNo:=L_RecItemJnlLine."Item Shpt. Entry No.";
+        EXIT(Res_EntryNo);
+      END;
+    END;
+
+    PROCEDURE CreateDelFromPostedDeliv@8053010(VAR P_RecPostedDelivery@8053000 : Record 8053014);
+    VAR
+      L_recSalesContract@8053004 : Record 8053012;
+      L_Iter@8053003 : Integer;
+      L_TotalIter@8053002 : Integer;
+      L_wDialog@8053001 : Dialog;
+    BEGIN
+      // lanc' . partir du Bon valid', dans le cas d'un livraison avec un magasin interm'diaire
+      IF (P_RecPostedDelivery."Item Ledger Entry No."=0) AND (P_RecPostedDelivery."Transfer-to Code"<>'') THEN BEGIN
+        IF CONFIRM(Text8053005,FALSE,P_RecPostedDelivery."Transfer-to Code") THEN BEGIN
+          // -------------------------------------------------------------------------------
+          // TRAITEMENT DE VALIDATION
+          // -------------------------------------------------------------------------------
+          IF GUIALLOWED THEN BEGIN
+            L_Iter := 1;
+            L_TotalIter := 1;
+
+            L_wDialog.OPEN('#1##########################' + '\' +
+                           '@2@@@@@@@@@@@@@@@@@@@@@@@@@@');
+
+            L_wDialog.UPDATE(1, Text8053003);
+            L_wDialog.UPDATE(2, ROUND(L_Iter / L_TotalIter * 10000,1));
+          END;
+
+          P_RecPostedDelivery.VALIDATE("Item Ledger Entry No.",
+            CreateItemJnlLine(P_RecPostedDelivery,P_RecPostedDelivery."Posting Date",FALSE,''));
+          P_RecPostedDelivery.MODIFY;
+
+          IF GUIALLOWED THEN
+            L_wDialog.CLOSE;
+        END;
+      END ELSE BEGIN
+        MESSAGE(Text8053006)
+      END;
+    END;
+
+    PROCEDURE CreateReceptDoc@8053011(P_RecPostedDelivery@8053000 : Record 8053014);
+    VAR
+      L_recReceipt@8053001 : Record 8052993;
+      L_RecObjects@8053006 : Record 2000000001;
+      L_RecCMCComments@8053005 : Record 8052990;
+      L_FromTableID@8053004 : Integer;
+      L_ToTableID@8053003 : Integer;
+      L_RecCMCComments2@8053002 : Record 8052990;
+      L_recDeliveryAnalysis@1000000000 : Record 8053030;
+      L_recRecepAnalysis@1000000001 : Record 8052994;
+    BEGIN
+      L_recReceipt.INIT;
+      L_recReceipt.VALIDATE("Receipt Type",L_recReceipt."Receipt Type"::Transfert);
+      L_recReceipt."No.":='';
+      L_recReceipt.INSERT(TRUE);
+      L_recReceipt.VALIDATE("Posting Date",P_RecPostedDelivery."Posting Date");
+      L_recReceipt.SetHideValidationDialog(TRUE);
+      L_recReceipt.SuspendUpdateWeighingData(TRUE);
+      L_recReceipt.VALIDATE("Location Code",P_RecPostedDelivery."Transfer-to Code");
+      L_recReceipt.VALIDATE("Transfer-from Code",P_RecPostedDelivery."Location Code");
+      L_recReceipt.VALIDATE("In-Transit Code",P_RecPostedDelivery."In-Transit Code");
+      L_recReceipt.VALIDATE("Species Code",P_RecPostedDelivery."Species Code");
+      L_recReceipt."Campaign No." := P_RecPostedDelivery."Campaign No.";
+      L_recReceipt.VALIDATE("Item No.",P_RecPostedDelivery."Item No.");
+
+      L_recReceipt.VALIDATE("Trailers Registration",P_RecPostedDelivery."Trailers Registration No.");
+      L_recReceipt.VALIDATE("Driver Name",P_RecPostedDelivery."Trucker Name");
+
+      L_recReceipt."Net Weight" := P_RecPostedDelivery."Net Weight";
+      L_recReceipt."Standard Weight" := P_RecPostedDelivery."Standard Weight";
+
+      L_recReceipt."Weight Standards Already" := FALSE;
+      L_recReceipt."Standard Weight Transfer" := P_RecPostedDelivery."Standard Weight";
+      L_recReceipt."Manual Transfer No." := P_RecPostedDelivery."Manual Transfer No.";
+
+      L_recReceipt."Shipping Agent Code":=P_RecPostedDelivery."Shipping Agent Code";
+      L_recReceipt."Transport Method":=P_RecPostedDelivery."Transport Method" ;
+      L_recReceipt.Area:=P_RecPostedDelivery.Area ;
+
+      L_recReceipt."Transfert Delivery No.":=P_RecPostedDelivery."No.";
+      L_recReceipt."Disinsectization Code Input"   := P_RecPostedDelivery."Disinsectization Code Output";
+      L_recReceipt."Disinsectization Dosage Input" := P_RecPostedDelivery."Disinsectization Dosage Output";
+      L_recReceipt.MODIFY(TRUE);
+
+      //copy des commentaires
+      CopyComments(G_RecDelivery.TABLENAME,G_RecDelivery."No.",L_recReceipt.TABLENAME,L_recReceipt."No.");
+
+      // copy analyses
+      L_recDeliveryAnalysis.RESET;
+      L_recDeliveryAnalysis.SETRANGE("Delivery Type",G_RecDelivery."Delivery Type");
+      L_recDeliveryAnalysis.SETRANGE("Delivery No.",G_RecDelivery."No.");
+      IF L_recDeliveryAnalysis.FINDSET THEN
+        REPEAT
+          L_recRecepAnalysis.INIT;
+          L_recRecepAnalysis."Receipt Type":=L_recReceipt."Receipt Type";
+          L_recRecepAnalysis."Receipt No.":=L_recReceipt."No.";
+          L_recRecepAnalysis."Analysis Code":=L_recDeliveryAnalysis."Analysis Code";
+          L_recRecepAnalysis.Value:=L_recDeliveryAnalysis.Value;
+          L_recRecepAnalysis."Sort Order":=L_recDeliveryAnalysis."Sort Order";
+          IF NOT L_recRecepAnalysis.INSERT THEN
+            L_recRecepAnalysis.MODIFY;
+        UNTIL L_recDeliveryAnalysis.NEXT = 0;
+    END;
+
+    PROCEDURE GetGoodDate@1000000003(P_NumSeq@1000000000 : Integer;P_Date@1000000001 : Date) Res_Date : Date;
+    VAR
+      L_AllowPostingTo@1000000002 : Date;
+      L_ItemLegEnt@1000000003 : Record 32;
+      Text8053009@1000000005 : TextConst 'ENU=Receipt Finalisation;FRA=La date de travail n''est pas dans la p'riode AgriMer autoris'e.';
+    BEGIN
+      G_CMCSetup.GET;
+      Res_Date:=P_Date;
+      L_AllowPostingTo:=G_CMCSetup."ONIC Allow Posting To";
+      IF G_CMCSetup."ONIC Allow Posting To" = 0D THEN
+        L_AllowPostingTo:= 31129999D;
+
+      IF L_ItemLegEnt.GET(P_NumSeq) THEN BEGIN
+        IF (L_ItemLegEnt."Posting Date" >= G_CMCSetup."ONIC Allow Posting From") AND (L_ItemLegEnt."Posting Date"<= L_AllowPostingTo)
+      THEN
+          Res_Date:=L_ItemLegEnt."Posting Date";
+      END;
+
+      IF Res_Date=P_Date THEN BEGIN
+        IF (P_Date < G_CMCSetup."ONIC Allow Posting From") OR (P_Date> L_AllowPostingTo) THEN
+          ERROR(Text8053009)
+      END;
+
+      EXIT(Res_Date);
+    END;
+
+    PROCEDURE PostBonis@8053000(RecPostedDelivery_P@8053004 : Record 8053014);
+    VAR
+      RecCellLoc@1000000003 : Record 8053031;
+      RecItemJnlLine_L@8053001 : Record 83;
+      RecItem_L@8053003 : Record 27;
+      TempJnlLineDim_L@1000000000 : TEMPORARY Record 356;
+      cduPostItemJnlLine_L@1000000001 : Codeunit 22;
+      cduCMCDimensions_L@1000000002 : Codeunit 8053004;
+    BEGIN
+      //--------------------------------------------------------------------------------------------------------------------
+      // Contr"le la disponibilit' en stock sur la cellule avant de valider la sortie ou le transfert
+      // Pour le transfert, si l'option Bonis sur transfert propos' est active, le systSme propose de valider un bonis
+      // correspondant . l''cart entre le poids au norme . transf'rer et la quantit' en stock
+      //
+      //--------------------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecPostedDelivery_P : Bon de sortie valid'
+      // Sorties:
+      //   -
+      //--------------------------------------------------------------------------------------------------------------------
+      WITH RecPostedDelivery_P DO BEGIN
+        RecCellLoc.GET(RecPostedDelivery_P."Location Code",RecPostedDelivery_P."Cell Code");
+        // --> 20150708-WI00-ADV01.01.00-1919-DRN01
+        //BEFORE
+        {
+        IF RecCellLoc."Distribution Cell" OR RecCellLoc."Ajustment Cell" THEN
+          EXIT;
+        }
+        // <-- 20150708-WI00-ADV01.01.00-1919-DRN01
+        RecCellLoc.CALCFIELDS("Cell Inventory");
+        // --> 20150708-WI00-ADV01.01.00-1919-DRN01
+        //BEFORE
+        {
+        IF RecPostedDelivery_P."Standard Weight" > RecCellLoc."Cell Inventory" THEN BEGIN
+          RecCMCSetup.GET;
+          IF RecCMCSetup."Bonis Transfer Proposed" THEN BEGIN
+            RecCMCSetup.TESTFIELD("Bonis Transfer Reason Code");
+            IF RecCellLoc."Cell Inventory" <= 0 THEN
+              IF ChekInventOnOtherCell(RecPostedDelivery_P."Location Code",RecPostedDelivery_P."Item No.",
+                RecPostedDelivery_P."Standard Weight")
+              THEN
+                IF CONFIRM(Text8053011,TRUE,RecPostedDelivery_P."Item No.",RecPostedDelivery_P."Cell Code") THEN
+                  ERROR('');
+
+            IF NOT CONFIRM(Text8053008,FALSE,RecPostedDelivery_P."Item No.",RecPostedDelivery_P."Cell Code") THEN
+              ERROR(Text8053009)
+            ELSE BEGIN
+        }
+        // <-- 20150708-WI00-ADV01.01.00-1919-DRN01
+        RecItemJnlLine_L.INIT;
+        RecItemJnlLine_L."Posting Date" := "Posting Date";
+        RecItemJnlLine_L."Document Date" := "Posting Date";
+        RecItemJnlLine_L."Document No." := "No.";
+        RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Positive Adjmt.";
+        RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::T10;
+        RecItemJnlLine_L.VALIDATE("Item No.", "Item No.");
+        RecItemJnlLine_L.Description := Text8053010;
+        RecItemJnlLine_L."Return Reason Code" := G_CMCSetup."Bonis Transfer Reason Code";
+        RecItemJnlLine_L."Shortcut Dimension 1 Code" := "Global Dimension 1 Code";
+        RecItemJnlLine_L."Shortcut Dimension 2 Code" := "Global Dimension 2 Code";
+        RecItemJnlLine_L."Location Code" := "Location Code";
+        RecItemJnlLine_L.VALIDATE(Quantity, "Standard Weight" - RecCellLoc."Cell Inventory");
+        RecItemJnlLine_L."Invoiced Quantity" := RecItemJnlLine_L.Quantity;
+        RecItemJnlLine_L."Quantity (Base)" := RecItemJnlLine_L.Quantity;
+        RecItemJnlLine_L."Invoiced Qty. (Base)" := RecItemJnlLine_L.Quantity;
+        RecItem_L.GET("Item No.");
+        RecItemJnlLine_L."Gen. Prod. Posting Group" := RecItem_L."Gen. Prod. Posting Group";
+        RecItemJnlLine_L."Inventory Posting Group" := RecItem_L."Inventory Posting Group";
+        RecItemJnlLine_L."Unit of Measure Code" := RecItem_L."Base Unit of Measure";
+        RecItemJnlLine_L."Qty. per Unit of Measure" := 1;
+        RecItemJnlLine_L."Product Group Code" := RecItem_L."Product Group Code";
+        RecItemJnlLine_L."Item Category Code" := RecItem_L."Item Category Code";
+        RecItemJnlLine_L."Cell Code" := "Cell Code";
+        RecItemJnlLine_L."Movement Type" := RecItemJnlLine_L."Movement Type"::T10;
+        RecItemJnlLine_L."Campaign No." := "Campaign No.";
+
+        TempJnlLineDim_L.DELETEALL;
+        IF "Global Dimension 1 Code" <> '' THEN BEGIN
+          TempJnlLineDim_L.INIT;
+          TempJnlLineDim_L."Table ID" := DATABASE::"Item Ledger Entry";
+          TempJnlLineDim_L.VALIDATE("Dimension Code", G_GeneralLedgerSetup."Global Dimension 1 Code");
+          TempJnlLineDim_L.VALIDATE("Dimension Value Code","Global Dimension 1 Code");
+          TempJnlLineDim_L.INSERT(TRUE);
+        END;
+        IF "Global Dimension 2 Code" <> '' THEN BEGIN
+          TempJnlLineDim_L.INIT;
+          TempJnlLineDim_L."Table ID" := DATABASE::"Item Ledger Entry";
+          TempJnlLineDim_L.VALIDATE("Dimension Code", G_GeneralLedgerSetup."Global Dimension 2 Code");
+          TempJnlLineDim_L.VALIDATE("Dimension Value Code","Global Dimension 2 Code");
+          TempJnlLineDim_L.INSERT(TRUE);
+        END;
+
+        CLEAR(cduPostItemJnlLine_L);
+        cduCMCDimensions_L.DimFromItemJnl(TempJnlLineDim_L,RecItemJnlLine_L,TRUE);
+        cduPostItemJnlLine_L.RunWithCheck(RecItemJnlLine_L,TempJnlLineDim_L);
+      END;
+    END;
+
+    PROCEDURE ChekInventOnOtherCell@8053020(LocationCode_P@8053000 : Code[10];ItemCode_P@8053001 : Code[20];QteToShip_P@8053004 : Decimal) ResErrorMessage : Boolean;
+    VAR
+      RecCellsLocation_L@8053002 : Record 8053031;
+      MessError_L@8053003 : Boolean;
+    BEGIN
+      MessError_L:=FALSE;
+      RecCellsLocation_L.RESET;
+      RecCellsLocation_L.SETRANGE("Location Code",LocationCode_P);
+      RecCellsLocation_L.SETRANGE("Active Item No.",ItemCode_P);
+      IF RecCellsLocation_L.FINDSET THEN
+        REPEAT
+          RecCellsLocation_L.CALCFIELDS("Cell Inventory");
+          IF RecCellsLocation_L."Cell Inventory">=QteToShip_P THEN
+            MessError_L:=TRUE;
+        UNTIL (RecCellsLocation_L.NEXT=0) OR (MessError_L=TRUE);
+      ResErrorMessage:=MessError_L;
+      EXIT(ResErrorMessage);
+    END;
+
+    PROCEDURE TestAnalysisValue@8053013(CMCDeliveryRec_P@8053000 : Record 8053013);
+    VAR
+      RecSpeciesAnalysis_L@8053001 : Record 8052989;
+      CMCDeliveryAnalysisRec_L@8053002 : Record 8053030;
+      Text001_L@8053003 : TextConst 'ENU=Entering a value for% 1 analysis is mandatory.;FRA=La saisie d''une valeur pour l''analyse %1 est obligatoire.';
+    BEGIN
+      RecSpeciesAnalysis_L.RESET;
+      RecSpeciesAnalysis_L.SETRANGE("Input/Output",RecSpeciesAnalysis_L."Input/Output"::"Input/Output");
+      RecSpeciesAnalysis_L.SETRANGE("Species Code",CMCDeliveryRec_P."Species Code");
+      RecSpeciesAnalysis_L.SETRANGE("Outpout Mandatory",TRUE);
+      IF RecSpeciesAnalysis_L.FINDSET THEN
+        REPEAT
+          IF CMCDeliveryAnalysisRec_L.GET(CMCDeliveryRec_P."Delivery Type",CMCDeliveryRec_P."No.", RecSpeciesAnalysis_L."Analysis Code")
+          THEN
+            IF CMCDeliveryAnalysisRec_L.Value=0 THEN
+              ERROR(Text001_L,RecSpeciesAnalysis_L."Analysis Code");
+        UNTIL RecSpeciesAnalysis_L.NEXT=0;
+    END;
+
+    PROCEDURE PostItemJnlLinesForTransferInd@8053021(RecPostedDelivery_P@8053004 : Record 8053014;Iter_P@8053006 : Integer;TreatmentType@8053005 : 'Validation,Annulation') Res_EntryNo : Integer;
+    VAR
+      L_RecItemJnlLine@8053000 : Record 83;
+      L_TempJnlLineDim@8053001 : TEMPORARY Record 356;
+      L_recItem@8053008 : Record 27;
+      RecCellsLocation_L@8053003 : Record 8053031;
+      L_PostItemJnlLine@8053002 : Codeunit 22;
+      cduICInboxOutboxMgt_L@8053007 : Codeunit 427;
+      RecCompanyInfo_L@8053009 : Record 79;
+    BEGIN
+      G_GeneralLedgerSetup.GET;
+
+      //--------------------------------------------------------------------------------------
+      // Cr'ation ( SANS INSERT ) des Ligne Feuille Article pour transfert vers magasin de transit ind'pendant
+      //--------------------------------------------------------------------------------------
+      WITH RecPostedDelivery_P DO BEGIN
+        L_RecItemJnlLine.INIT;
+        L_RecItemJnlLine."Posting Date" := "Posting Date";
+        L_RecItemJnlLine."Document Date" := "Posting Date";
+        L_RecItemJnlLine."Document No." := "No.";
+        IF TreatmentType = TreatmentType::Validation THEN BEGIN
+          IF Iter_P = 1 THEN BEGIN
+            L_RecItemJnlLine."Entry Type" := L_RecItemJnlLine."Entry Type"::"Negative Adjmt.";
+            L_RecItemJnlLine."Location Code" := "Location Code";
+            L_RecItemJnlLine."On Behalf Of" := "On Behalf Of Adjustment" AND ("IC Direction" = "IC Direction"::Incoming);
+            L_RecItemJnlLine."Cell Code" := "Cell Code";
+            L_RecItemJnlLine."Indep. Transfer-From Location" := "Location Code";
+            L_RecItemJnlLine."Indep. Transfer-To Location"  := "Transfer-to Code";
+          END ELSE
+            IF Iter_P = 2 THEN BEGIN
+            L_RecItemJnlLine."Entry Type" := L_RecItemJnlLine."Entry Type"::"Positive Adjmt.";
+            IF "Send IC Document" AND "On Behalf Of Adjustment" AND ("IC Direction" = "IC Direction"::Outgoing) THEN BEGIN
+              L_RecItemJnlLine."Location Code" := cduICInboxOutboxMgt_L.GetSetOffLocationFromICPartner("IC Partner Code");
+              L_RecItemJnlLine."On Behalf Of" := TRUE;
+              L_RecItemJnlLine."Cell Code" := RecCellsLocation_L.GetUncontroledCell(
+                cduICInboxOutboxMgt_L.GetSetOffLocationFromICPartner("IC Partner Code"))
+            END ELSE BEGIN
+              RecCompanyInfo_L.GET;
+              IF ("IC Direction" = "IC Direction"::Incoming) AND "On Behalf Of Adjustment" AND
+                 (RecCompanyInfo_L."IC Partner Code" = "IC Partner-From Code")
+              THEN BEGIN
+                L_RecItemJnlLine."Location Code" := "Transfer-to Code";
+                L_RecItemJnlLine."On Behalf Of" := TRUE;
+                L_RecItemJnlLine."Cell Code" := RecCellsLocation_L.GetUncontroledCell("Transfer-to Code");
+              END ELSE BEGIN
+                L_RecItemJnlLine."Location Code" := "Indep. Transfer Transit Code";
+                L_RecItemJnlLine."Cell Code" := "Cell Code";
+              END;
+            END;
+            L_RecItemJnlLine."Indep. Transfer-From Location" := "Location Code";
+            L_RecItemJnlLine."Indep. Transfer-To Location"  := "Transfer-to Code";
+          END;
+        END ELSE IF TreatmentType = TreatmentType::Annulation THEN BEGIN
+           L_RecItemJnlLine."Posting Date" := GetGoodDate(RecPostedDelivery_P."Item Ledger Entry No.",WORKDATE);
+           L_RecItemJnlLine."Document Date" := GetGoodDate(RecPostedDelivery_P."Item Ledger Entry No.",WORKDATE);
+          IF Iter_P = 1 THEN BEGIN
+            L_RecItemJnlLine."Entry Type" := L_RecItemJnlLine."Entry Type"::"Negative Adjmt.";
+            IF "Send IC Document" AND "On Behalf Of Adjustment" AND ("IC Direction" = "IC Direction"::Outgoing) THEN BEGIN
+              L_RecItemJnlLine."Location Code" := cduICInboxOutboxMgt_L.GetSetOffLocationFromICPartner("IC Partner Code");
+              L_RecItemJnlLine."On Behalf Of" := TRUE;
+              L_RecItemJnlLine."Cell Code" := RecCellsLocation_L.GetUncontroledCell(
+                cduICInboxOutboxMgt_L.GetSetOffLocationFromICPartner("IC Partner Code"))
+            END ELSE BEGIN
+              RecCompanyInfo_L.GET;
+              IF ("IC Direction" = "IC Direction"::Incoming) AND "On Behalf Of Adjustment" AND
+                (RecCompanyInfo_L."IC Partner Code" = "IC Partner-From Code") THEN BEGIN
+                L_RecItemJnlLine."Location Code" := "Transfer-to Code";
+                L_RecItemJnlLine."On Behalf Of" := TRUE;
+                L_RecItemJnlLine."Cell Code" := RecCellsLocation_L.GetUncontroledCell("Transfer-to Code");
+              END ELSE BEGIN
+                L_RecItemJnlLine."Location Code" := "Indep. Transfer Transit Code";
+                L_RecItemJnlLine."Cell Code" := "Cell Code";
+              END;
+            END;
+            L_RecItemJnlLine."Indep. Transfer-From Location" := "Location Code";
+            L_RecItemJnlLine."Indep. Transfer-To Location"  := "Transfer-to Code";
+          END ELSE
+            IF Iter_P = 2 THEN BEGIN
+            L_RecItemJnlLine."Entry Type" := L_RecItemJnlLine."Entry Type"::"Positive Adjmt.";
+            L_RecItemJnlLine."Location Code" := "Location Code";
+            L_RecItemJnlLine."On Behalf Of" := "On Behalf Of Adjustment" AND ("IC Direction" = "IC Direction"::Incoming);
+            L_RecItemJnlLine."Cell Code" := "Cell Code";
+            L_RecItemJnlLine."Indep. Transfer-From Location" := "Location Code";
+            L_RecItemJnlLine."Indep. Transfer-To Location"  := "Transfer-to Code";
+          END;
+          L_RecItemJnlLine."Origin Lot No.":=RecPostedDelivery_P."Lot No.";
+          L_RecItemJnlLine."Cereal Retreatment Mvt":=TRUE;
+        END;
+        L_RecItemJnlLine."Item No." := "Item No.";
+        L_RecItemJnlLine."Transfer No." := "No.";
+        L_RecItemJnlLine."Shortcut Dimension 1 Code" := "Global Dimension 1 Code";
+        L_RecItemJnlLine."New Shortcut Dimension 1 Code" := "Global Dimension 1 Code";
+        L_RecItemJnlLine."Shortcut Dimension 2 Code" := "Global Dimension 2 Code";
+        L_RecItemJnlLine."New Shortcut Dimension 2 Code" := "Global Dimension 2 Code";
+        L_RecItemJnlLine.Quantity := "Standard Weight";
+        L_RecItemJnlLine."Invoiced Quantity" := L_RecItemJnlLine.Quantity;
+        L_RecItemJnlLine."Quantity (Base)" := L_RecItemJnlLine.Quantity;
+        L_RecItemJnlLine."Invoiced Qty. (Base)" := L_RecItemJnlLine.Quantity;
+        L_recItem.GET("Item No.");
+        L_RecItemJnlLine."Gen. Prod. Posting Group" := L_recItem."Gen. Prod. Posting Group";
+        L_RecItemJnlLine."Inventory Posting Group" := L_recItem."Inventory Posting Group";
+        L_RecItemJnlLine."Unit of Measure Code" := L_recItem."Base Unit of Measure";
+        L_RecItemJnlLine."Qty. per Unit of Measure" := 1;
+        L_RecItemJnlLine."Transaction Type" :=  "Transaction Type";
+        L_RecItemJnlLine."Transport Method" := "Transport Method";
+        L_RecItemJnlLine.Area := Area;
+        L_RecItemJnlLine."Transaction Specification" := "Transaction Specification";
+        L_RecItemJnlLine."Product Group Code" := L_recItem."Product Group Code";
+        L_RecItemJnlLine."Item Category Code" := L_recItem."Item Category Code";
+        L_RecItemJnlLine."Movement Type":=L_RecItemJnlLine."Movement Type"::S05;
+        L_RecItemJnlLine."Stock Type" := L_RecItemJnlLine."Stock Type"::Company;
+        L_RecItemJnlLine."Collection Type" := L_RecItemJnlLine."Collection Type"::Purchase;
+        L_RecItemJnlLine."Vendor Storage" := FALSE;
+        L_RecItemJnlLine.VALIDATE("Campaign No.","Campaign No.");
+        L_RecItemJnlLine."Independent Transfer" :=  TRUE;
+        // Indiquer le partenaire IC dans le mvt de transfert g'n'r' par la soci't' de gestion du silo partag'
+        IF "Shared Silo" AND "Send IC Document" AND ("IC Direction" = "IC Direction"::Outgoing) AND NOT "On Behalf Of Adjustment" THEN
+          L_RecItemJnlLine."IC Partner Code" := "IC Partner Code";
+
+        IF "Shared Silo" AND "Send IC Document" AND ("IC Direction" = "IC Direction"::Outgoing) AND "On Behalf Of Adjustment" AND
+          ("IC Partner-From Code" <> '')
+        THEN
+          L_RecItemJnlLine."IC Partner Code" := "IC Partner-From Code";
+
+        L_RecItemJnlLine."Shared Silo" := "Shared Silo" AND ("IC Direction" = "IC Direction"::Incoming);
+
+        // --> 20150813-CER35/001-ADV01.01.00-1987-FHS01
+        IF RecPostedDelivery_P."Lot No." <> '' THEN BEGIN
+          L_RecItemJnlLine."Cereal Retreatment Mvt" := TRUE;
+          L_RecItemJnlLine."Origin Lot No." := RecPostedDelivery_P."Lot No.";
+        END;
+        // <-- 20150813-CER35/001-ADV01.01.00-1987-FHS01
+        // --> 20160513-Gen15/001-ADV01.01.00-2813-FBE
+        IF (L_RecItemJnlLine."Location Code" <> "Indep. Transfer Transit Code" ) AND ("Location Code" <> "Actual Location Code") THEN
+          L_RecItemJnlLine."Actual Location Code" := "Actual Location Code";
+        // <-- 20160513-Gen15/001-ADV01.01.00-2813-FBE
+
+        //--------------------------------------------------------------------------------------
+        // Cr'ation des Informations ANALYTIQUES ( Table TEMPORAIRE )
+        //--------------------------------------------------------------------------------------
+        L_TempJnlLineDim.DELETEALL;
+        IF "Global Dimension 1 Code" <> '' THEN BEGIN
+          L_TempJnlLineDim.INIT;
+          L_TempJnlLineDim."Table ID" := DATABASE::"Item Ledger Entry";
+          L_TempJnlLineDim.VALIDATE("Dimension Code", G_GeneralLedgerSetup."Global Dimension 1 Code");
+          L_TempJnlLineDim.VALIDATE("Dimension Value Code","Global Dimension 1 Code");
+          L_TempJnlLineDim.VALIDATE("New Dimension Value Code","Global Dimension 1 Code");
+          L_TempJnlLineDim.INSERT(TRUE);
+        END;
+
+        IF "Global Dimension 2 Code" <> '' THEN BEGIN
+          L_TempJnlLineDim.INIT;
+          L_TempJnlLineDim."Table ID" := DATABASE::"Item Ledger Entry";
+          L_TempJnlLineDim.VALIDATE("Dimension Code", G_GeneralLedgerSetup."Global Dimension 2 Code");
+          L_TempJnlLineDim.VALIDATE("Dimension Value Code","Global Dimension 2 Code");
+          L_TempJnlLineDim.VALIDATE("New Dimension Value Code","Global Dimension 2 Code");
+          L_TempJnlLineDim.INSERT(TRUE);
+        END;
+
+        CLEAR(L_PostItemJnlLine);
+        G_CMCDimension.DimFromItemJnl(L_TempJnlLineDim,L_RecItemJnlLine,TRUE);
+        L_PostItemJnlLine.RunWithCheck(L_RecItemJnlLine,L_TempJnlLineDim);
+        Res_EntryNo:=L_RecItemJnlLine."Item Shpt. Entry No.";
+        EXIT(Res_EntryNo);
+      END;
+    END;
+
+    PROCEDURE PostItemJnlLinesForOwnShipTrsf@8053039(RecPostedDelivery_P@8053004 : Record 8053014;Iter_P@8053005 : Integer) : Integer;
+    VAR
+      RecItemJnlLine_L@8053000 : Record 83;
+      RecJnlLineDimTmp_L@8053001 : TEMPORARY Record 356;
+      RecItem_L@8053008 : Record 27;
+      RecCellsLocation_L@8053003 : Record 8053031;
+      RecCompanyInfo_L@8053007 : Record 79;
+      cduPostItemJnlLine_L@8053002 : Codeunit 22;
+      cduICInboxOutboxMgt_L@8053006 : Codeunit 427;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Valide les mouvements dans le cas des transferts de propri't' pour r'gule des apports pour le compte de
+      //
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - RecPostedDelivery_P : N› transfert de propri't' valid'
+      //   -Iter_P : It'ration de g'n'ration du mouvement article
+      // Sorties:
+      //   - Renvoie le N› de s'quence de la denniSre 'criture article g'n'r'e
+      //----------------------------------------------------------------------------------------------------------
+      G_GeneralLedgerSetup.GET;
+
+      WITH RecPostedDelivery_P DO BEGIN
+        RecItemJnlLine_L.INIT;
+        RecItemJnlLine_L."Posting Date" := "Posting Date";
+        RecItemJnlLine_L."Document Date" := "Posting Date";
+        RecItemJnlLine_L."Document No." := "No.";
+
+        //Mouvements g'n'r's dans la soci't' de gestion
+        IF RecPostedDelivery_P."IC Direction" = RecPostedDelivery_P."IC Direction"::Outgoing THEN BEGIN
+          //It'ration 1 : ajustement n'gatif sur le silo partag'
+          IF Iter_P = 1 THEN BEGIN
+            RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Negative Adjmt.";
+            RecItemJnlLine_L."Location Code" := "Location Code";
+            RecItemJnlLine_L."Cell Code" := "Cell Code";
+            IF  "IC Partner-From Code" <> '' THEN
+              RecItemJnlLine_L."IC Partner Code" := "IC Partner-From Code"
+          END ELSE
+            //It'ration 2 : ajustement positif sur le silo partag'
+            IF Iter_P = 2 THEN BEGIN
+              RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Positive Adjmt.";
+              RecItemJnlLine_L."Location Code" := "Location Code";
+              RecItemJnlLine_L."Cell Code" := "Cell Code";
+              IF  "IC Partner-From Code" = '' THEN
+                RecItemJnlLine_L."IC Partner Code" := "IC Partner Code"
+              ELSE
+                IF "IC Partner-From Code" <> "IC Partner Code" THEN
+                  RecItemJnlLine_L."IC Partner Code" := "IC Partner Code"
+            //It'ration 3 : mouvement sur le silo de compensation
+            END ELSE BEGIN
+              //Cas 1 la soci't' de gestion doit . la soci't' utilisatrice
+              IF "IC Partner-From Code" = '' THEN
+                RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Positive Adjmt."
+              ELSE BEGIN
+                //Cas 2 la soci't' utilisatrice doit . la soci't' de gestion
+                IF "IC Partner-From Code" = "IC Partner Code" THEN
+                  RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Negative Adjmt."
+                //Cas 3 la soci't' utilisatrice A doit . la soci't' utilisatrice B -> pas de mouvement de compensation dans la
+                //soci't' de gestion
+                ELSE
+                  EXIT(RecPostedDelivery_P."Item Ledger Entry No.");
+              END;
+              RecItemJnlLine_L."Location Code" := cduICInboxOutboxMgt_L.GetSetOffLocationFromICPartner("IC Partner Code");;
+              // --> 20160513-Gen15/001-ADV01.01.00-2813-FBE
+              RecItemJnlLine_L."Actual Location Code" := "Location Code";
+              // <-- 20160513-Gen15/001-ADV01.01.00-2813-FBE
+              RecItemJnlLine_L."On Behalf Of" := TRUE;
+              RecItemJnlLine_L."Cell Code" := RecCellsLocation_L.GetUncontroledCell(
+                cduICInboxOutboxMgt_L.GetSetOffLocationFromICPartner("IC Partner Code"));
+            END;
+        //Mouvements g'n'r's dans la soci't' utilisatrice
+        END ELSE BEGIN
+          RecCompanyInfo_L.GET;
+          //It'ration 1 : ajustement n'gatif sur le silo partag' ou le silo de compensation
+          IF Iter_P = 1 THEN BEGIN
+            RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Negative Adjmt.";
+            RecItemJnlLine_L."On Behalf Of" := TRUE;
+            RecItemJnlLine_L."Shared Silo" := TRUE;
+            RecItemJnlLine_L."Location Code" := "Location Code";
+            RecItemJnlLine_L."Cell Code" := RecCellsLocation_L.GetUncontroledCell("Location Code");
+            // --> 20160513-Gen15/001-ADV01.01.00-2813-FBE
+            RecItemJnlLine_L."Actual Location Code" := "Location Code";
+            // <-- 20160513-Gen15/001-ADV01.01.00-2813-FBE
+          //It'ration 2 : ajustement positif sur le silo partag' ou le silo de compensation
+          END ELSE BEGIN
+            RecItemJnlLine_L."Entry Type" := RecItemJnlLine_L."Entry Type"::"Positive Adjmt.";
+            RecItemJnlLine_L."On Behalf Of" := TRUE;
+            RecItemJnlLine_L."Shared Silo" := TRUE;
+            RecItemJnlLine_L."Location Code" := "Transfer-to Code";
+            RecItemJnlLine_L."Cell Code" := RecCellsLocation_L.GetUncontroledCell("Transfer-to Code");
+          END;
+        END;
+        RecItemJnlLine_L."Item No." := "Item No.";
+        RecItemJnlLine_L."Transfer No." := "No.";
+        RecItemJnlLine_L."Shortcut Dimension 1 Code" := "Global Dimension 1 Code";
+        RecItemJnlLine_L."New Shortcut Dimension 1 Code" := "Global Dimension 1 Code";
+        RecItemJnlLine_L."Shortcut Dimension 2 Code" := "Global Dimension 2 Code";
+        RecItemJnlLine_L."New Shortcut Dimension 2 Code" := "Global Dimension 2 Code";
+        RecItemJnlLine_L.Quantity := "Standard Weight";
+        RecItemJnlLine_L."Invoiced Quantity" := RecItemJnlLine_L.Quantity;
+        RecItemJnlLine_L."Quantity (Base)" := RecItemJnlLine_L.Quantity;
+        RecItemJnlLine_L."Invoiced Qty. (Base)" := RecItemJnlLine_L.Quantity;
+        RecItem_L.GET("Item No.");
+        RecItemJnlLine_L."Gen. Prod. Posting Group" := RecItem_L."Gen. Prod. Posting Group";
+        RecItemJnlLine_L."Inventory Posting Group" := RecItem_L."Inventory Posting Group";
+        RecItemJnlLine_L."Unit of Measure Code" := RecItem_L."Base Unit of Measure";
+        RecItemJnlLine_L."Qty. per Unit of Measure" := 1;
+        RecItemJnlLine_L."Transaction Type" :=  "Transaction Type";
+        RecItemJnlLine_L."Transport Method" := "Transport Method";
+        RecItemJnlLine_L.Area := Area;
+        RecItemJnlLine_L."Transaction Specification" := "Transaction Specification";
+        RecItemJnlLine_L."Product Group Code" := RecItem_L."Product Group Code";
+        RecItemJnlLine_L."Item Category Code" := RecItem_L."Item Category Code";
+        RecItemJnlLine_L."Movement Type":=RecItemJnlLine_L."Movement Type"::S05;
+        RecItemJnlLine_L."Stock Type" := RecItemJnlLine_L."Stock Type"::Company;
+        RecItemJnlLine_L."Vendor Storage" := FALSE;
+        RecItemJnlLine_L."Campaign No." := "Campaign No.";
+        RecItemJnlLine_L."Ownership Transfer" := TRUE;
+
+        //--------------------------------------------------------------------------------------
+        // Cr'ation des Informations ANALYTIQUES ( Table TEMPORAIRE )
+        //--------------------------------------------------------------------------------------
+        RecJnlLineDimTmp_L.DELETEALL;
+        IF "Global Dimension 1 Code" <> '' THEN BEGIN
+          RecJnlLineDimTmp_L.INIT;
+          RecJnlLineDimTmp_L."Table ID" := DATABASE::"Item Ledger Entry";
+          RecJnlLineDimTmp_L.VALIDATE("Dimension Code", G_GeneralLedgerSetup."Global Dimension 1 Code");
+          RecJnlLineDimTmp_L.VALIDATE("Dimension Value Code","Global Dimension 1 Code");
+          RecJnlLineDimTmp_L.VALIDATE("New Dimension Value Code","Global Dimension 1 Code");
+          RecJnlLineDimTmp_L.INSERT(TRUE);
+        END;
+        IF "Global Dimension 2 Code" <> '' THEN BEGIN
+          RecJnlLineDimTmp_L.INIT;
+          RecJnlLineDimTmp_L."Table ID" := DATABASE::"Item Ledger Entry";
+          RecJnlLineDimTmp_L.VALIDATE("Dimension Code", G_GeneralLedgerSetup."Global Dimension 2 Code");
+          RecJnlLineDimTmp_L.VALIDATE("Dimension Value Code","Global Dimension 2 Code");
+          RecJnlLineDimTmp_L.VALIDATE("New Dimension Value Code","Global Dimension 2 Code");
+          RecJnlLineDimTmp_L.INSERT(TRUE);
+        END;
+
+        CLEAR(cduPostItemJnlLine_L);
+        G_CMCDimension.DimFromItemJnl(RecJnlLineDimTmp_L,RecItemJnlLine_L,TRUE);
+        cduPostItemJnlLine_L.RunWithCheck(RecItemJnlLine_L,RecJnlLineDimTmp_L);
+        EXIT(RecItemJnlLine_L."Item Shpt. Entry No.");
+      END;
+    END;
+
+    PROCEDURE CancelPostedIndepTransfer@8053015(RecPostedDelivery_P@8053000 : Record 8053014);
+    VAR
+      i@8053001 : Integer;
+      Text0002@8053002 : TextConst 'ENU=The posted independant transfer is canceled successfully.;FRA="Le transfert ind'pendant valid' a 't' annul' avec succSs. "';
+      Text0001@8053003 : TextConst 'FRA=Voulez-vous vraiment annuler le transfert ind'pendant valid' ?';
+      Text0003@8053004 : TextConst 'FRA=Voulez-vous g'n'rer un nouveau bon de transfert ind'pendant ?';
+      CduICInOutboxMgt_L@8053005 : Codeunit 427;
+      RecCharterLine_L@1000000000 : Record 8053265;
+      RecItemLdgEntry_L@1000000001 : Record 32;
+      RecCellsLocation_L@1000000002 : Record 8053031;
+      PostDeliveryYesNo_L@1000000003 : Codeunit 8052989;
+    BEGIN
+      WITH RecPostedDelivery_P DO BEGIN
+        TESTFIELD(Canceled,FALSE);
+        TESTFIELD("Reconciliation Validated",FALSE);
+        IF NOT IsCallFromPostICTransfer_G AND ("IC Direction" = "IC Direction"::Incoming) THEN BEGIN
+          ERROR(Text8053021,"IC Partner Code");
+        END;
+        IF HideValidationDialog_G OR NOT GUIALLOWED THEN
+          Confirmed_G := TRUE
+        ELSE
+          Confirmed_G := CONFIRM (Text0001,FALSE);
+        IF Confirmed_G THEN BEGIN
+          FOR i := 1 TO 2 DO BEGIN
+            // Ne pas g'n'rer de mvt dans le TRANSIT quand il s'agit de l'annulation d'un transfert IC
+            // L''criture sur le transit est g'n'r'e dans l'it'ration 1
+            // G'n'rer le mvt dans le magasin de compensation quand il s'agit d'un envoi transfert IC pour r'gule des apports
+            // pour le compte de
+            IF (i = 1) AND (NOT ("Send IC Document" AND ("IC Direction" = "IC Direction"::Outgoing)) OR
+              ("Send IC Document" AND "On Behalf Of Adjustment" AND ("IC Direction" = "IC Direction"::Outgoing) AND
+              // Ne pas g'n'rer le mvt dans le magasin de compensation dans la soci't' de gestion du silo partag' si la r'gule se fait
+              // entre 2 soci't's utilisatrices
+              ("IC Partner-From Code" = ''))) OR (i = 2)
+            THEN BEGIN
+              "Canceled Item Ledg. Entry No." := PostItemJnlLinesForTransferInd(RecPostedDelivery_P,i,1);
+              IF i = 2 THEN
+                CreateItemWeightEntry(RecPostedDelivery_P."Canceled Item Ledg. Entry No.",RecPostedDelivery_P."Net Weight");
+            END;
+          END;
+
+          // --> 20150728-WI00-ADV01.01.00-1983-DRN01
+          // si un PZ a eu lieu entre la validation de la sortie transfert et son annulation,
+          // il faut annuler le mouvement d'annulation sur le lot d'origine pour constater la freinte suur la cellule d'ajustement
+          // Dans le cas d'un flux IC, uniquement sur le flux sortant
+          IF "IC Direction" = "IC Direction"::Outgoing THEN BEGIN
+            RecItemLdgEntry_L.GET("Canceled Item Ledg. Entry No.");
+            RecCellsLocation_L.GET("Location Code","Cell Code");
+            IF RecCellsLocation_L."Active Lot No." <> "Lot No." THEN
+            // --> 20150915-CER35/001-ADV01.01.00-845-SDE01
+            //CreateGapLedgerEntry(RecPostedDelivery_P,"Posting Date",TRUE,"Lot No.",-RecItemLdgEntry_L.Quantity);
+              CreateGapLedgerEntry(RecPostedDelivery_P,RecItemLdgEntry_L."Posting Date",TRUE,"Lot No.",-RecItemLdgEntry_L.Quantity);
+            // --> 20150915-CER35/001-ADV01.01.00-845-SDE01
+          END;
+          // <-- 20150728-WI00-ADV01.01.00-1983-DRN01
+
+          Canceled := TRUE;
+
+          // --> 20150723-APP27-TER01.01.00-1917-BSI01
+          IF ("Shipping Order No." <> '') AND ("Charter No." <> '') THEN BEGIN
+            IF RecCharterLine_L.GET("Shipping Order No.") THEN BEGIN
+              RecCharterLine_L.VALIDATE("Realized Quantity",RecCharterLine_L."Realized Quantity" - "Net Weight");
+              RecCharterLine_L."Number of Achieved Units" -= 1;
+              RecCharterLine_L.Status := RecCharterLine_L.Status::Open;
+              RecCharterLine_L.MODIFY;
+            END;
+          END;
+          // <-- 20150723-APP27-TER01.01.00-1917-BSI01
+
+          // Envoi du flux IC d'annulation de la livraison transfert collecte
+          IF "Send IC Document" AND ("IC Direction" = "IC Direction"::Outgoing) THEN BEGIN
+            CduICInOutboxMgt_L.CreateOutboxDeliveryDocAction(RecPostedDelivery_P,DocActionType_G::Cancel);
+          END;
+          MODIFY;
+
+          // --> 20160518-WI00-ADV01.01.00-2212-MMI01
+          PostDeliveryYesNo_L.CancelTranportLine(RecPostedDelivery_P);
+          // <-- 20160518-WI00-ADV01.01.00-2212-MMI01
+
+          COMMIT;
+          MESSAGE(Text0002);
+
+          IF NOT IsCallFromPostICTransfer_G THEN
+            IF NOT CONFIRM(Text0003,FALSE)THEN
+              EXIT
+            ELSE
+              NewIndepTransferSuggest(RecPostedDelivery_P);
+        END;
+      END;
+    END;
+
+    PROCEDURE CheckDistribution@8053017(Delivery_P@8053000 : Record 8053013);
+    VAR
+      DistriCell_L@8053001 : Record 8053315;
+      CelLocation_L@8053002 : Record 8053031;
+      TransportMeth_L@8053003 : Record 259;
+      Text8053000_L@8053005 : TextConst 'FRA=La somme des quantit's distribu'es n''est pas 'gale au poids net;ENG=The total of distributed amounts is not equal to the net weight';
+      Text8053001_L@8053006 : TextConst 'FRA=La somme des quantit's distribu'es n''est pas 'gale au poids aux normes;ENG=The tolal of distributed amounts  is not equal to the standard weight';
+    BEGIN
+      CelLocation_L.GET(Delivery_P."Location Code",Delivery_P."Cell Code");
+      CelLocation_L.TESTFIELD(CelLocation_L."Distribution Cell");
+      TransportMeth_L.GET(Delivery_P."Transport Method");
+      TransportMeth_L.TESTFIELD(TransportMeth_L."Allow On Distribution Cell");
+      DistriCell_L.RESET;
+      DistriCell_L.SETRANGE("Delivery No.",Delivery_P."No.");
+      DistriCell_L.CALCSUMS(DistriCell_L.Quantity);
+      IF Delivery_P."Delivery Type"= Delivery_P."Delivery Type"::Delivery THEN
+        IF  NOT (Delivery_P."Net Weight" = DistriCell_L.Quantity) THEN
+          ERROR(Text8053000_L);
+      IF Delivery_P."Delivery Type"= Delivery_P."Delivery Type"::Transfert THEN
+        IF  NOT (ABS(Delivery_P."Standard Weight") = DistriCell_L.Quantity) THEN
+          ERROR(Text8053001_L);
+      // --> CER44-TER01.01.00-PSC02
+      IF Delivery_P."Delivery Type"= Delivery_P."Delivery Type"::Resumption THEN
+        IF  NOT (ABS(Delivery_P."Net Weight") = DistriCell_L.Quantity) THEN
+          ERROR(Text8053000_L);
+      // <-- CER44-TER01.01.00-PSC02
+    END;
+
+    PROCEDURE PostDistribLine@8053016(Delivery_P@8053000 : Record 8053013;VAR DistributionCell_P@8053001 : Record 8053315);
+    VAR
+      ItemJnlLine_L@8053003 : Record 83;
+      PostItemJnlLine_L@8053004 : Codeunit 22;
+      "-------"@1000000000 : Integer;
+      RecCMCSetup@1000000006 : Record 8052982;
+      RecItem_L@1000000004 : Record 27;
+      TempJnlLineDim_L@1000000003 : TEMPORARY Record 356;
+      cduCMCDimensions_L@1000000001 : Codeunit 8053004;
+    BEGIN
+      DistributionCell_P.LOCKTABLE;
+      IF NOT (DistributionCell_P."Cell Transfer Posted") THEN BEGIN
+        TempJnlLineDim_L.DELETEALL;
+        CLEAR(PostItemJnlLine_L);
+        cduCMCDimensions_L.DimFromItemJnl(TempJnlLineDim_L,ItemJnlLine_L,TRUE);
+
+        ItemJnlLine_L.INIT;
+        ItemJnlLine_L."Posting Date" := Delivery_P."Posting Date";
+        ItemJnlLine_L."Entry Type" := ItemJnlLine_L."Entry Type"::"Negative Adjmt.";
+        ItemJnlLine_L."Movement Type" := ItemJnlLine_L."Movement Type"::T30;
+        ItemJnlLine_L."Document No." := Delivery_P."No.";
+        ItemJnlLine_L.VALIDATE("Campaign No.",Delivery_P."Campaign No.");
+        ItemJnlLine_L.VALIDATE("Item No.",Delivery_P."Item No.");
+        ItemJnlLine_L.VALIDATE("Location Code",Delivery_P."Location Code");
+        ItemJnlLine_L.VALIDATE(Quantity,DistributionCell_P.Quantity);
+
+        TempJnlLineDim_L.DELETEALL;
+        CLEAR(PostItemJnlLine_L);
+        cduCMCDimensions_L.DimFromItemJnl(TempJnlLineDim_L,ItemJnlLine_L,TRUE);
+
+        ItemJnlLine_L.VALIDATE("Cell Code",DistributionCell_P."Cell Code");
+        PostItemJnlLine_L.RunWithCheck(ItemJnlLine_L,TempJnlLineDim_L);
+        DistributionCell_P."Cell Transfer Posted" := TRUE;
+        DistributionCell_P.MODIFY;
+
+        ItemJnlLine_L.INIT;
+        ItemJnlLine_L."Posting Date" := Delivery_P."Posting Date";
+        ItemJnlLine_L."Entry Type" := ItemJnlLine_L."Entry Type"::"Positive Adjmt.";
+        ItemJnlLine_L."Movement Type" := ItemJnlLine_L."Movement Type"::T30;
+        ItemJnlLine_L."Document No." := Delivery_P."No.";
+        ItemJnlLine_L.VALIDATE("Campaign No.",Delivery_P."Campaign No.");
+        ItemJnlLine_L.VALIDATE("Item No.",Delivery_P."Item No.");
+        ItemJnlLine_L.VALIDATE("Location Code",Delivery_P."Location Code");
+        ItemJnlLine_L.VALIDATE("Cell Code",Delivery_P."Cell Code");
+        ItemJnlLine_L.VALIDATE(Quantity,DistributionCell_P.Quantity);
+
+        TempJnlLineDim_L.DELETEALL;
+        cduCMCDimensions_L.DimFromItemJnl(TempJnlLineDim_L,ItemJnlLine_L,TRUE);
+        PostItemJnlLine_L.RunWithCheck(ItemJnlLine_L,TempJnlLineDim_L);
+
+      END;
+    END;
+
+    PROCEDURE PostDistributions@8053018(Delivery_P@8053001 : Record 8053013);
+    VAR
+      PostedDistibutions_L@8053002 : Record 8053316;
+      DistriCell_L@8053000 : Record 8053315;
+    BEGIN
+      // --> CER44-TER01.01.00-PSC02
+      // BEFORE
+      {
+      IF NOT (Delivery_P."Delivery Type" IN [Delivery_P."Delivery Type" ::Delivery, Delivery_P."Delivery Type"::Transfert])  THEN
+        EXIT;
+      }
+      // AFTER
+      IF NOT (Delivery_P."Delivery Type" IN
+        [Delivery_P."Delivery Type"::Delivery, Delivery_P."Delivery Type"::Transfert, Delivery_P."Delivery Type"::Resumption])
+      THEN
+        EXIT;
+      // <-- CER44-TER01.01.00-PSC02
+
+      DistriCell_L.LOCKTABLE;
+      DistriCell_L.RESET;
+      DistriCell_L.SETRANGE(DistriCell_L."Delivery No.",Delivery_P."No.");
+      IF NOT DistriCell_L.FINDSET THEN
+        EXIT;
+
+      CheckDistribution (Delivery_P);
+
+      DistriCell_L.SETRANGE(DistriCell_L."Cell Transfer Posted",FALSE);
+      IF DistriCell_L.FINDSET THEN
+        REPEAT
+          PostDistribLine(Delivery_P,DistriCell_L);
+        UNTIL DistriCell_L.NEXT =0 ;
+
+      DistriCell_L.SETRANGE(DistriCell_L."Cell Transfer Posted");
+      DistriCell_L.FINDSET;
+
+      REPEAT
+        PostedDistibutions_L.INIT;
+        PostedDistibutions_L.TRANSFERFIELDS(DistriCell_L);
+        PostedDistibutions_L.INSERT;
+        DistriCell_L.DELETE;
+      UNTIL DistriCell_L.NEXT=0;
+    END;
+
+    PROCEDURE CreateItemWeightEntry@8053019(EntryNo_P@8053000 : Integer;GrossWeight_P@8053005 : Decimal);
+    VAR
+      ItemWeightEntry_L@8053001 : Record 8053317;
+      ItemLedgEntry_L@8053002 : Record 32;
+      LastEntryNo_L@8053003 : Integer;
+      Text8053000_L@8053004 : TextConst 'ENU=Gross weight entry no. %1 is successfully created.;FRA=Ecriture poids brut n› %1  cr''e avec succSs.';
+    BEGIN
+      IF ItemWeightEntry_L.FINDLAST THEN
+        LastEntryNo_L := ItemWeightEntry_L."Entry No."
+      ELSE
+        LastEntryNo_L := 0;
+
+      IF ItemLedgEntry_L.GET(EntryNo_P) THEN BEGIN
+        ItemWeightEntry_L.INIT;
+        ItemWeightEntry_L.TRANSFERFIELDS(ItemLedgEntry_L);
+        ItemWeightEntry_L."Entry No." := LastEntryNo_L+1;
+        ItemWeightEntry_L."Item Ledger Entry No." := EntryNo_P;
+        ItemWeightEntry_L.Quantity := GrossWeight_P;
+        ItemWeightEntry_L.INSERT;
+       END;
+    END;
+
+    PROCEDURE NewIndepTransferSuggest@8053022(CMCPostedDeliveryRec_P@8053006 : Record 8053014);
+    VAR
+      CMCDeliveryRec_L@8053004 : Record 8053013;
+      CMCPostWeighingRec_L@8053003 : Record 8053095;
+      CMCWeighingRec_L@8053002 : Record 8053094;
+      CMCPostedDeliveryAnalysisRec_L@8053001 : Record 8053015;
+      CMCDeliveryAnalysisRec_L@8053000 : Record 8053030;
+      NoSeriesMgt_L@8053005 : Codeunit 396;
+      CMCDeliveryCard_L@8053007 : Page 8053627;
+      CMCArchivedWeighingRec_L@1000000000 : Record 60135;
+    BEGIN
+      WITH CMCPostedDeliveryRec_P DO BEGIN
+        CMCDeliveryRec_L.INIT;
+        CMCDeliveryRec_L."Delivery Type" := CMCDeliveryRec_L."Delivery Type"::Transfert;
+        CMCDeliveryRec_L.INSERT(TRUE);
+        CMCDeliveryRec_L."Independent Transfer" := TRUE;
+        CMCDeliveryRec_L.VALIDATE("Location Code","Location Code");
+        CMCDeliveryRec_L.VALIDATE("Indep. Transfer Transit Code","Indep. Transfer Transit Code");
+        IF NOT CMCPostedDeliveryRec_P."Send IC Document" THEN BEGIN
+          CMCDeliveryRec_L.VALIDATE("Transfer-to Code","Transfer-to Code");
+        END;
+        //ToDo Adresse de livraison + synchro avec pes'e
+        CMCDeliveryRec_L.VALIDATE("Cell Code","Cell Code");
+        CMCDeliveryRec_L.VALIDATE("Species Code","Species Code");
+        CMCDeliveryRec_L.VALIDATE("Item No.","Item No.");
+        CMCDeliveryRec_L."Manual Transfer No." := "Manual Transfer No.";
+        CMCDeliveryRec_L.VALIDATE("Trucker Name","Trucker Name");
+        CMCDeliveryRec_L.VALIDATE("Trailers Registration No.","Trailers Registration No.");
+        CMCDeliveryRec_L."Transport Method" := "Transport Method";
+        // --> 20150624-CER176-TER01.01.00-456-RMZ01
+        // before
+        //CMCDeliveryRec_L."Shipping Agent Code" := "Shipping Agent Code";
+        CMCDeliveryRec_L.VALIDATE("Shipping Agent Code","Shipping Agent Code");
+        // after
+        // <-- 20150624-CER176-TER01.01.00-456-RMZ01
+        CMCDeliveryRec_L.Area := Area;
+        CMCDeliveryRec_L."Active Subtance Used" := "Active Subtance Used";
+        CMCDeliveryRec_L."Clean Containing" := "Clean Containing";
+        CMCDeliveryRec_L."Pre-Stockage Duration" := "Pre-Stockage Duration";
+
+        //ToDo D'sinsectisation ?
+
+        //ToDo Derniers chargements ?
+
+        //ToDo Contr"le transport ?
+
+        CMCPostedDeliveryAnalysisRec_L.RESET;
+        CMCPostedDeliveryAnalysisRec_L.SETRANGE("Delivery Type","Delivery Type");
+        CMCPostedDeliveryAnalysisRec_L.SETRANGE("Delivery No.","No.");
+        CMCPostedDeliveryAnalysisRec_L.SETRANGE(Type,CMCPostedDeliveryAnalysisRec_L.Type::" ");
+        IF CMCPostedDeliveryAnalysisRec_L.FINDSET THEN
+          REPEAT
+            //Les analyses sont cr''es automatiquement dans le validate de l'espSce
+            IF CMCDeliveryAnalysisRec_L.GET(CMCDeliveryRec_L."Delivery Type",CMCDeliveryRec_L."No.",
+              CMCPostedDeliveryAnalysisRec_L."Analysis Code")
+            THEN BEGIN
+              CMCDeliveryAnalysisRec_L.VALIDATE(Value ,CMCPostedDeliveryAnalysisRec_L.Value);
+              CMCDeliveryAnalysisRec_L.MODIFY;
+            END;
+          UNTIL CMCPostedDeliveryAnalysisRec_L.NEXT = 0;
+        // --> 20210521-WI00-ADV01.01.00-3555-CJY01
+        //on soumet le GET a un IF, on d'place donc cette ligne avec la suite qui la concerne si le GET aboutie
+        {BEFORE
+        CMCPostWeighingRec_L.GET(CMCPostedDeliveryRec_P."Weighing No.");
+        }
+        // <-- 20210521-WI00-ADV01.01.00-3555-CJY01
+        //L'enregistrement pes'e est automatiquement mis . jour dans les validate
+        CMCWeighingRec_L.GET(CMCDeliveryRec_L."Weighing No.");
+        CMCDeliveryRec_L."Weighing 1" := "Weighing 1";
+        CMCDeliveryRec_L."Weighing 1 No." := "Weighing 1 No.";
+        CMCDeliveryRec_L."Weighing 2" := "Weighing 2";
+        CMCDeliveryRec_L."Weighing 2 No." := "Weighing 2 No.";
+        CMCDeliveryRec_L."Net Weight" := "Net Weight";
+        CMCDeliveryRec_L."Standard Weight" := "Standard Weight";
+        CMCDeliveryRec_L."Scale Weight" := "Scale Weight";
+        // On r'cupSre les informations de pes'e d'origine (Poids, DSD, ID pont bascule, N› ticket bascule)
+        // --> 20210521-WI00-ADV01.01.00-3555-CJY01
+        IF CMCPostWeighingRec_L.GET(CMCPostedDeliveryRec_P."Weighing No.") THEN BEGIN
+        // <-- 20210521-WI00-ADV01.01.00-3555-CJY01
+        CMCWeighingRec_L."Weighing 1" := CMCPostWeighingRec_L."Weighing 1";
+        CMCWeighingRec_L."Weighing 1 No." := CMCPostWeighingRec_L."Weighing 1 No.";
+        CMCWeighingRec_L."Weighing 2" := CMCPostWeighingRec_L."Weighing 2";
+        CMCWeighingRec_L."Weighing 2 No." := CMCPostWeighingRec_L."Weighing 2 No.";
+        CMCWeighingRec_L."Net Weight" := CMCPostWeighingRec_L."Net Weight";
+        CMCWeighingRec_L."Toggle Bridge Code W1" := CMCPostWeighingRec_L."Toggle Bridge Code W1";
+        CMCWeighingRec_L."Toggle Bridge Code W2" := CMCPostWeighingRec_L."Toggle Bridge Code W2";
+        CMCWeighingRec_L."Weight 1 Manual Update" := CMCPostWeighingRec_L."Weight 1 Manual Update";
+        CMCWeighingRec_L."Weight 1 Manual Entry" := CMCPostWeighingRec_L."Weight 1 Manual Entry";
+        CMCWeighingRec_L."Weight 2 Manual Update" := CMCPostWeighingRec_L."Weight 2 Manual Update";
+        CMCWeighingRec_L."Weight 2 Manual Entry" := CMCPostWeighingRec_L."Weight 2 Manual Entry";
+        // --> 20210521-WI00-ADV01.01.00-3555-CJY01
+        END
+        ELSE BEGIN
+          IF CMCArchivedWeighingRec_L.GET(CMCPostedDeliveryRec_P."Weighing No.") THEN BEGIN
+            CMCWeighingRec_L."Weighing 1" := CMCArchivedWeighingRec_L."Weighing 1";
+            CMCWeighingRec_L."Weighing 1 No." := CMCArchivedWeighingRec_L."Weighing 1 No.";
+            CMCWeighingRec_L."Weighing 2" := CMCArchivedWeighingRec_L."Weighing 2";
+            CMCWeighingRec_L."Weighing 2 No." := CMCArchivedWeighingRec_L."Weighing 2 No.";
+            CMCWeighingRec_L."Net Weight" := CMCArchivedWeighingRec_L."Net Weight";
+            CMCWeighingRec_L."Toggle Bridge Code W1" := CMCArchivedWeighingRec_L."Toggle Bridge Code W1";
+            CMCWeighingRec_L."Toggle Bridge Code W2" := CMCArchivedWeighingRec_L."Toggle Bridge Code W2";
+            CMCWeighingRec_L."Weight 1 Manual Update" := CMCArchivedWeighingRec_L."Weight 1 Manual Update";
+            CMCWeighingRec_L."Weight 1 Manual Entry" := CMCArchivedWeighingRec_L."Weight 1 Manual Entry";
+            CMCWeighingRec_L."Weight 2 Manual Update" := CMCArchivedWeighingRec_L."Weight 2 Manual Update";
+            CMCWeighingRec_L."Weight 2 Manual Entry" := CMCArchivedWeighingRec_L."Weight 2 Manual Entry";
+          END
+        END;
+        // <-- 20210521-WI00-ADV01.01.00-3555-CJY01
+        CMCWeighingRec_L."Manual Weighing No." := "Manual Weighing No.";
+        CMCWeighingRec_L."Notebook Weighing No." := "Notebook Weighing No.";
+        CMCWeighingRec_L.MODIFY;
+        CMCDeliveryRec_L."Manual Weighing No." := CMCWeighingRec_L."Manual Weighing No.";
+        CMCDeliveryRec_L."Notebook Weighing No." := CMCWeighingRec_L."Notebook Weighing No.";
+        // --> 20150624-CER176-TER01.01.00-456-RMZ01
+        CMCDeliveryRec_L."Campaign No." := CMCPostedDeliveryRec_P."Campaign No.";
+        // <-- 20150624-CER176-TER01.01.00-456-RMZ01
+        // --> 20150316-APP27-TER01.01.00-287-BSI01
+        CMCDeliveryRec_L.VALIDATE("Shipping Order No.",CMCPostedDeliveryRec_P."Shipping Order No.");
+        // <-- 20150316-APP27-TER01.01.00-287-BSI01
+
+        // --> 20150803-CER35/001-ADV01.01.00-1987-FHS01
+        CMCDeliveryRec_L."Use Lot No." := CMCPostedDeliveryRec_P."Lot No.";
+        // <-- 20150803-CER35/001-ADV01.01.00-1987-FHS01
+
+        // --> 20150624-CER176-TER01.01.00-456-RMZ01
+        CMCDeliveryRec_L.VALIDATE("Campaign No.",'');
+        // <-- 20150624-CER176-TER01.01.00-456-RMZ01
+        CMCDeliveryRec_L.MODIFY;
+        // --> 20150624-CER176-TER01.01.00-456-RMZ01
+        CMCDeliveryRec_L.VALIDATE("Campaign No.");
+        CMCDeliveryRec_L.MODIFY;
+        // <-- 20150624-CER176-TER01.01.00-456-RMZ01
+      END;
+
+      CLEAR(CMCDeliveryCard_L);
+      CMCDeliveryCard_L.SETRECORD(CMCDeliveryRec_L);
+      CMCDeliveryCard_L.RUN;
+    END;
+
+    PROCEDURE SetHideValidationDialog@14(NewHideValidationDialog_P@1000 : Boolean);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Instancie une variable globale pour neutraliser les dialogues avec l'utilisateur
+      // Appel dans le cdu ICInboxOutboxMgt
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - NewHideValidationDialog_P : TRUE pour neutraliser les dialogues
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      HideValidationDialog_G := NewHideValidationDialog_P;
+    END;
+
+    PROCEDURE CallFromPostICTransfer@1180250003(IsCallFromPostICTransfer_P@1180250002 : Boolean);
+    BEGIN
+      //--------------------------------------------------------------------------------------------------------------
+      // Instancie une variable globale pour bloquer l'annulation d'un transfert IC et la proposition de cr'ation d'un
+      // nouveau transfert dans la soci't' utilisatrice
+      // Appel dans le cdu ICInboxOutboxMgt
+      //--------------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - TestICTransferSuspended_P : TRUE pour bloquer l'annulation et la proposition
+      // Sorties:
+      //   -
+      //--------------------------------------------------------------------------------------------------------------
+      IsCallFromPostICTransfer_G := IsCallFromPostICTransfer_P;
+    END;
+
+    PROCEDURE CreateICWeightGapJnlLine@8053023(P_RecPostedDelivery@8053000 : Record 8053014;P_PostingDate@8053001 : Date;TreatmentMvt_P@8053008 : Boolean;LotNo_P@8053009 : Code[20]) : Integer;
+    VAR
+      L_recCustomer@8053002 : Record 18;
+      ShippingOrder_L@8053007 : Record 8053265;
+      PurchLine_L@8053006 : Record 39;
+      TransportPurchLine_L@8053005 : Record 39;
+      TransportPurchHeader_L@8053004 : Record 38;
+      RecCellsLocation_L@8053011 : Record 8053031;
+      PostPurchCu_L@8053003 : Codeunit 90;
+      SharedSiloAndIcFluxOut_L@1000000000 : Boolean;
+      SharedSiloAndIcFluxIn_L@1000000001 : Boolean;
+      GapQty_L@8053010 : Decimal;
+      RecICParner_L@8053012 : Record 413;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Cr'ation des 'critures pour l''cart de poids Sur Bon de sortie IC
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - P_RecPostedDelivery  : L'enregistrement de bon sortie
+      //   - P_PostingDate        : Date de comptabilisation de l''criture
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+
+      G_GeneralLedgerSetup.GET;
+      //--------------------------------------------------------------------------------------
+      // Cr'ation ( SANS INSERT ) d'une Ligne Feuille Article
+      //--------------------------------------------------------------------------------------
+
+      // SharedSiloAndIcFluxOut_L Soci't' utilisatrice, initiatrice du flux pour l'enregistrement de l''cart de poids
+      SharedSiloAndIcFluxOut_L := (P_RecPostedDelivery."Delivery Type" = P_RecPostedDelivery."Delivery Type"::Delivery) AND
+           P_RecPostedDelivery."Shared Silo" AND (P_RecPostedDelivery."IC Direction" = P_RecPostedDelivery."IC Direction"::Incoming) AND
+           (P_RecPostedDelivery."IC Partner Code" <> '');
+      // SharedSiloAndIcFluxIn_L C'est la soci't' de gestion du silo partag'
+      SharedSiloAndIcFluxIn_L := (P_RecPostedDelivery."Delivery Type" =P_RecPostedDelivery."Delivery Type"::Delivery) AND
+           P_RecPostedDelivery."Shared Silo" AND (P_RecPostedDelivery."IC Direction" = P_RecPostedDelivery."IC Direction"::Outgoing) AND
+           (P_RecPostedDelivery."IC Partner Code" <> '');
+
+      IF NOT RecICParner_L.GET( P_RecPostedDelivery."IC Partner Code") THEN
+        RecICParner_L.INIT;
+
+      G_RecItemJnlLine.INIT;
+
+      GapQty_L := P_RecPostedDelivery."Source Standard Weight" - P_RecPostedDelivery."Invoicing Weight";
+      IF GapQty_L < 0 THEN BEGIN
+        G_RecItemJnlLine.VALIDATE("Entry Type",G_RecItemJnlLine."Entry Type" :: "Negative Adjmt.");
+      END ELSE BEGIN
+        G_RecItemJnlLine.VALIDATE("Entry Type",G_RecItemJnlLine."Entry Type" :: "Positive Adjmt.");
+      END;
+
+      G_RecItemJnlLine."Movement Type":=G_RecItemJnlLine."Movement Type"::T10 ;
+      G_RecItemJnlLine."Line No." := GetNextItemJnlLineNo(G_RecItemJnlLine);
+      G_RecItemJnlLine.VALIDATE("Item No.",P_RecPostedDelivery."Item No.");
+      G_RecItemJnlLine.Description := FORMAT(STRSUBSTNO(Text8053022,RecICParner_L.Name),-MAXSTRLEN(G_RecItemJnlLine.Description));
+      G_RecItemJnlLine.VALIDATE("Posting Date",P_PostingDate);
+      G_RecItemJnlLine.VALIDATE("Document No.",P_RecPostedDelivery."No.");
+      G_RecItemJnlLine.VALIDATE("Location Code",P_RecPostedDelivery."Location Code");
+      G_RecItemJnlLine.VALIDATE(Quantity,ABS(GapQty_L));
+      G_RecItemJnlLine.VALIDATE("Invoiced Quantity",0);
+      G_RecItemJnlLine.VALIDATE("Invoiced Qty. (Base)",0);
+      G_RecItemJnlLine.VALIDATE("Unit Amount",P_RecPostedDelivery."Unit Price");
+      G_RecItemJnlLine.VALIDATE("Source Type",G_RecItemJnlLine."Source Type"::Customer);
+      G_RecItemJnlLine.VALIDATE("Source No.",P_RecPostedDelivery."Customer No.");
+      IF SharedSiloAndIcFluxIn_L THEN
+        G_RecItemJnlLine."IC Partner Code" := P_RecPostedDelivery."IC Partner Code"
+      ELSE
+        G_RecItemJnlLine.VALIDATE("Sales Contract No.", P_RecPostedDelivery."Contract No.");
+      G_RecItemJnlLine.VALIDATE("Cell Code",P_RecPostedDelivery."Cell Code");
+      G_RecItemJnlLine.VALIDATE("Shortcut Dimension 1 Code",P_RecPostedDelivery."Global Dimension 1 Code");
+      G_RecItemJnlLine.VALIDATE("Shortcut Dimension 2 Code",P_RecPostedDelivery."Global Dimension 2 Code");
+
+      L_recCustomer.GET(P_RecPostedDelivery."Customer No.");
+      G_RecItemJnlLine.VALIDATE("Source Posting Group",L_recCustomer."Customer Posting Group");
+      G_RecItemJnlLine.VALIDATE("Gen. Bus. Posting Group",L_recCustomer."Gen. Bus. Posting Group");
+
+      G_RecItemJnlLine."Stock Type":=G_RecItemJnlLine."Stock Type"::Company;
+      G_RecItemJnlLine.VALIDATE("Campaign No.",P_RecPostedDelivery."Campaign No.");
+
+      G_RecItemJnlLine."Transaction Type" := P_RecPostedDelivery."Transaction Type";
+      G_RecItemJnlLine."Transport Method" := P_RecPostedDelivery."Transport Method";
+      G_RecItemJnlLine."Entry/Exit Point" := P_RecPostedDelivery."Exit Point";
+      G_RecItemJnlLine.Area := P_RecPostedDelivery.Area;
+      G_RecItemJnlLine."Transaction Specification" := P_RecPostedDelivery."Transaction Specification";
+      G_RecItemJnlLine."Country/Region Code" := P_RecPostedDelivery."Ship-to Country/Region Code";
+      // pour pouvoir valider sur le silo partag' hors soci't' de gestion du silo
+      G_RecItemJnlLine."Force Entry In Shared Silo" := SharedSiloAndIcFluxOut_L;
+
+      G_RecItemJnlLine."Cereal Retreatment Mvt":=TreatmentMvt_P;
+      G_RecItemJnlLine."Origin Lot No.":=LotNo_P;
+      //--------------------------------------------------------------------------------------
+      // Cr'ation des Informations ANALYTIQUES ( Table TEMPORAIRE )
+      //--------------------------------------------------------------------------------------
+      G_TempJnlLineDim.DELETEALL;
+      CLEAR(G_PostItemJnlLine);
+      G_CMCDimension.DimFromItemJnl(G_TempJnlLineDim,G_RecItemJnlLine,TRUE);
+      G_PostItemJnlLine.RunWithCheck(G_RecItemJnlLine,G_TempJnlLineDim);
+
+      EXIT(G_RecItemJnlLine."Item Shpt. Entry No.");
+    END;
+
+    PROCEDURE BonisConfirmed@1000000001(Confirmed_P@1000000000 : Boolean);
+    BEGIN
+      //---------------------------------------------------------------------------------------------------------------------
+      // Instancie une variable globale pour g'rer le CONFIRM sur la proposition de bonis en cas de stock cellule insuffisant
+      // // Appel dans le cdu 8052989
+      //---------------------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - Confirmed_P : TRUE pour valider le bonis
+      // Sorties:
+      //   -
+      //---------------------------------------------------------------------------------------------------------------------
+      // --> 20150708-WI00-ADV01.01.00-1919-DRN01
+      BonisConfirmed_G := Confirmed_P;
+      // <-- 20150708-WI00-ADV01.01.00-1919-DRN01
+    END;
+
+    PROCEDURE SetForceSharedSilo@1000000002(ForceSharedSilo_P@1000000000 : Boolean);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Positionne la variable globale permettant de valider une ecriture sur un magasin partag' sans ^tre le gestionnaire
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - ForceSharedSilo_P  : Valeur a affecter
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      ForceSharedSilo_G := ForceSharedSilo_P;
+    END;
+
+    PROCEDURE CancelItemLedgEntryOnBehalfOf@60000(EntryNo_P@8053000 : Integer;Description_P@8053001 : Text[50];PostingDate_P@8053002 : Date;DocumentNo_P@8053003 : Code[20];GapQuantity_P@8053007 : Decimal;MovtType_P@8053008 : ' ,E01,E02,E03,E04,E05,S03,S04,S05,S10,S20,T10,T20,T30,T11,S11,T21,T22';LotNo_P@8053009 : Code[20]) Res_EntryNo : Integer;
+    VAR
+      L_SourceCodeSetup@8053004 : Record 242;
+      L_ItemLedgEntry@8053005 : Record 32;
+      L_recVendor@8053006 : Record 23;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Appele la fonction CancelItemLedgEntry apres avoir positionn' la valeur . annuler au lieu de la qt' de la livraison
+      //  et forcer le type de mouvement
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - EntryNo_P     : N› de l'ecriture . annuler
+      //   - Description_P : Description de l'ecriture
+      //   - PostingDate_P : Date de compta
+      //   - DocumentNo_P  : N› du docuent
+      //   - GapQuantity_P : Quantit' . annuler
+      //   - MovtType_P    : Type de mouvement
+      // Sorties:
+      //   - Res_EntryNo   : N› de l''criture d'annulation
+      //----------------------------------------------------------------------------------------------------------
+      BooCancelOnBehalfOf_G := TRUE;
+      MovementType_G := MovtType_P;
+      Res_EntryNo := CancelItemLedgEntry(EntryNo_P,Description_P,PostingDate_P,DocumentNo_P,FALSE,GapQuantity_P,LotNo_P);
+      BooCancelOnBehalfOf_G := FALSE;
+      EXIT(Res_EntryNo);
+    END;
+
+    PROCEDURE SetInvoicingWeight@60001(WeightInvoicing_P@60000 : Decimal);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      //  Positionne la valeur de la quantit' . valider sur la ligne article dans le cas de facturation d'un poids <> poids aux normes
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - WeightInvoicing_P   : Poids . facturer
+      // Sorties:
+      //   - Neant
+      //----------------------------------------------------------------------------------------------------------
+      WeightToPost_G := WeightInvoicing_P;
+    END;
+
+    PROCEDURE CreateGapLedgerEntry@1000000000(PostedDelively_P@8053000 : Record 8053014;PostingDate_P@8053006 : Date;RetraitMvt_P@8053008 : Boolean;LotNo_P@8053009 : Code[20];CancelQte_P@8053010 : Decimal);
+    VAR
+      L_recCustomer@8053002 : Record 18;
+      L_SourceCodeSetup@8053001 : Record 242;
+      ItemLedgerEntry_L@8053003 : Record 32;
+      PostedDelivery_L@8053005 : Record 8053014;
+      GapQuantity_L@8053007 : Decimal;
+    BEGIN
+      // --> 20150706-Wi00-ADV02.02.00-1938-SDE01
+      G_GeneralLedgerSetup.GET;
+
+      //--------------------------------------------------------------------------------------
+      // Cr'ation ( SANS INSERT ) d'une Ligne Feuille Article
+      //--------------------------------------------------------------------------------------
+      L_SourceCodeSetup.GET;
+
+      ItemLedgerEntry_L.GET(PostedDelively_P."Item Ledger Entry No.");
+      PostedDelivery_L.GET(PostedDelively_P."Delivery Type",PostedDelively_P."No.");
+
+      G_RecItemJnlLine.INIT;
+      G_RecItemJnlLine."Movement Type":= ItemLedgerEntry_L."Movement Type";
+      G_RecItemJnlLine.VALIDATE("Item No.", PostedDelivery_L."Item No.");
+      G_RecItemJnlLine.VALIDATE("Posting Date", PostingDate_P);
+      GapQuantity_L:=CancelQte_P;
+
+      IF GapQuantity_L > 0 THEN
+      G_RecItemJnlLine."Entry Type" := G_RecItemJnlLine."Entry Type"::"Positive Adjmt."
+      ELSE
+      G_RecItemJnlLine."Entry Type" := G_RecItemJnlLine."Entry Type"::"Negative Adjmt.";
+
+      G_RecItemJnlLine.VALIDATE("Value Entry Type", G_RecItemJnlLine."Value Entry Type"::"Direct Cost");
+      G_RecItemJnlLine.VALIDATE("Document No.", PostedDelivery_L."No.");
+      G_RecItemJnlLine.VALIDATE("Location Code", PostedDelivery_L."Location Code");
+
+      G_RecItemJnlLine.VALIDATE(Quantity, ABS(GapQuantity_L));
+
+      // 20150728-WI00-ADV01.01.00-1983-DRN01
+      //BEFORE
+      {
+      G_RecItemJnlLine.VALIDATE("Invoiced Quantity", 0);
+      G_RecItemJnlLine.VALIDATE(G_RecItemJnlLine."Invoiced Qty. (Base)", 0);
+      G_RecItemJnlLine.VALIDATE("Unit Amount", PostedDelivery_L."Unit Price");
+      G_RecItemJnlLine.VALIDATE("Unit Cost", PostedDelivery_L."Unit Price");
+      }
+      //AFTER
+      G_RecItemJnlLine.VALIDATE("Invoiced Quantity", G_RecItemJnlLine.Quantity);
+      G_RecItemJnlLine.VALIDATE(G_RecItemJnlLine."Invoiced Qty. (Base)", G_RecItemJnlLine.Quantity);
+      G_RecItemJnlLine.VALIDATE("Unit Amount", 0);
+      G_RecItemJnlLine.VALIDATE("Unit Cost", 0);
+      // 20150728-WI00-ADV01.01.00-1983-DRN01
+      G_RecItemJnlLine.VALIDATE("Source Code", L_SourceCodeSetup."Item Journal");
+
+      // 20150728-WI00-ADV01.01.00-1983-DRN01
+      //BEFORE
+      {
+      L_recCustomer.GET(PostedDelivery_L."Customer No.");
+      G_RecItemJnlLine.VALIDATE("Source Posting Group", L_recCustomer."Customer Posting Group");
+      G_RecItemJnlLine.VALIDATE("Gen. Bus. Posting Group", L_recCustomer."Gen. Bus. Posting Group");
+      }
+      // 20150728-WI00-ADV01.01.00-1983-DRN01
+      G_RecItemJnlLine.VALIDATE("Cell Code", PostedDelivery_L."Cell Code");
+
+      G_RecItemJnlLine.VALIDATE("Collection Type", ItemLedgerEntry_L."Collection Type");
+      G_RecItemJnlLine.VALIDATE("Shortcut Dimension 1 Code", PostedDelivery_L."Global Dimension 1 Code");
+      G_RecItemJnlLine.VALIDATE("Shortcut Dimension 2 Code", PostedDelivery_L."Global Dimension 2 Code");
+
+        G_RecItemJnlLine.VALIDATE("Campaign No.",PostedDelivery_L."Campaign No.");
+
+      G_RecItemJnlLine."Stock Type":= ItemLedgerEntry_L."Stock Type";
+
+      G_RecItemJnlLine."Movement Type":= G_RecItemJnlLine."Movement Type"::T10;
+      IF G_RecItemJnlLine."Entry Type" = G_RecItemJnlLine."Entry Type"::"Negative Adjmt." THEN
+      G_RecItemJnlLine."Movement Type":= G_RecItemJnlLine."Movement Type"::T11;
+
+      G_RecItemJnlLine.Description:='Ajust sur PZ';
+      G_RecItemJnlLine."Cereal Retreatment Mvt":=RetraitMvt_P;
+      G_RecItemJnlLine."Origin Lot No." := LotNo_P;
+
+      //--------------------------------------------------------------------------------------
+      // Cr'ation des Informations ANALYTIQUES ( Table TEMPORAIRE )
+      //--------------------------------------------------------------------------------------
+      G_TempJnlLineDim.DELETEALL;
+      CLEAR(G_PostItemJnlLine);
+      G_CMCDimension.DimFromItemJnl(G_TempJnlLineDim,G_RecItemJnlLine,TRUE);
+      G_PostItemJnlLine.RunWithCheck(G_RecItemJnlLine, G_TempJnlLineDim);
+    END;
+
+    PROCEDURE SetForceCancelOnBehalfOf@1000000006(ForceCancelOnBehalfOf_P@1000000000 : Boolean);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Positionne la variable globale permettant d'annuler un bon de sortie valid' coch' "pour le compte de"
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - ForceCancelOnBehalfOf_P  : Valeur a affecter
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      ForceCancelOnBehalfOf_G := ForceCancelOnBehalfOf_P;
+    END;
+
+    PROCEDURE InitValuesOnBehalfOf@60002(IcPartnerCode_P@8053002 : Code[20];VAR RecCellLocation_P@8053000 : Record 8053031;VAR RecIcPartner_P@8053001 : Record 413);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Recupere le partenaire IC et la cellule, cr'e la cellule Non Controlee pour le magasin de compensation si elle n'existe pas
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - IcPartnerCode_P   : Code du partenaire IC
+      //   - RecCellLocation_P : Cellule
+      //   - RecIcPartner_P    : Partenaire IC
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      RecIcPartner_P.GET(IcPartnerCode_P);
+      RecCellLocation_P.SETRANGE("Location Code",RecIcPartner_P."Set Off Location Code");
+      RecCellLocation_P.SETRANGE(Uncontroled,TRUE);
+      RecCellLocation_P.SETRANGE("Ajustment Cell",FALSE);
+      RecCellLocation_P.SETRANGE("Distribution Cell" ,FALSE);
+      IF NOT RecCellLocation_P.FINDFIRST THEN
+        RecCellLocation_P.GET(RecIcPartner_P."Set Off Location Code", RecCellLocation_P.GetUncontroledCell(
+          RecIcPartner_P."Set Off Location Code")); // Cr'ation de la cellule
+    END;
+
+    PROCEDURE SetCancelOnBehalfOf@60004(BooCancelOnBehalfOf_P@1000000000 : Boolean);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Positionne la variable globale permettant de v'rifier si le BS est "pour le compte de"
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - BooCancelOnBehalfOf_P  : Valeur a affecter
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      BooCancelOnBehalfOf_G := BooCancelOnBehalfOf_P;
+    END;
+
+    PROCEDURE SetNotSharedSilo@60005(NotSharedSilo_P@1000000000 : Boolean);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Positionne la variable globale permettant de v'rifier si le silo est partag'
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - NotSharedSilo_P  : Valeur a affecter
+      // Sorties:
+      //   -
+      //----------------------------------------------------------------------------------------------------------
+      NotSharedSilo_G := NotSharedSilo_P;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20110601-Wi00-CMC01.04 : Version RTM 01.04 - NavAgri
+      20111003-Wi00-CMC01.04.03-TLM11767-DRN01 : ADDCODE (Modification Fonctions CreateItemJnlLine et CancelItemLedgEntry
+                                                          -> Alimentation du champ "Country/Region Code" pour prise en compte
+                                                          des bons de sorties et des annulations dans la DEB)
+      20120120-Wi00-CMC01.04.04-TLM11426-DRN01 : ADDCODE (Ajout code dans Fct CreateReceptDoc -> Correction N› de campagne <>
+                                                          de l'exp'dition transfert)
+      20120111-Int01-CMC02.01.00-DRN01 : ADDCODE (Validation de l'enregistrement pes'e)
+      20120627-Cout01-CMC01.04.05-DRN01 : ADDCODE (Correction d'phasage du stock sur transferts entre stock entreprise et d'p"t)
+      20120718-Cout02-CMC02.01.00-DRN01 : ADDCODE (Contr"le disponibilit' en stock sur la cellule avant de valider
+                                                   la sortie ou le transfert + gestion du bonis sur transfert)
+      20130313-Cer14-CMC02.02.00-MMI : ADDCODE (IF "Weighing 1" or "Weighing 2" are filled, both fields must be filled)
+      20130617-Cer21-CMC02.02.00-AKH01 : ADDFUNCTION (TestAnalysisValue)
+      20130617-Cer21-CMC02.02.00-AKH02 : ADDCODE (test des valeurs d'analyse du livraison)
+      20130627-CER26-CMC02.02.00-BRA01 : ADDCODE (Transfert du champ Contenant propore et 'tanche)
+      20130703-Int01-CMC02.01.00-DRN01 : MODCODE (Correction bug -> ne pas g'n'rer la pes'e lors du transfert)
+      20130625-Log10-CMC02.02.00-BSI01 : ADDCODE  (Manual Weighting No. must be completed if Weighing 2 No. is blank)
+      20131007-Wi00-CMC02.02.00-766-FHU01 : CHANGETRANSLATION (ONIGC => AgriMer)
+      20131023-Log13-CMC02.02.00-WSA01: ADDCODE (Gestion des ordres de chargement)
+      20131024-Cer31/001-CMC02.02.00-KEM01 : ADDCODE (Affectation de valeur de D'sinsectisation)
+      20131024-Cer31/001-CMC02.02.00-KEM01 : ADDCODE (g'nSration automatiquement d'une intervention et validation)
+      20131113-Cer25/001-CMC02.02.00-KEM01 : ADDCODE ("Proposer . l'utilisateur de valider ou non un point z'ro )
+      20131119-Log13-CMC02.02.00-1052-WSA01 : MODCODE (incr'mentation nb d'unit's r'alis'es ordre de chargement)
+      20131120-CER31/001-CMC02.02.00-BRA01 : MODCODE (Bloquer la validation automatique de l'intervention si aucun type d'intervention est
+                                                      coch' d'sinsectisation)
+      20131125-CER33/001-CMC02.02.00-BRA01 : ADDCODE(Contr"le du tonnage maxi des livraisons c'r'ales et des livraisons
+                                                      transfert c'r'ales)
+      20131126-Cer18/001-CMC02.02.00-BSA01 : ADDFUNC(PostItemJnlLinesForTransferInd,CancelPostedIndepTransfer)
+                                             ADDCODE(Test dans le cas d'un transfert ind'pendant)
+      20131126-CER32/001-CMC02.02.00-KEM01 : ADDCODE (les dur'es pr'-stockage sur transferts c'r'ales)
+      20131129-Log13-CMC02.02.00-1052-WSA01 : ADDCODE (Alimentation champ nomre unit's r'alis's
+      20131128-Cer31/001-CMC02.02.00-AKH01 : MODCODE (Structuration : Tests en premiSre partie)
+      20131128-CER35/001-CMC02.02.00-BRA01 : ADDFUNCTIONS (CheckDistribution,PostDitribLine,PostDitributions)
+      20131202-Cer18/001-CMC02.02.00-BSA01 : ADDCODE (Test sur l'obligation de remplir certains champs)
+      20131203-CER35-CER34-CMC02.02.00-BRA01 : ADDCODE (Pas de Bonis sur cellule d'ajustement ou de r'partition)
+      20131204-Cer36/001-CMC02.02.00-WSA01 : ADDCODE ( Cr'ation 'criture poids brut)
+      20131206-Cer26-CMC02.02.00-BRA01 : ADDCODE (tester si le champ le champ contenant propre et etanche est renseign')
+      20131204-Cer18/001-CMC02.02.00-BSA01 : ADDCODE ( Ne pas tester la disponibilit' en stock sur la cellule en cas d'un transfert ind)
+      20131213-CER18/001-CMC02.02.00-1240-BSA01 : ADDCCODE (Proposition de point z'ro sur transfert ind'pendant)7
+      20131217-CER38/001-CMC02.02.00-DRN01 : Mode de transport obligatoire sur livraison et livraison transfert
+                                             Code transport obligatoire sur livraison transfert selon param. avanc'
+      20131217-CER35/001-CMC02.02.00-1278-AKH01 : ADDCODE (Livraison sur Cellule de r'partition doit avoir des cellule de Distribution )
+      20131219-WI00-CMC02.02.00-572-SD01 : ADDCODE (date compta = date livraison)
+      20131223-CER35/001-CMC02.02.00-1264-BRA01 : MODTEXT(modification des textes de la Fn CheckDistribution Text8053000_L,Text8053000_L)
+      20131224-CER35/001-CMC02.02.00-1339-AKH01 : ADDCODE (Point ZERO sur cellule de repartition)
+      20131226-Cer35/001-CMC02.02.00-1264-BRA01 : MODCODE (Prise en compte des poids en n'gatif des transferts ind'pendants)
+      20131226-Cer35/001-CMC02.02.00-1264-BRA02 : ADDCODE (Pas de propsition de pt zero sur trasnfert de cellule de r'partition)
+      20131226-CER18/001-CMC02.02.00-1344-BSA01 : ADD FUNCTION (NewIndepTransferSuggest)
+                                                  ADDCODE (Proposer de cr'er un autre Bon de transfert Ind'pendant aprSs une annulation)
+      20140102-CER18/001-CMC02.02.00-1326-BSA01 : MODCODE (les 'critures se font sur le poids aux normes et non sur le poids brut)
+      20140109-Cer31/001-CMC02.02.00-WSA01 : MODCODE (insertion d'intervention si d'sinsectization en sortie = en sortie)
+      20140109-Cer31/001-CMC02.02.00-WSA02 : ADDCODE (r'cupration de  quantit' >> intervention)
+      20140110-CER18/001-CMC02.02.00-1344-BSA02 : Ne pas Proposer de cr'er un autre Bon de transfert Ind'pendant si le bon est annul'
+      20140114-CER18/001-CMC02.02.00-BSA01 : MODCODE (Invertion de l'ordre des 'critures)
+      20140115-Cer31/001-CMC02.02.00-WSA01 : ADDCODE (tester champ code pompe si d'sinsectization en sortie <>'')
+      20140115-GEN15/001-CMC02.02.00-DRN01 : Gestion des livraisons transfert collecte IC
+                                             Ajout code pour envoi des transferts IC
+      20140116-GEN15/001-CMC02.02.00-DRN01 : Gestion des livraisons transfert collecte IC
+                                             Envoi du flux IC
+                                             Ne pas g'n'rer de mvt dans le TRANSIT quand il s'agit d'un envoi transfert IC
+                                             MAJ fonction PostItemJnlLinesForTransferInd -> Indiquer le partenaire IC dans le mvt de
+                                             transfert  g'n'r' par la soci't' de gestion du silo partag'
+      20140121-CER18/001-CMC02.02.00-BSA01 : ADDCODE (Ajout d'un COMMIT)
+      20140121-GEN15/001-CMC02.02.00-DRN01 : Gestion des livraisons transfert collecte IC
+                                             MAJ fonction CancelPostedIndepTransfer -> Ne pas g'n'rer de mvt dans le TRANSIT quand il
+                                             s'agit de l'annulation d'un transfert IC
+      20140121-CER18/001-CMC02.02.00-1344-DRN01 : MAJ fonction CancelPostedIndepTransfer -> Proposer de cr'er une autre livraison
+                                                  transfert uniquement si on confirme l'annulation
+      20140122-Cer36/001-CMC02.02.00-KEM01 : MODCODE/ADDCODE (Ne pas g'n'rer des 'critures poids pour les magasins de transit)
+      20140122-CER18/001-CMC02.02.00-1344-DRN01 : MAJ fonction NewIndepTransferSuggest -> correction de la logique de cr'ation
+      20140122-GEN15/001-CMC02.02.00-DRN01 : Gestion des livraisons transfert collecte IC
+                                             Ajout fonction SetHideValidationDialog, CallFromPostICTransfer
+      20140122-CER18/001-CMC02.02.00-1344-DRN01 : MAJ fonction CancelPostedIndepTransfer -> Renvoyer un erreur si le transfert a 't'
+                                                  annul'
+      20140123-GEN15/001-CMC02.02.00-DRN01 : Ajout options Cancel et Reconcile dans DocActionType
+      20140125-GEN15/001-CMC02.02.00-DRN01 : Gestion des livraisons transfert collecte IC pour r'gule des apports pour le compte de
+                                             MAJ fonctions PostItemJnlLinesForTransferInd, CancelPostedIndepTransfer
+                                             -> G'n'rer le mvt dans le magasin de compensation quand il s'agit d'un envoi transfert IC
+      20140128-CER36/001-CMC02.02.00-1559-BRA01 : MODCODE/ADDCODE (Prise en compte poids net au lieu du poids aux normes)
+      20140129-CER18/001-CMC02.02.00-DRN01 : MAJ CancelPostedIndepTransfer -> D'placement TESTFIELD rapprochement valid'
+      20140203-CER31/001-CMC02.02.00-1614-AKH01 : ADDCODE (code pompe non obligatoire dans certain cas )
+      20140203-CER36/001-CMC02.02.00-1559-BRA01 : MODCODE (Validation bon de sortie,Bon de sortie transf indp et bon de sortie transfert)
+      20140205-GEN15/001-CMC02.02.00-DRN01 : Gestion des livraisons transfert collecte IC pour r'gule des apports pour le compte de
+                                             Ne pas g'n'rer le mvt dans le magasin de compensation dans la soci't' de gestion du silo
+                                             partag' si la r'gule se fait entre 2 soci't's utilisatrices
+                                             MAJ fonctions PostItemJnlLinesForTransferInd, CancelPostedIndepTransfer
+      20140212-CER25/001-CMC02.02.00-DRN01 : D'placement de la proposition automatique de point z'ro vers le cdu 8052989 pour 'viter
+                                             le CONFIRM durant la transaction de validation
+      20140213-WI00-CMC02.02.00-DRN01 : Suppression des tests en doublon
+      20140213-GEN15/001-CMC02.02.00-DRN01 : Gestion des transferts de propri't' IC pour r'gule des apports pour le compte de
+                                             D'sactivation de certains traitements
+      20140218-GEN15/001-CMC02.02.00-DRN01 : Gestion des transferts de propri't' IC pour r'gule des apports pour le compte de
+                                             Ajout fonction PostItemJnlLinesForOwnShipTrsf pour g'n'rer les mouvements de transfert de
+                                             propri't'
+      20140218-GEN15/001-CMC02.02.00-DRN02 : Gestion des livraisons transfert collecte IC
+                                             MAJ fonctions PostItemJnlLinesForTransferInd -> Autoriser mouvement sur silo partag' dans
+                                             soci't's utilisatrices
+      20140226-WI00-CMC02.02.00-DRN01 : Ajout permission T8053265 en modification
+      20140306-Gen15/001-CMC02.02.00-FBE01 : Gestion des bons de sortie IC (Issu de ordre de chargement)
+      20140312-CER18/001-CMC02.02.00-1344-DRN01 : MAJ fonction NewIndepTransferSuggest
+                                                  -> MAJ N› ticket bascule et N› cahier pes'e
+      20140326-Gen15/001-CMC02.02.00-FBE01 : Fait suivre le IC Partner Code dans le cas d'un Bon de sortie
+      20140402-Gen15/001-CMC02.02.00-FBE01 : Pas de test analyses si "pour le compte de" et flux IC entrant
+      20140424-CER19-CMC02.02.00-SDE01 : ADDCODE (cas du S11 vente agriculteur)
+      20140428-CER18-CMC02.02.00-2049-BSI01 : ADDCODE (Affectation du champ "Type Collecte")
+      20140520-Cer18/001-CMC02.02.00-SDE01 : ADDCODE (am'lioration)
+      20140606-Wi00-CMC02.02.00-SDE01 : ADDCODE(optimisation)
+      20140617-LOG10-CMC02.02.00-2253-DRN01 : Archivage des pes'es supprim'es
+      20140707-WI00-CMC02.02.00-1741-SDE01  : ADDCODE (Optimisation)
+      20140910-CER24-TER01.01.00-1550-SCF01 : ADDCODE(Check Setup to automatic close contrat)
+      20140917-CER26-TER01.01.00-SCF01: ADDCODE (check Shiping price included on contract)
+      20140917-CER28-TER01.01.00-SCF01 : ADDCODE (Function OnRun)
+      20140917-CER51-TER01.01.00-SCF01 : ADDCODE (Function OnRun)
+      20141006-CER46-TER01.01.00-PSC02 : ADDCODE (code in "OnRun" trigger)
+      20141016-CER46-TER01.01.00-PSC03 : ADDCODE (code in "OnRun" trigger)
+      20141022-APP27-TER01.01.00-BSI01 : ADDCODE (G'n'ration d'une commande achat transport)
+      20141022-APP27-TER01.01.00-BSI02 : ADDCODE (Test dans le cas d'un transfert ind'pendant)
+      20141022-CER64-TER01.01.00-RMZ01 : ADDCODE (OnRun)
+      20141023-CER44-TER01.01.00-PSC02 : ADDCODE (in triggers "PostDistributions", "CheckDistribution")
+      20141027-CER51-TER01.01.00-SCF01 : ADDCODE (correction on call local variables)
+      20141205-APP27-TER01.01.00-FBE01 : d'place code g'n'ration facture achat 20141022-APP27-TER01.01.00-BSI01 aprSs cr'ation doc valid'
+      20150216-APP27-TER01.01.00-246-BSI01 : MODECODE (groupper les param en doublons)
+      20150217-LOG10-CMC02.02.00-2748-DRN01 : ADDCODE (Correction tests Manual Weighing No. et Notebook Weighing No.)
+      20150316-APP27-TER01.01.00-287-BSI01 : ADDCODE (Ajout d'un validate sur "Shipping Order No.")
+      20150325-APP27-TER01.01.00-249-BSI01 : ADDCODE (Mise . jour de l'ordre de chargement aprSs la validation du bon)
+      20150331-CER28-TER01.01.00-233-BSI01 : MODCODE (Tester si le nom de chauffeur est obligatoire ou non)
+      20150331-APP27-TER01.01.00-233-BSI01 : ADDCODE (Tester si l'immatriculation remorque est obligatoire ou non)
+      20150401-APP27-TER01.01.00-233-BSI01 : ADDCODE (MAJ du champ "Realized Quantity")
+      20150408-CER98-TER01.01.00-058-RMZ01 : ADDCODE (OnRun)
+      20150416-CER106-TER01.01.00-310-BSI01 : ADDCODE (Tester si le N› bon manuel doit ^tre rempli ou pas)
+      20150424-CER28-TER01.01.00-233-BSI01 : ADDCODE (Test Immat. et Immat. remorque)
+      20150427-CER98-TER01.01.00-058-RMZ01 : ADDCODE (OnRun)
+      20150430-GEN15/001-CMC02.02.00-2944-FBE01 : Gestion du poids aux normes d'origine
+      20150506-CER19-CMC02.02.00-2977-SDE01 : ADDCODE (cas du S11 vente tiers conso)
+      20150526-CER154-TER01.01.00-375-BSI01 : ADDCODE (G'rer l'obligation de remplire ou non le nom chauffeur selon un paramStre)
+      20150609-CER164-TER01.01.00-423-BSI01 : ADDCODE (Lors d'un retour vente dans une cellule dont le stock est n'gatif
+                                                       ne pas proposer de faire un bonis ou de changer de cellule)
+      20150617-APP27-TER01.01.00-BSI01 : ADDCODE (VAlidation de la commande de transport)
+      20150623-CER28-TER01.01.00-467-SDE01 : MODCODE (Immatriculation)
+      20150624-CER164-TER01.01.00-423-BSI01 : ADDCODE (Lors d'un retour vente dans une cellule dont le stock est n'gatif
+                                                        ne pas proposer de faire un bonis ou de changer de cellule)
+      20150624-CER170-TER01.01.00-448-FBE01 : ADDCODE Gestion Desinsectisation
+      20150624-CER176-TER01.01.00-456-RMZ01 : ADDCODE(NewIndepTransferSuggest)
+      20150626-APP27-TER01.01.00-1748-DRN01 : MODCODE (Correction bug sur la mise . jour du nombre d'unit's r'alis'es sur l'ordre de
+                                                       chargement dans le cas des affrStement)
+      20150706-Wi00-ADV02.02.00-1938-SDE01 : ADDCODE (CreateGapLedgerEntry)
+      20150708-WI00-ADV01.01.00-1919-DRN01 : MODCODE (Le CONFIRM li' . la proposition du bonis sur stock cellule insuffisant
+                                                      est transf'r' dans le cdu 8052989)
+      20150710-WI00-TER01.01.00-1834-FBE01 : ADDFUNC SetForceSharedSilo
+      20150710-WI00-TER01.01.00-1834-FBE01 : ADDFUNC SetInvoicingWeight
+      20150723-APP27-TER01.01.00-1917-BSI01 : ADDCODE (MAJ de l'OC suite . la validation du transfert)
+      20150728-WI00-ADV01.01.00-1983-DRN01 : MODCODE (Correction bug annulation sortie transfert en cas de PZ)
+      20150730-CER35/001-ADV01.01.00-1987-SDE01 : ADDCODE
+      20150731-GEN15/001-ADV01.01.00-1834-DRN01 : MODCODE (Correction bug sur la gestion du poids . facturer)
+      20150803-CER35/001-ADV01.01.00-1987-FHS01 : MODCODE (Use Lot)
+      20150809-CER35/001-ADV01.01.00-1987-SDE01 : ADDCODE
+      20150812-CER66-ADV01.01.00-2119-FHS01 : MODCODE (Corrige problSme de deadlock en transfert)
+      20150813-CER35/001-ADV01.01.00-1987-FHS01 : MODCODE (.)
+      20150813-Wi00-ADV01.01.00-1984-FHS01 : MODPROPERTY (Ajout droit sur contrat de vente)
+      20150820-CER35/001-ADV01.01.00-1987-SDE01 : ADDCODE
+      20150915-CER35/001-ADV01.01.00-845-SDE01  : MODCODE (date dans le lancement de CreateGapLedgerEntry)
+      20150918-GEN15/001-TER01.01.00-2041-FBE01 : Recalcule le poids aux normes en int'gration IC
+      20150924-Wi00-ADV01.01.00-2304-SDE01 : ADDCODE (retour du n0 seq sur annulation)
+      20151009-Wi00-ADV01.01.00-2162-FHS01 : MODCODE (Vide les nouveaux champs lors de l'annulation d'un bon)
+      20160204-wi00-ADV01.01.00-SP2721-JLT01 : MODCODE ne pas v'rifier la remorque dans les transferts de propri't's
+      20160513-GEN15/001-ADV01.01.00-2993-NED : ADDCODE (Sortie transfert "pour le compte de" sur silo maritime pas de test sur N› AffrSt)
+      20160513-GEN15/001-ADV01.01.00-2813-NED : ADDFUNCTION (SetForceCancelOnBehalfOf)
+      20160513-GEN15/001-ADV01.01.00-2813-NED : ADDCODE (Appel e la function SetForceCancelOnBehalfOf et ne pas v'rifier l'existance du
+      20160513-GEN15/001-ADV01.01.00-2813-NED : contrat de vente lors de l'annulation d'un bon de sortie coch' "pour le compte de")
+      20160513-Gen15/001-ADV01.01.00-2813-FBE : ADDFUNCT (InitValuesOnBehalfOf)
+      20160513-Gen15/001-ADV01.01.00-2813-FBE : ADDCODE (OnRun, Ecritures sur bon de sortie IC sur silo non partag')
+      20160513-Gen15/001-ADV01.01.00-2813-FBE : MODFUNCT (CreateItemJnlLine, Ecritures sur bon de sortie IC sur silo non partag')
+      20160513-GEN15/001-ADV01.01.00-2813-NED : ADDFUNCTION (SetForceCancelOnBehalfOf)
+      20160513-GEN15/001-ADV01.01.00-2813-NED : ADDCODE (Appel de la function SetForceCancelOnBehalfOf et ne pas v'rifier l'existance du
+      20160513-GEN15/001-ADV01.01.00-2813-NED : contrat de vente lors de l'annulation d'un bon de sortie coch' "pour le compte de"
+      20160513-GEN15/001-ADV01.01.00-2813-NED : ADDCODE (Remplir code magasin r'el lors de l'annulation de BS)
+      20160513-Gen15/001-ADV01.01.00-2813-FBE : MODFUNCT (PostItemJnlLinesForTransferInd, Gestion du silo r'el sur transfert)
+      20160513-Gen15/001-ADV01.01.00-2813-FBE : MODFUNCT (PostItemJnlLinesForOwnShipTrsf, Gestion du silo r'el sur transfert)
+      20160513-GEN15/001-ADV01.01.00-2813-FBE : MODCODE (Ne pas tester N› Affretement et Ordre chargement si R'gul pour le compte de)
+      20160615-GEN15/001-ADV01.01.00-3092-FBE : ADDCODE(Pas de commande achat pour "Regul pour le compte de" et "Transfert de propri't'"
+                                                       et entrant)
+      20160518-WI00-ADV01.01.00-2212-MMI01 : ADDCODE (Cancel transport line)
+      20170316-APP27-TER01.01.00-ID24265-DDS01 : ADDCODE (Dans la fonction CreateAnnulationDelivery MAJ Qt' Ordre de chargement)
+      20171024-Wi00-ADV01.01.00-ID30404-JLT01 : MODCOD Pb sur bon de transfert ind'pendant
+      20161024-Wi00-ADV-ID22680-JLT01 : MODCOD Am'lioration CMC avoir sur poids au norme
+      20190513-WI00-ADV01.01.00-3358-MRU01 : ADDCODE (Transfert des notes lors de la validation du document)
+      20200629-WI00-ADV01.01.00-3484-SCR01 : ADDCODE (Test Seal No.)
+      20210521-WI00-ADV01.01.00-3555-CJY01 : MODCODE (prise en compte suppression d'une pes'e valid'e)
+      20240718-WI00-ADV01.01.00-3665-IJI : ADDCODE (mettre . jour le champ code transporteur du bon de r'ception associ' li')
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,232 @@
+OBJECT Codeunit 60030 Exp Whse Shpt Phyto Logis Tour
+{
+  OBJECT-PROPERTIES
+  {
+    Date=15/12/17;
+    Heure=00:00:00;
+    Liste versions=LogA07-SCT00.00.00;
+  }
+  PROPERTIES
+  {
+    TableNo=7320;
+    OnRun=VAR
+            RecItem_L@60015 : Record 27;
+            RecWhseShptLine_L@60014 : Record 7321;
+            RecPackType_L@60000 : Record 8053152;
+            Count_L@60012 : Integer;
+          BEGIN
+            Count_L := 0;
+            RecPhytoInterfaceSetup_G.GET;
+            RecPhytoInterfaceSetup_G.TESTFIELD("Phyto Family Code");
+            RecPhytoInterfaceSetup_G.TESTFIELD("Shpt Citrix Folder Tour Export");
+            RecPhytoInterfaceSetup_G.TESTFIELD("Shpt Local Folder Tour Export");
+            RecPhytoInterfaceSetup_G.TESTFIELD("Shpt File Export Tour Extens.");
+
+            CLEAR(RecWhseShptLine_L);
+            RecWhseShptLine_L.SETRANGE("No.","No.");
+            IF RecWhseShptLine_L.FINDSET THEN
+            REPEAT
+              CLEAR(RecItem_L);
+              RecItem_L.GET(RecWhseShptLine_L."Item No.");
+
+              CLEAR(RecPackType_L);
+              RecPackType_L.SETRANGE(Code,RecItem_L."Packaging Type");
+              RecPackType_L.SETRANGE("Include Export Terminal Scan",TRUE);
+              IF NOT RecPackType_L.ISEMPTY THEN
+                Count_L += 1;
+            UNTIL RecWhseShptLine_L.NEXT = 0;
+
+            IF Count_L > 0 THEN BEGIN
+              IF "Terminal Scan File Generated" THEN
+                Confirm_G := CONFIRM(Text60004,FALSE,"No.");
+              IF NOT "Terminal Scan File Generated" OR Confirm_G THEN BEGIN
+                RecWhseShptHeader_G.COPY(Rec);
+                CLEAR(RecWhseShptLine_G);
+                RecWhseShptLine_G.SETCURRENTKEY("No.","Source Document","Source No.");
+                RecWhseShptLine_G.SETRANGE("No.","No.");
+                RecWhseShptLine_G.SETRANGE("Source Document",RecWhseShptLine_G."Source Document" :: "Sales Order");
+                RecWhseShptLine_G.MODIFYALL("Qty. to Ship",0);
+                // --> 20171129-LogA07-SCT00.00.00-3313-NED
+                RecWhseShptLine_G.SETRANGE("Build Kit",FALSE);
+                CmdNo_G := '';
+                IF RecWhseShptLine_G.FINDSET THEN
+                REPEAT
+                  ExportLogisTourShpt(FALSE,'_' + "No.");
+                UNTIL RecWhseShptLine_G.NEXT = 0;
+                CmdNo_G := '';
+                RecWhseShptLine_G.SETRANGE("Build Kit",TRUE);
+                IF RecWhseShptLine_G.FINDSET THEN
+                REPEAT
+                  ExportLogisTourShpt(TRUE,'_P'+ "No.");
+                UNTIL RecWhseShptLine_G.NEXT = 0;
+                // <-- 20171129-LogA07-SCT00.00.00-3313-NED
+                IF IsInserted_G THEN BEGIN
+                  "Terminal Scan File Generated" := TRUE;
+                  MODIFY;
+                  MESSAGE(Text60000);
+                END;
+              END;
+            END ELSE
+              MESSAGE(Text60001);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      RecPhytoInterfaceSetup_G@60000 : Record 60076;
+      Text60000@60004 : TextConst 'FRA=Fichier g'n'r' avec succ's.';
+      Text60001@60003 : TextConst 'FRA=Il n''y a rien . traiter.';
+      Text60002@60002 : TextConst 'FRA="Le fichier de l''exp'dition N› %1 et de la commande vente N› %2 existe d'j., voulez-vous l'''craser ? "';
+      Text60003@60001 : TextConst 'FRA=Le dossier d''export n''existe pas. Veuillez contacter votre administrateur.';
+      Text60004@60005 : TextConst 'FRA=Le fichier de l''exp'dition N› %1 a d'j. 't' g'n'r', voulez-vous le r'g'n'rer ?';
+      RecWhseShptHeader_G@60009 : Record 7320;
+      RecWhseShptLine_G@60010 : Record 7321;
+      IsInserted_G@60007 : Boolean;
+      Confirm_G@60008 : Boolean;
+      Text60005@60011 : TextConst 'FRA="Le fichier de l''exp'dition N› %1 et de la commande vente N› %2 (articles composants kit) existe d'j., voulez-vous l'''craser ? "';
+      CmdNo_G@60006 : Code[20];
+
+    PROCEDURE GetFileName@60001(DestFolder_P@60006 : Text[1024];ShptNo_P@60004 : Code[20];OrderNo_P@60007 : Code[20]) Filename_R : Text[1024];
+    VAR
+      StringArray@60005 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Array" RUNONCLIENT;
+      StringEnumerator@60003 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Collections.IEnumerator" RUNONCLIENT;
+      SysDirectory@60002 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.Directory" RUNONCLIENT;
+      SysPath@60001 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.Path" RUNONCLIENT;
+      Filename@60000 : Text[1024];
+    BEGIN
+      StringArray := SysDirectory.GetFiles(DestFolder_P,'*.' + RecPhytoInterfaceSetup_G."Shpt File Export Tour Extens.");
+
+      StringEnumerator := StringArray.GetEnumerator;
+      WHILE StringEnumerator.MoveNext DO BEGIN
+        Filename := '';
+        Filename := SysPath.GetFileNameWithoutExtension(StringEnumerator.Current);
+        IF (STRPOS(Filename,ShptNo_P) <> 0) AND (STRPOS(Filename,OrderNo_P) <> 0) THEN BEGIN
+          Filename_R := Filename;
+        END;
+      END;
+      EXIT(Filename_R);
+    END;
+
+    PROCEDURE ExportLogisTourShpt@60004(IsBuildkit_P@60019 : Boolean;ShptNo_P@60005 : Code[20]);
+    VAR
+      RecSalesHeader_L@60018 : Record 36;
+      ServerFileName_L@60017 : Text[1024];
+      ResultFile_L@60016 : File;
+      FileOutStream_L@60015 : OutStream;
+      ExistFileName_L@60014 : Text[1024];
+      FileToDownload@60013 : Text[1024];
+      FileVar@60012 : File;
+      IStream@60011 : InStream;
+      MagicPath@60010 : Text[1024];
+      DestinationFileName@60009 : Text[1024];
+      DestinationFolder@60008 : Text[1024];
+      FinalFileName_L@60007 : Text[1024];
+      FilesSysObj_L@60006 : Automation "{F935DC20-1CF0-11D0-ADB9-00C04FD58A0B} 1.0:{0D43FE01-F093-11CF-8940-00A0C9054228}:'Windows Script Host Object Model'.FileSystemObject";
+      XMLExpWhseShptPhLogisTour_L@60003 : XMLport 50024;
+      CharterNo_L@60002 : Code[20];
+      FinalFileNameWithoutExt_L@60001 : Text[1024];
+      FileIORename_L@60000 : DotNet "'Microsoft.VisualBasic, Version=8.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a'.Microsoft.VisualBasic.FileIO.FileSystem" RUNONCLIENT;
+      Confirm_L@60020 : Boolean;
+    BEGIN
+      // --> 20171129-LogA07-SCT00.00.00-3313-NED
+      WITH RecWhseShptHeader_G DO BEGIN
+        IF RecWhseShptLine_G."Source No." <> CmdNo_G THEN BEGIN
+          IF NOT RecSalesHeader_L.GET(RecWhseShptLine_G."Source Subtype",RecWhseShptLine_G."Source No.") THEN
+            CLEAR(RecSalesHeader_L);
+          CharterNo_L := '';
+          IF "Charter No." <> '' THEN
+            CharterNo_L := "Charter No."
+          ELSE
+            IF IsBuildkit_P THEN
+              CharterNo_L := 'P' + "No."
+            ELSE
+              CharterNo_L := "No.";
+          ServerFileName_L := '';
+          CLEAR(FileOutStream_L);
+          ServerFileName_L := TEMPORARYPATH +
+                          DELCHR(FORMAT(CURRENTDATETIME,0,'<Year><Month,2><Day,2><Hours24,2><Minutes,2><Seconds,2>'),'=','/:,.')
+                               + '_TOU_' + CharterNo_L + ShptNo_P + '_' + RecSalesHeader_L."Sell-to Customer Name"
+                                   + '_' + RecSalesHeader_L."Sell-to Customer No." + '_' + RecWhseShptLine_G."Source No." +
+                                       '.' + RecPhytoInterfaceSetup_G."Shpt File Export Tour Extens.";
+
+          ResultFile_L.CREATE(ServerFileName_L);
+          ResultFile_L.CREATEOUTSTREAM(FileOutStream_L);
+          SETRECFILTER;
+          CLEAR(XMLExpWhseShptPhLogisTour_L);
+          XMLExpWhseShptPhLogisTour_L.GetSourceNo(RecWhseShptLine_G."Source No.");
+          XMLExpWhseShptPhLogisTour_L.IsBuildKit(IsBuildkit_P);
+          XMLExpWhseShptPhLogisTour_L.SETTABLEVIEW(RecWhseShptHeader_G);
+          XMLExpWhseShptPhLogisTour_L.SETDESTINATION(FileOutStream_L);
+          IF NOT XMLExpWhseShptPhLogisTour_L.EXPORT THEN BEGIN
+            MESSAGE(GETLASTERRORTEXT);
+            ResultFile_L.CLOSE;
+            ERASE(ServerFileName_L);
+          END ELSE BEGIN
+            ResultFile_L.CLOSE;
+            IF ISSERVICETIER THEN BEGIN
+              FileToDownload := ServerFileName_L;
+              FileVar.OPEN(FileToDownload);
+              FileVar.CREATEINSTREAM(IStream);
+              DOWNLOADFROMSTREAM(IStream,'','<TEMP>', '',MagicPath);
+              FileVar.CLOSE;
+
+              IF ISCLEAR(FilesSysObj_L) THEN
+                CREATE(FilesSysObj_L,TRUE,TRUE);
+
+              DestinationFolder := RecPhytoInterfaceSetup_G."Shpt Citrix Folder Tour Export";
+              IF NOT FilesSysObj_L.FolderExists(DestinationFolder) THEN BEGIN
+                DestinationFolder := RecPhytoInterfaceSetup_G."Shpt Local Folder Tour Export";
+                IF NOT FilesSysObj_L.FolderExists(DestinationFolder) THEN
+                  ERROR(Text60003);
+              END;
+
+              FinalFileName_L :=DELCHR(FORMAT(CURRENTDATETIME,0,'<Year><Month,2><Day,2><Hours24,2><Minutes,2><Seconds,2>'),'=','/:,.')
+                                  + '_TOU_' + CharterNo_L + ShptNo_P + '_' + RecSalesHeader_L."Sell-to Customer Name"
+                                      + '_' + RecSalesHeader_L."Sell-to Customer No." + '_' + RecWhseShptLine_G."Source No." +
+                                          '.' + RecPhytoInterfaceSetup_G."Shpt File Export Tour Extens.";
+
+              FinalFileNameWithoutExt_L :=
+              DELCHR(FORMAT(CURRENTDATETIME,0,'<Year><Month,2><Day,2><Hours24,2><Minutes,2><Seconds,2>'),'=','/:,.')
+                                     + '_ADH_' + RecSalesHeader_L."Sell-to Customer No." + ShptNo_P;
+              DestinationFileName := DestinationFolder + '\' + FinalFileNameWithoutExt_L;
+              ExistFileName_L := GetFileName(DestinationFolder,ShptNo_P,RecWhseShptLine_G."Source No.");
+              Confirm_L := FALSE;
+              IF ExistFileName_L <> '' THEN BEGIN
+                IF IsBuildkit_P THEN
+                  Confirm_L := CONFIRM(Text60005,FALSE,"No.",RecWhseShptLine_G."Source No.")
+                ELSE
+                  Confirm_L := CONFIRM(Text60002,FALSE,"No.",RecWhseShptLine_G."Source No.");
+                IF Confirm_L THEN
+                  FilesSysObj_L.DeleteFile(DestinationFolder + '\' + ExistFileName_L + '.' +
+                  RecPhytoInterfaceSetup_G."Shpt File Export Tour Extens.",TRUE)
+                ELSE
+                  EXIT;
+              END;
+
+              FilesSysObj_L.CopyFile(MagicPath,DestinationFileName);
+              FilesSysObj_L.DeleteFile(MagicPath,TRUE);
+              FileIORename_L.RenameFile(DestinationFileName,FinalFileName_L);
+              ERASE(ServerFileName_L);
+              CLEAR(FilesSysObj_L);
+            END;
+            CmdNo_G := RecWhseShptLine_G."Source No.";
+            IsInserted_G := TRUE;
+          END;
+        END;
+      END;
+      // <-- 20171129-LogA07-SCT00.00.00-3313-NED
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20170907-LogA07-SCT00.00.00-3288-NED : ADDOBJ
+      20171129-LogA07-SCT00.00.00-3313-NED : MODCODE (Refonte : Adaptation export article kit)
+      20171129-LogA07-SCT00.00.00-3313-NED : ADDFUNCT (ExportLogisTourShpt)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

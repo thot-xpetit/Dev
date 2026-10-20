@@ -1,0 +1,150 @@
+OBJECT Codeunit 10862 Fiscal Year-FiscalClose
+{
+  OBJECT-PROPERTIES
+  {
+    Date=05/11/08;
+    Heure=12:00:00;
+    Liste versions=NAVFR6.00;
+  }
+  PROPERTIES
+  {
+    TableNo=50;
+    OnRun=BEGIN
+            AccountingPeriod.COPY(Rec);
+            Code;
+            Rec := AccountingPeriod;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text001@1120000 : TextConst 'ENU=You must create a new fiscal year before you can fiscally close the old year.;FRA=Vous devez cr'er un nouvel exercice comptable avant de pouvoir cl"turer fiscalement l''ancien exercice.';
+      Text002@1120001 : TextConst 'ENU="This function fiscally closes the fiscal year from %1 to %2. ";FRA="Cette fonction permet de cl"turer fiscalement l''exercice comptable du %1 au %2. "';
+      Text003@1120002 : TextConst 'ENU=Make sure to make a backup of the database before fiscally closing the fiscal year, because once the fiscal year is fiscally closed it cannot be opened again and no G/L entries can be posted anymore on a fiscally closed fiscal year.\\;FRA=Veillez . cr'er une sauvegarde de la base de donn'es avant de cl"turer fiscalement l''exercice comptable car une fois qu''il est cl"tur', vous ne pouvez plus le rouvrir ni y valider d'''critures comptables.\\';
+      Text004@1120003 : TextConst 'ENU=Do you want to fiscally close the fiscal year?;FRA=Voulez-vous cl"turer fiscalement l''exercice comptable ?';
+      Text005@1120004 : TextConst 'ENU=To fiscally close the fiscal year from %1 to %2, the fields %3 and %4 in the tables %5 and %6 must be outside the fiscal year that is being fiscally closed.;FRA=Pour pouvoir cl"turer fiscalement l''exercice comptable du %1 au %2, les champs %3 et %4 des tables %5 et %6 doivent se situer en dehors de l''exercice comptable en cours de cl"ture fiscale.';
+      Text006@1120005 : TextConst 'ENU="To fiscally close the fiscal year from %1 to %2, you must first post or delete all unposted general journal lines for this fiscal year.\\%3=''%4'',%5=''%6'',%7=''%8''";FRA="Pour cl"turer fiscalement l''exercice comptable du %1 au %2, vous devez d''abord valider ou supprimer toutes les lignes feuille comptabilit' non valid'es pour cet exercice comptable.\\%3=''%4'',%5=''%6'',%7=''%8''"';
+      Text007@1120006 : TextConst 'ENU=The Income Statement G/L accounts are not balanced at date %1. Please run the batch job Close Income Statement again before fiscally closing the fiscal year from %2 to %3.;FRA=Les comptes g'n'raux de gestion ne sont pas sold's au %1. R'ex'cutez le traitement par lots Cl"ture comptes de gestion avant de cl"turer fiscalement l''exercice comptable du %2 au %3.';
+      AccountingPeriod@1120007 : Record 50;
+      GLSetup@1120008 : Record 98;
+      UserSetup@1120009 : Record 91;
+      FiscalYearStartDate@1120010 : Date;
+      FiscalYearEndDate@1120011 : Date;
+      Text008@1120012 : TextConst 'ENU=The fiscal year from %1 to %2 must first be closed before it can be fiscally closed.;FRA=L''exercice comptable du %1 au %2 doit ^tre cl"tur' avant de pouvoir ^tre cl"tur' fiscalement.';
+      Text009@1120013 : TextConst 'ENU=Fiscally Closed;FRA=Cl"tur' fiscalement';
+      Text010@1120014 : TextConst 'ENU=Fiscally Open;FRA=Ouvert fiscalement';
+
+    LOCAL PROCEDURE Code@1120000();
+    BEGIN
+      WITH AccountingPeriod DO BEGIN
+        SETRANGE("New Fiscal Year",TRUE);
+        SETRANGE("Fiscally Closed",FALSE);
+        FINDFIRST;
+
+        FiscalYearStartDate := "Starting Date";
+        IF FIND('>') THEN BEGIN
+          FiscalYearEndDate := CALCDATE('<-1D>',"Starting Date");
+          FIND('<');
+        END ELSE
+          ERROR(Text001);
+
+        SETRANGE("New Fiscal Year");
+        SETRANGE("Fiscally Closed");
+        IF FIND('<') THEN
+          IF NOT "Fiscally Closed" THEN BEGIN
+            FiscalYearEndDate := CALCDATE('<-1D>',FiscalYearStartDate);
+            SETRANGE("New Fiscal Year",TRUE);
+            SETRANGE("Fiscally Closed",TRUE);
+            FINDLAST;
+            FiscalYearStartDate := "Starting Date"
+          END ELSE
+            FIND('>');
+
+        IF NOT Closed THEN
+          ERROR(Text008,FiscalYearStartDate,FiscalYearEndDate);
+
+        CheckGeneralJournal;
+        CheckSimulationEntries(FiscalYearStartDate,FiscalYearEndDate);
+        CheckClosingEntries;
+
+        IF NOT
+           CONFIRM(
+             Text002 +
+             Text003 +
+             Text004,FALSE,
+             FiscalYearStartDate,FiscalYearEndDate)
+        THEN
+          EXIT;
+
+        RESET;
+
+        SETRANGE("Starting Date",FiscalYearStartDate,FiscalYearEndDate);
+        SETRANGE("Fiscally Closed",FALSE);
+
+        MODIFYALL("Fiscal Closing Date",TODAY);
+        MODIFYALL("Fiscally Closed",TRUE);
+
+        UpdateGLSetup(FiscalYearEndDate);
+        UpdateUserSetup(FiscalYearEndDate);
+
+        RESET;
+      END;
+    END;
+
+    PROCEDURE CheckGeneralJournal@1120001();
+    VAR
+      GenJnlLine@1120000 : Record 81;
+    BEGIN
+      WITH GenJnlLine DO BEGIN
+        SETFILTER("Posting Date",'%1..%2',FiscalYearStartDate,FiscalYearEndDate);
+        IF FIND('-') THEN
+          ERROR(
+            Text006,
+            FiscalYearStartDate,FiscalYearEndDate,
+            FIELDCAPTION("Journal Template Name"),"Journal Template Name",
+            FIELDCAPTION("Journal Batch Name"),"Journal Batch Name",
+            FIELDCAPTION("Line No."),"Line No.");
+      END;
+    END;
+
+    PROCEDURE CheckClosingEntries@1120002();
+    VAR
+      GLAccount@1120000 : Record 15;
+    BEGIN
+      WITH GLAccount DO BEGIN
+        SETRANGE("Date Filter",FiscalYearStartDate,CLOSINGDATE(FiscalYearEndDate));
+        SETRANGE("Income/Balance","Income/Balance"::"Income Statement");
+        IF FIND('-') THEN
+          REPEAT
+            CALCFIELDS("Net Change");
+            IF "Net Change" <> 0 THEN
+              ERROR(Text007,
+                CLOSINGDATE(FiscalYearEndDate),
+                FiscalYearStartDate,FiscalYearEndDate);
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CheckFiscalYearStatus@1120004(PeriodRange@1120000 : Text[30]) : Text[30];
+    VAR
+      AccountingPeriod@1120001 : Record 50;
+      Date@1120002 : Record 2000000007;
+    BEGIN
+      Date.SETRANGE("Type de p'riode",Date."Type de p'riode"::Date);
+      Date.SETFILTER("D'but p'riode",PeriodRange);
+      Date.FIND('+');
+      AccountingPeriod.SETFILTER("Starting Date",'<=%1',Date."D'but p'riode");
+      AccountingPeriod.SETRANGE("New Fiscal Year",TRUE);
+      AccountingPeriod.FIND('+');
+      IF AccountingPeriod."Fiscally Closed" THEN
+        EXIT(Text009)
+      ELSE
+        EXIT(Text010);
+    END;
+
+    BEGIN
+    END.
+  }
+}
+

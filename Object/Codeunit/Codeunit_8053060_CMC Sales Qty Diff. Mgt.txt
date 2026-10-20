@@ -1,0 +1,626 @@
+OBJECT Codeunit 8053060 CMC Sales Qty Diff. Mgt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=26/06/26;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,ADV01.01.00,LogA07-SCT00.00.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text8053500@8053005 : TextConst 'ENU=Item %1 can not be shipped over %2 %3.;FRA=L''article %1 ne peut pas ^tre livr' . plus de %2 %3.';
+      Text8053501@8053006 : TextConst 'ENU=All Quantity is already Shipped.;FRA=Toute la quantit' . d'j. 't' livr'e.';
+      Text8053502@8053007 : TextConst 'ENU=No setup finded with item %1, activity %2, family %3, sub-family %4, species %5.;FRA=Aucun param'trage d'''cart de quantit' n''a 't' trouv' pour l''article %1, activit' %2, famille %3, sous-famille %4, espSce %5.';
+      Text8053503@8053000 : TextConst 'ENU=The surpluses of delivery are not supported for tracking products, you must enter additional command line for item % 1;FRA=Les exc'dants de livraison ne sont pas g'r's pour les produits traÎ's, vous devez saisir une ligne de commande suppl'mentaire pour l''article %1';
+
+    PROCEDURE CheckShip@8053000(VAR QtyToShipVar_P@8053520 : Decimal;VAR recSalesLineVar_P@8053519 : Record 37) Result_L : Boolean;
+    VAR
+      ExtraQty_L@8053518 : Decimal;
+      NewLineQty_L@8053517 : Decimal;
+      recProcPurch_L@8053516 : Record 5721;
+      PercentEcart_L@8053515 : Decimal;
+      recSetup_L@8053514 : Record 8053261;
+      SetupFinded_L@8053513 : Boolean;
+      recSalesLine_L@8053512 : Record 37;
+      recContrat_L@8053511 : Record 37;
+      recSalesHeader_L@8053509 : Record 36;
+      recCmcSetup_L@8053502 : Record 8052982;
+      LinkedOrderLine_L@8053501 : Record 37;
+      recItem_L@8053000 : Record 27;
+      recVariant_L@8053001 : Record 5401;
+      CalcIndv_L@8053002 : Decimal;
+      OldPrepaymentAmount_L@8053003 : Decimal;
+      cduDefalq_L@8053100 : Codeunit 8053008;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Gestion de la livraison des surplus
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - QtyToShipVarr_P : quantit' . livrer
+      //    - Var recSalesLineVar_P : Ligne de vente . mettre . jour
+      //  Sorties
+      //    - Result_L : Nouvelle ligne suite . acompte
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //pas de traitement si la ligne est en LD ou commande sp'ciale
+      Result_L := FALSE;
+      IF recSalesLineVar_P.Type <> recSalesLineVar_P.Type::Item THEN
+        EXIT(Result_L);
+
+      // --> CMC-8052300/125|903487-NED
+      IF recItem_L.GET(recSalesLineVar_P."No.") AND (recItem_L."Item Tracking Code"<>'')  AND
+          (QtyToShipVar_P > recSalesLineVar_P.Quantity) THEN
+        ERROR(Text8053503,recItem_L."No.");
+      // <--CMC-8052300/125|903487-NED
+      IF recSalesLineVar_P."Purchasing Code" <> '' THEN BEGIN
+        IF recProcPurch_L.GET(recSalesLineVar_P."Purchasing Code") THEN BEGIN
+          IF (recProcPurch_L."Drop Shipment" = TRUE) OR (recProcPurch_L."Special Order" = TRUE) THEN BEGIN
+            IF recSalesLineVar_P.Quantity < recSalesLineVar_P."Quantity Shipped" + QtyToShipVar_P THEN BEGIN
+              OldPrepaymentAmount_L := recSalesLineVar_P."Prepmt. Line Amount";
+              recSalesLineVar_P.VALIDATE(Quantity, recSalesLineVar_P."Quantity Shipped" + QtyToShipVar_P);
+              recSalesLineVar_P.MODIFY(TRUE);
+            END;
+            EXIT(Result_L);
+          END;
+        END;
+      END;
+
+      //Pas de nouvelle ligne en cas d'acompte
+      recCmcSetup_L.GET;
+      IF (recSalesLineVar_P."Prepmt. Line Amount" = 0) OR (recCmcSetup_L."Cancel Sales Prepayment Checks") THEN BEGIN
+        recCmcSetup_L.GET;
+        IF recCmcSetup_L."New Line On Exceed Qty To Ship" = TRUE THEN BEGIN
+          IF (recSalesLineVar_P."Blanket Order No." <> '') AND (recSalesLineVar_P."Blanket Order Line No." <> 0) THEN BEGIN
+            //la ligne est li'e . un contrat
+            recContrat_L.RESET;
+            recContrat_L.SETRANGE("Document Type", recContrat_L."Document Type"::"Blanket Order");
+            recContrat_L.SETRANGE("Document No.", recSalesLineVar_P."Blanket Order No.");
+            recContrat_L.SETRANGE("Line No.", recSalesLineVar_P."Blanket Order Line No.");
+            IF recContrat_L.FINDFIRST THEN BEGIN
+              ExtraQty_L := QtyToShipVar_P + recContrat_L."Quantity Shipped" - recContrat_L.Quantity;
+              IF ExtraQty_L > 0 THEN BEGIN
+                IF (recContrat_L.Quantity - recContrat_L."Quantity Shipped") = 0 THEN BEGIN
+                  ERROR(Text8053501);
+                END;
+                PercentEcart_L := (ExtraQty_L / (recContrat_L.Quantity - recContrat_L."Quantity Shipped")) * 100;
+                IF NOT recItem_L.GET(recContrat_L."No.") THEN
+                  recItem_L.INIT;
+
+                // --> 20160322-Gen14-ADV01.01.00-2767-BDN01
+                // BEFORE
+                {SetupFinded_L := SearchSetup(recSetup_L,FALSE,PercentEcart_L,recContrat_L."Unit of Measure Code",recContrat_L."No.",
+                                              recContrat_L."Species Code",recContrat_L."Sub-Family Code",recContrat_L."Family Code",
+                                              recContrat_L."Activity Code",recItem_L);}
+                // AFTER
+                SetupFinded_L := SearchSetup(recSetup_L, FALSE, PercentEcart_L, recContrat_L."Unit of Measure Code", recContrat_L."No.",
+                                             recContrat_L."Species Code",recContrat_L."Sub-Family Code",recContrat_L."Family Code",
+                                             recContrat_L."Activity Code",recItem_L,recSalesLineVar_P."Location Code",
+                                             GetLocationType(recSalesLineVar_P."Location Code"));
+                // <-- 20160322-Gen14-ADV01.01.00-2767-BDN01
+
+                IF SetupFinded_L = TRUE THEN BEGIN
+                  //un param'trage a 't' trouv'
+                  IF recSetup_L.Processing = recSetup_L.Processing::Blocking THEN
+                    //Il faut afficher un message d'erreur
+                    ERROR(Text8053500, recSalesLineVar_P."No.", ((recContrat_L.Quantity - recContrat_L."Quantity Shipped") *
+                      (1 + (recSetup_L."Max. % Difference" / 100))), recContrat_L."Unit of Measure Code");
+
+                  IF recSetup_L.Processing = recSetup_L.Processing::"New Line" THEN BEGIN
+                    //Il faut cr'er une nouvelle ligne
+                    //La nouvelle ligne cr''e va prendre la totalit' du surplus
+                    NewLineQty_L := ExtraQty_L;
+                    IF recSetup_L."New Line Qty" = recSetup_L."New Line Qty"::"Simple Difference" THEN BEGIN
+                      //La nouvelle ligne cr''e va prendre la quantit' au del. du max
+                      NewLineQty_L := NewLineQty_L - ((recContrat_L.Quantity - recContrat_L."Quantity Shipped") *
+                                                     (recSetup_L."Max. % Difference" / 100));
+                    END;
+                    //on met . jour la quantit' . livr'e sur la ligne initiale
+                    QtyToShipVar_P := QtyToShipVar_P - NewLineQty_L;
+
+                    IF recSalesLineVar_P."Variant Code" <> '' THEN BEGIN
+                      IF recVariant_L.GET(recSalesLineVar_P."No.", recSalesLineVar_P."Variant Code") THEN BEGIN
+                        IF recVariant_L."Indiv. Base Qty" > 0 THEN BEGIN
+                          CalcIndv_L := ROUND(QtyToShipVar_P / recVariant_L."Indiv. Base Qty", 1, '=');
+                          NewLineQty_L := NewLineQty_L + QtyToShipVar_P - (CalcIndv_L * recVariant_L."Indiv. Base Qty");
+                          QtyToShipVar_P := CalcIndv_L * recVariant_L."Indiv. Base Qty";
+                        END;
+                      END;
+                    END
+                    ELSE BEGIN
+                      IF recItem_L.GET(recSalesLineVar_P."No.") THEN BEGIN
+                        IF recItem_L."Indiv. Base Qty" > 0 THEN BEGIN
+                          CalcIndv_L := ROUND(QtyToShipVar_P / recItem_L."Indiv. Base Qty", 1, '=');
+                          NewLineQty_L := NewLineQty_L + QtyToShipVar_P - (CalcIndv_L * recItem_L."Indiv. Base Qty");
+                          QtyToShipVar_P := CalcIndv_L * recItem_L."Indiv. Base Qty";
+                        END;
+                      END;
+                    END;
+                    CreateNewLine(recSalesLineVar_P, recSalesLine_L, NewLineQty_L);
+                    UpdateWhse(recSalesLineVar_P, NewLineQty_L, recSalesLine_L);
+                  END;
+                END;
+              END;
+            END;
+          END
+          ELSE BEGIN
+            //la ligne est sans contrat
+            ExtraQty_L := QtyToShipVar_P + recSalesLineVar_P."Quantity Shipped" - recSalesLineVar_P.Quantity;
+            IF ExtraQty_L > 0 THEN BEGIN
+              IF (recSalesLineVar_P.Quantity - recSalesLineVar_P."Quantity Shipped") = 0 THEN BEGIN
+                ERROR(Text8053501);
+              END;
+              PercentEcart_L := (ExtraQty_L / (recSalesLineVar_P.Quantity - recSalesLineVar_P."Quantity Shipped")) * 100;
+              IF NOT recItem_L.GET(recSalesLineVar_P."No.") THEN
+                recItem_L.INIT;
+
+              // --> 20160322-Gen14-ADV01.01.00-2767-BDN01
+              //
+              // BEFORE
+              {SetupFinded_L := SearchSetup(recSetup_L, TRUE, PercentEcart_L, recSalesLineVar_P."Unit of Measure Code",
+                                              recSalesLineVar_P."No.",recSalesLineVar_P."Species Code",recSalesLineVar_P."Sub-Family Code"
+      ,
+                                            recSalesLineVar_P."Family Code", recSalesLineVar_P."Activity Code", recItem_L);}
+              // AFTER
+              SetupFinded_L := SearchSetup(recSetup_L, TRUE, PercentEcart_L, recSalesLineVar_P."Unit of Measure Code",
+                recSalesLineVar_P."No.", recSalesLineVar_P."Species Code", recSalesLineVar_P."Sub-Family Code",
+                                           recSalesLineVar_P."Family Code", recSalesLineVar_P."Activity Code", recItem_L,
+                                           recSalesLineVar_P."Location Code",GetLocationType(recSalesLineVar_P."Location Code"));
+              // <-- 20160322-Gen14-ADV01.01.00-2767-BDN01
+
+              IF SetupFinded_L = TRUE THEN BEGIN
+                //un param'trage a 't' trouv'
+                IF recSetup_L.Processing = recSetup_L.Processing::Blocking THEN
+                  //Il faut afficher un message d'erreur
+                  ERROR(Text8053500, recSalesLineVar_P."No.", ((recSalesLineVar_P.Quantity - recSalesLineVar_P."Quantity Shipped") *
+                    (1 + (recSetup_L."Max. % Difference" / 100))), recSalesLineVar_P."Unit of Measure Code");
+                IF recSetup_L.Processing = recSetup_L.Processing::"New Line" THEN BEGIN
+                  //Il faut cr'er une nouvelle ligne
+                  //La nouvelle ligne cr''e va prendre la totalit' du surplus
+                  NewLineQty_L := ExtraQty_L;
+                  IF recSetup_L."New Line Qty" = recSetup_L."New Line Qty"::"Simple Difference" THEN BEGIN
+                    //La nouvelle ligne cr''e va prendre la quantit' au del. du max
+                    NewLineQty_L := NewLineQty_L - ((recSalesLineVar_P.Quantity - recSalesLineVar_P."Quantity Shipped") *
+                                                   (recSetup_L."Max. % Difference" / 100));
+                  END;
+                  //on met . jour la quantit' . livr'e sur la ligne initiale
+                  QtyToShipVar_P := QtyToShipVar_P - NewLineQty_L;
+
+                  IF recSalesLineVar_P."Variant Code" <> '' THEN BEGIN
+                    IF recVariant_L.GET(recSalesLineVar_P."No.", recSalesLineVar_P."Variant Code") THEN BEGIN
+                      IF recVariant_L."Indiv. Base Qty" > 0 THEN BEGIN
+                        CalcIndv_L := ROUND(QtyToShipVar_P / recVariant_L."Indiv. Base Qty", 1, '=');
+                        NewLineQty_L := NewLineQty_L + QtyToShipVar_P - (CalcIndv_L * recVariant_L."Indiv. Base Qty");
+                        QtyToShipVar_P := CalcIndv_L * recVariant_L."Indiv. Base Qty";
+                      END;
+                    END;
+                  END
+                  ELSE BEGIN
+                    IF recItem_L.GET(recSalesLineVar_P."No.") THEN BEGIN
+                      IF recItem_L."Indiv. Base Qty" > 0 THEN BEGIN
+                        CalcIndv_L := ROUND(QtyToShipVar_P / recItem_L."Indiv. Base Qty", 1, '=');
+                        NewLineQty_L := NewLineQty_L + QtyToShipVar_P - (CalcIndv_L * recItem_L."Indiv. Base Qty");
+                        QtyToShipVar_P := CalcIndv_L * recItem_L."Indiv. Base Qty";
+                      END;
+                    END;
+                  END;
+                  CreateNewLine(recSalesLineVar_P, recSalesLine_L, NewLineQty_L);
+                  UpdateWhse(recSalesLineVar_P, NewLineQty_L, recSalesLine_L);
+                END;
+              END;
+            END;
+          END;
+        END;
+      END
+      ELSE BEGIN
+        ExtraQty_L := 0;
+        IF recSalesLineVar_P."Linked Order No." <> '' THEN BEGIN
+          IF LinkedOrderLine_L.GET(recSalesLineVar_P."Document Type",
+              recSalesLineVar_P."Linked Order No.", recSalesLineVar_P."Linked Order Line No.") THEN BEGIN
+            //la ligne a un acompte
+            ExtraQty_L := QtyToShipVar_P + LinkedOrderLine_L.Quantity - LinkedOrderLine_L."Outstanding Quantity";
+            IF ExtraQty_L > recSalesLineVar_P.Quantity THEN BEGIN
+              ExtraQty_L := QtyToShipVar_P - LinkedOrderLine_L."Outstanding Quantity";
+            END;
+          END;
+        END
+        ELSE BEGIN
+          //la ligne est un acompte
+          ExtraQty_L := QtyToShipVar_P - recSalesLineVar_P."Outstanding Quantity";
+        END;
+        IF ExtraQty_L > 0 THEN BEGIN
+          //Il y a un surplus, il faut splitter la ligne avec la totalit' du surplus
+          Result_L := TRUE;
+          NewLineQty_L := ExtraQty_L;
+          //on met . jour la quantit' . livr'e sur la ligne initiale
+          QtyToShipVar_P := QtyToShipVar_P - NewLineQty_L;
+
+          CreateNewLine(recSalesLineVar_P, recSalesLine_L, NewLineQty_L);
+          UpdateWhse(recSalesLineVar_P, NewLineQty_L, recSalesLine_L);
+        END;
+      END;
+
+      EXIT(Result_L);
+    END;
+
+    PROCEDURE SearchSetup@8053001(VAR recSetupVar_P@1000000000 : Record 8053261;Order_P@1000000009 : Boolean;PercentEcart_P@1000000008 : Decimal;Unit_P@1000000007 : Code[10];ItemCode_P@1000000002 : Code[20];SpeciesCode_P@1000000003 : Code[10];SubFamilyCode_P@1000000005 : Code[10];FamilyCode_P@1000000004 : Code[10];ActivityCode_P@1000000006 : Code[10];Item_P@1000000001 : Record 27;LocationCode_P@1000000011 : Code[20];LocTypeCode_P@1000000010 : Code[20]) Result_L : Boolean;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Recherche du param'trage
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - recSetupVar_P : Param'trage
+      //    - Order_P : TRUE = order, FALSE = Blanket Order
+      //    - PercentEcart_P : % d''cart
+      //    - Unit_P : Unit'
+      //    - ItemCode_P : Article
+      //    - SpeciesCode_P : espSce
+      //    - SubFamilyCode_P : sous-famille
+      //    - FamilyCode_P : famille
+      //    - ActivityCode_P : code activit'
+      //    - LocationCode_P : code magasin       // 20160322-Gen14-ADV01.01.00-2767-BDN01
+      //    - LocTypeCode_P : code type magasin   // 20160322-Gen14-ADV01.01.00-2767-BDN01
+      //  Sorties
+      //    - Result_L : Param'trage trouv'
+      //----------------------------------------------------------------------------------------------------------------------------------
+      Result_L := FALSE;
+
+      //Recherche du param'trage
+      recSetupVar_P.RESET;
+      recSetupVar_P.SETRANGE(Type, recSetupVar_P.Type::Item);
+      recSetupVar_P.SETRANGE(Code, ItemCode_P);
+      recSetupVar_P.SETFILTER("Unit of Measure Code",'%1|%2','',Unit_P);
+      recSetupVar_P.SETFILTER("Packaging Type",'%1|%2','',Item_P."Packaging Type");
+      recSetupVar_P.SETRANGE("Movement Type", recSetupVar_P."Movement Type"::"Shipped Qty");
+      recSetupVar_P.SETFILTER("Max. % Difference", '<%1', PercentEcart_P);
+      IF Order_P = TRUE THEN
+        recSetupVar_P.SETRANGE("Difference Type", recSetupVar_P."Difference Type"::Order)
+      ELSE
+        recSetupVar_P.SETRANGE("Difference Type", recSetupVar_P."Difference Type"::"Blanket Order");
+
+      // --> 20160322-Gen14-ADV01.01.00-2767-BDN01
+      // BEFORE
+      {IF recSetupVar_P.FINDLAST THEN
+        Result_L := TRUE;}
+      // AFTER
+      recSetupVar_P.SETRANGE("Condition Type",recSetupVar_P."Condition Type"::Location);
+      recSetupVar_P.SETRANGE("Condition No.",LocationCode_P);
+      IF recSetupVar_P.FINDLAST THEN
+        Result_L := TRUE
+      ELSE BEGIN
+        recSetupVar_P.SETRANGE("Condition Type",recSetupVar_P."Condition Type"::"Location Type");
+        recSetupVar_P.SETRANGE("Condition No.",LocTypeCode_P);
+        IF recSetupVar_P.FINDLAST THEN
+          Result_L := TRUE
+        ELSE BEGIN
+          recSetupVar_P.SETRANGE("Condition Type",recSetupVar_P."Condition Type"::" ");
+          recSetupVar_P.SETRANGE("Condition No.",'');
+      IF recSetupVar_P.FINDLAST THEN
+        Result_L := TRUE;
+        END;
+      END;
+      // <-- 20160322-Gen14-ADV01.01.00-2767-BDN01
+
+      //Descente d'un niveau (espSce) pour la recherche du param'trage si on n'a pas encore trouv'
+      IF Result_L = FALSE THEN BEGIN
+        recSetupVar_P.SETRANGE(Type, recSetupVar_P.Type::Species);
+        recSetupVar_P.SETRANGE(Code, SpeciesCode_P);
+        // -->20160322-Gen14-ADV01.01.00-2767-BDN01
+        // BEFORE
+        {IF recSetupVar_P.FINDLAST THEN
+          Result_L := TRUE;}
+        // AFTER
+        recSetupVar_P.SETRANGE("Condition Type",recSetupVar_P."Condition Type"::Location);
+        recSetupVar_P.SETRANGE("Condition No.",LocationCode_P);
+        IF recSetupVar_P.FINDLAST THEN
+          Result_L := TRUE
+        ELSE BEGIN
+          recSetupVar_P.SETRANGE("Condition Type",recSetupVar_P."Condition Type"::"Location Type");
+          recSetupVar_P.SETRANGE("Condition No.",LocTypeCode_P);
+          IF recSetupVar_P.FINDLAST THEN
+            Result_L := TRUE
+          ELSE BEGIN
+            recSetupVar_P.SETRANGE("Condition Type",recSetupVar_P."Condition Type"::" ");
+            recSetupVar_P.SETRANGE("Condition No.",'');
+        IF recSetupVar_P.FINDLAST THEN
+          Result_L := TRUE;
+      END;
+        END;
+        // <-- 20160322-Gen14-ADV01.01.00-2767-BDN01
+      END;
+
+      //Descente d'un niveau (sous-famille) pour la recherche du param'trage si on n'a pas encore trouv'
+      IF Result_L = FALSE THEN BEGIN
+        recSetupVar_P.SETRANGE(Type, recSetupVar_P.Type::"Sub-family");
+        recSetupVar_P.SETRANGE(Code, SubFamilyCode_P);
+        // --> 20160322-Gen14-ADV01.01.00-2767-BDN01
+        // BEFORE
+        {IF recSetupVar_P.FINDLAST THEN
+          Result_L := TRUE;}
+        // AFTER
+        recSetupVar_P.SETRANGE("Condition Type",recSetupVar_P."Condition Type"::Location);
+        recSetupVar_P.SETRANGE("Condition No.",LocationCode_P);
+        IF recSetupVar_P.FINDLAST THEN
+          Result_L := TRUE
+        ELSE BEGIN
+          recSetupVar_P.SETRANGE("Condition Type",recSetupVar_P."Condition Type"::"Location Type");
+          recSetupVar_P.SETRANGE("Condition No.",LocTypeCode_P);
+          IF recSetupVar_P.FINDLAST THEN
+            Result_L := TRUE
+          ELSE BEGIN
+            recSetupVar_P.SETRANGE("Condition Type",recSetupVar_P."Condition Type"::" ");
+            recSetupVar_P.SETRANGE("Condition No.",'');
+        IF recSetupVar_P.FINDLAST THEN
+          Result_L := TRUE;
+      END;
+        END;
+        // <-- 20160322-Gen14-ADV01.01.00-2767-BDN01
+      END;
+
+      //Descente d'un niveau (famille) pour la recherche du param'trage si on n'a pas encore trouv'
+      IF Result_L = FALSE THEN BEGIN
+        recSetupVar_P.SETRANGE(Type, recSetupVar_P.Type::Family);
+        recSetupVar_P.SETRANGE(Code, FamilyCode_P);
+        // --> 20160322-Gen14-ADV01.01.00-2767-BDN01
+        // BEFORE
+        {IF recSetupVar_P.FINDLAST THEN
+          Result_L := TRUE;}
+        // AFTER
+        recSetupVar_P.SETRANGE("Condition Type",recSetupVar_P."Condition Type"::Location);
+        recSetupVar_P.SETRANGE("Condition No.",LocationCode_P);
+        IF recSetupVar_P.FINDLAST THEN
+          Result_L := TRUE
+        ELSE BEGIN
+          recSetupVar_P.SETRANGE("Condition Type",recSetupVar_P."Condition Type"::"Location Type");
+          recSetupVar_P.SETRANGE("Condition No.",LocTypeCode_P);
+          IF recSetupVar_P.FINDLAST THEN
+            Result_L := TRUE
+          ELSE BEGIN
+            recSetupVar_P.SETRANGE("Condition Type",recSetupVar_P."Condition Type"::" ");
+            recSetupVar_P.SETRANGE("Condition No.",'');
+        IF recSetupVar_P.FINDLAST THEN
+          Result_L := TRUE;
+      END;
+        END;
+        // <-- 20160322-Gen14-ADV01.01.00-2767-BDN01
+      END;
+
+      //Descente d'un niveau (activit') pour la recherche du param'trage si on n'a pas encore trouv'
+      IF Result_L = FALSE THEN BEGIN
+        recSetupVar_P.SETRANGE(Type, recSetupVar_P.Type::Activity);
+        recSetupVar_P.SETRANGE(Code, ActivityCode_P);
+        // --> 20160322-Gen14-ADV01.01.00-2767-BDN01
+        // BEFORE
+        {IF recSetupVar_P.FINDLAST THEN
+          Result_L := TRUE;}
+        // AFTER
+        recSetupVar_P.SETRANGE("Condition Type",recSetupVar_P."Condition Type"::Location);
+        recSetupVar_P.SETRANGE("Condition No.",LocationCode_P);
+        IF recSetupVar_P.FINDLAST THEN
+          Result_L := TRUE
+        ELSE BEGIN
+          recSetupVar_P.SETRANGE("Condition Type",recSetupVar_P."Condition Type"::"Location Type");
+          recSetupVar_P.SETRANGE("Condition No.",LocTypeCode_P);
+          IF recSetupVar_P.FINDLAST THEN
+            Result_L := TRUE
+          ELSE BEGIN
+            recSetupVar_P.SETRANGE("Condition Type",recSetupVar_P."Condition Type"::" ");
+            recSetupVar_P.SETRANGE("Condition No.",'');
+        IF recSetupVar_P.FINDLAST THEN
+          Result_L := TRUE;
+      END;
+        END;
+        // <-- 20160322-Gen14-ADV01.01.00-2767-BDN01
+      END;
+
+      IF Result_L = FALSE THEN
+        ERROR(Text8053502, ItemCode_P, ActivityCode_P, FamilyCode_P, SubFamilyCode_P, SpeciesCode_P);
+      EXIT(Result_L);
+    END;
+
+    PROCEDURE SearchNewLineNo@8053002(recSalesLine_P@8053500 : Record 37) Result_L : Integer;
+    VAR
+      recSalesLine_L@8053501 : Record 37;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Recherche du dernier num'ro de ligne pour une nouvelle ligne
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - recSalesLine_P : Ligne parente
+      //  Sorties
+      //    - Result_L : No de ligne
+      //----------------------------------------------------------------------------------------------------------------------------------
+      Result_L := recSalesLine_P."Line No." + 10000;
+
+      recSalesLine_L.RESET;
+      recSalesLine_L.SETRANGE("Document Type", recSalesLine_P."Document Type");
+      recSalesLine_L.SETRANGE("Document No.", recSalesLine_P."Document No.");
+      recSalesLine_L.SETFILTER("Line No.", '>%1', recSalesLine_P."Line No.");
+      IF recSalesLine_L.FINDLAST THEN BEGIN
+        Result_L := recSalesLine_L."Line No." + 10000;
+      END;
+
+      EXIT(Result_L);
+    END;
+
+    PROCEDURE CreateNewLine@8053003(recSalesLine_P@8053101 : Record 37;VAR recSalesLineVar_P@8053102 : Record 37;NewLineQty_P@8053103 : Decimal);
+    VAR
+      recSalesLine_L@8053104 : Record 37;
+      cduReleaseSalesDoc_L@8053105 : Codeunit 414;
+      recSalesHeader_L@8053106 : Record 36;
+      GLSetup_L@8053107 : Record 98;
+      cduDefalq_L@8053108 : Codeunit 8053008;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Insertion nouvelle ligne de commande
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - recSalesLine_P : Ligne de commande initiale
+      //    - recSalesLineVar_P : Line que l'on va cr''
+      //    - NewLineQty_P : Nouvelle quantit' de livraison calcul'e pr'c'demment
+      //  Sorties
+      //----------------------------------------------------------------------------------------------------------------------------------
+      recSalesHeader_L.GET(recSalesLine_P."Document Type", recSalesLine_P."Document No.");
+      cduReleaseSalesDoc_L.Reopen(recSalesHeader_L);
+      //Cr'ation de la nouvelle ligne de vente
+      recSalesLineVar_P.RESET;
+      recSalesLineVar_P.INIT;
+      recSalesLineVar_P.SuspendStatusCheck(TRUE);
+      recSalesLineVar_P.UpdateQtyFromWhse(TRUE);
+      recSalesLineVar_P."Document Type" := recSalesLine_P."Document Type";
+      recSalesLineVar_P."Document No." := recSalesLine_P."Document No.";
+      recSalesLineVar_P."Line No." := SearchNewLineNo(recSalesLine_P);
+      recSalesLineVar_P.INSERT(TRUE);
+      recSalesLineVar_P.VALIDATE("Sell-to Customer No.", recSalesLine_P."Sell-to Customer No.");
+      recSalesLineVar_P.VALIDATE(Type, recSalesLine_P.Type);
+      recSalesLineVar_P."System Created" := TRUE;
+      recSalesLineVar_P.VALIDATE("No.", recSalesLine_P."No.");
+      recSalesLineVar_P."System Created" := FALSE;
+      recSalesLineVar_P.VALIDATE("Location Code", recSalesLine_P."Location Code");
+      recSalesLineVar_P.VALIDATE("Posting Group", recSalesLine_P."Posting Group");
+      recSalesLineVar_P.VALIDATE("Gen. Prod. Posting Group", recSalesLine_P."Gen. Prod. Posting Group");
+      recSalesLineVar_P.VALIDATE("VAT Prod. Posting Group", recSalesLine_P."VAT Prod. Posting Group");
+      recSalesLineVar_P.VALIDATE("Shipment Date", recSalesLine_P."Shipment Date");
+      recSalesLineVar_P.Description := recSalesLine_P.Description;
+      recSalesLineVar_P."Description 2" := recSalesLine_P."Description 2";
+      recSalesLineVar_P."Unit of Measure" := recSalesLine_P."Unit of Measure";
+      recSalesLineVar_P.VALIDATE(Quantity, NewLineQty_P);
+      recSalesLineVar_P.VALIDATE("Quantity (Base)", NewLineQty_P);
+      recSalesLineVar_P.VALIDATE("Qty. to Ship", NewLineQty_P);
+      recSalesLineVar_P.VALIDATE("Qty. to Ship (Base)", NewLineQty_P);
+      recSalesLineVar_P."Due Date" := recSalesLine_P."Due Date";
+
+      recSalesLineVar_P."Due Pivot Date Gap" := recSalesLine_P."Due Pivot Date Gap";// <--> 20170116-Wi00-ADV02.02.00-ID24388-DDS01
+
+      GLSetup_L.GET;
+      recSalesLineVar_P."Order Date" := GLSetup_L."Server Workdate";
+      recSalesLineVar_P."CMC Campaign No." := recSalesLine_P."CMC Campaign No.";
+      recSalesLineVar_P."Season ID No." := recSalesLine_P."Season ID No.";
+      recSalesLineVar_P."Source Order No." := recSalesLine_P."Source Order No.";
+      recSalesLineVar_P."Source Order Line No." := recSalesLine_P."Source Order Line No.";
+      // --> 20140918-GEN14-CMC02.02.00-1685-FBE01
+      recSalesLineVar_P."Surplus Line" := TRUE;
+      // <-- 20140918-GEN14-CMC02.02.00-1685-FBE01
+      // --> 20260513-WI00-ADV01.01.00-44552-CJY01
+      //flowfield + champ LS . d'sactiver = ligne inutile
+      //recSalesLineVar_P.Status := recSalesHeader_L.Status;
+      // <-- 20260513-WI00-ADV01.01.00-44552-CJY01
+      // --> 20150630-APP27-TER01.01.00-1829-BSI01
+      recSalesLineVar_P."Chater Source Document Type" := recSalesLine_P."Chater Source Document Type";
+      // <-- 20150630-APP27-TER01.01.00-1829-BSI01
+      // --> 20170907-LogA07-SCT00.00.00-3288-NED
+      recSalesLineVar_P."Splited Line" := TRUE;
+      // <-- 20170907-LogA07-SCT00.00.00-3288-NED
+      // --> 20180411-WI00-ADV01.01.00-26359-NED
+      recSalesLineVar_P."Customer Price Group" := recSalesLine_P."Customer Price Group";
+      recSalesLineVar_P."Market Price" := recSalesLine_P."Market Price";
+      recSalesLineVar_P."Item Season Code" := recSalesLine_P."Item Season Code";
+      // <-- 20180411-WI00-ADV01.01.00-26359-NED
+      recSalesLineVar_P.MODIFY(TRUE);
+      cduReleaseSalesDoc_L.RUN(recSalesHeader_L);
+    END;
+
+    PROCEDURE UpdateWhse@8053004(recSalesLine_P@8053109 : Record 37;NewLineQty_P@8053110 : Decimal;recNewSalesLine_P@8053000 : Record 37);
+    VAR
+      recWhsShipLine_L@8053111 : Record 7321;
+      cduReleaseWhseShptDoc_L@8053112 : Codeunit 7310;
+      recWhsShipHeader_L@8053113 : Record 7320;
+      recWhsShipLine2_L@8053114 : Record 7321;
+      NewWhsLineNo_L@8053115 : Integer;
+      OldLineQtyToShip_L@8053116 : Decimal;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Insertion nouvelle ligne de livraison et mise . jour de celle existante
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - recSalesLine_P : Ligne de commande . livrer
+      //    - NewLineQty_P : Nouvelle quantit' de livraison calcul'e pr'c'demment
+      //    - recNewSalesLine_P : Ligne d'j. cr''e
+      //  Sorties
+      //----------------------------------------------------------------------------------------------------------------------------------
+      recWhsShipLine_L.RESET;
+      recWhsShipLine_L.SETRANGE("Source Type", DATABASE::"Sales Line");
+      recWhsShipLine_L.SETRANGE("Source No.", recSalesLine_P."Document No.");
+      recWhsShipLine_L.SETRANGE("Source Line No.", recSalesLine_P."Line No.");
+      IF recWhsShipLine_L.FINDFIRST THEN BEGIN
+        //recherche du nouveau num'ro de ligne
+        NewWhsLineNo_L := recWhsShipLine_L."Line No." + 10000;
+        recWhsShipLine2_L.RESET;
+        recWhsShipLine2_L.SETRANGE("No.", recWhsShipLine_L."No.");
+        recWhsShipLine2_L.SETFILTER("Line No.", '>%1', recWhsShipLine_L."Line No.");
+        IF recWhsShipLine2_L.FINDLAST THEN
+          NewWhsLineNo_L := recWhsShipLine2_L."Line No." + 10000;
+
+        recWhsShipHeader_L.GET(recWhsShipLine_L."No.");
+        cduReleaseWhseShptDoc_L.Reopen(recWhsShipHeader_L);
+        OldLineQtyToShip_L := recWhsShipLine_L."Qty. to Ship" - NewLineQty_P;
+        recWhsShipLine_L.VALIDATE("Qty. to Ship", OldLineQtyToShip_L);
+        recWhsShipLine_L.VALIDATE("Qty. to Ship (Base)", OldLineQtyToShip_L);
+        recWhsShipLine_L.MODIFY(TRUE);
+        recWhsShipLine2_L.INIT;
+        recWhsShipLine2_L.TRANSFERFIELDS(recWhsShipLine_L);
+        recWhsShipLine2_L."No." := recWhsShipLine_L."No.";
+        recWhsShipLine2_L."Line No." := NewWhsLineNo_L;
+        recWhsShipLine2_L."Source Type" := recWhsShipLine2_L."Source Type";
+        recWhsShipLine2_L."Source Subtype" := recWhsShipLine2_L."Source Subtype";
+        recWhsShipLine2_L."Source No." := recWhsShipLine2_L."Source No.";
+        recWhsShipLine2_L."Source Line No." := recNewSalesLine_P."Line No.";
+        recWhsShipLine2_L.Quantity := NewLineQty_P;
+        recWhsShipLine2_L.VALIDATE(Quantity, NewLineQty_P);
+        recWhsShipLine2_L.VALIDATE("Qty. (Base)", NewLineQty_P);
+        recWhsShipLine2_L.VALIDATE("Qty. to Ship", NewLineQty_P);
+        recWhsShipLine2_L.VALIDATE("Qty. to Ship (Base)", NewLineQty_P);
+        recWhsShipLine2_L.INSERT(TRUE);
+        cduReleaseWhseShptDoc_L.Release(recWhsShipHeader_L);
+      END;
+    END;
+
+    PROCEDURE GetLocationType@1000000005(LocationCode_P@1000000000 : Code[10]) : Code[10];
+    VAR
+      Location_L@1000000001 : Record 14;
+    BEGIN
+      // --> 20160322-Gen14-ADV01.01.00-2767-BDN01
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Retourne le type de magasin
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - LocationCode_P : Code du magasin
+      //  Sorties
+      //    - Code Type magasin
+      //----------------------------------------------------------------------------------------------------------------------------------
+
+      IF Location_L.GET(LocationCode_P) THEN
+        EXIT(Location_L."Location Type")
+      ELSE
+        EXIT('');
+      // <-- 20160322-Gen14-ADV01.01.00-2767-BDN01
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+
+      20140718-Gen14-CMC02.02.00-2359-FHS01 : NEW CU
+      20140718-Gen14-CMC02.02.00-2359-FHS01 : MODCODE (Erreur de factoring)
+      20140918-GEN14-CMC02.02.00-1685-FBE01 : MODFUNC CreateNewLine
+      201471013-GEN14-CMC02.02.00-2116-FHS01 : ADDCODE (Ajout d'un message d'erreur si aucun param'trage n'est trouv')
+      20150630-APP27-TER01.01.00-1829-BSI01 : ADDCODE (Alimentation du champ "Chater Source Document Type")
+      20160322-Gen14-ADV01.01.00-2767-BDN01 : ADDCODE (Check Condition Type, Condition No.)
+                                              ADDFUNCTION (GetLocationType)
+      CMC-8052300/125|903487-NED : ADDCODE (CheckShip : pas de livraison surplus sur les produits traÎ's)
+      20170116-Wi00-ADV02.02.00-ID24388-DDS01 : ADDCODE (Manage "Due Pivot Date Gap")
+      20170907-LogA07-SCT00.00.00-3288-NED : MODFUNCT (CreateNewLine : Cocher ligne splitt'e)
+      20180411-WI00-ADV01.01.00-26359-NED : MODFUNCT (CreateNewLine)
+      20260513-WI00-ADV01.01.00-44552-CJY01 : MODFIELD (d'sactivation champs LS "status" remplac' par "Header status" )
+
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

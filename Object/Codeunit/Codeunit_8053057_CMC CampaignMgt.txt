@@ -1,0 +1,327 @@
+OBJECT Codeunit 8053057 CMC CampaignMgt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=22/03/23;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text8053000@1000000000 : TextConst 'FRA=Voulez-vous indenter le param'trage des saisons ?';
+      Text8053001@8053001 : TextConst 'ENU=Expected prepayment person should not be less then %1;FRA="Le pourcentage d''acompte pr'visionnel ne doit pas ^tre inf'rieur . %1 "';
+      Text8053002@8053002 : TextConst 'FRA=La saison n''autorise pas l''acompte.';
+      Text8053003@8053003 : TextConst 'FRA=La saison oblige la saisie d''un acompte.';
+
+    PROCEDURE LookupCampaign@1000000000(ReferenceDate_P@1000000002 : Date) : Code[20];
+    VAR
+      Campaign_L@1000000000 : Record 8052991;
+      CampaignPage_L@1000000001 : Page 8052994;
+    BEGIN
+      Campaign_L.RESET;
+      Campaign_L.SETCURRENTKEY("Type Code","Starting Date","Ending Date");
+      IF ReferenceDate_P <> 0D THEN BEGIN
+        Campaign_L.SETFILTER("Starting Date", '<=%1', ReferenceDate_P);
+        Campaign_L.SETFILTER("Ending Date", '>=%1', ReferenceDate_P);
+      END;
+      CampaignPage_L.LOOKUPMODE(TRUE);
+      CampaignPage_L.SETRECORD(Campaign_L);
+      CampaignPage_L.SETTABLEVIEW(Campaign_L);
+      IF CampaignPage_L.RUNMODAL = ACTION::LookupOK THEN BEGIN
+        CampaignPage_L.GETRECORD(Campaign_L);
+        EXIT(Campaign_L."No.");
+      END;
+      EXIT('');
+    END;
+
+    PROCEDURE CheckCampaign@1000000001(CampaignCodeToCheck_P@1000000001 : Code[10];ReferenceDate_P@1000000002 : Date) : Boolean;
+    VAR
+      Campaign_L@1000000000 : Record 8052991;
+    BEGIN
+      Campaign_L.RESET;
+      Campaign_L.SETCURRENTKEY("Type Code","Starting Date","Ending Date");
+      IF ReferenceDate_P <> 0D THEN BEGIN
+        Campaign_L.SETFILTER("Starting Date", '<=%1', ReferenceDate_P);
+        Campaign_L.SETFILTER("Ending Date", '>=%1', ReferenceDate_P);
+      END;
+      Campaign_L.SETRANGE("No.",CampaignCodeToCheck_P);
+      EXIT(NOT Campaign_L.ISEMPTY);
+    END;
+
+    PROCEDURE GetAvailableSeason@8053064(VAR TmpSeason2_L@8053000 : Record 8053154;SalesLine_L@1000000004 : Record 37);
+    VAR
+      Season_L@8053001 : Record 8053154;
+      TmpCampaign_L@1000000000 : TEMPORARY Record 8052991;
+      i_L@1000000001 : Integer;
+      LevelFound_L@1000000002 : Boolean;
+      TmpSeason_L@1000000003 : TEMPORARY Record 8053154;
+      DateRef_L@8053002 : Date;
+      SalesHeader_L@8053003 : Record 36;
+      DateCaption_L@8053004 : Text[50];
+      Item_L@8053005 : Record 27;
+      PriceCalcMgt_L@1000000005 : Codeunit 7000;
+      TableauType_L@1000000006 : ARRAY [6] OF Integer;
+    BEGIN
+      TmpSeason_L.RESET;
+      TmpSeason_L.DELETEALL;
+
+      TmpCampaign_L.RESET;
+      TmpCampaign_L.DELETEALL;
+
+      SalesHeader_L.GET(SalesLine_L."Document Type", SalesLine_L."Document No.");
+      DateRef_L := PriceCalcMgt_L.GetReferenceDate(SalesHeader_L, SalesLine_L, DateCaption_L);
+
+      Season_L.RESET;
+      Season_L.SETCURRENTKEY(Type,"No.","Variant Code","Order Starting Date");
+      Season_L.SETFILTER("Order Starting Date", '<=%1', DateRef_L);
+      Season_L.SETFILTER("Order Ending Date", '>=%1', DateRef_L);
+      Season_L.SETRANGE(Unactive,FALSE);
+
+      CASE TRUE OF
+        SalesLine_L.Type = SalesLine_L.Type::Item :
+          Item_L.GET(SalesLine_L."No.");
+        (SalesLine_L.Type = SalesLine_L.Type::"Charge (Item)") AND (SalesLine_L."Item Charge Pricing Item No." <> '') :
+          Item_L.GET(SalesLine_L."Item Charge Pricing Item No.");
+      END;
+
+      Season_L.SETRANGE(Type, Season_L.Type::Item);
+      Season_L.SETRANGE("No.", Item_L."No.");
+
+      //Search by Item and Variant Code
+      IF SalesLine_L."Variant Code" <> '' THEN BEGIN
+        Season_L.SETRANGE("Variant Code", SalesLine_L."Variant Code");
+        IF Season_L.FINDSET THEN
+          REPEAT
+            TmpSeason_L.INIT;
+            TmpSeason_L := Season_L;
+            TmpSeason_L.INSERT;
+            TmpCampaign_L.INIT;
+            TmpCampaign_L."No." := Season_L."Campaign No.";
+            IF TmpCampaign_L.INSERT THEN;
+          UNTIL Season_L.NEXT = 0;
+      END;
+
+      //Search by Item
+      Season_L.SETRANGE("Variant Code");
+      IF Season_L.FINDSET THEN
+        REPEAT
+          TmpSeason_L.INIT;
+          TmpSeason_L := Season_L;
+          // --> 20160603-APP17-ADV01.01.00-3036-OAN01
+          // BEFORE
+          {TmpSeason_L.INSERT;}
+          // AFTER
+          IF NOT TmpSeason_L.INSERT THEN;
+          // <-- 20160603-APP17-ADV01.01.00-3036-OAN01
+          TmpCampaign_L.INIT;
+          TmpCampaign_L."No." := Season_L."Campaign No.";
+          IF TmpCampaign_L.INSERT THEN;
+        UNTIL Season_L.NEXT = 0;
+
+      // --> 20230315-WI00-ADV01.01.00-3614-CJY01
+      //Search by Rate Code
+      IF Item_L."Code tarif" <> '' THEN BEGIN
+        Season_L.SETRANGE(Type, Season_L.Type::"Rate Code");
+        Season_L.SETRANGE("No.", Item_L."Code tarif");
+        IF Season_L.FINDSET THEN
+          REPEAT
+            TmpSeason_L.INIT;
+            TmpSeason_L := Season_L;
+            TmpSeason_L.INSERT;
+            TmpCampaign_L.INIT;
+            TmpCampaign_L."No." := Season_L."Campaign No.";
+            IF TmpCampaign_L.INSERT THEN;
+          UNTIL Season_L.NEXT = 0;
+
+      END;
+
+      // <-- 20230315-WI00-ADV01.01.00-3614-CJY01
+
+      //Search by Species
+      Season_L.SETRANGE(Type, Season_L.Type::Species);
+      Season_L.SETRANGE("No.", Item_L."Species Code");
+      IF Season_L.FINDSET THEN
+        REPEAT
+          TmpSeason_L.INIT;
+          TmpSeason_L := Season_L;
+          TmpSeason_L.INSERT;
+          TmpCampaign_L.INIT;
+          TmpCampaign_L."No." := Season_L."Campaign No.";
+          IF TmpCampaign_L.INSERT THEN;
+        UNTIL Season_L.NEXT = 0;
+
+      //Search by Subfamily
+      Season_L.SETRANGE(Type, Season_L.Type::Subfamily);
+      Season_L.SETRANGE("No.", Item_L."Sub-Family Code");
+      IF Season_L.FINDSET THEN
+        REPEAT
+          TmpSeason_L.INIT;
+          TmpSeason_L := Season_L;
+          TmpSeason_L.INSERT;
+          TmpCampaign_L.INIT;
+          TmpCampaign_L."No." := Season_L."Campaign No.";
+          IF TmpCampaign_L.INSERT THEN;
+        UNTIL Season_L.NEXT = 0;
+
+      //Search by Family
+      Season_L.SETRANGE(Type, Season_L.Type::Family);
+      Season_L.SETRANGE("No.", Item_L."Family Code");
+      IF Season_L.FINDSET THEN
+        REPEAT
+          TmpSeason_L.INIT;
+          TmpSeason_L := Season_L;
+          TmpSeason_L.INSERT;
+          TmpCampaign_L.INIT;
+          TmpCampaign_L."No." := Season_L."Campaign No.";
+          IF TmpCampaign_L.INSERT THEN;
+        UNTIL Season_L.NEXT = 0;
+
+      //Search by Activity
+      Season_L.SETRANGE(Type, Season_L.Type::Activity);
+      Season_L.SETRANGE("No.", Item_L."Activity Code");
+      IF Season_L.FINDSET THEN
+        REPEAT
+          TmpSeason_L.INIT;
+          TmpSeason_L := Season_L;
+          TmpSeason_L.INSERT;
+          TmpCampaign_L.INIT;
+          TmpCampaign_L."No." := Season_L."Campaign No.";
+          IF TmpCampaign_L.INSERT THEN;
+        UNTIL Season_L.NEXT = 0;
+
+      // --> 20230315-WI00-ADV01.01.00-3614-CJY01
+      {BEFORE
+      IF TmpCampaign_L.FINDSET THEN BEGIN
+        REPEAT
+          LevelFound_L := FALSE;
+          FOR i_L:=5 DOWNTO 1 DO
+            IF LevelFound_L = FALSE THEN BEGIN
+              TmpSeason_L.RESET;
+              TmpSeason_L.SETRANGE(Type,i_L-1);
+              TmpSeason_L.SETRANGE("Campaign No.",TmpCampaign_L."No.");
+              IF TmpSeason_L.FINDSET THEN BEGIN
+                REPEAT
+                  TmpSeason2_L.INIT;
+                  TmpSeason2_L := TmpSeason_L;
+                  TmpSeason2_L.INSERT;
+                UNTIL TmpSeason_L.NEXT = 0;
+                LevelFound_L := TRUE;
+              END;
+            END;
+        UNTIL TmpCampaign_L.NEXT = 0;
+      END;
+      AFTER}
+      TableauType_L[6] := 4;
+      TableauType_L[5] := 5;
+      TableauType_L[4] := 3;
+      TableauType_L[3] := 2;
+      TableauType_L[2] := 1;
+      TableauType_L[1] := 0;
+      IF TmpCampaign_L.FINDSET THEN BEGIN
+        REPEAT
+          LevelFound_L := FALSE;
+          FOR i_L:=6 DOWNTO 1 DO
+            IF LevelFound_L = FALSE THEN BEGIN
+              TmpSeason_L.RESET;
+              TmpSeason_L.SETRANGE(Type,TableauType_L[i_L]);
+              TmpSeason_L.SETRANGE("Campaign No.",TmpCampaign_L."No.");
+              IF TmpSeason_L.FINDSET THEN BEGIN
+                REPEAT
+                  TmpSeason2_L.INIT;
+                  TmpSeason2_L := TmpSeason_L;
+                  TmpSeason2_L.INSERT;
+                UNTIL TmpSeason_L.NEXT = 0;
+                LevelFound_L := TRUE;
+              END;
+            END;
+        UNTIL TmpCampaign_L.NEXT = 0;
+      END;
+
+      // <-- 20230315-WI00-ADV01.01.00-3614-CJY01
+    END;
+
+    PROCEDURE IndentSeasonSetup@8053027();
+    VAR
+      Season_L@1000000000 : Record 8053154;
+      WindMgt_L@1000000001 : Codeunit 8060986;
+      FunnelMgt_L@1000000002 : Codeunit 8053054;
+    BEGIN
+      IF NOT CONFIRM(Text8053000,FALSE) THEN
+        EXIT;
+
+      WITH Season_L DO BEGIN
+        RESET;
+        IF FINDSET THEN BEGIN
+          WindMgt_L.CreateWindow(COUNT);
+          REPEAT
+            WindMgt_L.UpdateWindow;
+            Indent := Type + 1;
+            IF "No." <> '' THEN BEGIN
+            // --> 20230315-WI00-ADV01.01.00-3614-CJY01
+              {BEFORE
+              "Ranking ID" := FunnelMgt_L.SetMultiLevelString(Type,"No.",FALSE);
+              Description := FunnelMgt_L.GetDescription(Type,"No.","Variant Code");
+              AFTER}
+              "Ranking ID" := FunnelMgt_L.SetMultiLevelString(Type,"No.",FALSE);
+              Description := FunnelMgt_L.GetDescriptionSeason(Type,"No.","Variant Code");
+
+            // <-- 20230315-WI00-ADV01.01.00-3614-CJY01
+              MODIFY(TRUE);
+            END;
+          UNTIL NEXT = 0;
+        END;
+      END;
+
+      WindMgt_L.CloseWindow('');
+    END;
+
+    PROCEDURE CheckSeasonPrepStatus@8053028(Season_P@1000000000 : Record 8053154;PrepPerCent_P@1000000001 : Decimal) : Text[250];
+    BEGIN
+      WITH Season_P DO BEGIN
+        CASE "Prepayment Status" OF
+          "Prepayment Status"::Forbid : BEGIN
+            IF PrepPerCent_P <> 0 THEN
+              EXIT(Text8053002);
+            EXIT('');
+          END;
+          "Prepayment Status"::Authorized : BEGIN
+            IF PrepPerCent_P > 0 THEN
+              IF ("Minimum Prepayment %" <> 0) AND (PrepPerCent_P < "Minimum Prepayment %") THEN
+                EXIT(STRSUBSTNO(Text8053001,"Minimum Prepayment %"));
+            EXIT('');
+          END;
+          "Prepayment Status"::Mandatory : BEGIN
+            IF PrepPerCent_P <> 0 THEN BEGIN
+              IF ("Minimum Prepayment %" <> 0) AND (PrepPerCent_P < "Minimum Prepayment %") THEN
+                EXIT(STRSUBSTNO(Text8053001,"Minimum Prepayment %"));
+            END ELSE
+              EXIT(Text8053003);
+            EXIT('');
+          END;
+        END;
+      END;
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+
+      20140704-APP17-CMC02.02.00-2307-FEC01 : ADDOBJ(Nouvel objet).
+      20160603-APP17-ADV01.01.00-3036-OAN01 : MODCODE (Season Can Exist In Temporary Record If Parameter Is By Variant Code)
+                                              MODFUNCTION (GetAvailableSeason)
+      20230315-WI00-ADV01.01.00-3614-CJY01 : MODFUNC (ajout "code tarif" dans GetAvailableSeason)
+      20230315-WI00-ADV01.01.00-3614-CJY01 : MODFUNC (GetAvailableSeason : modification de l'ordre de lecture, le Type n'est plus ordonn')
+
+      // --> 3LI END
+    }
+    END.
+  }
+}
+

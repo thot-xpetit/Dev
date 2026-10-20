@@ -1,0 +1,293 @@
+OBJECT Codeunit 60088 Via Lacta Export
+{
+  OBJECT-PROPERTIES
+  {
+    Date=23/04/24;
+    Heure=14:30:08;
+    Modifi'=Oui;
+    Liste versions=SP3453;
+  }
+  PROPERTIES
+  {
+    TableNo=8061230;
+    Permissions=TableData 7323=rm;
+    OnRun=BEGIN
+            CodeUnit_G := Processing;
+
+            ExportThird;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      CodeUnit_G@60001 : Integer;
+      cduMoteurInterface_G@60002 : Codeunit 8061230;
+      cduToolsFile_G@60003 : Codeunit 8053405;
+      ConnectorName_G@60014 : Code[20];
+      ImpExpFolder_G@60013 : Text[256];
+      LogFolder_G@60012 : Text[256];
+      ExtensionFile_G@60011 : Text[10];
+      PrefixFile_G@60010 : Text[10];
+      ItemTemplateCode_G@60009 : Code[20];
+      CustomerTemplateCode_G@60008 : Code[20];
+      VendorTemplateCode_G@60007 : Code[20];
+      ContactTemplateCode_G@60006 : Code[20];
+      AccountTemplateCode_G@60005 : Code[20];
+      GlobalTemplateCode_G@60004 : Code[20];
+      Text60000@60025 : TextConst 'ENU=Error Creating File %1 \%2.;FRA=Erreur cr'ation fichier %1 \%2.';
+      TxtEcrit_G@60016 : Text[1024];
+      LineNo_G@60017 : Integer;
+      FileOutstream_G@60018 : OutStream;
+      recCompanyInfo_G@60019 : Record 79;
+      cduFormatFieldsManage_G@60020 : Codeunit 8060985;
+      CMCOETSetup_G@100000000 : Record 8053431;
+      TErrEmailAdr@1000000000 : TextConst 'ENU=The Email Address Parameter is empty;FRA=La prametre Adresse Mail est vide';
+      TEmailSubject@1000000001 : TextConst 'ENU="VIA LACTA Export ";FRA=Export VIA LACTA';
+      TEmailBody@1000000002 : TextConst 'ENU=You con find inclosure this emai lthe export to via lacta;FRA=Vous trouverez en piece jointe de ce mail ,l''export VIA LACTA';
+
+    PROCEDURE ExportThird@60001();
+    VAR
+      FileLogName_L@60001 : Text[256];
+    BEGIN
+      // Entr'es:
+      // - Filename_P : Nom du Fichier des exp'ditions . g'n'rer
+      // Sorties:
+      // - Result_L : Erreur Retourn'e , Vide Si Ok
+      //----------------------------------------------------------------------------------------------------------------------------------
+      cduMoteurInterface_G.GetParameter(CodeUnit_G, ConnectorName_G, ImpExpFolder_G, LogFolder_G, ExtensionFile_G, PrefixFile_G);
+      cduMoteurInterface_G.GetTemplatesCode (ConnectorName_G, ItemTemplateCode_G, CustomerTemplateCode_G, VendorTemplateCode_G,
+        ContactTemplateCode_G, AccountTemplateCode_G, GlobalTemplateCode_G);
+      cduToolsFile_G.LogInit(LogFolder_G, ConnectorName_G);
+      cduToolsFile_G.LogInitCodeUnit(CodeUnit_G);
+
+      ExportTexte();
+
+      FileLogName_L := cduToolsFile_G.LogName;
+      cduToolsFile_G.LogClose();
+
+      // Pour g'rer le ROLLBACK.
+      IF cduToolsFile_G.LogErreurType() = 'E' THEN BEGIN
+        ERROR('ERREUR ' + FileLogName_L);
+      END ELSE BEGIN
+        IF cduToolsFile_G.LogErreurType() = 'I' THEN BEGIN
+          cduMoteurInterface_G.InsertLog(CodeUnit_G, FileLogName_L);
+        END ELSE BEGIN
+          cduMoteurInterface_G.InsertOk(CodeUnit_G);
+        END;
+        UpdatePstdWhseShptLine;
+      END;
+    END;
+
+    PROCEDURE ExportTexte@60005() Result_L : Text[256];
+    VAR
+      FileNameOuvert_L@60002 : Boolean;
+      NbCarEcrit_L@60001 : Integer;
+      FileName_L@60004 : Text[256];
+      FilePath_L@60007 : Text[256];
+      FileN_L@60006 : Text[256];
+      FileTemp_L@60008 : Text[256];
+      FileExport_L@60009 : File;
+      PstdWhseShipmentLine_L@100000000 : Record 7323;
+      Item_L@100000001 : Record 27;
+      CMCContactExtServRecur_L@100000002 : Record 8053467;
+      ExportLine_L@100000003 : Boolean;
+    BEGIN
+      //R'cup'ration des informations soci't'
+      recCompanyInfo_G.GET;
+
+      //R'cup'ration des informations de param'trage
+      CMCOETSetup_G.GET;
+
+      FileNameOuvert_L := FALSE;
+      NbCarEcrit_L := 0;
+
+      // Cr'ation du fichier F_UNE_PFE_TRA_JJ_MM_SSAA_HH_MN_SS.csv
+      FileName_L := ImpExpFolder_G + '\' + DELCHR(PrefixFile_G, '<>', ' ') + FORMAT(CURRENTDATETIME, 0,
+        '<Day,2>_<Month,2>_<Year4>_<Hours24,2>_<Minutes,2>_<Seconds,2>') + '.' + DELCHR(ExtensionFile_G, '<>', ' ');
+      cduToolsFile_G.LogInitFileExecute(FileName_L);
+      cduToolsFile_G.SplitFilename(FileName_L, FilePath_L, FileN_L);
+      FileTemp_L := FilePath_L + 'Temp_' + FileN_L;
+      IF NOT FileExport_L.CREATE(FileTemp_L) THEN BEGIN
+        cduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text60000, FileTemp_L, GETLASTERRORTEXT), 1, MAXSTRLEN(Result_L)));
+        CLEARLASTERROR;
+      END ELSE BEGIN
+        FileExport_L.CREATEOUTSTREAM(FileOutstream_G);
+        FileNameOuvert_L := TRUE;
+
+        //Export des lignes d'exp'dition entrep"t enregistr's sous les conditions suivantes :
+        // - Agriculteurs qui ont un abonnement au service "VIA LACTA"
+        // - ET Articles au d'part du code magasin 110
+        // - ET l'article :
+        //                  - Appartient . la Famille RUMI & SIMP
+        //             OU   - Appartient . la sous famille BOVI
+        //             OU   - Appartient . l'espSce NRUMI
+        // - Ligne non envoy'e
+        // - Si Agriculteur nouvellement abonn' : Historique sur 6 mois
+
+        LineNo_G := 1;
+
+        PstdWhseShipmentLine_L.RESET;
+        PstdWhseShipmentLine_L.SETRANGE("Location Code", CMCOETSetup_G."Oet Location Code");
+        PstdWhseShipmentLine_L.SETFILTER("Posting Date", '>=%1', CALCDATE('<-6M>', TODAY));
+        PstdWhseShipmentLine_L.SETRANGE("VIA LACTA Already Send", FALSE);
+        IF PstdWhseShipmentLine_L.FINDSET THEN REPEAT
+          ExportLine_L := ToExport(PstdWhseShipmentLine_L);
+
+          //Si tout est bon, on exporte la ligne
+          IF ExportLine_L THEN BEGIN
+            {Vu avec Anthony : pas besoin d'une ligne d'ent^te
+            IF LineNo_G = 1 THEN BEGIN
+              AddConvertedTextAndComma(recCompanyInfo_G.FIELDCAPTION("Registration No."));
+              AddConvertedTextAndComma(CMCOETSetup_G.FIELDCAPTION("Site Code"));
+              AddConvertedTextAndComma(PstdWhseShipmentLine_L.FIELDCAPTION("Destination No."));
+              AddConvertedTextAndComma(PstdWhseShipmentLine_L.FIELDCAPTION(Description));
+              AddConvertedTextAndComma(PstdWhseShipmentLine_L.FIELDCAPTION("Item No."));
+              AddConvertedTextAndComma(PstdWhseShipmentLine_L.FIELDCAPTION("OET Lot No."));
+              AddConvertedTextAndComma(PstdWhseShipmentLine_L.FIELDCAPTION(Quantity));
+              AddConvertedTextAndComma(PstdWhseShipmentLine_L.FIELDCAPTION("Unit of Measure Code"));
+              AddConvertedTextAndComma(PstdWhseShipmentLine_L.FIELDCAPTION("Shipment Date"));
+              AddConvertedTextAndComma(PstdWhseShipmentLine_L.FIELDCAPTION("OET Lot No."));
+              InsertLine;
+            END;
+            }
+
+            TxtEcrit_G := '';
+            AddConvertedTextAndComma(recCompanyInfo_G."Registration No.");
+            AddConvertedTextAndComma(CMCOETSetup_G."Site Code");
+            AddConvertedTextAndComma(PstdWhseShipmentLine_L."Destination No.");
+            AddConvertedTextAndComma(PstdWhseShipmentLine_L.Description);
+            AddConvertedTextAndComma(PstdWhseShipmentLine_L."Item No.");
+            AddConvertedTextAndComma(PstdWhseShipmentLine_L."OET Lot No.");
+            AddConvertedTextAndComma(FORMAT(PstdWhseShipmentLine_L.Quantity));
+            AddConvertedTextAndComma(PstdWhseShipmentLine_L."Unit of Measure Code");
+            AddConvertedTextAndComma(FORMAT(PstdWhseShipmentLine_L."Shipment Date"));
+            AddConvertedTextAndComma(PstdWhseShipmentLine_L."OET Lot No.");
+            InsertLine;
+
+          END;
+        UNTIL PstdWhseShipmentLine_L.NEXT = 0;
+
+        NbCarEcrit_L := FileExport_L.LEN;
+        FileExport_L.CLOSE;
+      END;
+
+      IF (NbCarEcrit_L > 0) THEN BEGIN
+        IF cduToolsFile_G.LogErreurType() = 'E' THEN BEGIN
+          IF FileNameOuvert_L THEN BEGIN
+            FILE.ERASE(FileTemp_L);
+          END;
+        END ELSE BEGIN
+          IF RENAME(FileTemp_L, FileName_L) THEN BEGIN
+            // --> 20240423-CLA202757
+            SentByEmail(FileName_L, CMCOETSetup_G);
+            // <-- 20240423-CLA202757
+          END;
+        END;
+      END ELSE BEGIN
+        IF FileNameOuvert_L THEN BEGIN
+          FILE.ERASE(FileTemp_L);
+        END;
+      END;
+    END;
+
+    PROCEDURE InsertLine@60003();
+    BEGIN
+      //Suppression du dernier point virgule des lignes
+      TxtEcrit_G := COPYSTR(TxtEcrit_G, 1, STRLEN(TxtEcrit_G) - 1);
+
+      FileOutstream_G.WRITETEXT(TxtEcrit_G);
+      FileOutstream_G.WRITETEXT();
+      LineNo_G += 1;
+    END;
+
+    PROCEDURE AddConvertedTextAndComma@60011(Text_P@60000 : Text[500]);
+    BEGIN
+      TxtEcrit_G += CONVERTSTR(cduFormatFieldsManage_G.Ascii2Ansi(Text_P), ';', ',') + ';';
+    END;
+
+    PROCEDURE UpdatePstdWhseShptLine@100000001();
+    VAR
+      PstdWhseShipmentLine_L@100000000 : Record 7323;
+      ExportedLine_L@100000001 : Boolean;
+    BEGIN
+      //Si le fichier a bien 't' g'n'r' : mise . jour des lignes d'j. export'es
+      PstdWhseShipmentLine_L.RESET;
+      PstdWhseShipmentLine_L.SETRANGE("Location Code", CMCOETSetup_G."Oet Location Code");
+      PstdWhseShipmentLine_L.SETRANGE("VIA LACTA Already Send", FALSE);
+      PstdWhseShipmentLine_L.SETFILTER("Posting Date", '>=%1', CALCDATE('<-6M>', TODAY));
+      IF PstdWhseShipmentLine_L.FINDSET THEN REPEAT
+        ExportedLine_L := ToExport(PstdWhseShipmentLine_L);
+
+        IF ExportedLine_L THEN BEGIN
+          PstdWhseShipmentLine_L."VIA LACTA Already Send" := TRUE;
+          PstdWhseShipmentLine_L.MODIFY;
+        END;
+      UNTIL PstdWhseShipmentLine_L.NEXT = 0;
+    END;
+
+    PROCEDURE ToExport@100000002(PstdWhseShipmentLine_P@100000000 : Record 7323) : Boolean;
+    VAR
+      CMCContactExtServRecur_L@100000001 : Record 8053467;
+      Item_L@100000002 : Record 27;
+    BEGIN
+      // Contr"le de l'abonnement
+      IF CMCContactExtServRecur_L.GET(PstdWhseShipmentLine_P."Destination No.", CMCOETSetup_G."External Service") THEN BEGIN
+        IF NOT CMCContactExtServRecur_L.Active THEN
+          EXIT(FALSE);
+      END ELSE
+        EXIT(FALSE);
+
+      // Contr"les sur l'article
+      IF Item_L.GET(PstdWhseShipmentLine_P."Item No.") THEN BEGIN
+        IF (STRPOS(CMCOETSetup_G."Family Filter", Item_L."Family Code") = 0)
+           AND (STRPOS(CMCOETSetup_G."SubFamily Filter", Item_L."Sub-Family Code") = 0)
+           AND (STRPOS(CMCOETSetup_G."Species Filter", Item_L."Species Code") = 0) THEN
+          EXIT(FALSE);
+      END ELSE
+        EXIT(FALSE);
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE "-- XPE --"@1000000000();
+    BEGIN
+    END;
+
+    PROCEDURE SentByEmail@1000000001(FileToSend@1000000000 : Text[1024];OETSetup@1000000001 : Record 8053431);
+    VAR
+      SmtpMail@1000000005 : Codeunit 400;
+      Char13@1000000003 : Char;
+      Char10@1000000002 : Char;
+    BEGIN
+      // 20240423-CLA202757
+      Char13 := 13;
+      Char10 := 10;
+      IF (OETSetup."Sent by Email") THEN BEGIN
+        IF (OETSetup."Email Address" <> '') THEN BEGIN
+          SmtpMail.CreateMessage('AUTOMATE - UNEAL',
+                                 'Contact1@groupe-advitam.fr',
+                                 OETSetup."Email Address",
+                                 TEmailSubject,
+                                 TEmailBody,
+                                 TRUE);
+          SmtpMail.AddAttachment(FileToSend);
+          SmtpMail.Send();
+        END ELSE BEGIN
+          cduToolsFile_G.LogWriteErreur(TErrEmailAdr);
+        END;
+      END;
+      // 20240423-CLA202757
+    END;
+
+    BEGIN
+    {
+      //--> 3LI BEGIN
+      20191209-WI00-ADV01.01.00-3453-MRU01 : CREATE Object
+      //<-- 3LI BEGIN
+      // 20240423-CLA202757 XPE : Add function : SentByEmail
+    }
+    END.
+  }
+}
+

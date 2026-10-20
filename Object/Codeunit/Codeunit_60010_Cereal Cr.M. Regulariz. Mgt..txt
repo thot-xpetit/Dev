@@ -1,0 +1,242 @@
+OBJECT Codeunit 60010 Cereal Cr.M. Regulariz. Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02/03/26;
+    Heure=00:00:00;
+    Liste versions=TER01.01.00;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            SalesHeader_L@60000 : Record 36;
+          BEGIN
+            CreateCrMemoHeader(SalesHeader_L,'');
+            OpenCrMemo(SalesHeader_L);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text60000@60000 : TextConst 'ENU=The %1 %2 can''t be closed.;FRA=Le %1 %2 ne peut pas ^tre ferm'.';
+      Text001_G@60002 : TextConst 'ENU=Contract No. %1 - Specie %2 - Item %3;FRA=Contrat Nõ %1 - EspSce %2 - Article %3';
+      Text002_G@60001 : TextConst 'FRA=........................................';
+      Text003_G@60004 : TextConst 'ENU=Contract No. %1 - Specie %2;FRA=Contrat Nõ %1 - EspSce %2';
+      Text004_G@60003 : TextConst 'ENU=Item %1;FRA=Article %1';
+      ArianeMgt_G@1000000000 : Codeunit 60125;
+
+    LOCAL PROCEDURE CreateCrMemoHeader@60000(VAR SalesHeaderVar_P@60000 : Record 36;SalesContractNo_P@60001 : Code[10]);
+    VAR
+      SalesContract_L@60002 : Record 8053012;
+      Customer_L@60003 : Record 18;
+      Item_L@60004 : Record 27;
+      GenPostSetup_L@60005 : Record 252;
+      SalesLine_L@60006 : Record 37;
+      SpeciesSetup_L@60007 : Record 8053323;
+      Location_L@60010 : Record 14;
+      GLSetup_L@60009 : Record 98;
+      DefaultDim_L@60008 : Record 352;
+      RecLocation_L@1000000000 : Record 14;
+    BEGIN
+      IF SalesContractNo_P <> '' THEN BEGIN
+        SalesContract_L.GET(SalesContractNo_P);
+        SalesContract_L.TESTFIELD("Species Code");
+        SpeciesSetup_L.GET(SalesContract_L."Species Code");
+        SpeciesSetup_L.TESTFIELD("Product Type",SpeciesSetup_L."Product Type"::" ");  // (in T8053013."Product Type"::"Cereal")
+
+        IF SalesContract_L.Status = SalesContract_L.Status::Closed THEN
+          ERROR(Text60000,SalesContract_L.TABLECAPTION,SalesContract_L."No.");
+
+        SalesContract_L.TESTFIELD("Customer No.");
+        Customer_L.GET(SalesContract_L."Customer No.");
+
+        SalesContract_L.TESTFIELD("Item No.");
+        Item_L.GET(SalesContract_L."Item No.");
+
+        GenPostSetup_L.GET(Customer_L."Gen. Bus. Posting Group",Item_L."Gen. Prod. Posting Group");
+      END;
+
+      CLEAR(SalesHeaderVar_P);
+      SalesHeaderVar_P."Document Type" := SalesHeaderVar_P."Document Type"::"Credit Memo";
+      SalesHeaderVar_P."No." := '';
+      SalesHeaderVar_P.INSERT(TRUE);
+
+      SalesHeaderVar_P.VALIDATE("Posting Date",WORKDATE);
+      SalesHeaderVar_P."Invoice Type" := SalesHeaderVar_P."Invoice Type"::"Cereal Regularization";
+      IF SalesContractNo_P <> '' THEN BEGIN
+        SalesHeaderVar_P.VALIDATE("Sell-to Customer No.",SalesContract_L."Customer No.");
+        IF SalesContract_L."Bill-to Customer No." <> '' THEN
+          SalesHeaderVar_P.VALIDATE("Bill-to Customer No.",SalesContract_L."Bill-to Customer No.");
+        // --> 20150213-CER49-TER01.01.00-RMZ01
+        IF SalesContract_L."Campaign No." <> '' THEN
+          SalesHeaderVar_P.VALIDATE("CMC Campaign No.",SalesContract_L."Campaign No.");
+        // <-- 20150213-CER49-TER01.01.00-RMZ01
+        SalesHeaderVar_P.VALIDATE("Sales Contract No.",SalesContractNo_P);
+        //IF SalesContract_L."Campaign No." <> '' THEN
+      //SalesHeaderVar_P.VALIDATE("CMC Campaign No.",SalesContract_L."Campaign No."); // --> 20150213-CER49-TER01.01.00-RMZ01 comment
+
+        // --> 20150629-CER148-TER01.01.00-1795-BSI01
+        IF GetLocationCode(SalesContractNo_P) <> '' THEN BEGIN
+          RecLocation_L.GET(GetLocationCode(SalesContractNo_P));
+          SalesHeaderVar_P.VALIDATE("Location Code",GetLocationCode(SalesContractNo_P));
+          SalesHeaderVar_P.VALIDATE("Shortcut Dimension 1 Code",RecLocation_L."Analytic Section");
+        END;
+        // <-- 20150629-CER148-TER01.01.00-1795-BSI01
+
+        IF SalesContract_L."Shipping Agent Code" <> '' THEN
+          SalesHeaderVar_P.VALIDATE("Shipping Agent Code",SalesContract_L."Shipping Agent Code");
+
+        IF SalesContract_L."Transaction Specification" <> '' THEN
+          SalesHeaderVar_P.VALIDATE("Transaction Specification",SalesContract_L."Transaction Specification");
+
+        IF SalesContract_L."Transaction Type" <> '' THEN
+          SalesHeaderVar_P.VALIDATE("Transaction Type",SalesContract_L."Transaction Type");
+
+        IF SalesContract_L."Transport Method" <> '' THEN
+          SalesHeaderVar_P.VALIDATE("Transport Method",SalesContract_L."Transport Method");
+
+        IF SalesContract_L."Exit Point" <> '' THEN
+          SalesHeaderVar_P.VALIDATE("Exit Point",SalesContract_L."Exit Point");
+
+        IF SalesContract_L.Area <> '' THEN
+          SalesHeaderVar_P.VALIDATE(Area,SalesContract_L.Area);
+      END;
+      // --> 20260224-WI00-ADV01.01.00-42635-IJI
+      SalesHeaderVar_P."Send to Approved Platform" := ArianeMgt_G.SalesHeaderSendAP(SalesHeaderVar_P);
+      // <-- 20260224-WI00-ADV01.01.00-42635-IJI
+      SalesHeaderVar_P.MODIFY;
+
+      IF (SalesContractNo_P <> '') AND (GenPostSetup_L."Sales Regularization Account" <> '') THEN BEGIN
+        // --> 20141023-CER49-TER01.01.00-PDC01
+        CLEAR(SalesLine_L);
+        SalesLine_L."Document Type":=SalesHeaderVar_P."Document Type";
+        SalesLine_L."Document No.":=SalesHeaderVar_P."No.";
+        SalesLine_L."Line No.":=10000;
+        SalesLine_L."Sell-to Customer No.":=Customer_L."No.";
+        // --> 20150213-CER49-TER01.01.00-RMZ01
+        IF STRLEN(STRSUBSTNO(Text001_G,SalesContractNo_P,SalesContract_L."Species Code",SalesContract_L."Item No.")) > 50 THEN
+          SalesLine_L.Description := STRSUBSTNO(Text003_G,SalesContractNo_P,SalesContract_L."Species Code")
+        ELSE
+        // <-- 20150213-CER49-TER01.01.00-RMZ01
+          SalesLine_L.Description := STRSUBSTNO(Text001_G,SalesContractNo_P,SalesContract_L."Species Code",SalesContract_L."Item No.");
+        SalesLine_L.INSERT(TRUE);
+        // <-- 20141023-CER49-TER01.01.00-PDC01
+
+        // --> 20150213-CER49-TER01.01.00-RMZ01
+        IF STRLEN(STRSUBSTNO(Text001_G,SalesContractNo_P,SalesContract_L."Species Code",SalesContract_L."Item No.")) > 50 THEN BEGIN
+          CLEAR(SalesLine_L);
+          SalesLine_L."Document Type":=SalesHeaderVar_P."Document Type";
+          SalesLine_L."Document No.":=SalesHeaderVar_P."No.";
+          SalesLine_L."Line No.":=20000;
+          SalesLine_L."Sell-to Customer No.":=Customer_L."No.";
+          SalesLine_L.Description := STRSUBSTNO(Text004_G,SalesContract_L."Item No.");
+          SalesLine_L.INSERT(TRUE);
+        END;
+        // <-- 20150213-CER49-TER01.01.00-RMZ01
+
+
+        CLEAR(SalesLine_L);
+        SalesLine_L."Document Type" := SalesHeaderVar_P."Document Type";
+        SalesLine_L."Document No." := SalesHeaderVar_P."No.";
+        //SalesLine_L."Line No." := 10000;
+        SalesLine_L."Line No." := 30000;  //new
+        SalesLine_L.INSERT(TRUE);
+
+        SalesLine_L.VALIDATE(Type,SalesLine_L.Type::"G/L Account");
+        SalesLine_L.VALIDATE("No.",GenPostSetup_L."Sales Regularization Account");
+        SalesLine_L.VALIDATE("Gen. Prod. Posting Group",Item_L."Gen. Prod. Posting Group");
+        // --> 20141023-CER49-TER01.01.00-PDC01
+        SalesLine_L.Description := Text002_G;
+        // --> 20150629-CER148-TER01.01.00-1795-BSI01
+        {IF Location_L.GET(SalesContract_L."Default Location Code") THEN
+          IF Location_L."Analytic Section"<>'' THEN
+            SalesLine_L.VALIDATE("Shortcut Dimension 1 Code",Location_L."Analytic Section");}
+        // <-- 20150629-CER148-TER01.01.00-1795-BSI01
+        GLSetup_L.GET;
+        IF DefaultDim_L.GET(27,Item_L."No.",0,GLSetup_L."Global Dimension 2 Code") THEN
+          SalesLine_L.VALIDATE("Shortcut Dimension 2 Code",DefaultDim_L."Dimension Value Code");
+        // <-- 20141023-CER49-TER01.01.00-PDC01
+        SalesLine_L.MODIFY;
+
+      END;
+
+      COMMIT;
+    END;
+
+    LOCAL PROCEDURE OpenCrMemo@60001(SalesHeader_P@60000 : Record 36);
+    VAR
+      SalesHeader_L@60001 : Record 36;
+    BEGIN
+      SalesHeader_L.FILTERGROUP := 2;
+      SalesHeader_L.SETRANGE("Document Type",SalesHeader_P."Document Type");
+      SalesHeader_L.SETRANGE("No.",SalesHeader_P."No.");
+      SalesHeader_L.FILTERGROUP := 0;
+      SalesHeader_L.FINDFIRST;
+
+      PAGE.RUNMODAL(PAGE::"CMC Sales Credit Memo Cereals",SalesHeader_L);
+    END;
+
+    PROCEDURE GetContractCrMemo@60004(SalesContractNo_P@60000 : Code[10]);
+    VAR
+      SalesHeader_L@60001 : Record 36;
+    BEGIN
+      IF SalesContractNo_P = '' THEN
+        EXIT;
+
+      CreateCrMemoHeader(SalesHeader_L,SalesContractNo_P);
+      OpenCrMemo(SalesHeader_L);
+    END;
+
+    PROCEDURE GetLocationCode@1000000000(SalesContractNo_P@1000000000 : Code[10]) LocationCode_Res : Code[10];
+    VAR
+      RecSalesContract_L@1000000002 : Record 8053012;
+      RecPostedReceiptsLine_L@60001 : Record 8053104;
+      TmpLocation_L@60002 : TEMPORARY Record 14;
+      RecPostedDeliv_L@1000000001 : Record 8053014;
+    BEGIN
+      // --> 20150629-CER148-TER01.01.00-1795-BSI01
+      LocationCode_Res := '';
+      TmpLocation_L.DELETEALL;
+      // --> 20151021-CER148-TER01.01.00-1795-BSI01
+      IF RecSalesContract_L.GET(SalesContractNo_P) THEN BEGIN
+      // <-- 20151021-CER148-TER01.01.00-1795-BSI01
+        CLEAR(RecPostedDeliv_L);
+        RecPostedDeliv_L.SETRANGE("Delivery Type",RecPostedDeliv_L."Delivery Type"::Delivery);
+        RecPostedDeliv_L.SETRANGE("Contract No.",SalesContractNo_P);
+        RecPostedDeliv_L.SETFILTER("Location Code",'<>%1','');
+        IF RecPostedDeliv_L.FIND('-') THEN
+        REPEAT
+          TmpLocation_L.INIT;
+          TmpLocation_L.Code := RecPostedDeliv_L."Location Code";
+          TmpLocation_L."Cathedral Concret Cells Numb" := 1;
+          IF NOT TmpLocation_L.INSERT THEN BEGIN
+            TmpLocation_L.GET(RecPostedDeliv_L."Location Code");
+            TmpLocation_L."Cathedral Concret Cells Numb" += 1;
+            TmpLocation_L.MODIFY;
+          END;
+        UNTIL RecPostedDeliv_L.NEXT = 0;
+
+        TmpLocation_L.SETCURRENTKEY("Cathedral Concret Cells Numb");
+        IF TmpLocation_L.FINDLAST THEN
+          LocationCode_Res := TmpLocation_L.Code;
+      END;
+      // <-- 20150629-CER148-TER01.01.00-1795-BSI01
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+
+      20141001-CER49-TER01.01.00-PSC01 : NEWCODEUNIT
+      20141023-CER49-TER01.01.00-PDC01 : ADDCODE(CreateCrMemoHeader)
+      20150113-CER49-TER01.01.00-RMZ01 : ADDCODE(CreateCrMemoHeader)
+      20150629-CER148-TER01.01.00-1795-BSI01 : ADDCODE (Alimentation des champs "Code magasin" et "Code axe Lieu")
+      20151021-CER148-TER01.01.00-1795-BSI01 : MODCODE (Ajout d'un get)
+      20260224-WI00-ADV01.01.00-42635-IJI : ADDCODE (A transmettre . la Plateforme Agr'e)
+      // --> 3LI END
+    }
+    END.
+  }
+}
+

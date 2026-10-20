@@ -1,0 +1,810 @@
+OBJECT Codeunit 7171 Sales Info-Pane Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=16/11/16;
+    Heure=00:00:00;
+    Liste versions=NAVW16.00,CMC02.02.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Cust@1000 : Record 18;
+      Item@1001 : Record 27;
+      SalesHeader@1003 : Record 36;
+      SalesPriceCalcMgt@1002 : Codeunit 7000;
+      Text000@1004 : TextConst 'ENU=The Ship-to Address has been changed.;FRA=L''adresse destinataire a chang'.';
+      "<< 3LI TEXT GLOBALS >>"@8053005 : TextConst;
+      Text8053001@8053002 : TextConst 'ENU=Contract quantity %1 , Line %2 excedeed;FRA=La quantit' du contrat %1, ligne %2 est d'pass'e';
+      Text8053002@8053000 : TextConst 'FRA=Prix ligne contrat vente diff'rent , voulez-vous importer le nouveau prix ?';
+
+    PROCEDURE CalcNoOfDocuments@1(VAR Cust@1000 : Record 18);
+    BEGIN
+      Cust.CALCFIELDS(
+        "No. of Quotes","No. of Blanket Orders","No. of Orders","No. of Invoices",
+        "No. of Return Orders","No. of Credit Memos","No. of Pstd. Shipments",
+        "No. of Pstd. Invoices","No. of Pstd. Return Receipts","No. of Pstd. Credit Memos",
+        "Sell-to No. Of Archived Doc.");
+    END;
+
+    PROCEDURE CalcTotalNoOfDocuments@2(CustNo@1000 : Code[20]) : Integer;
+    BEGIN
+      GetCust(CustNo);
+      WITH Cust DO BEGIN
+        CalcNoOfDocuments(Cust);
+        EXIT(
+          "No. of Quotes" + "No. of Blanket Orders" + "No. of Orders" + "No. of Invoices" +
+          "No. of Return Orders" + "No. of Credit Memos" + "No. of Pstd. Shipments" +
+          "No. of Pstd. Invoices" + "No. of Pstd. Return Receipts" + "No. of Pstd. Credit Memos" +
+          "Sell-to No. Of Archived Doc.");
+      END;
+    END;
+
+    PROCEDURE CalcNoOfShipToAddr@5(CustNo@1000 : Code[20]) : Integer;
+    BEGIN
+      GetCust(CustNo);
+      Cust.CALCFIELDS("No. of Ship-to Addresses");
+      EXIT(Cust."No. of Ship-to Addresses");
+    END;
+
+    PROCEDURE CalcNoOfContacts@3(SalesHeader@1002 : Record 36) : Integer;
+    VAR
+      Cont@1000 : Record 5050;
+      ContBusRelation@1001 : Record 5054;
+    BEGIN
+      Cont.SETCURRENTKEY("Company No.");
+      WITH SalesHeader DO
+        IF "Sell-to Customer No." <> '' THEN BEGIN
+          IF Cont.GET("Sell-to Contact No.") THEN BEGIN
+            Cont.SETRANGE("Company No.",Cont."Company No.");
+            EXIT(Cont.COUNT);
+          END ELSE BEGIN
+            ContBusRelation.RESET;
+            ContBusRelation.SETCURRENTKEY("Link to Table","No.");
+            ContBusRelation.SETRANGE("Link to Table",ContBusRelation."Link to Table"::Customer);
+            ContBusRelation.SETRANGE("No.","Sell-to Customer No.");
+            IF ContBusRelation.FINDFIRST THEN BEGIN
+              Cont.SETRANGE("Company No.",ContBusRelation."Contact No.");
+              EXIT(Cont.COUNT);
+            END ELSE
+              EXIT(0)
+          END;
+        END;
+    END;
+
+    PROCEDURE CalcAvailableCredit@4(CustNo@1002 : Code[20]) : Decimal;
+    VAR
+      TotalAmountLCY@1000 : Decimal;
+    BEGIN
+      GetCust(CustNo);
+      WITH Cust DO BEGIN
+        SETRANGE("Date Filter",0D,WORKDATE);
+        CALCFIELDS("Balance (LCY)","Outstanding Orders (LCY)","Shipped Not Invoiced (LCY)","Outstanding Invoices (LCY)");
+        TotalAmountLCY := "Balance (LCY)" + "Outstanding Orders (LCY)" + "Shipped Not Invoiced (LCY)" + "Outstanding Invoices (LCY)";
+
+        IF "Credit Limit (LCY)" <> 0 THEN
+          EXIT("Credit Limit (LCY)" - TotalAmountLCY);
+      END;
+    END;
+
+    PROCEDURE CalcAvailability@18(VAR SalesLine@1000 : Record 37) : Decimal;
+    VAR
+      AvailableToPromise@1001 : Codeunit 5790;
+      GrossRequirement@1002 : Decimal;
+      ScheduledReceipt@1003 : Decimal;
+      PeriodType@1006 : 'Day,Week,Month,Quarter,Year';
+      AvailabilityDate@1004 : Date;
+      LookaheadDateformula@1005 : DateFormula;
+    BEGIN
+      IF GetItem(SalesLine) THEN BEGIN
+        IF SalesLine."Shipment Date" <> 0D THEN
+          AvailabilityDate := SalesLine."Shipment Date"
+        ELSE
+          AvailabilityDate := WORKDATE;
+
+        Item.RESET;
+        Item.SETRANGE("Date Filter",0D,AvailabilityDate);
+        Item.SETRANGE("Variant Filter",SalesLine."Variant Code");
+        Item.SETRANGE("Location Filter",SalesLine."Location Code");
+        Item.SETRANGE("Drop Shipment Filter",FALSE);
+
+        EXIT(
+          AvailableToPromise.QtyAvailabletoPromise(
+            Item,
+            GrossRequirement,
+            ScheduledReceipt,
+            AvailabilityDate,
+            PeriodType,
+            LookaheadDateformula));
+      END;
+    END;
+
+    PROCEDURE CalcNoOfSubstitutions@20(VAR SalesLine@1000 : Record 37) : Integer;
+    BEGIN
+      IF GetItem(SalesLine) THEN BEGIN
+        Item.CALCFIELDS("No. of Substitutes");
+        EXIT(Item."No. of Substitutes");
+      END;
+    END;
+
+    PROCEDURE CalcNoOfSalesPrices@19(VAR SalesLine@1000 : Record 37) : Integer;
+    BEGIN
+      IF GetItem(SalesLine) THEN BEGIN
+        GetSalesHeader(SalesLine);
+        EXIT(SalesPriceCalcMgt.NoOfSalesLinePrice(SalesHeader,SalesLine,TRUE));
+      END;
+    END;
+
+    PROCEDURE CalcNoOfSalesLineDisc@22(VAR SalesLine@1001 : Record 37) : Integer;
+    BEGIN
+      IF GetItem(SalesLine) THEN BEGIN
+        GetSalesHeader(SalesLine);
+        EXIT(SalesPriceCalcMgt.NoOfSalesLineLineDisc(SalesHeader,SalesLine,TRUE));
+      END;
+    END;
+
+    PROCEDURE DocExist@16(CurrentSalesHeader@1005 : Record 36;CustNo@1000 : Code[20]) : Boolean;
+    VAR
+      SalesInvHeader@1001 : Record 112;
+      SalesShptHeader@1002 : Record 110;
+      SalesCrMemoHeader@1003 : Record 114;
+      ReturnReceipt@1006 : Record 6660;
+      SalesHeader@1004 : Record 36;
+    BEGIN
+      IF CustNo = '' THEN
+        EXIT(FALSE);
+      WITH SalesInvHeader DO BEGIN
+        SETCURRENTKEY("Sell-to Customer No.");
+        SETRANGE("Sell-to Customer No.",CustNo);
+        IF NOT ISEMPTY THEN
+          EXIT(TRUE);
+      END;
+      WITH SalesShptHeader DO BEGIN
+        SETCURRENTKEY("Sell-to Customer No.");
+        SETRANGE("Sell-to Customer No.",CustNo);
+        IF NOT ISEMPTY THEN
+          EXIT(TRUE);
+      END;
+      WITH SalesCrMemoHeader DO BEGIN
+        SETCURRENTKEY("Sell-to Customer No.");
+        SETRANGE("Sell-to Customer No.",CustNo);
+        IF NOT ISEMPTY THEN
+          EXIT(TRUE);
+      END;
+      WITH SalesHeader DO BEGIN
+        SETCURRENTKEY("Sell-to Customer No.");
+        SETRANGE("Sell-to Customer No.",CustNo);
+        IF FINDFIRST THEN BEGIN
+          IF ("Document Type" <> CurrentSalesHeader."Document Type") OR
+             ("No." <> CurrentSalesHeader."No.")
+          THEN
+            EXIT(TRUE);
+          IF FIND('>') THEN
+            EXIT(TRUE);
+        END;
+      END;
+      WITH ReturnReceipt DO BEGIN
+        SETCURRENTKEY("Sell-to Customer No.");
+        SETRANGE("Sell-to Customer No.",CustNo);
+        IF NOT ISEMPTY THEN
+          EXIT(TRUE);
+      END;
+    END;
+
+    PROCEDURE CustCommentExists@8(CustNo@1000 : Code[20]) : Boolean;
+    BEGIN
+      GetCust(CustNo);
+      Cust.CALCFIELDS(Comment);
+      EXIT(Cust.Comment);
+    END;
+
+    PROCEDURE ItemCommentExists@12(SalesLine@1000 : Record 37) : Boolean;
+    BEGIN
+      IF GetItem(SalesLine) THEN BEGIN
+        Item.CALCFIELDS(Comment);
+        EXIT(Item.Comment);
+      END;
+    END;
+
+    PROCEDURE LookupCustSalesHistory@9(VAR SalesHeader@1001 : Record 36;CustNo@1000 : Code[20];UseBillTo@1003 : Boolean);
+    VAR
+      CustSalesHistory@1002 : Form 7171;
+    BEGIN
+      GetCust(CustNo);
+      CustSalesHistory.SetToSalesHeader(SalesHeader,UseBillTo);
+      CustSalesHistory.SETRECORD(Cust);
+      CustSalesHistory.LOOKUPMODE := TRUE;
+      CustSalesHistory.RUNMODAL;
+    END;
+
+    PROCEDURE LookupShipToAddr@10(VAR SalesHeader@1000 : Record 36);
+    VAR
+      ShipToAddr@1001 : Record 222;
+    BEGIN
+      WITH SalesHeader DO BEGIN
+        ShipToAddr.SETRANGE("Customer No.","Sell-to Customer No.");
+        IF FORM.RUNMODAL(0,ShipToAddr) = ACTION::LookupOK THEN BEGIN
+          VALIDATE("Ship-to Code",ShipToAddr.Code);
+          MODIFY(TRUE);
+          MESSAGE(Text000);
+        END;
+      END;
+    END;
+
+    PROCEDURE LookupContacts@11(VAR SalesHeader@1000 : Record 36);
+    VAR
+      Cont@1002 : Record 5050;
+      ContBusRelation@1001 : Record 5054;
+    BEGIN
+      WITH SalesHeader DO BEGIN
+        IF "Sell-to Customer No." <> '' THEN BEGIN
+          IF Cont.GET("Sell-to Contact No.") THEN
+            Cont.SETRANGE("Company No.",Cont."Company No.")
+          ELSE BEGIN
+            ContBusRelation.RESET;
+            ContBusRelation.SETCURRENTKEY("Link to Table","No.");
+            ContBusRelation.SETRANGE("Link to Table",ContBusRelation."Link to Table"::Customer);
+            ContBusRelation.SETRANGE("No.","Sell-to Customer No.");
+            IF ContBusRelation.FINDFIRST THEN
+              Cont.SETRANGE("Company No.",ContBusRelation."Contact No.")
+            ELSE
+              Cont.SETRANGE("No.",'');
+          END;
+          IF Cont.GET("Sell-to Contact No.") THEN ;
+        END ELSE
+          Cont.SETRANGE("No.",'');
+        IF FORM.RUNMODAL(0,Cont) = ACTION::LookupOK THEN BEGIN
+          VALIDATE("Sell-to Contact No.",Cont."No.");
+          MODIFY(TRUE);
+        END;
+      END;
+    END;
+
+    PROCEDURE LookupAvailCredit@15(CustNo@1000 : Code[20]);
+    BEGIN
+      Cust.RESET;
+      Cust.SETRANGE("No.",CustNo);
+      FORM.RUNMODAL(FORM::"Available Credit",Cust);
+    END;
+
+    PROCEDURE LookupItem@7(SalesLine@1000 : Record 37);
+    BEGIN
+      SalesLine.TESTFIELD(Type,SalesLine.Type::Item);
+      SalesLine.TESTFIELD("No.");
+      GetItem(SalesLine);
+      FORM.RUNMODAL(FORM::"Item Card",Item);
+    END;
+
+    PROCEDURE LookupItemComment@14(SalesLine@1000 : Record 37);
+    VAR
+      CommentLine@1001 : Record 97;
+    BEGIN
+      IF GetItem(SalesLine) THEN BEGIN
+        CommentLine.SETRANGE("Table Name",CommentLine."Table Name"::Item);
+        CommentLine.SETRANGE("No.",SalesLine."No.");
+        FORM.RUNMODAL(FORM::"Comment Sheet",CommentLine);
+      END;
+    END;
+
+    LOCAL PROCEDURE GetCust@6(CustNo@1000 : Code[20]);
+    BEGIN
+      IF CustNo <> '' THEN BEGIN
+        IF CustNo <> Cust."No." THEN
+          IF NOT Cust.GET(CustNo) THEN
+            CLEAR(Cust);
+      END ELSE
+        CLEAR(Cust);
+    END;
+
+    LOCAL PROCEDURE GetItem@24(VAR SalesLine@1000 : Record 37) : Boolean;
+    BEGIN
+      WITH Item DO BEGIN
+        IF (SalesLine.Type <> SalesLine.Type::Item) OR (SalesLine."No." = '') THEN
+          EXIT(FALSE);
+
+        IF SalesLine."No." <> "No." THEN
+          GET(SalesLine."No.");
+        EXIT(TRUE);
+      END;
+    END;
+
+    LOCAL PROCEDURE GetSalesHeader@13(SalesLine@1000 : Record 37);
+    BEGIN
+      IF (SalesLine."Document Type" <> SalesHeader."Document Type") OR
+         (SalesLine."Document No." <> SalesHeader."No.")
+      THEN
+        SalesHeader.GET(SalesLine."Document Type",SalesLine."Document No.");
+    END;
+
+    PROCEDURE CalcNoOfBillToDocuments@17(VAR Cust@1000 : Record 18);
+    BEGIN
+      Cust.CALCFIELDS(
+        "Bill-To No. of Quotes","Bill-To No. of Blanket Orders","Bill-To No. of Orders","Bill-To No. of Invoices",
+        "Bill-To No. of Return Orders","Bill-To No. of Credit Memos","Bill-To No. of Pstd. Shipments",
+        "Bill-To No. of Pstd. Invoices","Bill-To No. of Pstd. Return R.","Bill-To No. of Pstd. Cr. Memos",
+        "Bill-to No. Of Archived Doc.");
+    END;
+
+    PROCEDURE LookupCustHistory@1102628000(CustNo@1000 : Code[20];UseBillTo@1003 : Boolean);
+    VAR
+      CustSalesHistory@1002 : Form 7171;
+    BEGIN
+      GetCust(CustNo);
+      CustSalesHistory.SetToSalesHeader(SalesHeader,UseBillTo);
+      CustSalesHistory.SETRECORD(Cust);
+      CustSalesHistory.LOOKUPMODE := TRUE;
+      CustSalesHistory.RUNMODAL;
+    END;
+
+    PROCEDURE "<< 3LI FUNCTIONS >>"@8053000();
+    BEGIN
+    END;
+
+    PROCEDURE CalcNoOfSalesRegionPrices@8053001(VAR SalesLine@1000 : Record 37) : Integer;
+    BEGIN
+      IF GetItem(SalesLine) THEN BEGIN
+        GetSalesHeader(SalesLine);
+        EXIT(SalesPriceCalcMgt.NoOfSalesLineRegionPrice(SalesHeader,SalesLine,TRUE));
+      END;
+    END;
+
+    PROCEDURE CalcNoOfSalesDocWithItem@8053002(VAR SalesLine@8053000 : Record 37) : Integer;
+    VAR
+      L_recSalesHeader@8053002 : Record 36;
+      L_recSalesLine@8053001 : Record 37;
+      L_Count@8053003 : Integer;
+    BEGIN
+      L_Count := 0;
+
+      L_recSalesHeader.RESET;
+      L_recSalesHeader.SETCURRENTKEY("Document Type", "Sell-to Customer No.");
+      L_recSalesHeader.SETRANGE("Document Type", SalesLine."Document Type");
+      L_recSalesHeader.SETRANGE("Sell-to Customer No.", SalesLine."Sell-to Customer No.");
+      L_recSalesHeader.SETFILTER("No.", '<>%1', SalesLine."Document No.");
+      IF L_recSalesHeader.FIND('-') THEN BEGIN
+        REPEAT
+          L_recSalesLine.RESET;
+          L_recSalesLine.SETCURRENTKEY("Document Type", "Sell-to Customer No.", Type, "No.");
+          L_recSalesLine.SETRANGE("Document Type", L_recSalesHeader."Document Type");
+          L_recSalesLine.SETRANGE("Document No.", L_recSalesHeader."No.");
+          L_recSalesLine.SETRANGE(Type, SalesLine.Type);
+          L_recSalesLine.SETRANGE("No.", SalesLine."No.");
+          IF NOT L_recSalesLine.ISEMPTY THEN
+            L_Count += 1;
+
+        UNTIL L_recSalesHeader.NEXT = 0;
+      END;
+
+      EXIT(L_Count);
+    END;
+
+    PROCEDURE LookupSalesDocWithItem@8053003(SalesLine@8053000 : Record 37);
+    VAR
+      L_recSalesHeader@8053003 : Record 36;
+      L_recSalesLine@8053002 : Record 37;
+      L_pageSalesList@8053001 : Page 45;
+    BEGIN
+      L_recSalesHeader.RESET;
+      L_recSalesHeader.SETCURRENTKEY("Document Type", "Sell-to Customer No.");
+      L_recSalesHeader.SETRANGE("Document Type", SalesLine."Document Type");
+      L_recSalesHeader.SETRANGE("Sell-to Customer No.", SalesLine."Sell-to Customer No.");
+      L_recSalesHeader.SETFILTER("No.", '<>%1', SalesLine."Document No.");
+      IF L_recSalesHeader.FIND('-') THEN BEGIN
+        REPEAT
+          L_recSalesLine.RESET;
+          L_recSalesLine.SETCURRENTKEY("Document Type", "Sell-to Customer No.", Type, "No.");
+          L_recSalesLine.SETRANGE("Document Type", L_recSalesHeader."Document Type");
+          L_recSalesLine.SETRANGE("Document No.", L_recSalesHeader."No.");
+          L_recSalesLine.SETRANGE(Type, SalesLine.Type);
+          L_recSalesLine.SETRANGE("No.", SalesLine."No.");
+          IF NOT L_recSalesLine.ISEMPTY THEN
+            L_recSalesHeader.MARK(TRUE)
+        UNTIL L_recSalesHeader.NEXT = 0;
+      END;
+
+      L_recSalesHeader.MARKEDONLY(TRUE);
+
+      L_pageSalesList.SETTABLEVIEW(L_recSalesHeader);
+      L_pageSalesList.SETRECORD(L_recSalesHeader);
+      L_pageSalesList.SetAttentionStyle(TRUE, SalesLine.Type, SalesLine."No.");
+      L_pageSalesList.LOOKUPMODE := TRUE;
+      L_pageSalesList.RUNMODAL;
+    END;
+
+    PROCEDURE LookupSalesHistWithItem@8053004(SalesLine@8053000 : Record 37);
+    VAR
+      L_recCustomer@8053003 : Record 18;
+      L_pageCustomerSalesHist@8053001 : Page 7171;
+    BEGIN
+      L_recCustomer.RESET;
+      L_recCustomer.SETRANGE("No.", SalesLine."Sell-to Customer No.");
+      IF L_recCustomer.FINDFIRST THEN;
+
+      L_pageCustomerSalesHist.AssignDocFilter := 7; // Facture enregistr'e
+
+      IF SalesLine.Type = SalesLine.Type::Item THEN
+        L_pageCustomerSalesHist.AssignItemFilter := SalesLine."No.";
+
+      L_pageCustomerSalesHist.SETTABLEVIEW(L_recCustomer);
+      L_pageCustomerSalesHist.SETRECORD(L_recCustomer);
+      L_pageCustomerSalesHist.RUN;
+    END;
+
+    PROCEDURE CalcAvailabilityFromTour@1000000000(VAR P_TourLine@1000 : Record 8053052) : Decimal;
+    VAR
+      AvailableToPromise@1001 : Codeunit 5790;
+      GrossRequirement@1002 : Decimal;
+      ScheduledReceipt@1003 : Decimal;
+      PeriodType@1006 : 'Day,Week,Month,Quarter,Year';
+      AvailabilityDate@1004 : Date;
+      LookaheadDateformula@1005 : DateFormula;
+    BEGIN
+      IF Item.GET(P_TourLine."Item No.") THEN BEGIN
+        IF P_TourLine."Promised Delivery Date" <> 0D THEN
+          AvailabilityDate := P_TourLine."Promised Delivery Date"
+        ELSE
+          AvailabilityDate := WORKDATE;
+
+        Item.RESET;
+        Item.SETRANGE("Date Filter",0D,AvailabilityDate);
+        Item.SETRANGE("Variant Filter",P_TourLine."Variant Code");
+        Item.SETRANGE("Location Filter",P_TourLine."Departure Location Code");
+        Item.SETRANGE("Drop Shipment Filter",FALSE);
+
+        EXIT(
+          AvailableToPromise.QtyAvailabletoPromise(
+            Item,
+            GrossRequirement,
+            ScheduledReceipt,
+            AvailabilityDate,
+            PeriodType,
+            LookaheadDateformula));
+      END;
+    END;
+
+    PROCEDURE CalcInventory@8053005(VAR SalesLine@1000 : Record 37) : Decimal;
+    VAR
+      AvailableToPromise@8053000 : Codeunit 5790;
+      AvailabilityDate@8053001 : Date;
+    BEGIN
+      // --> 20120717-Wi00-CMC02.01.00-SD01
+      IF GetItem(SalesLine) THEN BEGIN
+        Item.RESET;
+        IF SalesLine."Variant Code"<>''  THEN
+        Item.SETRANGE("Variant Filter",SalesLine."Variant Code");
+        IF SalesLine."Location Code"<>'' THEN
+        Item.SETRANGE("Location Filter",SalesLine."Location Code");
+        Item.SETRANGE("Drop Shipment Filter",FALSE);
+        Item.CALCFIELDS(Inventory);
+        EXIT(Item.Inventory);
+      END;
+      // <-- 20120717-Wi00-CMC02.01.00-SD01
+    END;
+
+    PROCEDURE CalcInventoryFromTour@8053006(VAR P_TourLine@1000 : Record 8053052) : Decimal;
+    VAR
+      AvailableToPromise@8053000 : Codeunit 5790;
+      GrossRequirement@8053001 : Decimal;
+      ScheduledReceipt@8053002 : Decimal;
+      PeriodType@8053003 : 'Day,Week,Month,Quarter,Year';
+      AvailabilityDate@8053004 : Date;
+      LookaheadDateformula@8053005 : DateFormula;
+    BEGIN
+      // --> 20120620-Wi00-CMC02.01.00-SD01
+      IF Item.GET(P_TourLine."Item No.") THEN BEGIN
+
+        Item.RESET;
+        Item.SETRANGE("Date Filter",0D,AvailabilityDate);
+        Item.SETRANGE("Location Filter",P_TourLine."Departure Location Code");
+        Item.SETRANGE("Drop Shipment Filter",FALSE);
+
+        EXIT(
+          AvailableToPromise.QtyAvailabletoPromise(
+            Item,
+            GrossRequirement,
+            ScheduledReceipt,
+            AvailabilityDate,
+            PeriodType,
+            LookaheadDateformula));
+      END;
+      // <-- 20120620-Wi00-CMC02.01.00-SD01
+    END;
+
+    PROCEDURE CalcSalesContractNo@8053009(VAR SalesLine_P@8053000 : Record 37) : Code[20];
+    VAR
+      SalesBlanketLine_L@8053001 : Record 37;
+    BEGIN
+      //-->20130416-NUT03-CMC02.02.00-PPE01
+      SalesBlanketLine_L.SETRANGE("Document Type", SalesBlanketLine_L."Document Type"::"Blanket Order");
+      SalesBlanketLine_L.SETRANGE(Type, SalesLine_P.Type);
+      SalesBlanketLine_L.SETRANGE("No.", SalesLine_P."No.");
+      SalesBlanketLine_L.SETRANGE("Sell-to Customer No.", SalesLine_P."Sell-to Customer No.");
+      SalesBlanketLine_L.SETRANGE("Finished Blanket Order Line", FALSE);
+      SalesBlanketLine_L.SETRANGE("Document Status", SalesBlanketLine_L."Document Status"::Released);
+      IF SalesBlanketLine_L.FINDFIRST THEN
+        EXIT(SalesBlanketLine_L."Document No.");
+
+      EXIT('');
+      //<--20130416-NUT03-CMC02.02.00-PPE01
+    END;
+
+    PROCEDURE LookUpSalesContract@8053010(VAR SalesLine_P@8053000 : Record 37);
+    VAR
+      SalesBlanketLine_L@8053001 : Record 37;
+      SalesBlanketHeader_L@8053002 : Record 36;
+    BEGIN
+      //-->20130416-NUT03-CMC02.02.00-PPE01
+      SalesBlanketLine_L.SETRANGE("Document Type", SalesBlanketLine_L."Document Type"::"Blanket Order");
+      SalesBlanketLine_L.SETRANGE(Type, SalesLine_P.Type);
+      SalesBlanketLine_L.SETRANGE("No.", SalesLine_P."No.");
+      SalesBlanketLine_L.SETRANGE("Sell-to Customer No.", SalesLine_P."Sell-to Customer No.");
+      SalesBlanketLine_L.SETRANGE("Finished Blanket Order Line", FALSE);
+      SalesBlanketLine_L.SETRANGE("Document Status", SalesBlanketLine_L."Document Status"::Released);
+      //-->20130423-NUT03-CMC02.02.00-PPE01
+      //before
+      {
+      IF SalesBlanketLine_L.FINDFIRST THEN
+      BEGIN
+        SalesBlanketHeader_L.GET(SalesBlanketHeader_L."Document Type"::"Blanket Order",SalesBlanketLine_L."Document No.");
+        FORM.RUN(507,SalesBlanketHeader_L);
+      END
+      }
+      //after
+      IF PAGE.RUNMODAL(PAGE::"CMC Affect Blanket Sales Line",SalesBlanketLine_L) = ACTION::LookupOK THEN
+      BEGIN
+        SalesBlanketLine_L.CALCFIELDS("Outstanding Qty on Sales Order");
+        IF SalesBlanketLine_L."Outstanding Qty on Sales Order" + SalesBlanketLine_L."Quantity Shipped" + SalesLine_P.Quantity >
+          SalesBlanketLine_L.Quantity
+        THEN
+          ERROR(STRSUBSTNO(Text8053001,SalesBlanketLine_L."Document No.",SalesBlanketLine_L."Line No."));
+
+        SalesLine_P."Blanket Order No." := SalesBlanketLine_L."Document No.";
+        SalesLine_P."Blanket Order Line No." := SalesBlanketLine_L."Line No.";
+        IF SalesBlanketLine_L."Unit Price" <> SalesLine_P."Unit Price" THEN
+          IF CONFIRM(Text8053002,FALSE ) THEN
+            SalesLine_P.VALIDATE("Unit Price",SalesBlanketLine_L."Unit Price");
+        SalesLine_P.MODIFY;
+      END;
+      //<--20130423-NUT03-CMC02.02.00-PPE01
+      //<--20130416-NUT03-CMC02.02.00-PPE01
+    END;
+
+    PROCEDURE CountNoOfSalesContracts@8053011(VAR SalesLine_P@8053000 : Record 37) : Integer;
+    VAR
+      SalesBlanketLine_L@8053001 : Record 37;
+    BEGIN
+      // --> 20131014-Nut09-CMC02.02.00-BSI01
+      SalesBlanketLine_L.SETRANGE("Document Type", SalesBlanketLine_L."Document Type"::"Blanket Order");
+      SalesBlanketLine_L.SETRANGE(Type, SalesLine_P.Type);
+      SalesBlanketLine_L.SETRANGE("No.", SalesLine_P."No.");
+      SalesBlanketLine_L.SETRANGE("Sell-to Customer No.", SalesLine_P."Sell-to Customer No.");
+      SalesBlanketLine_L.SETRANGE("Finished Blanket Order Line", FALSE);
+      SalesBlanketLine_L.SETRANGE("Document Status", SalesBlanketLine_L."Document Status"::Released);
+      EXIT(SalesBlanketLine_L.COUNT);
+      // <-- 20131014-Nut09-CMC02.02.00-BSI01
+    END;
+
+    PROCEDURE LookUpNoOfSalesContract@8053007(VAR SalesLine_P@8053000 : Record 37);
+    VAR
+      SalesBlanketLine_L@8053001 : Record 37;
+    BEGIN
+      // --> 20131014-Nut09-CMC02.02.00-BSI01
+      SalesBlanketLine_L.SETRANGE("Document Type", SalesBlanketLine_L."Document Type"::"Blanket Order");
+      SalesBlanketLine_L.SETRANGE(Type, SalesLine_P.Type);
+      SalesBlanketLine_L.SETRANGE("No.", SalesLine_P."No.");
+      SalesBlanketLine_L.SETRANGE("Sell-to Customer No.", SalesLine_P."Sell-to Customer No.");
+      SalesBlanketLine_L.SETRANGE("Finished Blanket Order Line", FALSE);
+      SalesBlanketLine_L.SETRANGE("Document Status", SalesBlanketLine_L."Document Status"::Released);
+      PAGE.RUNMODAL(PAGE::"CMC Affect Blanket Sales Line",SalesBlanketLine_L);
+      // <-- 20131014-Nut09-CMC02.02.00-BSI01
+    END;
+
+    PROCEDURE CountNoOfTAFContracts@8053012(VAR SalesLine_P@8053000 : Record 37) : Integer;
+    VAR
+      CollContract_L@8053001 : Record 8052983;
+      SalesLineCerealCont_L@1000000000 : Record 8053232;
+      ContractNo_L@1000000001 : Integer;
+    BEGIN
+      // --> 20140523-APP28-CMC02.02.00-2160-FEC01
+      {BEFORE
+      // --> 20131015-Nut09-CMC02.02.00-BSI01
+      CollectionContract_L.SETCURRENTKEY(Type,"Collection Type","Generical Template",
+                                  "Vendor No.","Item No.","Campaign No.","Species Code");
+      CollectionContract_L.SETRANGE("Collection Type",CollectionContract_L."Collection Type"::"Storage for Job");
+      CollectionContract_L.SETRANGE("Vendor No.", SalesLine_P."Sell-to Customer No.");
+      CollectionContract_L.SETRANGE("Item No.", SalesLine_P."No.");
+      CollectionContract_L.SETRANGE("Campaign No.", SalesLine_P."CMC Campaign No.");
+      EXIT(CollectionContract_L.COUNT);
+      // <-- 20131015-Nut09-CMC02.02.00-BSI01
+      AFTER}
+      ContractNo_L := 0;
+
+      SalesLineCerealCont_L.RESET;
+      SalesLineCerealCont_L.SETRANGE("Document Type",SalesLine_P."Document Type");
+      SalesLineCerealCont_L.SETRANGE("Document No.",SalesLine_P."Document No.");
+      SalesLineCerealCont_L.SETRANGE("Document Line No.",SalesLine_P."Line No.");
+      IF SalesLineCerealCont_L.FINDSET THEN
+
+        REPEAT
+
+          CollContract_L.RESET;
+          CollContract_L.SETCURRENTKEY(Type,"Collection Type","Generical Template",
+                                      "Vendor No.","Item No.","Campaign No.","Species Code");
+          CollContract_L.SETRANGE("Collection Type",CollContract_L."Collection Type"::"Storage for Job");
+          CollContract_L.SETRANGE("Vendor No.", SalesLine_P."Sell-to Customer No.");
+          CollContract_L.SETRANGE("Item No.", SalesLineCerealCont_L."Cereal Item No.");
+          CollContract_L.SETRANGE("Campaign No.", SalesLine_P."CMC Campaign No.");
+
+          ContractNo_L := ContractNo_L + CollContract_L.COUNT;
+
+        UNTIL SalesLineCerealCont_L.NEXT = 0;
+
+      EXIT(ContractNo_L);
+      // --< 20140523-APP28-CMC02.02.00-2160-FEC01
+    END;
+
+    PROCEDURE LookUpNoOfTAFContract@8053020(VAR SalesLine_P@8053000 : Record 37);
+    VAR
+      CollContract_L@8053001 : Record 8052983;
+      SalesLineCerealCont_L@1000000000 : Record 8053232;
+      TmpCollContract_L@1000000001 : TEMPORARY Record 8052983;
+    BEGIN
+      // --> 20140523-APP28-CMC02.02.00-2160-FEC02
+      {BEFORE
+      // --> 20131015-Nut09-CMC02.02.00-BSI01
+      CollectionContract_L.SETCURRENTKEY(Type,"Collection Type","Generical Template",
+                                  "Vendor No.","Item No.","Campaign No.","Species Code");
+      CollectionContract_L.SETRANGE("Collection Type",CollectionContract_L."Collection Type"::"Storage for Job");
+      CollectionContract_L.SETRANGE("Vendor No.", SalesLine_P."Sell-to Customer No.");
+      CollectionContract_L.SETRANGE("Item No.", SalesLine_P."No.");
+      CollectionContract_L.SETRANGE("Campaign No.", SalesLine_P."CMC Campaign No.");
+      PAGE.RUNMODAL(PAGE::"CMC Collection Contracts",CollectionContract_L);
+      // <-- 20131015-Nut09-CMC02.02.00-BSI01
+      AFTER}
+
+      TmpCollContract_L.RESET;
+      TmpCollContract_L.DELETEALL;
+
+      SalesLineCerealCont_L.RESET;
+      SalesLineCerealCont_L.SETRANGE("Document Type",SalesLine_P."Document Type");
+      SalesLineCerealCont_L.SETRANGE("Document No.",SalesLine_P."Document No.");
+      SalesLineCerealCont_L.SETRANGE("Document Line No.",SalesLine_P."Line No.");
+      IF SalesLineCerealCont_L.FINDSET THEN
+
+        REPEAT
+
+          CollContract_L.RESET;
+          CollContract_L.SETCURRENTKEY(Type,"Collection Type","Generical Template",
+                                      "Vendor No.","Item No.","Campaign No.","Species Code");
+          CollContract_L.SETRANGE("Collection Type",CollContract_L."Collection Type"::"Storage for Job");
+          CollContract_L.SETRANGE("Vendor No.", SalesLine_P."Sell-to Customer No.");
+          CollContract_L.SETRANGE("Item No.", SalesLineCerealCont_L."Cereal Item No.");
+          CollContract_L.SETRANGE("Campaign No.", SalesLine_P."CMC Campaign No.");
+          IF CollContract_L.FINDSET THEN
+            REPEAT
+              TmpCollContract_L.INIT;
+              TmpCollContract_L.TRANSFERFIELDS(CollContract_L);
+              TmpCollContract_L.INSERT;
+            UNTIL CollContract_L.NEXT = 0;
+
+        UNTIL SalesLineCerealCont_L.NEXT = 0;
+
+      PAGE.RUNMODAL(PAGE::"CMC Collection Contracts",TmpCollContract_L);
+      // --< 20140523-APP28-CMC02.02.00-2160-FEC02
+    END;
+
+    PROCEDURE CountNoOfTAFContractsByCust@8053008(VAR Customer_P@8053000 : Record 18) : Integer;
+    VAR
+      CollectionContract_L@8053001 : Record 8052983;
+    BEGIN
+      //--> 20140115-APP28-CMC02.02.00-1487-FGS
+      CollectionContract_L.SETCURRENTKEY(Type,"Collection Type","Generical Template",
+                                  "Vendor No.","Item No.","Campaign No.","Species Code");
+      CollectionContract_L.SETRANGE("Collection Type",CollectionContract_L."Collection Type"::"Storage for Job");
+      CollectionContract_L.SETRANGE("Vendor No.",Customer_P."No.");
+      EXIT(CollectionContract_L.COUNT);
+      //<-- 20140115-APP28-CMC02.02.00-1487-FGS
+    END;
+
+    PROCEDURE LookUpNoOfTAFContractByCust@8053013(VAR Cust_P@8053000 : Record 18);
+    VAR
+      CollectionContract_L@8053001 : Record 8052983;
+    BEGIN
+      //--> 20140115-APP28-CMC02.02.00-1486-FGS
+      CollectionContract_L.SETCURRENTKEY(Type,"Collection Type","Generical Template",
+                                  "Vendor No.","Item No.","Campaign No.","Species Code");
+      CollectionContract_L.SETRANGE("Collection Type",CollectionContract_L."Collection Type"::"Storage for Job");
+      CollectionContract_L.SETRANGE("Vendor No.", Cust_P."No.");
+      PAGE.RUNMODAL(PAGE::"CMC Collection Contracts",CollectionContract_L);
+      //--> 20140115-APP28-CMC02.02.00-1486-FGS
+    END;
+
+    PROCEDURE CalcAvailabilityQties@1000000001(SalesLine@1000 : Record 37;VAR QtyStock_P@1000000000 : Decimal;VAR QtySalesOrder_P@1000000001 : Decimal;VAR QtyTransShipment_P@1000000002 : Decimal;VAR QtyPurchOrder_P@1000000004 : Decimal;VAR QtyTransReceipt_P@1000000003 : Decimal;VAR QtySalesReturn_P@1000000007 : Decimal;VAR QtyPurchReturn_P@1000000008 : Decimal) : Decimal;
+    VAR
+      AvailableToPromise@8053000 : Codeunit 5790;
+      AvailabilityDate@8053001 : Date;
+      ItemOverviewSetup_L@1000000005 : Record 8053191;
+      PagItemInventoryOverview_L@1000000006 : Page 8053213;
+    BEGIN
+      // --> 20160902-Wi00-ADV01.01.00-1369-JCD01
+      // Donn'es pour calcul du disponible
+      // SalesLine          : Rec Sales Line
+      // QtyStock_P         : stock
+      // QtySalesOrder_P    : Quantit' en commande vente
+      // QtyTransShipment_P : Quantit' en exp'dition transfert
+      // QtyPurchOrder_P    : Quantit' en commande achat
+      // QtyTransReceipt_P  : Quantit' en r'ception transfert
+
+      IF GetItem(SalesLine) THEN BEGIN
+        Item.RESET;
+        IF SalesLine."Variant Code"<>''  THEN
+          Item.SETRANGE("Variant Filter",SalesLine."Variant Code");
+        IF SalesLine."Location Code"<>'' THEN
+          Item.SETRANGE("Location Filter",SalesLine."Location Code");
+        Item.SETRANGE("Drop Shipment Filter",FALSE);
+        // --> 20161017-Wi00-ADV01.01.00-1369-JCD01
+        IF ItemOverviewSetup_L.GET AND (ItemOverviewSetup_L."Use only Released Doc" = TRUE) THEN BEGIN
+          Item.CALCFIELDS(Inventory);
+          QtyStock_P := Item.Inventory;
+
+          QtySalesOrder_P := PagItemInventoryOverview_L.CalcQtySalesOrder(Item, TRUE);
+          QtyTransShipment_P := PagItemInventoryOverview_L.CalcQtyOnTransfer(Item, FALSE);
+          QtyPurchOrder_P := PagItemInventoryOverview_L.CalcQtyOnPurchOrder(Item, TRUE);
+          QtyTransReceipt_P := PagItemInventoryOverview_L.CalcQtyOnTransfer(Item, TRUE);
+          // --> 20161116-Wi00-ADV01.01.00-1369-JCD01
+          QtySalesReturn_P := PagItemInventoryOverview_L.CalcQtySalesOrder(Item, FALSE);
+          QtyPurchReturn_P := PagItemInventoryOverview_L.CalcQtyOnPurchOrder(Item, FALSE);
+          // <-- 20161116-Wi00-ADV01.01.00-1369-JCD01
+        END ELSE BEGIN
+        // <-- 20161017-Wi00-ADV01.01.00-1369-JCD01
+          Item.CALCFIELDS(Inventory,"Qty. on Sales Order","Trans. Ord. Shipment (Qty.)","Qty. on Purch. Order",
+            "Trans. Ord. Receipt (Qty.)");
+
+          QtyStock_P := Item.Inventory;
+          QtySalesOrder_P := Item."Qty. on Sales Order";
+          QtyTransShipment_P := Item."Trans. Ord. Shipment (Qty.)";
+          QtyPurchOrder_P := Item."Qty. on Purch. Order";
+          QtyTransReceipt_P := Item."Trans. Ord. Receipt (Qty.)";
+          // --> 20161116-Wi00-ADV01.01.00-1369-JCD01
+          QtySalesReturn_P := PagItemInventoryOverview_L.CalcQtySalesOrder(Item, FALSE);
+          QtyPurchReturn_P := PagItemInventoryOverview_L.CalcQtyOnPurchOrder(Item, FALSE);
+          // <-- 20161116-Wi00-ADV01.01.00-1369-JCD01
+
+        // <-- 20161017-Wi00-ADV01.01.00-1369-JCD01
+        END;
+        // --> 20161017-Wi00-ADV01.01.00-1369-JCD01
+      END;
+      // <-- 20160902-Wi00-ADV01.01.00-1369-JCD01
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+
+      20110601-Wi00-CMC01.04 : Version RTM 01.04 - NavAgri
+      20120717-Wi00-CMC02.01.00-SD01 : ADDFONCTION
+      20120620-Wi00-CMC02.01.00-SD01 : ADDFONCTION
+      20130416-NUT03-CMC02.02.00-PPE01: ADDFONCTION (sales contract)
+      20130423-NUT03-CMC02.02.00-PPE01: MODCODE (sales contract)
+      20131014-Nut09-CMC02.02.00-BSI01: ADDFONCTION(CountNoOfSalesContracts)
+                                        ADDFONCTION(LookUpNoOfSalesContract)
+      20131015-Nut09-CMC02.02.00-BSI01: ADDFONCTION(CountNoOfTAFContracts)
+      20140115-APP28-CMC02.02.00-1487-FGS : ADDFUNCTION (CountNoOfTAFContractsByCust)
+      20140115-APP28-CMC02.02.00-1487-FGS : ADDFUNCTION (LookUpNoOfTAFContractByCust)
+      20140523-APP28-CMC02.02.00-2160-FEC01 : MODCODE.
+      20140523-APP28-CMC02.02.00-2160-FEC02 : MODCODE.
+      20160902-Wi00-ADV01.01.00-1369-JCD01 : ADDFUNCTION (CalcAvailabilityQties)
+      20161017-Wi00-ADV01.01.00-1369-JCD01 : ADDCODE (Gestion du stock comme dans l'aperÎu stock)
+      20161116-Wi00-ADV01.01.00-1369-JCD01 : MODCODE (Ajout des retour achat etvente dans les retours)
+      // --> 3LI END
+    }
+    END.
+  }
+}
+

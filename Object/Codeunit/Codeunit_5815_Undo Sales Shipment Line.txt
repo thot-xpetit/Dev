@@ -1,0 +1,989 @@
+OBJECT Codeunit 5815 Undo Sales Shipment Line
+{
+  OBJECT-PROPERTIES
+  {
+    Date=21/12/17;
+    Heure=00:00:00;
+    Liste versions=NAVW15.00,CMC02.02.00,,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    TableNo=111;
+    Permissions=TableData 37=imd,
+                TableData 111=imd,
+                TableData 339=rmd,
+                TableData 359=imd,
+                TableData 6507=ri;
+    OnRun=VAR
+            UpdateItemAnalysisView@1000 : Codeunit 7150;
+          BEGIN
+            SETRANGE(Type,Type::Item);
+
+            // --> 20131009-Log03-CMC02.01.00-0922-DAD
+            IF Quantity = 0 THEN
+             IF Quantity = "Qty. Shipped Not Invoiced" THEN
+              SETFILTER(Quantity,'<>0');
+            // <-- 20131009-Log03-CMC02.01.00-0922-DAD
+
+            // <-- 20110601-Wi00-CMC01.04
+            IF FIND('-') THEN BEGIN
+            {
+            IF NOT FIND('-') THEN
+              ERROR(Text006);
+            }
+            // --> 20110601-Wi00-CMC01.04
+
+            IF NOT HideDialog THEN
+              IF NOT CONFIRM(Text000) THEN
+                EXIT;
+
+            SalesShptLine.COPY(Rec);
+            Code;
+            UpdateItemAnalysisView.UpdateAll(0,TRUE);
+            Rec := SalesShptLine;
+
+
+            // <-- 20110601-Wi00-CMC01.04
+            END ELSE BEGIN
+              SETRANGE(Type,Type::"G/L Account");
+              IF NOT FIND('-') THEN
+                ERROR(Text006);
+
+              IF  FIND('-') THEN BEGIN
+              IF NOT HideDialog THEN
+                IF NOT CONFIRM(Text000) THEN
+                  EXIT;
+              SalesShptLine.COPY(Rec);
+              CodeForGL;
+              Rec := SalesShptLine;
+              END;
+            END;
+            // --> 20110601-Wi00-CMC01.04
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      SalesShptHeader@1004 : Record 110;
+      SalesShptLine@1001 : Record 111;
+      TempWhseJnlLine@1017 : TEMPORARY Record 7311;
+      TempGlobalItemLedgEntry@1026 : TEMPORARY Record 32;
+      TempGlobalItemEntryRelation@1025 : TEMPORARY Record 6507;
+      InvtSetup@1007 : Record 313;
+      UndoPostingMgt@1024 : Codeunit 5817;
+      ItemJnlPostLine@1000 : Codeunit 22;
+      Text60000@1000000000 : TextConst 'FRA=Cette exp'dition a d'j. 't' factur'e. Vous ne pouvez appliquer l''option Annuler exp'dition frais annexe qu''aux exp'ditions enregistr'es mais non factur'es.';
+      Text000@1003 : TextConst 'ENU=Do you really want to undo the selected Shipment lines?;FRA=Souhaitez-vous vraiment supprimer les lignes exp'dition s'lectionn'es ?';
+      Text001@1009 : TextConst 'ENU=Undo quantity posting...;FRA=Annulation de la validation de la quantit'...';
+      Text002@1002 : TextConst 'ENU=There is not enough space to insert correction lines.;FRA=Il n''y a pas suffisamment d''espace pour ins'rer les lignes correction.';
+      WhseUndoQty@1015 : Codeunit 7320;
+      InvtAdjmt@1008 : Codeunit 5895;
+      HideDialog@1005 : Boolean;
+      Text003@1006 : TextConst 'ENU=Checking lines...;FRA=V'rification des lignes...';
+      Text004@1016 : TextConst 'ENU=Some shipment lines may have unused service items. Do you want to delete them?;FRA=Certaines lignes exp'dition contiennent des articles de service inutilis's. Souhaitez-vous les supprimer ?';
+      NextLineNo@1014 : Integer;
+      Text005@1010 : TextConst 'ENU=This shipment has already been invoiced. Undo Shipment can be applied only to posted, but not invoiced shipments.;FRA=Cette exp'dition a d'j. 't' factur'e. Vous ne pouvez appliquer l''option Annuler exp'dition qu''aux exp'ditions enregistr'es mais non factur'es.';
+      Text006@1011 : TextConst 'ENU=Undo Shipment can be performed only for lines of type Item. Please select a line of the Item type and repeat the procedure.;FRA=Vous ne pouvez appliquer l''option Annuler exp'dition qu''aux lignes de type Article. S'lectionnez une ligne de ce type et r'p'tez la proc'dure.';
+      CerealIncorpMngt_G@8053000 : Codeunit 8053026;
+      TempSLineCerealContract@8053001 : TEMPORARY Record 8053232;
+      Text60001@60000 : TextConst 'FRA=Vous devez param'trer une feuille de nomemclature de desassemblage dans les paramStres Phytos pour permettre la rentr'e des composant en annulation BL.';
+
+    PROCEDURE SetHideDialog@8(NewHideDialog@1000 : Boolean);
+    BEGIN
+      HideDialog := NewHideDialog;
+    END;
+
+    LOCAL PROCEDURE Code@2();
+    VAR
+      ServItem@1003 : Record 5940;
+      Window@1001 : Dialog;
+      ItemShptEntryNo@1002 : Integer;
+      DocLineNo@1004 : Integer;
+      DeleteServItems@1000 : Boolean;
+      "<< 3LI LOCALS >>"@8053000 : Integer;
+      SalesShipLine_L@8053001 : Record 111;
+    BEGIN
+      WITH SalesShptLine DO BEGIN
+        CLEAR(ItemJnlPostLine);
+        SETCURRENTKEY("Item Shpt. Entry No.");
+        SETRANGE(Correction,FALSE);
+
+        REPEAT
+          IF NOT HideDialog THEN
+            Window.OPEN(Text003);
+          CheckSalesShptLine(SalesShptLine);
+        UNTIL NEXT = 0;
+
+        ServItem.SETCURRENTKEY("Sales/Serv. Shpt. Document No.");
+        ServItem.SETRANGE("Sales/Serv. Shpt. Document No.","Document No.");
+        IF ServItem.FIND('-') THEN
+          IF NOT HideDialog THEN
+            DeleteServItems := CONFIRM(Text004,TRUE)
+          ELSE
+            DeleteServItems := TRUE;
+
+        FIND('-');
+        REPEAT
+          TempGlobalItemLedgEntry.RESET;
+          IF NOT TempGlobalItemLedgEntry.ISEMPTY THEN
+            TempGlobalItemLedgEntry.DELETEALL;
+          TempGlobalItemEntryRelation.RESET;
+          IF NOT TempGlobalItemEntryRelation.ISEMPTY THEN
+            TempGlobalItemEntryRelation.DELETEALL;
+
+          IF NOT HideDialog THEN
+            Window.OPEN(Text001);
+
+          ItemShptEntryNo := PostItemJnlLine(SalesShptLine,DocLineNo);
+
+          InsertNewShipmentLine(SalesShptLine,ItemShptEntryNo,DocLineNo);
+
+          UpdateOrderLine(SalesShptLine);
+
+          // --> 20171218-WI00-ADV01.01.00-3286-CJY01
+          DesassemblyOnCancelShipment(SalesShptLine,ItemShptEntryNo,DocLineNo);
+          // <-- 20171218-WI00-ADV01.01.00-3286-CJY01
+          // <-- 20110601-Wi00-CMC01.04
+          SalesShipLine_L.RESET;
+          SalesShipLine_L.SETCURRENTKEY("Document No.");
+          SalesShipLine_L.SETRANGE("Document No.",SalesShptLine."Document No.");
+          SalesShipLine_L.SETRANGE("CVO Item Attached Line",SalesShptLine."Line No.");
+          // --> 20151202-WI00-ADV01.01.00-2461-CJY01
+          SalesShipLine_L.SETRANGE(Correction,FALSE);
+          // <-- 20151202-WI00-ADV01.01.00-2461-CJY01
+          IF SalesShipLine_L.FINDFIRST THEN
+            InsertNewShipmentLineForGL(SalesShipLine_L);
+
+          SalesShipLine_L.RESET;
+          SalesShipLine_L.SETCURRENTKEY("Document No.");
+          SalesShipLine_L.SETRANGE("Document No.",SalesShptLine."Document No.");
+          SalesShipLine_L.SETRANGE("CVO Corn Item Attached Line",SalesShptLine."Line No.");
+          // --> 20151202-WI00-ADV01.01.00-2461-CJY01
+          SalesShipLine_L.SETRANGE(Correction,FALSE);
+          // <-- 20151202-WI00-ADV01.01.00-2461-CJY01
+          IF SalesShipLine_L.FINDFIRST THEN
+           InsertNewShipmentLineForGL(SalesShipLine_L);
+
+          SalesShipLine_L.RESET;
+          SalesShipLine_L.SETCURRENTKEY("Document No.");
+          SalesShipLine_L.SETRANGE("Document No.",SalesShptLine."Document No.");
+          SalesShipLine_L.SETRANGE("RPD Item Attached Line",SalesShptLine."Line No.");
+          // --> 20151202-WI00-ADV01.01.00-2461-CJY01
+          SalesShipLine_L.SETRANGE(Correction,FALSE);
+          // <-- 20151202-WI00-ADV01.01.00-2461-CJY01
+          IF SalesShipLine_L.FINDFIRST THEN
+           InsertNewShipmentLineForGL(SalesShipLine_L);
+
+          // <-- 20110601-Wi00-CMC01.04
+
+          // --> 20150610-NUT02-CMC02.02.00-3059-FEC02
+          SalesShipLine_L.RESET;
+          SalesShipLine_L.SETCURRENTKEY("Document No.");
+          SalesShipLine_L.SETRANGE("Document No.",SalesShptLine."Document No.");
+          SalesShipLine_L.SETRANGE("Item Charge Root Line No.",SalesShptLine."Line No.");
+          SalesShipLine_L.SETRANGE(Correction,FALSE);
+          IF SalesShipLine_L.FINDFIRST THEN
+            REPEAT
+              InsertNewShipmentLineForIC(SalesShipLine_L);
+            UNTIL SalesShipLine_L.NEXT = 0;
+          // <-- 20150610-NUT02-CMC02.02.00-3059-FEC02
+
+          IF ("Blanket Order No." <> '') AND ("Blanket Order Line No." <> 0) THEN
+            UpdateBlanketOrder(SalesShptLine);
+
+          IF DeleteServItems THEN
+            DeleteSalesShptLineServItems(SalesShptLine);
+
+          "Quantity Invoiced" := Quantity;
+          "Qty. Invoiced (Base)" := "Quantity (Base)";
+          "Qty. Shipped Not Invoiced" := 0;
+          Correction := TRUE;
+          MODIFY;
+
+        UNTIL NEXT = 0;
+
+        InvtSetup.GET;
+        IF InvtSetup."Automatic Cost Adjustment" <>
+           InvtSetup."Automatic Cost Adjustment"::Never
+        THEN BEGIN
+          InvtAdjmt.SetProperties(TRUE,InvtSetup."Automatic Cost Posting");
+          InvtAdjmt.MakeMultiLevelAdjmt;
+        END;
+
+        WhseUndoQty.PostTempWhseJnlLine(TempWhseJnlLine);
+
+        UpdateFreeItemLine(SalesShptLine); // 20150612-wi00-CMC02.02.00-12583-2992-JLT01
+
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckSalesShptLine@3(SalesShptLine@1001 : Record 111);
+    VAR
+      TempItemLedgEntry@1015 : TEMPORARY Record 32;
+    BEGIN
+      WITH SalesShptLine DO BEGIN
+        TESTFIELD(Type,Type::Item);
+        IF "Qty. Shipped Not Invoiced" <> Quantity THEN
+          ERROR(Text005);
+        TESTFIELD("Drop Shipment",FALSE);
+
+        UndoPostingMgt.TestSalesShptLine(SalesShptLine);
+        UndoPostingMgt.CollectItemLedgEntries(TempItemLedgEntry,DATABASE::"Sales Shipment Line",
+          "Document No.","Line No.","Quantity (Base)","Item Shpt. Entry No.");
+        UndoPostingMgt.CheckItemLedgEntries(TempItemLedgEntry,"Line No.");
+      END;
+    END;
+
+    LOCAL PROCEDURE PostItemJnlLine@5(SalesShptLine@1000 : Record 111;VAR DocLineNo@1003 : Integer) : Integer;
+    VAR
+      ItemJnlLine@1001 : Record 83;
+      SalesLine@1006 : Record 37;
+      SalesShptHeader@1004 : Record 110;
+      SalesShptLine2@1007 : Record 111;
+      SourceCodeSetup@1002 : Record 242;
+      TempApplyToEntryList@1005 : TEMPORARY Record 32;
+      LineSpacing@1008 : Integer;
+      Item_L@8053000 : Record 27;
+      Location_L@8053001 : Record 14;
+    BEGIN
+      WITH SalesShptLine DO BEGIN
+
+        SalesShptLine2.SETRANGE("Document No.","Document No.");
+        SalesShptLine2."Document No." := "Document No.";
+        SalesShptLine2."Line No." := "Line No.";
+        SalesShptLine2.FIND('=');
+
+        IF SalesShptLine2.FIND('>') THEN BEGIN
+          LineSpacing := (SalesShptLine2."Line No." - "Line No.") DIV 2;
+          IF LineSpacing = 0 THEN
+            ERROR(Text002);
+        END ELSE
+          LineSpacing := 10000;
+        DocLineNo := "Line No." + LineSpacing;
+
+        // --> 20140317-Log12-CMC02.02.00-1839-FEC01
+        Item_L.GET("No.");
+        Location_L.GET("Location Code");
+        IF ItemJnlPostLine.ItemToReverse(Item_L,Location_L."Reverse Item Filter View") THEN
+          EXIT(0);
+        // --< 20140317-Log12-CMC02.02.00-1839-FEC01
+
+        SourceCodeSetup.GET;
+        SalesShptHeader.GET("Document No.");
+        ItemJnlLine.INIT;
+        ItemJnlLine."Entry Type" := ItemJnlLine."Entry Type"::Sale;
+        ItemJnlLine."Item No." := "No.";
+        ItemJnlLine."Posting Date" := SalesShptHeader."Posting Date";
+        ItemJnlLine."Document No." := "Document No.";
+        ItemJnlLine."Document Line No." := DocLineNo;
+        ItemJnlLine."Gen. Bus. Posting Group" := "Gen. Bus. Posting Group";
+        ItemJnlLine."Gen. Prod. Posting Group" := "Gen. Prod. Posting Group";
+        ItemJnlLine."Location Code" := "Location Code";
+        ItemJnlLine."Source Code" := SourceCodeSetup.Sales;
+        ItemJnlLine."Applies-to Entry" := "Item Shpt. Entry No.";
+        ItemJnlLine.Correction := TRUE;
+        ItemJnlLine."Variant Code" := "Variant Code";
+        ItemJnlLine."Bin Code" := "Bin Code";
+        ItemJnlLine.Quantity := -"Quantity (Base)";
+        ItemJnlLine."Quantity (Base)" := -"Quantity (Base)";
+        ItemJnlLine."Document Date" := SalesShptHeader."Document Date";
+        // --> 20160718-Wi00-ADV01.01.00-2871-OAN01
+        ItemJnlLine."Order Date" := SalesShptHeader."Order Date";
+        // <-- 20160718-Wi00-ADV01.01.00-2871-OAN01
+
+        WhseUndoQty.InsertTempWhseJnlLine(ItemJnlLine,
+          DATABASE::"Sales Line",
+          SalesLine."Document Type"::Order,
+          "Order No.",
+          "Order Line No.",
+          TempWhseJnlLine."Reference Document"::"Posted Shipment",
+          TempWhseJnlLine,
+          NextLineNo);
+
+        IF "Item Shpt. Entry No." <> 0 THEN BEGIN
+          ItemJnlPostLine.RUN(ItemJnlLine);
+          EXIT(ItemJnlLine."Item Shpt. Entry No.");
+        END ELSE BEGIN
+          UndoPostingMgt.CollectItemLedgEntries(TempApplyToEntryList,DATABASE::"Sales Shipment Line",
+            "Document No.","Line No.","Quantity (Base)","Item Shpt. Entry No.");
+
+          UndoPostingMgt.PostItemJnlLineAppliedToList(ItemJnlLine,TempApplyToEntryList,
+            Quantity,"Quantity (Base)",TempGlobalItemLedgEntry,TempGlobalItemEntryRelation);
+
+          EXIT(0); // "Item Shpt. Entry No."
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE InsertNewShipmentLine@1(OldSalesShptLine@1000 : Record 111;ItemShptEntryNo@1001 : Integer;DocLineNo@1004 : Integer);
+    VAR
+      NewSalesShptLine@1002 : Record 111;
+      RecRFCLEdgerEntry_L@1000000002 : Record 8053089;
+      RecDetailedRFCEntry_L@1000000001 : Record 8053334;
+      RecRFCValueEntryDiscount_L@1000000000 : Record 8053252;
+    BEGIN
+      WITH OldSalesShptLine DO BEGIN
+        NewSalesShptLine.INIT;
+        NewSalesShptLine.COPY(OldSalesShptLine);
+        NewSalesShptLine."Line No." := DocLineNo;
+        NewSalesShptLine."Appl.-from Item Entry" := "Item Shpt. Entry No.";
+        NewSalesShptLine."Item Shpt. Entry No." := ItemShptEntryNo;
+        NewSalesShptLine.Quantity := -Quantity;
+        NewSalesShptLine."Qty. Shipped Not Invoiced" := 0;
+        NewSalesShptLine."Quantity (Base)" := -"Quantity (Base)";
+        NewSalesShptLine."Quantity Invoiced" := NewSalesShptLine.Quantity;
+        NewSalesShptLine."Qty. Invoiced (Base)" := NewSalesShptLine."Quantity (Base)";
+        NewSalesShptLine.Correction := TRUE;
+        NewSalesShptLine.INSERT;
+        // --> 20151119-APP33-ADV01.01.00-2496-CJY01
+        //On utilise les infos de OldSalesShptLine pour trouver les possibles RFC associ'es
+        RecRFCLEdgerEntry_L.RESET;
+        RecRFCLEdgerEntry_L.SETRANGE("Item Ledger Entry Type",RecRFCLEdgerEntry_L."Item Ledger Entry Type"::Sale);
+        RecRFCLEdgerEntry_L.SETRANGE("Document No.",OldSalesShptLine."Document No.");
+        RecRFCLEdgerEntry_L.SETRANGE("Document Line No.",OldSalesShptLine."Line No.");
+        RecRFCLEdgerEntry_L.SETRANGE("Document Type",RecRFCLEdgerEntry_L."Document Type"::"Sales Shipment");
+        IF RecRFCLEdgerEntry_L.FINDSET THEN
+          REPEAT
+            //Suppression de l''criture RFC elle-m^me
+            RecRFCLEdgerEntry_L.DELETE(TRUE);
+            //Suppression des RFC d'taill'es
+            RecDetailedRFCEntry_L.RESET;
+            RecDetailedRFCEntry_L.SETRANGE("Sales / Purchase",RecDetailedRFCEntry_L."Sales / Purchase"::Sales);
+            RecDetailedRFCEntry_L.SETRANGE("ECD Entry No.",RecRFCLEdgerEntry_L."Entry No.");
+            IF NOT RecDetailedRFCEntry_L.ISEMPTY THEN
+              RecDetailedRFCEntry_L.DELETEALL(TRUE);
+            //Suppression des Value entry discount
+            IF RecRFCValueEntryDiscount_L.GET(RecRFCLEdgerEntry_L."Value Entry No.",RecRFCLEdgerEntry_L."Discount Code") THEN
+              RecRFCValueEntryDiscount_L.DELETE(TRUE);
+          UNTIL RecRFCLEdgerEntry_L.NEXT = 0;
+        // <-- 20151119-APP33-ADV01.01.00-2496-CJY01
+
+        // --> 20130812-APP28-CMC02.02.00-KEM01
+        CerealIncorpMngt_G.PostUndoShipSLCerealContract(NewSalesShptLine,OldSalesShptLine);
+        // <-- 20130812-APP28-CMC02.02.00-KEM01
+
+        CopyShipmentLineDimensions(OldSalesShptLine,NewSalesShptLine);
+
+        InsertItemEntryRelation(TempGlobalItemEntryRelation,NewSalesShptLine);
+
+      END;
+    END;
+
+    LOCAL PROCEDURE UpdateOrderLine@4(SalesShptLine@1000 : Record 111);
+    VAR
+      SalesLine@1001 : Record 37;
+    BEGIN
+      WITH SalesShptLine DO BEGIN
+        SalesLine.GET(SalesLine."Document Type"::Order,"Order No.","Order Line No.");
+        UndoPostingMgt.UpdateSalesLine(SalesLine,Quantity,"Quantity (Base)",TempGlobalItemLedgEntry);
+        // <-- 20130812-APP28-CMC02.02.00-KEM01
+        CerealIncorpMngt_G.RefreshTempSLineCerealContract(SalesLine,TempSLineCerealContract);
+        CerealIncorpMngt_G.ModifySalesLineCerealContract(TempSLineCerealContract,FALSE);
+        // --> 20130812-APP28-CMC02.02.00-KEM01
+        // --> 20131009-Log03-CMC02.01.00-0922-DAD
+        UpdateOrderLineLinked(SalesLine);
+        // <-- 20131009-Log03-CMC02.01.00-0922-DAD
+      END;
+    END;
+
+    LOCAL PROCEDURE CopyShipmentLineDimensions@6(FromSalesShptLine@1000 : Record 111;ToSalesShptLine@1001 : Record 111);
+    VAR
+      ToPostedDocDim@1002 : Record 359;
+      FromPostedDocDim@1003 : Record 359;
+    BEGIN
+      FromPostedDocDim.SETRANGE("Table ID",DATABASE::"Sales Shipment Line");
+      FromPostedDocDim.SETRANGE("Document No.",FromSalesShptLine."Document No.");
+      FromPostedDocDim.SETRANGE("Line No.",FromSalesShptLine."Line No.");
+
+      IF FromPostedDocDim.FIND('-') THEN
+        REPEAT
+          ToPostedDocDim.COPY(FromPostedDocDim);
+          ToPostedDocDim."Document No." := ToSalesShptLine."Document No.";
+          ToPostedDocDim."Line No." := ToSalesShptLine."Line No.";
+          ToPostedDocDim.INSERT;
+        UNTIL FromPostedDocDim.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE UpdateBlanketOrder@7(SalesShptLine@1000 : Record 111);
+    VAR
+      BlanketOrderLine@1001 : Record 37;
+    BEGIN
+      WITH SalesShptLine DO BEGIN
+        IF BlanketOrderLine.GET(
+             BlanketOrderLine."Document Type"::"Blanket Order","Blanket Order No.","Blanket Order Line No.")
+        THEN BEGIN
+          BlanketOrderLine.TESTFIELD(Type,Type);
+          BlanketOrderLine.TESTFIELD("No.","No.");
+          BlanketOrderLine.TESTFIELD("Sell-to Customer No.","Sell-to Customer No.");
+
+          IF BlanketOrderLine."Qty. per Unit of Measure" = "Qty. per Unit of Measure" THEN
+            BlanketOrderLine."Quantity Shipped" := BlanketOrderLine."Quantity Shipped" - Quantity
+          ELSE
+            BlanketOrderLine."Quantity Shipped" :=
+              BlanketOrderLine."Quantity Shipped" -
+              ROUND("Qty. per Unit of Measure" / BlanketOrderLine."Qty. per Unit of Measure" * Quantity,0.00001);
+
+          BlanketOrderLine."Qty. Shipped (Base)" := BlanketOrderLine."Qty. Shipped (Base)" - "Quantity (Base)";
+          BlanketOrderLine.InitOutstanding;
+          BlanketOrderLine.MODIFY;
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE InsertItemEntryRelation@12(VAR TempItemEntryRelation@1003 : TEMPORARY Record 6507;NewSalesShptLine@1000 : Record 111);
+    VAR
+      ItemEntryRelation@1002 : Record 6507;
+    BEGIN
+      IF TempItemEntryRelation.FIND('-') THEN BEGIN
+        REPEAT
+          ItemEntryRelation := TempItemEntryRelation;
+          ItemEntryRelation.TransferFieldsSalesShptLine(NewSalesShptLine);
+          ItemEntryRelation.INSERT;
+        UNTIL TempItemEntryRelation.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE DeleteSalesShptLineServItems@10(SalesShptLine@1000 : Record 111);
+    VAR
+      ServItem@1003 : Record 5940;
+    BEGIN
+      ServItem.SETCURRENTKEY("Sales/Serv. Shpt. Document No.","Sales/Serv. Shpt. Line No.");
+      ServItem.SETRANGE("Sales/Serv. Shpt. Document No.",SalesShptLine."Document No.");
+      ServItem.SETRANGE("Sales/Serv. Shpt. Line No.",SalesShptLine."Line No.");
+      ServItem.SETRANGE("Shipment Type",ServItem."Shipment Type"::Sales);
+      IF ServItem.FIND('-') THEN
+        REPEAT
+          IF ServItem.CheckIfCanBeDeleted = '' THEN
+            IF ServItem.DELETE(TRUE) THEN;
+        UNTIL ServItem.NEXT = 0;
+    END;
+
+    PROCEDURE "<< 3LI FUNCTIONS >>"@8053000();
+    BEGIN
+    END;
+
+    PROCEDURE InsertNewShipmentLineForGL@8053002(VAR _OldSalesShptLine_P@1000 : Record 111);
+    VAR
+      NewSalesShptLine_L@1002 : Record 111;
+      SalesShptLine2_L@8053000 : Record 111;
+      LineSpacing_L@8053001 : Integer;
+      DocLineNo_L@8053002 : Integer;
+    BEGIN
+      // <-- 20110601-Wi00-CMC01.04
+
+      WITH _OldSalesShptLine_P DO BEGIN
+
+       IF "Qty. Shipped Not Invoiced" <> Quantity THEN
+         ERROR(Text005);
+
+       SalesShptLine2_L.SETRANGE("Document No.","Document No.");
+       SalesShptLine2_L."Document No." := "Document No.";
+       SalesShptLine2_L."Line No." := "Line No.";
+       SalesShptLine2_L.FIND('=');
+
+       IF SalesShptLine2_L.FIND('>') THEN BEGIN
+         LineSpacing_L := (SalesShptLine2_L."Line No." - "Line No.") DIV 2;
+         IF LineSpacing_L = 0 THEN
+           ERROR(Text002);
+       END ELSE
+         LineSpacing_L := 10000;
+       DocLineNo_L := "Line No." + LineSpacing_L;
+
+       NewSalesShptLine_L.INIT;
+       NewSalesShptLine_L.COPY(_OldSalesShptLine_P);
+       NewSalesShptLine_L."Line No." := DocLineNo_L;
+       //NewSalesShptLine_L."Appl.-from Item Entry" := "Item Shpt. Entry No.";
+       //NewSalesShptLine_L."Item Shpt. Entry No." := ItemShptEntryNo;
+       NewSalesShptLine_L.Quantity := -Quantity;
+       NewSalesShptLine_L."Qty. Shipped Not Invoiced" := 0;
+       NewSalesShptLine_L."Quantity (Base)" := -"Quantity (Base)";
+       NewSalesShptLine_L."Quantity Invoiced" := NewSalesShptLine_L.Quantity;
+       NewSalesShptLine_L."Qty. Invoiced (Base)" := NewSalesShptLine_L."Quantity (Base)";
+       NewSalesShptLine_L.Correction := TRUE;
+       NewSalesShptLine_L.INSERT;
+        // --> 20130812-APP28-CMC02.02.00-KEM01
+        CerealIncorpMngt_G.PostUndoShipSLCerealContract(NewSalesShptLine_L,_OldSalesShptLine_P);
+        // <-- 20130812-APP28-CMC02.02.00-KEM01
+        CopyShipmentLineDimensions(_OldSalesShptLine_P,NewSalesShptLine_L);
+
+        "Quantity Invoiced" := Quantity;
+        "Qty. Invoiced (Base)" := "Quantity (Base)";
+        "Qty. Shipped Not Invoiced" := 0;
+        Correction := TRUE;
+        MODIFY;
+        UpdateOrderLine(_OldSalesShptLine_P);
+         //InsertItemEntryRelation(TempGlobalItemEntryRelation,NewSalesShptLine_L);
+
+      END;
+
+      // --> 20110601-Wi00-CMC01.04
+    END;
+
+    LOCAL PROCEDURE CodeForGL@8053007();
+    VAR
+      ServItem@1003 : Record 5940;
+      Window@1001 : Dialog;
+      ItemShptEntryNo@1002 : Integer;
+      DocLineNo@1004 : Integer;
+      DeleteServItems@1000 : Boolean;
+      "<< 3LI LOCALS >>"@8053000 : Integer;
+      SalesShipLine_L@8053001 : Record 111;
+    BEGIN
+      WITH SalesShptLine DO BEGIN
+        SETRANGE(Correction,FALSE);
+        REPEAT
+          IF NOT HideDialog THEN
+            Window.OPEN(Text003);
+         IF "Qty. Shipped Not Invoiced" <> Quantity THEN
+           ERROR(Text005);
+        UNTIL NEXT = 0;
+
+        FIND('-');
+        REPEAT
+          IF NOT HideDialog THEN
+            Window.OPEN(Text001);
+          InsertNewShipmentLineForGL(SalesShptLine);
+        UNTIL NEXT = 0;
+
+      END;
+    END;
+
+    PROCEDURE UpdateOrderLineLinked@8053010(SalesLine_P@1000000000 : Record 37);
+    VAR
+      SalesLine_L@8053001 : Record 37;
+      SalesLineLinked_L@8053002 : Record 37;
+    BEGIN
+      // --> 20131009-Log03-CMC02.01.00-0922-DAD
+      IF SalesLineLinked_L.GET(SalesLine_P."Document Type"::Order,SalesLine_P."Linked Order No.",SalesLine_P."Linked Order Line No.")
+      THEN
+      BEGIN
+        SalesLine_L.RESET;
+        SalesLine_L.SETRANGE("Document Type",SalesLine_P."Document Type"::Order);
+        SalesLine_L.SETRANGE("Document No.",SalesLine_P."Document No.");
+        SalesLine_L.SETRANGE("Line No.",SalesLine_P."Line No.");
+        IF SalesLine_L.FINDSET AND (SalesLineLinked_L."Prepayment %" > 0) THEN
+        BEGIN
+          SalesLineLinked_L."Prepmt. Line Amount" += SalesLine_L."Prepmt. Line Amount";
+          SalesLineLinked_L."Prepmt. Amt. Inv." += SalesLine_L."Prepmt. Amt. Inv.";
+          SalesLineLinked_L."Prepmt. Amt. Incl. VAT" += SalesLine_L."Prepmt. Amt. Incl. VAT";
+          SalesLineLinked_L."Prepayment Amount" += SalesLine_L."Prepayment Amount";
+          SalesLineLinked_L."Prepmt. VAT Base Amt." += SalesLine_L."Prepmt. VAT Base Amt.";
+          SalesLineLinked_L."Prepayment VAT %" := SalesLine_L."Prepayment VAT %";
+          SalesLineLinked_L."Prepmt. VAT Calc. Type" := SalesLine_L."Prepmt. VAT Calc. Type";
+          SalesLineLinked_L."Prepayment VAT Identifier" := SalesLine_L."Prepayment VAT Identifier";
+          SalesLineLinked_L."Prepayment Tax Area Code" := SalesLine_L."Prepayment Tax Area Code";
+          SalesLineLinked_L."Prepayment Tax Liable" := SalesLine_L."Prepayment Tax Liable";
+          SalesLineLinked_L."Prepayment Tax Group Code" := SalesLine_L."Prepayment Tax Group Code";
+          SalesLineLinked_L."Prepmt Amt to Deduct" += SalesLine_L."Prepmt Amt to Deduct";
+          SalesLineLinked_L."Prepmt Amt Deducted" += SalesLine_L."Prepmt Amt Deducted";
+          SalesLineLinked_L."Prepayment Line" := SalesLine_L."Prepayment Line";
+          SalesLineLinked_L."Prepmt. Amount Inv. Incl. VAT" += SalesLine_L."Prepmt. Amount Inv. Incl. VAT";
+          SalesLineLinked_L."Prepmt. Amount Inv. (LCY)" += SalesLine_L."Prepmt. Amount Inv. (LCY)";
+          SalesLineLinked_L."Prepayment VAT Difference" += SalesLine_L."Prepayment VAT Difference";
+          SalesLineLinked_L."Prepmt VAT Diff. to Deduct" += SalesLine_L."Prepmt VAT Diff. to Deduct";
+          SalesLineLinked_L."Prepmt VAT Diff. Deducted" += SalesLine_L."Prepmt VAT Diff. Deducted";
+          SalesLineLinked_L.Amount += SalesLineLinked_L.Amount;
+          SalesLineLinked_L."Line Amount" += SalesLine_L."Line Amount";
+          SalesLineLinked_L."Quantity (Base)" += SalesLine_L."Quantity (Base)";
+          SalesLineLinked_L."Outstanding Qty. (Base)" += SalesLine_L."Outstanding Qty. (Base)";
+          SalesLineLinked_L."VAT Base Amount"+= SalesLine_P."VAT Base Amount";
+        END;
+        SalesLine_L."Prepayment %" := 0;
+        SalesLine_L."Prepmt. Line Amount" := 0;
+        SalesLine_L."Prepmt. Amt. Inv." := 0;
+        SalesLine_L."Prepmt. Amt. Incl. VAT" := 0;
+        SalesLine_L."Prepayment Amount"  := 0;
+        SalesLine_L."Prepmt. VAT Base Amt." := 0;
+        SalesLine_L."Prepayment VAT %" := 0;
+        SalesLine_L."Prepmt. VAT Calc. Type" := SalesLine_L."Prepmt. VAT Calc. Type"::"Normal VAT";
+        SalesLine_L."Prepayment VAT Identifier" := '';
+        SalesLine_L."Prepayment Tax Area Code" := '';
+        SalesLine_L."Prepayment Tax Liable" := FALSE;
+        SalesLine_L."Prepayment Tax Group Code" := '';
+        SalesLine_L."Prepmt Amt to Deduct" := 0;
+        SalesLine_L."Prepmt Amt Deducted" := 0;
+        SalesLine_L."Prepayment Line" := FALSE;
+        SalesLine_L."Prepmt. Amount Inv. Incl. VAT" := 0;
+        SalesLine_L."Prepmt. Amount Inv. (LCY)" := 0;
+        SalesLine_L."Prepayment VAT Difference"  := 0;
+        SalesLine_L."Prepmt VAT Diff. to Deduct" := 0;
+        SalesLine_L."Prepmt VAT Diff. Deducted" := 0;
+        SalesLine_L.MODIFY;
+        UndoPostingMgt.UpdateSalesLineLinked(SalesLineLinked_L,SalesShptLine.Quantity,
+          SalesShptLine."Quantity (Base)",TempGlobalItemLedgEntry);
+      END
+      // <-- 20131009-Log03-CMC02.01.00-0922-DAD
+    END;
+
+    PROCEDURE InsertNewShipmentLineForIC@8053001(VAR OldSalesShptLine_P@1000 : Record 111);
+    VAR
+      NewSalesShptLine_L@1002 : Record 111;
+      SalesShptLine2_L@8053000 : Record 111;
+      LineSpacing_L@8053001 : Integer;
+      DocLineNo_L@8053002 : Integer;
+    BEGIN
+      // --> 20150610-NUT02-CMC02.02.00-3059-FEC01
+
+      WITH OldSalesShptLine_P DO BEGIN
+
+        IF "Qty. Shipped Not Invoiced" <> Quantity THEN
+          ERROR(Text005);
+
+        SalesShptLine2_L.SETRANGE("Document No.","Document No.");
+        SalesShptLine2_L."Document No." := "Document No.";
+        SalesShptLine2_L."Line No." := "Line No.";
+        SalesShptLine2_L.FIND('=');
+
+        IF SalesShptLine2_L.FIND('>') THEN BEGIN
+          LineSpacing_L := (SalesShptLine2_L."Line No." - "Line No.") DIV 2;
+          IF LineSpacing_L = 0 THEN
+            ERROR(Text002);
+        END ELSE
+          LineSpacing_L := 10000;
+        DocLineNo_L := "Line No." + LineSpacing_L;
+
+        NewSalesShptLine_L.INIT;
+        NewSalesShptLine_L.COPY(OldSalesShptLine_P);
+        NewSalesShptLine_L."Line No." := DocLineNo_L;
+        NewSalesShptLine_L.Quantity := -Quantity;
+        NewSalesShptLine_L."Qty. Shipped Not Invoiced" := 0;
+        NewSalesShptLine_L."Quantity (Base)" := -"Quantity (Base)";
+        NewSalesShptLine_L."Quantity Invoiced" := NewSalesShptLine_L.Quantity;
+        NewSalesShptLine_L."Qty. Invoiced (Base)" := NewSalesShptLine_L."Quantity (Base)";
+        NewSalesShptLine_L.Correction := TRUE;
+        NewSalesShptLine_L.INSERT;
+
+        CopyShipmentLineDimensions(OldSalesShptLine_P,NewSalesShptLine_L);
+
+        "Quantity Invoiced" := Quantity;
+        "Qty. Invoiced (Base)" := "Quantity (Base)";
+        "Qty. Shipped Not Invoiced" := 0;
+        Correction := TRUE;
+        MODIFY;
+        UpdateOrderLine(OldSalesShptLine_P);
+
+      END;
+
+      // <-- 20150610-NUT02-CMC02.02.00-3059-FEC01
+    END;
+
+    PROCEDURE UpdateFreeItemLine@1000000000(SalesShipmentLine_P@1000000000 : Record 111);
+    VAR
+      SalesLine_L@1000000001 : Record 37;
+      SalesShipmentLine_L@1000000002 : Record 111;
+    BEGIN
+      // 20150612-wi00-CMC02.02.00-12583-2992-JLT01 : MODCODE  Gestion de la ligne gratuit
+
+      SalesLine_L.SETRANGE("Document Type",SalesLine_L."Document Type"::Order);
+      SalesLine_L.SETRANGE("Document No.",SalesShipmentLine_P."Order No.");
+      SalesLine_L.SETRANGE("Free Item Root Line",SalesShipmentLine_P."Order Line No.");
+      IF NOT SalesLine_L.FINDSET THEN EXIT;
+
+      SalesShipmentLine_L.SETRANGE("Document No.",SalesShipmentLine_P."Document No.");
+
+      REPEAT
+        SalesShipmentLine_L.SETRANGE("Order No.",SalesLine_L."Document No.");
+        SalesShipmentLine_L.SETRANGE("Order Line No.",SalesLine_L."Line No.");
+        SalesShipmentLine_L.SETRANGE(Correction, FALSE);
+        IF SalesShipmentLine_L.FINDSET THEN REPEAT
+          InsertNewShipmentLineForGL(SalesShipmentLine_L);
+        UNTIL SalesShipmentLine_L.NEXT=0
+      UNTIL SalesLine_L.NEXT=0
+    END;
+
+    PROCEDURE InsertNewShptLineForChargeItem@1000000001(VAR OldSalesShptLine_P@1000000001 : Record 111);
+    VAR
+      NewSalesShptLine_L@1000000004 : Record 111;
+      SalesShptLine2_L@1000000003 : Record 111;
+      LineSpacing_L@1000000002 : Integer;
+      DocLineNo_L@1000000000 : Integer;
+    BEGIN
+      // --> 20160406-Wi00-ADV01.01.00-2296-OAN01
+      WITH OldSalesShptLine_P DO BEGIN
+        IF "Qty. Shipped Not Invoiced" <> Quantity THEN
+          ERROR(Text60000);
+
+        SalesShptLine2_L.SETRANGE("Document No.","Document No.");
+        SalesShptLine2_L."Document No." := "Document No.";
+        SalesShptLine2_L."Line No." := "Line No.";
+        SalesShptLine2_L.FIND('=');
+
+        IF SalesShptLine2_L.FIND('>') THEN BEGIN
+          LineSpacing_L := (SalesShptLine2_L."Line No." - "Line No.") DIV 2;
+          IF LineSpacing_L = 0 THEN
+            ERROR(Text002);
+        END ELSE
+          LineSpacing_L := 10000;
+        DocLineNo_L := "Line No." + LineSpacing_L;
+
+        NewSalesShptLine_L.INIT;
+        NewSalesShptLine_L.COPY(OldSalesShptLine_P);
+        NewSalesShptLine_L."Line No." := DocLineNo_L;
+        NewSalesShptLine_L.Quantity := -Quantity;
+        NewSalesShptLine_L."Qty. Shipped Not Invoiced" := 0;
+        NewSalesShptLine_L."Quantity (Base)" := -"Quantity (Base)";
+        NewSalesShptLine_L."Quantity Invoiced" := NewSalesShptLine_L.Quantity;
+        NewSalesShptLine_L."Qty. Invoiced (Base)" := NewSalesShptLine_L."Quantity (Base)";
+        NewSalesShptLine_L.Correction := TRUE;
+        NewSalesShptLine_L.INSERT;
+        CopyShipmentLineDimensions(OldSalesShptLine_P,NewSalesShptLine_L);
+        "Quantity Invoiced" := Quantity;
+        "Qty. Invoiced (Base)" := "Quantity (Base)";
+        "Qty. Shipped Not Invoiced" := 0;
+        Correction := TRUE;
+        MODIFY;
+        UpdateOrderLine(OldSalesShptLine_P);
+      END;
+      // <-- 20160406-Wi00-ADV01.01.00-2296-OAN01
+    END;
+
+    PROCEDURE DesassemblyOnCancelShipment@60001(OldSalesShptLine_P@60002 : Record 111;ItemShptEntryNo_P@60001 : Integer;DocLineNo_P@60000 : Integer);
+    VAR
+      Item_L@60003 : Record 27;
+      ParamPhytos_L@60004 : Record 60076;
+      BomJournalLine_L@60005 : Record 89;
+      ItemLedgerEntry_L@60006 : Record 32;
+      SalesOrderLine_L@60007 : Record 37;
+      BOMJournalTemplate_L@60008 : Record 88;
+      NoLine_L@60009 : Integer;
+      BOMJnlPost_L@60010 : Codeunit 251;
+      KitBOMJournalLine_L@60011 : Record 25001;
+      KitSalesShipmentLine_L@60012 : Record 25004;
+      NoLineKit_L@60013 : Integer;
+      ItemLedgerEntry2_L@60014 : Record 32;
+      T337_L@60015 : Record 337;
+      RecReservEntry1_L@60016 : Record 337;
+    BEGIN
+      // --> 20171218-WI00-ADV01.01.00-3286-CJY01
+      IF OldSalesShptLine_P.Type <> OldSalesShptLine_P.Type::Item THEN
+        EXIT;
+      IF NOT OldSalesShptLine_P."Build Kit" THEN
+        EXIT;
+      //on ne fait que si l'article est param'tr' pour g'rer les composants en retour
+
+      Item_L.GET(OldSalesShptLine_P."No.");
+      IF Item_L."No return for kit component" THEN
+        EXIT;
+
+      SalesOrderLine_L.GET(SalesOrderLine_L."Document Type"::Order,OldSalesShptLine_P."Order No.",OldSalesShptLine_P."Order Line No.");
+      //utilisation d'une feuille d'assemblage param'tr'e
+      ParamPhytos_L.GET;
+      IF ParamPhytos_L."Modele nomencl annulation BL" = '' THEN
+        ERROR(Text60001);
+
+      BOMJournalTemplate_L.GET(ParamPhytos_L."Modele nomencl annulation BL");
+
+      //si pas de kit exp'di' alors pas de d'sassemblage
+      KitSalesShipmentLine_L.RESET;
+      KitSalesShipmentLine_L.SETRANGE("Document No.",OldSalesShptLine_P."Document No.");
+      KitSalesShipmentLine_L.SETRANGE("Document Line No.",OldSalesShptLine_P."Line No.");
+      IF KitSalesShipmentLine_L.ISEMPTY
+        THEN EXIT;
+
+
+      //
+      ItemLedgerEntry_L.GET(ItemShptEntryNo_P);
+
+      BomJournalLine_L.LOCKTABLE;
+      BomJournalLine_L.RESET;
+      BomJournalLine_L.SETRANGE("Journal Template Name",ParamPhytos_L."Modele nomencl annulation BL");
+      BomJournalLine_L.SETRANGE("Journal Batch Name",'DEFAUT');
+      //BomJournalLine_L.SETRANGE("Line No.",10000);
+      IF BomJournalLine_L.FINDLAST THEN
+        NoLine_L := BomJournalLine_L."Line No." +10000
+      ELSE
+        NoLine_L := 10000;
+      //cr'ation de la ligne de desassemblage
+      WITH OldSalesShptLine_P DO BEGIN
+        BomJournalLine_L.INIT;
+        BomJournalLine_L.VALIDATE("Journal Template Name",ParamPhytos_L."Modele nomencl annulation BL");
+        BomJournalLine_L.VALIDATE("Journal Batch Name",'DEFAUT');
+
+        BomJournalLine_L."Item No." := OldSalesShptLine_P."No.";
+        BomJournalLine_L."Variant Code" := "Variant Code";
+        BomJournalLine_L."Posting Date" := ItemLedgerEntry_L."Posting Date";
+        BomJournalLine_L."Document No." := OldSalesShptLine_P."Document No.";
+        BomJournalLine_L."Line No." := NoLine_L;
+        BomJournalLine_L.Description := Description;
+        BomJournalLine_L."Shortcut Dimension 1 Code" := "Shortcut Dimension 1 Code";
+        BomJournalLine_L."Shortcut Dimension 2 Code" := "Shortcut Dimension 2 Code";
+        BomJournalLine_L."Location Code" := "Location Code";
+        BomJournalLine_L.VALIDATE(Quantity,Quantity);
+        BomJournalLine_L."Unit Cost" := "Unit Cost";
+        //BomJournalLine_L."Total Cost" := "Total Cost";
+        //BomJournalLine_L."Inventory Posting Group" := SalesOrderLine_L."Inventory Posting Group";
+        BomJournalLine_L."Source Code" := BOMJournalTemplate_L."Source Code";
+        //BomJournalLine_L."Reason Code" := "Reason Code";
+        BomJournalLine_L."Document Date" := ItemLedgerEntry_L."Document Date";
+        BomJournalLine_L."External Document No." := STRSUBSTNO('%1',ItemShptEntryNo_P);
+        //BomJournalLine_L."Posting No. Series" := "Posting No. Series";
+
+        BomJournalLine_L."Bin Code" := "Bin Code";
+        BomJournalLine_L."Qty. per Unit of Measure" := "Qty. per Unit of Measure";
+        BomJournalLine_L."Unit of Measure Code" := "Unit of Measure Code";
+        //BomJournalLine_L."Quantity (Base)" := "Quantity (Base)";
+        //BomJournalLine_L."Entry Type" := BomJournalLine_L."Entry Type"::Assembly;
+        BomJournalLine_L."Entry Type" := BomJournalLine_L."Entry Type"::Disassembly ;
+
+        BomJournalLine_L.INSERT(TRUE);
+        //BomJournalLine_L."Gen. Bus. Posting Group" := SalesHeader ."Gen. Bus. Posting Group";
+      END;
+      //on gSre les lignes de kit sur la base de celle vraiment exp'di'es
+      //On commence par supprimer les eventuellement existantes
+      KitBOMJournalLine_L.RESET;
+      KitBOMJournalLine_L.SETRANGE("Journal Template Name",ParamPhytos_L."Modele nomencl annulation BL");
+      KitBOMJournalLine_L.SETRANGE("Journal Batch Name",'DEFAUT');
+      KitBOMJournalLine_L.SETRANGE("Journal Line No.",NoLine_L);
+      IF NOT KitBOMJournalLine_L.ISEMPTY THEN
+        KitBOMJournalLine_L.DELETEALL(TRUE);
+
+      //recr'ation
+      //NoLineKit_L := 0;
+      KitSalesShipmentLine_L.RESET;
+      KitSalesShipmentLine_L.SETRANGE("Document No.",OldSalesShptLine_P."Document No.");
+      KitSalesShipmentLine_L.SETRANGE("Document Line No.",OldSalesShptLine_P."Line No.");
+      WITH KitSalesShipmentLine_L DO BEGIN
+        IF KitSalesShipmentLine_L.FINDSET THEN REPEAT
+          //NoLineKit_L := NoLineKit_L + 10000;
+          KitBOMJournalLine_L.INIT;
+          KitBOMJournalLine_L."Journal Template Name" := ParamPhytos_L."Modele nomencl annulation BL";
+          KitBOMJournalLine_L."Journal Batch Name" := 'DEFAUT';
+          KitBOMJournalLine_L."Journal Line No." := NoLine_L;
+          KitBOMJournalLine_L."Line No." := KitSalesShipmentLine_L."Line No.";
+          KitBOMJournalLine_L.Type := Type;
+          KitBOMJournalLine_L."No." := "No.";
+          KitBOMJournalLine_L."Variant Code" := "Variant Code";
+          KitBOMJournalLine_L."Location Code" := OldSalesShptLine_P."Location Code";
+          KitBOMJournalLine_L.Description := Description;
+          KitBOMJournalLine_L."Unit of Measure Code" := "Unit of Measure Code";
+          KitBOMJournalLine_L."Qty. per Unit of Measure"  := "Qty. per Unit of Measure";
+          KitBOMJournalLine_L."Quantity per"  := "Quantity per";
+          KitBOMJournalLine_L."Extended Quantity (Base)" := "Extended Quantity (Base)";
+          KitBOMJournalLine_L."Extended Quantity" := "Extended Quantity";
+
+          KitBOMJournalLine_L."Unit Cost" := "Unit Cost";
+          KitBOMJournalLine_L.INSERT(TRUE);
+
+
+        UNTIL KitSalesShipmentLine_L.NEXT = 0;
+      END;
+      //traÎabilit'
+      //on se base sur les 'criture articles composant de l'exp'dition
+      ItemLedgerEntry2_L.RESET;
+      ItemLedgerEntry2_L.SETRANGE("Document No.",OldSalesShptLine_P."Document No.");
+      ItemLedgerEntry2_L.SETRANGE("Document Line No.",OldSalesShptLine_P."Line No.");
+      ItemLedgerEntry2_L.SETRANGE("Entry Type",ItemLedgerEntry2_L."Entry Type"::Consumption);
+      ItemLedgerEntry2_L.SETFILTER("Lot No.",'<>%1','');
+      IF ItemLedgerEntry2_L.FINDSET THEN REPEAT
+          //on recherche la ligne de Kit correspondante qu'on vient de cr'er
+          KitBOMJournalLine_L.RESET;
+          KitBOMJournalLine_L.SETRANGE("Journal Template Name",ParamPhytos_L."Modele nomencl annulation BL");
+          KitBOMJournalLine_L.SETRANGE("Journal Batch Name",'DEFAUT');
+          KitBOMJournalLine_L.SETRANGE("Journal Line No.",NoLine_L);
+          KitBOMJournalLine_L.SETRANGE(Type,KitBOMJournalLine_L.Type::Item);
+          KitBOMJournalLine_L.SETRANGE("No.",ItemLedgerEntry2_L."Item No.");
+          KitBOMJournalLine_L.SETRANGE("Variant Code",ItemLedgerEntry2_L."Variant Code");
+          IF KitBOMJournalLine_L.FINDSET THEN REPEAT
+            //A t'on d'j. une ligne traca en T337 correspondante ou doit on la cr'er ?
+            T337_L.RESET;
+            T337_L.SETRANGE("Source ID",ParamPhytos_L."Modele nomencl annulation BL");
+            T337_L.SETRANGE("Source Batch Name",'DEFAUT');
+            T337_L.SETRANGE("Source Prod. Order Line",NoLine_L);
+            T337_L.SETRANGE("Source Ref. No.",KitBOMJournalLine_L."Line No.");
+            T337_L.SETRANGE("Source Type",25001);
+            T337_L.SETRANGE("Source Subtype",1);
+            T337_L.SETRANGE("Item No.",ItemLedgerEntry2_L."Item No.");
+            T337_L.SETRANGE("Variant Code",ItemLedgerEntry2_L."Variant Code");
+            T337_L.SETRANGE("Location Code", KitBOMJournalLine_L."Location Code");
+            T337_L.SETRANGE("Reservation Status", T337_L."Reservation Status" :: Surplus);
+            T337_L.SETRANGE("Lot No.",ItemLedgerEntry2_L."Lot No.");
+            IF NOT T337_L.FINDSET THEN BEGIN
+              //cr'ation
+              T337_L.INIT;
+              RecReservEntry1_L.RESET;
+              IF RecReservEntry1_L.FINDLAST THEN
+                T337_L."Entry No." := RecReservEntry1_L."Entry No." + 1
+              ELSE
+                T337_L."Entry No." := 1;
+              T337_L."Source ID":= ParamPhytos_L."Modele nomencl annulation BL";
+              T337_L."Source Batch Name" := 'DEFAUT';
+              T337_L."Source Prod. Order Line" := NoLine_L;
+              T337_L."Source Ref. No." := KitBOMJournalLine_L."Line No.";
+              T337_L."Source Type" := 25001;
+              T337_L."Source Subtype" := 1;
+              T337_L.VALIDATE("Item No.",ItemLedgerEntry2_L."Item No.");
+              T337_L.VALIDATE("Variant Code",ItemLedgerEntry2_L."Variant Code");
+              T337_L.VALIDATE("Location Code",ItemLedgerEntry2_L."Location Code");
+              T337_L."Qty. per Unit of Measure" := ItemLedgerEntry2_L."Qty. per Unit of Measure";
+              T337_L."Item Tracking" := T337_L."Item Tracking" :: "Lot No.";
+              T337_L."Lot No." := ItemLedgerEntry2_L."Lot No.";
+              T337_L."Reservation Status" := T337_L."Reservation Status" :: Surplus;
+              T337_L.VALIDATE("Quantity (Base)",ABS(ItemLedgerEntry2_L.Quantity));
+              T337_L."Quantity Invoiced (Base)" := 0;
+              T337_L.Positive := (T337_L."Quantity (Base)" > 0);
+              T337_L."Creation Date" := WORKDATE;
+              T337_L."Created By" := USERID;
+              T337_L.VALIDATE("Manufacturing Date",ItemLedgerEntry2_L."Manufacturing Date");
+              T337_L.VALIDATE("Expiration Date",ItemLedgerEntry2_L."Expiration Date");
+              T337_L."Shipment Date" := OldSalesShptLine_P."Shipment Date";
+              T337_L.Description := ItemLedgerEntry2_L.Description;
+              T337_L.INSERT;
+
+
+            END
+            ELSE BEGIN
+              //maj
+              //si on trouve un ligne T337 d'ja pr'sent, c'est qu'on est ds le cas d'un meme lot d'coup'
+              //en plusieur ecriture article : mais la ltraÎa doit ^tre port'e par une ligne unique
+              //T337_L.VALIDATE("Quantity (Base)",ItemLedgerEntry2_L.Quantity);
+              T337_L.VALIDATE("Quantity (Base)",T337_L."Quantity (Base)" + ABS(ItemLedgerEntry2_L.Quantity));
+              T337_L.MODIFY;
+            END;
+
+
+          UNTIL KitBOMJournalLine_L.NEXT = 0;
+      UNTIL ItemLedgerEntry2_L.NEXT = 0;
+
+      //validation
+      BomJournalLine_L.RESET;
+      BomJournalLine_L.SETRANGE("Journal Template Name",ParamPhytos_L."Modele nomencl annulation BL");
+      BomJournalLine_L.SETRANGE("Journal Batch Name",'DEFAUT');
+      BomJournalLine_L.SETRANGE("Line No.",NoLine_L);
+      IF BomJournalLine_L.FINDFIRST THEN BEGIN
+        CLEAR(BOMJnlPost_L);
+        BOMJnlPost_L.UseSilentMode;
+        BOMJnlPost_L.RUN(BomJournalLine_L);
+      END;
+
+
+
+
+      // <-- 20171218-WI00-ADV01.01.00-3286-CJY01
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+
+      20110601-Wi00-CMC01.04 : Version RTM 01.04 - NavAgri
+      20130812-APP28-CMC02.02.00-KEM01 : ADDCODE (annulation livraison)
+      20131009-Log03-CMC02.01.00-0922-DAD : ADDCODE (Annulation Exp'dition commandes d'EnlSvement)
+      20140317-Log12-CMC02.02.00-1839-FEC01 : ADDCODE.
+      20140602-Log12-CMC02.02.00-1839-FEC01 : MODCODE (Le pav' 20140317-Log12-CMC02.02.00-1839-FEC01 a 't' d'plac').
+      20150610-NUT02-CMC02.02.00-3059-FEC01 : ADDFUNCT (Item Charge Root Line No.).
+      20150610-NUT02-CMC02.02.00-3059-FEC02 : ADDCODE (Processing of Linked IC Lines).
+      20150612-Wi00-CMC02.02.00-12583-2992-JLT01 : MODCODE  Gestion de la ligne gratuit
+      20151119-APP33-ADV01.01.00-2496-CJY01 : MODCODE (pour supprimer RFC lors de l'annulation expedition)
+      20151202-WI00-ADV01.01.00-2461-CJY01 : MODCODE (pour ne pas tenter d'annuler des ligne GL d'ja annul'es)
+      20160406-Wi00-ADV01.01.00-2296-OAN01 : ADDCODE (Allow Cancellation Of Charge (Item))
+                                             ADDFUNCTION (InsertNewShptLineForChargeItem)
+      20160718-Wi00-ADV01.01.00-2871-OAN01 : ADDCODE (On Sales Shipment Line Undo, Keep Header Order Date On Entries)
+                                             MODFUNCTION (PostItemJnlLine)
+      20171218-WI00-ADV01.01.00-3286-CJY01 : Gestion desassemblage lors de l'annulation d'une ligne BL
+      // --> 3LI END
+    }
+    END.
+  }
+}
+

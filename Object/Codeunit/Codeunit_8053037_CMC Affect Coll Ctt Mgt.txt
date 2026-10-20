@@ -1,0 +1,1728 @@
+OBJECT Codeunit 8053037 CMC Affect Coll Ctt Mgt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=08/07/16;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,TER01.01.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text8053001@8053000 : TextConst 'ENU=Contract must be locked;FRA=Contrat doit ^tre au statut verrouill'';
+      RecSpeciesSetup_G@8053002 : Record 8053323;
+      RecPostedReceipts_G@8053001 : Record 8052995;
+      RecCollectionReceipt_G@8053021 : Record 8052993;
+      RecPostedReceiptsLine_G@8053003 : Record 8053104;
+      RecTMPPostedReceiptsLine_G@8053004 : TEMPORARY Record 8053104;
+      RecCollectionContract_G@8053012 : Record 8052983;
+      RecTMPCollectionContract_G@8053013 : TEMPORARY Record 8052983;
+      RecReceiptLine_G@8053020 : Record 8053103;
+      RecPurchContractType_G@8053006 : Record 8053096;
+      RecCampaign_G@8053005 : Record 8052991;
+      RecVendor_G@8053015 : Record 23;
+      OpenContractQuantity_G@8053007 : Decimal;
+      PageCollectReceiptToAffect_G@8053008 : Page 8053221;
+      Text8053002@8053009 : TextConst 'FRA=Voulez-vous pr'-affecter des bons aux contrat en cours ?';
+      Text8053003@8053010 : TextConst 'ENU=The totale quantity is already reached;FRA=La quantit' totale est d'j. affect'e.';
+      PageContractReceiptSelection_G@8053011 : Page 8053026;
+      TestQuantityContract_G@8053014 : Boolean;
+      Text8053004@8053016 : TextConst 'FRA=La parcelle doit ^tre renseign'e.';
+      RecCollectionContract_G2@8053018 : Record 8052983;
+      Text8053005@8053017 : TextConst 'FRA=Le contrat saisi n''est pas valide';
+      Text8053006@8053019 : TextConst 'FRA=Les analyses obligatoires en affectation contrat ne sont pas toutes saisies.';
+      Text8053007@8053022 : TextConst 'FRA=La parcelle ne contient pas de date de retour.';
+
+    PROCEDURE AffectFromCollContract@8053001(P_RecCollectionContract@8053000 : Record 8052983;P_PreContract@8053001 : Boolean);
+    VAR
+      ContractNo_L@8053004 : Code[20];
+      PreContract_L@8053003 : Boolean;
+      ContractType_L@8053002 : 'Collecte,Commercialisation';
+      RecSpeciesSetup_L@8053005 : Record 8053323;
+      SpecieFilter_L@8053006 : Text[1024];
+      LineOK_L@8053007 : Boolean;
+      RecCMCSetup_L@8053011 : Record 8052982;
+      RecTempPoorSpeciesSetup_L@8053010 : TEMPORARY Record 8053323;
+      RecTempRichSpeciesSetup_L@8053009 : TEMPORARY Record 8053323;
+      RecTempDeclSpeciesSetup_L@8053008 : TEMPORARY Record 8053323;
+      recItem_L@1000000000 : Record 27;
+      SpecieFilterRich_L@1000000001 : Text[1024];
+      SpecieFilterPoor_L@1000000002 : Text[1024];
+      SpecieFilterDeclas_L@1000000003 : Text[1024];
+      HeadOK_L@1000000004 : Boolean;
+      HeadOKG_L@1000000005 : Boolean;
+    BEGIN
+      // --> 20150705-CER06-TER01.01.00-1881-SDE01
+      {
+      // --> 20150109-CER06-TER01.01.00-ENS01
+      RecCMCSetup_L.GET;
+      // <-- 20150109-CER06-TER01.01.00-ENS01
+
+      //Lanc' . partir des contrats de collecte pour affectation ou pre affectation
+
+      WITH P_RecCollectionContract DO
+      BEGIN
+        // messages initiaux
+        CASE P_PreContract OF
+          P_PreContract::Non :
+          BEGIN
+            // --> 20150109-CER06-TER01.01.00-ENS01
+            //IF Status <> Status::Locked THEN
+            // --> 20150120-CER06-TER01.01.00-RMZ01
+            //IF (Status <> Status::Locked) AND NOT RecCMCSetup_L."Auth. Alloc. Finished Contract" THEN
+            IF ((Status = Status::Open) AND RecCMCSetup_L."Auth. Alloc. Finished Contract")
+              OR ((Status <> Status::Locked) AND NOT RecCMCSetup_L."Auth. Alloc. Finished Contract") THEN
+            // <-- 20150120-CER06-TER01.01.00-RMZ01
+            // <-- 20150109-CER06-TER01.01.00-ENS01
+              ERROR(Text8053001);
+          END;
+          P_PreContract::Oui :
+          BEGIN
+            IF (Status = Status::Open) THEN BEGIN
+              IF NOT CONFIRM(Text8053002) THEN ERROR('');
+            END;
+          END;
+        END;
+        RecTMPPostedReceiptsLine_G.DELETEALL;
+        RecPurchContractType_G.GET("Contract Type");
+          TestQuantityContract_G:=RecPurchContractType_G."Mandatory Quantity";
+
+        // --> 20141209-WI00-CMC02.02.00-FBE01
+        RecCMCSetup_L.GET;
+        // <-- 20141209-WI00-CMC02.02.00-FBE01
+
+        // filtres initiaux sur les lignes de r'ception
+        RecPostedReceipts_G.RESET;
+        RecPostedReceipts_G.SETCURRENTKEY("Species Code","Vendor No.","Campaign No.");
+        RecPostedReceipts_G.SETRANGE("Species Code","Species Code");
+        // --> 20141203-CER03-TER01.01.00-RMZ01
+        //RecPostedReceipts_G.SETRANGE("Vendor No.","Vendor No."); // comment
+        // <-- 20141203-CER03-TER01.01.00-RMZ01
+        RecPostedReceipts_G.SETRANGE("Campaign No.","Campaign No.");
+        // --> 20140827-CER41-TER01.01.00-RMZ01
+        RecCMCSetup_L.GET;
+        IF RecCMCSetup_L."Include Resumpt. Purch. Inv." THEN
+          RecPostedReceipts_G.SETFILTER("Receipt Type",'%1|%2',RecPostedReceipts_G."Receipt Type"::Receipt,
+                  RecPostedReceipts_G."Receipt Type"::Resumption)
+        ELSE
+        // <-- 20140827-CER41-TER01.01.00-RMZ01
+          RecPostedReceipts_G.SETRANGE("Receipt Type",RecPostedReceipts_G."Receipt Type"::Receipt);
+        RecPostedReceipts_G.SETRANGE(Status,RecPostedReceipts_G.Status::Released);
+
+        // cas des articles pr'sents comme article pauvres ou d'class's
+        RecTempPoorSpeciesSetup_L.DELETEALL;
+        RecTempRichSpeciesSetup_L.DELETEALL;
+        RecTempDeclSpeciesSetup_L.DELETEALL;
+        SpecieFilter_L:="Species Code";
+
+        // --> 20150217-CER16-CMC02.02.00-2646-FHS01
+        IF NOT RecCMCSetup_L."Ignore item rec/contrat affec" THEN BEGIN
+        // <-- 20150217-CER16-CMC02.02.00-2646-FHS01
+          // produit d'class'
+          RecSpeciesSetup_L.RESET;
+          RecSpeciesSetup_L.SETRANGE("Declassed Product",P_RecCollectionContract."Item No.");
+          IF RecSpeciesSetup_L.FINDSET THEN
+            REPEAT
+              IF STRPOS(SpecieFilter_L,RecSpeciesSetup_L."Species Code")=0 THEN
+                SpecieFilter_L:=STRSUBSTNO('%1|%2',SpecieFilter_L,RecSpeciesSetup_L."Species Code");
+              RecTempDeclSpeciesSetup_L.INIT;
+              RecTempDeclSpeciesSetup_L:=RecSpeciesSetup_L;
+              IF RecTempDeclSpeciesSetup_L.INSERT THEN ;
+            UNTIL RecSpeciesSetup_L.NEXT=0;
+
+           // produit pauvre
+          RecSpeciesSetup_L.RESET;
+          RecSpeciesSetup_L.SETRANGE("Poor Product",P_RecCollectionContract."Item No.");
+          IF RecSpeciesSetup_L.FINDSET THEN
+            REPEAT
+              IF STRPOS(SpecieFilter_L,RecSpeciesSetup_L."Species Code")=0 THEN
+                SpecieFilter_L:=STRSUBSTNO('%1|%2',SpecieFilter_L,RecSpeciesSetup_L."Species Code");
+              RecTempPoorSpeciesSetup_L.INIT;
+              RecTempPoorSpeciesSetup_L:=RecSpeciesSetup_L;
+              IF RecTempPoorSpeciesSetup_L.INSERT THEN ;
+            UNTIL RecSpeciesSetup_L.NEXT=0;
+
+          // produit riche
+          RecSpeciesSetup_L.RESET;
+          RecSpeciesSetup_L.SETRANGE("Rich Product",P_RecCollectionContract."Item No.");
+          IF RecSpeciesSetup_L.FINDSET THEN
+            REPEAT
+              IF STRPOS(SpecieFilter_L,RecSpeciesSetup_L."Species Code")=0 THEN
+                SpecieFilter_L:=STRSUBSTNO('%1|%2',SpecieFilter_L,RecSpeciesSetup_L."Species Code");
+              RecTempRichSpeciesSetup_L.INIT;
+              RecTempRichSpeciesSetup_L:=RecSpeciesSetup_L;
+              IF RecTempRichSpeciesSetup_L.INSERT THEN ;
+            UNTIL RecSpeciesSetup_L.NEXT=0;
+
+        IF SpecieFilter_L<>"Species Code" THEN BEGIN
+          RecPostedReceipts_G.SETRANGE("Species Code")
+        END ELSE
+          SpecieFilter_L:='';
+
+        // --> 20150217-CER16-CMC02.02.00-2646-FHS01
+        END ELSE BEGIN
+          recItem_L.RESET;
+          recItem_L.SETRANGE("Species Code", "Species Code");
+          IF recItem_L.FINDSET(FALSE, FALSE) THEN
+            REPEAT
+              // produit riche
+              RecSpeciesSetup_L.RESET;
+              // --> 20150407-CER16-CMC02.02.00-2646-FHS01
+              //BEFORE
+              //RecSpeciesSetup_L.SETRANGE("Rich Product", P_RecCollectionContract."Item No.");
+              //AFTER
+              RecSpeciesSetup_L.SETRANGE("Rich Product", recItem_L."No.");
+              // <-- 20150407-CER16-CMC02.02.00-2646-FHS01
+              IF RecSpeciesSetup_L.FINDSET THEN
+                REPEAT
+                  RecTempRichSpeciesSetup_L.INIT;
+                  RecTempRichSpeciesSetup_L:=RecSpeciesSetup_L;
+                  IF RecTempRichSpeciesSetup_L.INSERT THEN ;
+                UNTIL RecSpeciesSetup_L.NEXT=0;
+
+              RecTempRichSpeciesSetup_L.RESET;
+              IF RecTempRichSpeciesSetup_L.COUNT = 0 THEN BEGIN
+                // produit pauvre
+                RecSpeciesSetup_L.RESET;
+                RecSpeciesSetup_L.SETRANGE("Poor Product", recItem_L."No.");
+                IF RecSpeciesSetup_L.FINDSET(FALSE, FALSE) THEN
+                  REPEAT
+                    RecTempPoorSpeciesSetup_L.INIT;
+                    RecTempPoorSpeciesSetup_L := RecSpeciesSetup_L;
+                    IF RecTempPoorSpeciesSetup_L.INSERT THEN ;
+                  UNTIL RecSpeciesSetup_L.NEXT=0;
+
+                RecTempPoorSpeciesSetup_L.RESET;
+                IF RecTempPoorSpeciesSetup_L.COUNT = 0 THEN BEGIN
+                  // produit d'class'
+                  RecSpeciesSetup_L.RESET;
+                  RecSpeciesSetup_L.SETRANGE("Declassed Product", recItem_L."No.");
+                  IF RecSpeciesSetup_L.FINDSET THEN
+                    REPEAT
+                      RecTempDeclSpeciesSetup_L.INIT;
+                      RecTempDeclSpeciesSetup_L:=RecSpeciesSetup_L;
+                      IF RecTempDeclSpeciesSetup_L.INSERT THEN ;
+                    UNTIL RecSpeciesSetup_L.NEXT=0;
+                END;
+              END;
+            UNTIL recItem_L.NEXT = 0;
+
+            RecTempRichSpeciesSetup_L.RESET;
+            IF RecTempRichSpeciesSetup_L.FINDSET(FALSE, FALSE) THEN BEGIN
+              REPEAT
+                IF SpecieFilterRich_L = '' THEN
+                  SpecieFilterRich_L := RecTempRichSpeciesSetup_L."Species Code"
+                ELSE
+                  SpecieFilterRich_L := STRSUBSTNO('%1|%2', SpecieFilterRich_L, RecTempRichSpeciesSetup_L."Species Code");
+              UNTIL RecTempRichSpeciesSetup_L.NEXT = 0;
+            END ELSE BEGIN
+              RecTempPoorSpeciesSetup_L.RESET;
+              IF RecTempPoorSpeciesSetup_L.FINDSET(FALSE, FALSE) THEN BEGIN
+                REPEAT
+                  IF SpecieFilterPoor_L = '' THEN
+                    SpecieFilterPoor_L := RecTempPoorSpeciesSetup_L."Species Code"
+                  ELSE
+                    SpecieFilterPoor_L := STRSUBSTNO('%1|%2', SpecieFilterPoor_L, RecTempPoorSpeciesSetup_L."Species Code");
+                UNTIL RecTempPoorSpeciesSetup_L.NEXT = 0;
+              END ELSE BEGIN
+                RecTempDeclSpeciesSetup_L.RESET;
+                IF RecTempDeclSpeciesSetup_L.FINDSET(FALSE, FALSE) THEN
+                  REPEAT
+                    IF SpecieFilterDeclas_L = '' THEN
+                      SpecieFilterDeclas_L := RecTempDeclSpeciesSetup_L."Species Code"
+                    ELSE
+                      SpecieFilterDeclas_L := STRSUBSTNO('%1|%2', SpecieFilterDeclas_L, RecTempDeclSpeciesSetup_L."Species Code");
+                  UNTIL RecTempDeclSpeciesSetup_L.NEXT = 0;
+                  END;
+            END;
+            IF (SpecieFilterPoor_L <> '') OR (SpecieFilterRich_L <> '') THEN BEGIN
+          SpecieFilter_L:='';
+              RecPostedReceipts_G.SETRANGE("Species Code");
+            END;
+        END;
+        // <-- 20150217-CER16-CMC02.02.00-2646-FHS01
+
+        //Filtre sur le type collecte des lignes en fonction du type collecte du contrat
+        CASE "Collection Type" OF
+           "Collection Type"::"Storage for Job", //stock . faÎon
+           "Collection Type"::Storage:         // stock d'pot
+             BEGIN
+             RecPostedReceipts_G.SETFILTER("Collection Type" ,'%1|%2', RecPostedReceipts_G."Collection Type"::"Storage For Job",
+                                        RecPostedReceipts_G."Collection Type"::Storage)
+             END;
+           "Collection Type"::Purchase: //achat, on propose tout
+             BEGIN
+               RecPostedReceipts_G.SETRANGE("Collection Type");
+             END;
+        END;
+
+        // filtre sur stockage ferme
+        // --> 20140924-CER11-TER01.01.00-ENS01
+        //IF "Farm Storage"= TRUE THEN
+        //    RecPostedReceipts_G.SETRANGE("Out Of Harvest","Farm Storage")
+        //  ELSE
+        //    RecPostedReceipts_G.SETRANGE("Out Of Harvest");
+        IF (RecCMCSetup_L."Affectation Type" = RecCMCSetup_L."Affectation Type"::Strict) THEN
+          RecPostedReceipts_G.SETRANGE("Out Of Harvest","Farm Storage")
+        ELSE IF (RecCMCSetup_L."Affectation Type" = RecCMCSetup_L."Affectation Type"::Harvest) THEN BEGIN
+          IF "Farm Storage" THEN //si contrat stockage ferme alors bon stockage ferme
+            RecPostedReceipts_G.SETRANGE("Out Of Harvest","Farm Storage")
+          ELSE //si contrat non stockage ferme, pas de contr"le
+            RecPostedReceipts_G.SETRANGE("Out Of Harvest");
+        END ELSE
+          RecPostedReceipts_G.SETRANGE("Out Of Harvest");
+        // <-- 20140924-CER11-TER01.01.00-ENS01
+
+        // Filtre sur magasin
+           // pas de filtre magasin
+
+        // filtre sur les date d'but et fin livraison
+        // --> 20150107-CER05-TER01.01.00-ENS01
+        // --> 20150116-CER05-TER01.01.00-ENS01
+        //  IF RecPurchContractType_G."Ctct Date Ctrl. on Manual Aff." =
+        //    RecPurchContractType_G."Ctct Date Ctrl. on Manual Aff."::Controlled
+        IF RecPurchContractType_G."Shp. Date Ctrl. on Manual Aff." =
+          RecPurchContractType_G."Shp. Date Ctrl. on Manual Aff."::Controlled
+        // <-- 20150116-CER05-TER01.01.00-ENS01
+        THEN BEGIN
+          IF ("Ship Ending Date" <> 0D) THEN
+            RecPostedReceipts_G.SETRANGE("Shipment Date","Ship Starting Date","Ship Ending Date")
+          ELSE
+            RecPostedReceipts_G.SETRANGE("Shipment Date","Ship Starting Date",31129999D);
+        END ELSE
+          RecPostedReceipts_G.SETRANGE("Shipment Date");
+        // <-- 20150107-CER05-TER01.01.00-ENS01
+
+        // filtre sur date d'but et fin contrat
+        // --> 20141222-CER05-TER01.01.00-PSC01
+        //RecPostedReceipts_G.SETRANGE("Posting Date","Starting Date","Ending Date");
+        CASE RecPurchContractType_G."Ctct Date Ctrl. on Manual Aff." OF
+          RecPurchContractType_G."Ctct Date Ctrl. on Manual Aff."::Controlled:
+        // --> 20150116-CER05-TER01.01.00-ENS01
+        //      RecPostedReceipts_G.SETRANGE("Shipment Date","Starting Date","Ending Date");
+            RecPostedReceipts_G.SETRANGE("Posting Date","Starting Date","Ending Date");
+        // <-- 20150116-CER05-TER01.01.00-ENS01
+        END;
+        // <-- 20141222-CER05-TER01.01.00-PSC01
+
+        // filtre sur les parcelles renseign'e
+        RecSpeciesSetup_G.GET("Species Code");
+        IF RecSpeciesSetup_G."Parcel Mandatory Contract" THEN
+          RecPostedReceipts_G.SETFILTER("Parcel Code",'<>%1','');
+
+        IF RecPostedReceipts_G.FINDSET( FALSE , FALSE ) THEN // avec les bons trouv's
+          REPEAT
+            IF (P_RecCollectionContract."Blocking Characteristics" = FALSE) OR ((P_RecCollectionContract."Blocking Characteristics" =
+             TRUE) AND (P_RecCollectionContract.isCheckPostedAnalysis(RecPostedReceipts_G."No.", P_RecCollectionContract."No.")))
+            THEN BEGIN
+              IF (RecPostedReceipts_G.CheckAnalysContract = TRUE) // test sur les analyses contrat
+                AND (RecPostedReceipts_G.CheckIfParcelDateOK=TRUE) // test sur date parcelle
+              THEN BEGIN
+                RecPostedReceiptsLine_G.RESET; // on cherche les lignes de bon
+                RecPostedReceiptsLine_G.SETCURRENTKEY("Receipt Type","No.");
+                RecPostedReceiptsLine_G.SETRANGE("Receipt Type",RecPostedReceipts_G."Receipt Type");
+                RecPostedReceiptsLine_G.SETRANGE("No.",RecPostedReceipts_G."No.");
+                RecPostedReceiptsLine_G.SETFILTER("Contract No.",'%1|%2',"No.",''); // N› contrat ou vide
+                RecPostedReceiptsLine_G.SETRANGE("Canceled Line",FALSE); // pas les lignes annul'es
+                RecPostedReceiptsLine_G.SETRANGE("Cancellation line",FALSE); // pas les lignes d'annulation
+                RecPostedReceiptsLine_G.SETRANGE("Resump No.",''); // pas les lignes affect'es aux reprises
+                IF P_PreContract THEN BEGIN // Cas du pre contrat
+                  RecPostedReceiptsLine_G.SETRANGE("Contract No.",'');
+                END;
+
+                // cas des produits riche et pauvres
+                // --> 20141209-WI00-CMC02.02.00-FBE01
+                IF NOT RecCMCSetup_L."Ignore item rec/contrat affec" THEN BEGIN
+                // <-- 20141209-WI00-CMC02.02.00-FBE01
+                IF SpecieFilter_L='' THEN BEGIN // cas ou tout dans la meme espSce
+                  IF RecSpeciesSetup_G."Rich Product" = "Item No." THEN
+                    RecPostedReceiptsLine_G.SETRANGE("Product Type",RecPostedReceiptsLine_G."Product Type"::"Rich Product");
+
+                  IF RecSpeciesSetup_G."Declassed Product" = "Item No." THEN
+                    RecPostedReceiptsLine_G.SETRANGE("Product Type",RecPostedReceiptsLine_G."Product Type"::"Declassed Product");
+
+                  IF RecSpeciesSetup_G."Poor Product" = "Item No." THEN
+                    RecPostedReceiptsLine_G.SETRANGE("Product Type",RecPostedReceiptsLine_G."Product Type"::"Poor Product");
+                  END;
+                // --> 20150217-CER16-CMC02.02.00-2646-FHS01
+                END ELSE BEGIN
+
+                // <-- 20150217-CER16-CMC02.02.00-2646-FHS01
+                END;
+                IF RecPostedReceiptsLine_G.FINDSET( FALSE , FALSE ) THEN // pour les lignes trouv'es
+                  REPEAT
+
+                    // --> 20141203-CER03-TER01.01.00-RMZ01
+                    LineOK_L:=FALSE;
+                    IF (RecPostedReceiptsLine_G."Distributed Vendor No." = P_RecCollectionContract."Vendor No.") OR
+                      ((P_RecCollectionContract."Vendor No."= RecPostedReceipts_G."Vendor No.")
+                      AND (RecPostedReceiptsLine_G."Distributed Vendor No." = '')) THEN BEGIN
+                    // <-- 20141203-CER03-TER01.01.00-RMZ01
+
+                      //gestion des produits riches, bruts, pauvres et declass'.
+                      IF SpecieFilter_L<>'' THEN BEGIN
+                        LineOK_L:=FALSE;
+                        CASE RecPostedReceiptsLine_G."Product Type" OF
+
+                          RecPostedReceiptsLine_G."Product Type"::" " :
+                          BEGIN
+                            IF P_RecCollectionContract."Species Code"=RecPostedReceipts_G."Species Code"
+                              THEN LineOK_L:=TRUE;
+                          END;
+
+                          RecPostedReceiptsLine_G."Product Type"::"Brut Product" :
+                          BEGIN
+                            IF P_RecCollectionContract."Species Code"=RecPostedReceipts_G."Species Code"
+                              THEN LineOK_L:=TRUE;
+                          END;
+
+                          RecPostedReceiptsLine_G."Product Type"::"Poor Product" :
+                          BEGIN
+                            IF RecTempPoorSpeciesSetup_L.GET(RecPostedReceipts_G."Species Code")
+                              THEN LineOK_L:=TRUE;
+                          END;
+
+                          RecPostedReceiptsLine_G."Product Type"::"Rich Product" :
+                          BEGIN
+                            IF RecTempRichSpeciesSetup_L.GET(RecPostedReceipts_G."Species Code")
+                              THEN LineOK_L:=TRUE;
+                          END;
+
+                          RecPostedReceiptsLine_G."Product Type"::"Declassed Product" :
+                          BEGIN
+                            IF RecTempDeclSpeciesSetup_L.GET(RecPostedReceipts_G."Species Code")
+                              THEN LineOK_L:=TRUE;
+                          END;
+
+                        END;
+                      END ELSE BEGIN
+                        // --> 20150217-CER16-CMC02.02.00-2646-FHS01
+                        LineOK_L := FALSE;
+
+                      // --> 20150320-CER16-CMC02.02.00-2646-FHS01
+                      ///BEFOFE
+                      //IF (SpecieFilterRich_L = '') AND (SpecieFilterPoor_L = '') AND (SpecieFilterDeclas_L = '') THEN BEGIN
+                      //AFTER
+                      IF ((SpecieFilterRich_L = '') AND (SpecieFilterPoor_L = '') AND (SpecieFilterDeclas_L = '') OR
+                        (P_RecCollectionContract."Item No." = RecPostedReceiptsLine_G."Item Contract No."))
+                      THEN BEGIN
+                      // <-- 20150320-CER16-CMC02.02.00-2646-FHS01
+                        // <-- 20150217-CER16-CMC02.02.00-2646-FHS01
+                          LineOK_L:=TRUE;
+                        // --> 20150217-CER16-CMC02.02.00-2646-FHS01
+                        END ELSE BEGIN
+                          IF (SpecieFilterRich_L <> '') AND (RecPostedReceiptsLine_G."Product Type" =
+                            RecPostedReceiptsLine_G."Product Type"::"Rich Product")
+                          THEN BEGIN
+                            IF RecTempRichSpeciesSetup_L.GET(RecPostedReceipts_G."Species Code") THEN
+                              LineOK_L:=TRUE;
+                          END ELSE BEGIN
+                            IF (SpecieFilterPoor_L <> '') AND (RecPostedReceiptsLine_G."Product Type" =
+                              RecPostedReceiptsLine_G."Product Type"::"Poor Product")
+                            THEN BEGIN
+                              IF RecTempPoorSpeciesSetup_L.GET(RecPostedReceipts_G."Species Code") THEN
+                                LineOK_L:=TRUE;
+                            END ELSE BEGIN
+                              IF (SpecieFilterDeclas_L <> '') AND (RecPostedReceiptsLine_G."Product Type" =
+                                RecPostedReceiptsLine_G."Product Type"::"Declassed Product")
+                              THEN BEGIN
+                                IF RecTempDeclSpeciesSetup_L.GET(RecPostedReceipts_G."Species Code") THEN
+                                  LineOK_L:=TRUE;
+                              END;
+                            END;
+                          END;
+                        END;
+                      END;
+                    // <-- 20150217-CER16-CMC02.02.00-2646-FHS01
+                    // --> 20150601-CER16-CMC02.02.00-2646-FHS01
+                    IF LineOK_L = FALSE THEN BEGIN
+                      IF RecPostedReceiptsLine_G."Product Type" = RecPostedReceiptsLine_G."Product Type"::" " THEN BEGIN
+                        IF RecPostedReceipts_G."Species Code" = P_RecCollectionContract."Species Code" THEN
+                          LineOK_L := TRUE;
+                      END;
+                    END;
+                    // <-- 20150601-CER16-CMC02.02.00-2646-FHS01
+
+                     //
+                    END;
+                    IF  LineOK_L=TRUE THEN BEGIN
+                      RecTMPPostedReceiptsLine_G := RecPostedReceiptsLine_G; // on les copies dans la table temporaire
+                      IF P_PreContract = FALSE THEN BEGIN // cas de la pre affectation
+                        IF (RecPostedReceiptsLine_G."Contract No."= "No.") THEN BEGIN
+                          RecTMPPostedReceiptsLine_G.Selected:=TRUE;
+                          RecTMPPostedReceiptsLine_G."Quantity To Affect":=RecPostedReceiptsLine_G.Quantity;
+                        END;
+                      END ELSE BEGIN
+                        IF (RecPostedReceiptsLine_G."Pre Contract No."="No.") THEN BEGIN
+                          RecTMPPostedReceiptsLine_G.Selected:=TRUE;
+                          RecTMPPostedReceiptsLine_G."Quantity To Affect" := RecPostedReceiptsLine_G."Quantity To Pre Affect";
+                        END;
+                      END;
+
+                      IF P_PreContract = TRUE THEN BEGIN  // sur analyse contrat et analyse campagne si pr'contrat
+                        IF P_RecCollectionContract.isCheckPostedAnalysis(RecPostedReceiptsLine_G."No.",P_RecCollectionContract."No.")
+      THEN
+                          RecTMPPostedReceiptsLine_G.INSERT
+                        ELSE
+                          CLEAR(RecTMPPostedReceiptsLine_G);
+                      END ELSE
+                       RecTMPPostedReceiptsLine_G.INSERT;
+                    END;
+                  UNTIL RecPostedReceiptsLine_G.NEXT = 0;
+              END;
+            END;
+          UNTIL RecPostedReceipts_G.NEXT = 0;
+
+        IF RecTMPPostedReceiptsLine_G.FINDSET THEN BEGIN
+          CLEAR(PageCollectReceiptToAffect_G) ;
+          PageCollectReceiptToAffect_G.InitData(RecTMPPostedReceiptsLine_G,P_RecCollectionContract."No.",
+                                                  P_PreContract,0);
+          PageCollectReceiptToAffect_G.RUNMODAL;
+        END;
+      END;
+
+      }
+      //AFTER :
+
+      //Lanc' . partir des contrats de collecte pour affectation ou pre affectation
+
+      WITH P_RecCollectionContract DO
+      BEGIN
+        // messages initiaux sur le contrat
+        CASE P_PreContract OF
+          P_PreContract::Non :
+          BEGIN
+            IF ((Status = Status::Open) AND RecCMCSetup_L."Auth. Alloc. Finished Contract")
+              OR ((Status <> Status::Locked) AND NOT RecCMCSetup_L."Auth. Alloc. Finished Contract") THEN
+              ERROR(Text8053001);
+          END;
+          P_PreContract::Oui :
+          BEGIN
+            IF (Status = Status::Open) THEN BEGIN
+              IF NOT CONFIRM(Text8053002) THEN ERROR('');
+            END;
+          END;
+        END;
+
+        RecCMCSetup_L.GET;
+        RecTMPPostedReceiptsLine_G.DELETEALL;
+        RecPurchContractType_G.GET("Contract Type");
+        TestQuantityContract_G:=RecPurchContractType_G."Mandatory Quantity";
+
+        // recherche des lignes de bon
+
+        RecPostedReceiptsLine_G.RESET;
+        RecPostedReceiptsLine_G.SETCURRENTKEY("Receipt Type","Campaign No.","Distributed Vendor No.","Species Code","Contract No.",
+          "Canceled Line","Cancellation line","Resump No.","Collection Type");
+
+        IF RecCMCSetup_L."Include Resumpt. Purch. Inv." THEN
+          RecPostedReceiptsLine_G.SETFILTER("Receipt Type",'%1|%2',RecPostedReceiptsLine_G."Receipt Type"::Receipt,
+                    RecPostedReceiptsLine_G."Receipt Type"::Resumption)
+        ELSE
+          RecPostedReceipts_G.SETRANGE("Receipt Type",RecPostedReceipts_G."Receipt Type"::Receipt);
+        RecPostedReceiptsLine_G.SETRANGE("Campaign No.","Campaign No.");
+        RecPostedReceiptsLine_G.SETRANGE("Distributed Vendor No.","Vendor No."); // n› founisseur
+        RecPostedReceiptsLine_G.SETRANGE("Species Code","Species Code");
+        RecPostedReceiptsLine_G.SETFILTER("Contract No.",'%1|%2',"No.",''); // N› contrat ou vide
+        IF P_PreContract THEN // Cas du pre contrat
+          RecPostedReceiptsLine_G.SETRANGE("Contract No.",'');
+        RecPostedReceiptsLine_G.SETRANGE("Canceled Line",FALSE); // pas les lignes annul'es
+        RecPostedReceiptsLine_G.SETRANGE("Cancellation line",FALSE); // pas les lignes d'annulation
+        RecPostedReceiptsLine_G.SETRANGE("Resump No.",''); // pas les lignes affect'es aux reprises
+
+        CASE "Collection Type" OF
+           "Collection Type"::"Storage for Job", //stock . faÎon
+           "Collection Type"::Storage:         // stock d'pot
+             BEGIN
+             RecPostedReceiptsLine_G.SETFILTER("Collection Type" ,'%1|%2', RecPostedReceipts_G."Collection Type"::"Storage For Job",
+                                        RecPostedReceipts_G."Collection Type"::Storage)
+             END;
+           "Collection Type"::Purchase: //achat, on propose tout
+             BEGIN
+               RecPostedReceiptsLine_G.SETRANGE("Collection Type");
+             END;
+        END;
+
+        // cas des articles pr'sents comme article pauvres ou d'class's
+        RecTempPoorSpeciesSetup_L.DELETEALL;
+        RecTempRichSpeciesSetup_L.DELETEALL;
+        RecTempDeclSpeciesSetup_L.DELETEALL;
+        SpecieFilter_L:="Species Code";
+
+        // filtre espece
+        IF NOT RecCMCSetup_L."Ignore item rec/contrat affec" THEN BEGIN // on tient compte de l'article contrat
+          // produit d'class'
+          RecSpeciesSetup_L.RESET;
+          RecSpeciesSetup_L.SETRANGE("Declassed Product",P_RecCollectionContract."Item No.");
+          IF RecSpeciesSetup_L.FINDSET THEN
+            REPEAT
+              IF STRPOS(SpecieFilter_L,RecSpeciesSetup_L."Species Code")=0 THEN
+                SpecieFilter_L:=STRSUBSTNO('%1|%2',SpecieFilter_L,RecSpeciesSetup_L."Species Code");
+              RecTempDeclSpeciesSetup_L.INIT;
+              RecTempDeclSpeciesSetup_L:=RecSpeciesSetup_L;
+              IF RecTempDeclSpeciesSetup_L.INSERT THEN ;
+            UNTIL RecSpeciesSetup_L.NEXT=0;
+
+           // produit pauvre
+          RecSpeciesSetup_L.RESET;
+          RecSpeciesSetup_L.SETRANGE("Poor Product",P_RecCollectionContract."Item No.");
+          IF RecSpeciesSetup_L.FINDSET THEN
+            REPEAT
+              IF STRPOS(SpecieFilter_L,RecSpeciesSetup_L."Species Code")=0 THEN
+                SpecieFilter_L:=STRSUBSTNO('%1|%2',SpecieFilter_L,RecSpeciesSetup_L."Species Code");
+              RecTempPoorSpeciesSetup_L.INIT;
+              RecTempPoorSpeciesSetup_L:=RecSpeciesSetup_L;
+              IF RecTempPoorSpeciesSetup_L.INSERT THEN ;
+            UNTIL RecSpeciesSetup_L.NEXT=0;
+
+          // produit riche
+          RecSpeciesSetup_L.RESET;
+          RecSpeciesSetup_L.SETRANGE("Rich Product",P_RecCollectionContract."Item No.");
+          IF RecSpeciesSetup_L.FINDSET THEN
+            REPEAT
+              IF STRPOS(SpecieFilter_L,RecSpeciesSetup_L."Species Code")=0 THEN
+                SpecieFilter_L:=STRSUBSTNO('%1|%2',SpecieFilter_L,RecSpeciesSetup_L."Species Code");
+              RecTempRichSpeciesSetup_L.INIT;
+              RecTempRichSpeciesSetup_L:=RecSpeciesSetup_L;
+              IF RecTempRichSpeciesSetup_L.INSERT THEN ;
+            UNTIL RecSpeciesSetup_L.NEXT=0;
+
+          IF SpecieFilter_L<>"Species Code" THEN BEGIN
+            RecPostedReceiptsLine_G.SETRANGE("Species Code")
+          END ELSE
+            SpecieFilter_L:='';
+
+        END ELSE BEGIN  // on ne tient pas compte de l'article contrat
+          recItem_L.RESET;
+          recItem_L.SETRANGE("Species Code", "Species Code");
+          IF recItem_L.FINDSET(FALSE, FALSE) THEN
+            REPEAT
+              // produit riche
+              RecSpeciesSetup_L.RESET;
+              RecSpeciesSetup_L.SETRANGE("Rich Product", recItem_L."No.");
+              IF RecSpeciesSetup_L.FINDSET THEN
+                REPEAT
+                  RecTempRichSpeciesSetup_L.INIT;
+                  RecTempRichSpeciesSetup_L:=RecSpeciesSetup_L;
+                  IF RecTempRichSpeciesSetup_L.INSERT THEN ;
+                UNTIL RecSpeciesSetup_L.NEXT=0;
+
+              RecTempRichSpeciesSetup_L.RESET;
+              IF RecTempRichSpeciesSetup_L.COUNT = 0 THEN BEGIN
+                // produit pauvre
+                RecSpeciesSetup_L.RESET;
+                RecSpeciesSetup_L.SETRANGE("Poor Product", recItem_L."No.");
+                IF RecSpeciesSetup_L.FINDSET(FALSE, FALSE) THEN
+                  REPEAT
+                    RecTempPoorSpeciesSetup_L.INIT;
+                    RecTempPoorSpeciesSetup_L := RecSpeciesSetup_L;
+                    IF RecTempPoorSpeciesSetup_L.INSERT THEN ;
+                  UNTIL RecSpeciesSetup_L.NEXT=0;
+
+                RecTempPoorSpeciesSetup_L.RESET;
+                IF RecTempPoorSpeciesSetup_L.COUNT = 0 THEN BEGIN
+                  // produit d'class'
+                  RecSpeciesSetup_L.RESET;
+                  RecSpeciesSetup_L.SETRANGE("Declassed Product", recItem_L."No.");
+                  IF RecSpeciesSetup_L.FINDSET THEN
+                    REPEAT
+                      RecTempDeclSpeciesSetup_L.INIT;
+                      RecTempDeclSpeciesSetup_L:=RecSpeciesSetup_L;
+                      IF RecTempDeclSpeciesSetup_L.INSERT THEN ;
+                    UNTIL RecSpeciesSetup_L.NEXT=0;
+                END;
+              END;
+            UNTIL recItem_L.NEXT = 0;
+
+            RecTempRichSpeciesSetup_L.RESET;
+            IF RecTempRichSpeciesSetup_L.FINDSET(FALSE, FALSE) THEN BEGIN
+              REPEAT
+                IF SpecieFilterRich_L = '' THEN
+                  SpecieFilterRich_L := RecTempRichSpeciesSetup_L."Species Code"
+                ELSE
+                  SpecieFilterRich_L := STRSUBSTNO('%1|%2', SpecieFilterRich_L, RecTempRichSpeciesSetup_L."Species Code");
+              UNTIL RecTempRichSpeciesSetup_L.NEXT = 0;
+            END ELSE BEGIN
+              RecTempPoorSpeciesSetup_L.RESET;
+              IF RecTempPoorSpeciesSetup_L.FINDSET(FALSE, FALSE) THEN BEGIN
+                REPEAT
+                  IF SpecieFilterPoor_L = '' THEN
+                    SpecieFilterPoor_L := RecTempPoorSpeciesSetup_L."Species Code"
+                  ELSE
+                    SpecieFilterPoor_L := STRSUBSTNO('%1|%2', SpecieFilterPoor_L, RecTempPoorSpeciesSetup_L."Species Code");
+                UNTIL RecTempPoorSpeciesSetup_L.NEXT = 0;
+              END ELSE BEGIN
+                RecTempDeclSpeciesSetup_L.RESET;
+                IF RecTempDeclSpeciesSetup_L.FINDSET(FALSE, FALSE) THEN
+                  REPEAT
+                    IF SpecieFilterDeclas_L = '' THEN
+                      SpecieFilterDeclas_L := RecTempDeclSpeciesSetup_L."Species Code"
+                    ELSE
+                      SpecieFilterDeclas_L := STRSUBSTNO('%1|%2', SpecieFilterDeclas_L, RecTempDeclSpeciesSetup_L."Species Code");
+                  UNTIL RecTempDeclSpeciesSetup_L.NEXT = 0;
+              END;
+            END;
+            IF (SpecieFilterPoor_L <> '') OR (SpecieFilterRich_L <> '') THEN BEGIN
+              SpecieFilter_L:='';
+              RecPostedReceiptsLine_G.SETRANGE("Species Code");
+            END;
+        END;
+
+        RecSpeciesSetup_G.GET("Species Code");
+        IF NOT RecCMCSetup_L."Ignore item rec/contrat affec" THEN BEGIN
+        IF SpecieFilter_L='' THEN BEGIN // cas ou tout dans la meme espSce
+          IF RecSpeciesSetup_G."Rich Product" = "Item No." THEN
+            RecPostedReceiptsLine_G.SETRANGE("Product Type",RecPostedReceiptsLine_G."Product Type"::"Rich Product");
+
+          IF RecSpeciesSetup_G."Declassed Product" = "Item No." THEN
+            RecPostedReceiptsLine_G.SETRANGE("Product Type",RecPostedReceiptsLine_G."Product Type"::"Declassed Product");
+
+          IF RecSpeciesSetup_G."Poor Product" = "Item No." THEN
+            RecPostedReceiptsLine_G.SETRANGE("Product Type",RecPostedReceiptsLine_G."Product Type"::"Poor Product");
+          END;
+        END ELSE BEGIN
+
+        END;
+
+        IF RecPostedReceiptsLine_G.FINDSET( FALSE , FALSE ) THEN // pour les lignes trouv'es
+        REPEAT
+
+          // test sur les donn'es de l'entete
+          HeadOK_L:=TRUE;
+          HeadOKG_L:=TRUE;
+          RecPostedReceipts_G.GET(RecPostedReceiptsLine_G."Receipt Type",RecPostedReceiptsLine_G."No.");
+
+          // bon lanc'
+          IF NOT (RecPostedReceipts_G.Status=RecPostedReceipts_G.Status::Released) THEN HeadOK_L:=FALSE;
+          IF HeadOK_L=FALSE THEN HeadOKG_L:=FALSE;
+
+          // stockage ferme
+          IF (RecCMCSetup_L."Affectation Type" = RecCMCSetup_L."Affectation Type"::Strict) AND
+            (RecPostedReceipts_G."Out Of Harvest"<>"Farm Storage") THEN HeadOK_L:=FALSE;
+
+          IF (RecCMCSetup_L."Affectation Type" = RecCMCSetup_L."Affectation Type"::Harvest) AND
+          (RecPostedReceipts_G."Out Of Harvest"="Farm Storage") AND
+          (RecPostedReceipts_G."Out Of Harvest"<>"Farm Storage") THEN HeadOK_L:=FALSE;
+
+          IF HeadOK_L=FALSE THEN HeadOKG_L:=FALSE;
+
+          // contr"le sur date de livraison / date liv contrat sur affectation manuelle
+          IF RecPurchContractType_G."Shp. Date Ctrl. on Manual Aff." =
+            RecPurchContractType_G."Shp. Date Ctrl. on Manual Aff."::Controlled
+          THEN BEGIN
+            IF ("Ship Ending Date" <> 0D) THEN BEGIN
+              IF (RecPostedReceipts_G."Shipment Date"<"Ship Starting Date") OR
+               (RecPostedReceipts_G."Shipment Date">"Ship Ending Date") THEN HeadOK_L:=FALSE;
+            END ELSE BEGIN
+              IF (RecPostedReceipts_G."Shipment Date"<"Ship Starting Date") AND
+               (RecPostedReceipts_G."Shipment Date">31129999D) THEN HeadOK_L:=FALSE;
+            END;
+            IF HeadOK_L=FALSE THEN HeadOKG_L:=FALSE;
+          END;
+
+          // contr"le sur date de livraison / date contrat sur affectation manuelle
+          IF (RecPurchContractType_G."Ctct Date Ctrl. on Manual Aff." =
+           RecPurchContractType_G."Ctct Date Ctrl. on Manual Aff."::Controlled)
+           AND
+           ((RecPostedReceipts_G."Shipment Date"<"Starting Date") AND
+           (RecPostedReceipts_G."Shipment Date">"Ending Date"))
+           THEN HeadOK_L:=FALSE;
+           IF HeadOK_L=FALSE THEN HeadOKG_L:=FALSE;
+
+          // Parcelles renseign'es
+          RecSpeciesSetup_G.GET("Species Code");
+          IF (RecSpeciesSetup_G."Parcel Mandatory Contract") AND  (RecPostedReceipts_G."Parcel Code"='') THEN HeadOK_L:=FALSE;
+          IF HeadOK_L=FALSE THEN HeadOKG_L:=FALSE;
+
+          // test sur caracteritic analyse contrat
+          {
+          IF (P_RecCollectionContract."Blocking Characteristics" = FALSE)
+          OR
+          ((P_RecCollectionContract."Blocking Characteristics" =
+           TRUE) AND (P_RecCollectionContract.isCheckPostedAnalysis(RecPostedReceipts_G."No.", P_RecCollectionContract."No.")))
+          AND
+          ((RecPostedReceipts_G.CheckAnalysContract = TRUE) AND (RecPostedReceipts_G.CheckIfParcelDateOK=TRUE))
+           THEN HeadOK_L:=TRUE;
+          IF HeadOK_L=FALSE THEN HeadOKG_L:=FALSE;
+          }
+      //
+
+          IF (P_RecCollectionContract."Blocking Characteristics" = TRUE) AND
+             NOT (P_RecCollectionContract.isCheckPostedAnalysis(RecPostedReceipts_G."No.", P_RecCollectionContract."No."))
+           THEN HeadOK_L:=FALSE;
+          IF HeadOK_L=FALSE THEN HeadOKG_L:=FALSE;
+
+          IF (RecPostedReceipts_G.CheckAnalysContract = FALSE) OR (RecPostedReceipts_G.CheckIfParcelDateOK=FALSE)
+           THEN HeadOK_L:=FALSE;
+          IF HeadOK_L=FALSE THEN HeadOKG_L:=FALSE;
+
+
+
+      //
+
+          // test sur les lignes
+          LineOK_L:=FALSE;
+          IF HeadOKG_L = TRUE THEN BEGIN
+            IF SpecieFilter_L<>'' THEN BEGIN
+              LineOK_L:=FALSE;
+              CASE RecPostedReceiptsLine_G."Product Type" OF
+
+                RecPostedReceiptsLine_G."Product Type"::" " :
+                BEGIN
+                  IF P_RecCollectionContract."Species Code"=RecPostedReceipts_G."Species Code"
+                    THEN LineOK_L:=TRUE;
+                END;
+
+                RecPostedReceiptsLine_G."Product Type"::"Brut Product" :
+                BEGIN
+                  IF P_RecCollectionContract."Species Code"=RecPostedReceipts_G."Species Code"
+                    THEN LineOK_L:=TRUE;
+                END;
+
+                RecPostedReceiptsLine_G."Product Type"::"Poor Product" :
+                BEGIN
+                  IF RecTempPoorSpeciesSetup_L.GET(RecPostedReceipts_G."Species Code")
+                    THEN LineOK_L:=TRUE;
+                END;
+
+                RecPostedReceiptsLine_G."Product Type"::"Rich Product" :
+                BEGIN
+                  IF RecTempRichSpeciesSetup_L.GET(RecPostedReceipts_G."Species Code")
+                    THEN LineOK_L:=TRUE;
+                END;
+
+                RecPostedReceiptsLine_G."Product Type"::"Declassed Product" :
+                BEGIN
+                  IF RecTempDeclSpeciesSetup_L.GET(RecPostedReceipts_G."Species Code")
+                    THEN LineOK_L:=TRUE;
+                END;
+
+              END;
+            END ELSE BEGIN // specifilter =''
+              LineOK_L := FALSE;
+              IF ((SpecieFilterRich_L = '') AND (SpecieFilterPoor_L = '') AND (SpecieFilterDeclas_L = '') OR
+              (P_RecCollectionContract."Item No." = RecPostedReceiptsLine_G."Item Contract No."))
+              THEN BEGIN
+                LineOK_L:=TRUE;
+              END ELSE BEGIN
+                IF (SpecieFilterRich_L <> '') AND (RecPostedReceiptsLine_G."Product Type" =
+                  RecPostedReceiptsLine_G."Product Type"::"Rich Product")
+                THEN BEGIN
+                  IF RecTempRichSpeciesSetup_L.GET(RecPostedReceipts_G."Species Code") THEN
+                    LineOK_L:=TRUE;
+                END ELSE BEGIN
+                  IF (SpecieFilterPoor_L <> '') AND (RecPostedReceiptsLine_G."Product Type" =
+                    RecPostedReceiptsLine_G."Product Type"::"Poor Product")
+                  THEN BEGIN
+                    IF RecTempPoorSpeciesSetup_L.GET(RecPostedReceipts_G."Species Code") THEN
+                      LineOK_L:=TRUE;
+                  END ELSE BEGIN
+                    IF (SpecieFilterDeclas_L <> '') AND (RecPostedReceiptsLine_G."Product Type" =
+                      RecPostedReceiptsLine_G."Product Type"::"Declassed Product")
+                    THEN BEGIN
+                      IF RecTempDeclSpeciesSetup_L.GET(RecPostedReceipts_G."Species Code") THEN
+                        LineOK_L:=TRUE;
+                    END;
+                  END;
+                END;
+              END;
+            END;
+            IF LineOK_L = FALSE THEN BEGIN
+              IF RecPostedReceiptsLine_G."Product Type" = RecPostedReceiptsLine_G."Product Type"::" " THEN BEGIN
+                IF RecPostedReceipts_G."Species Code" = P_RecCollectionContract."Species Code" THEN
+                  LineOK_L := TRUE;
+              END;
+            END;
+          END;
+
+
+          IF (HeadOKG_L = TRUE) AND (LineOK_L = TRUE)THEN BEGIN
+            RecTMPPostedReceiptsLine_G := RecPostedReceiptsLine_G; // on les copies dans la table temporaire
+            IF P_PreContract = FALSE THEN BEGIN // cas de la pre affectation
+              IF (RecPostedReceiptsLine_G."Contract No."= "No.") THEN BEGIN
+                RecTMPPostedReceiptsLine_G.Selected:=TRUE;
+                RecTMPPostedReceiptsLine_G."Quantity To Affect":=RecPostedReceiptsLine_G.Quantity;
+              END;
+            END ELSE BEGIN
+              IF (RecPostedReceiptsLine_G."Pre Contract No."="No.") THEN BEGIN
+                RecTMPPostedReceiptsLine_G.Selected:=TRUE;
+                RecTMPPostedReceiptsLine_G."Quantity To Affect" := RecPostedReceiptsLine_G."Quantity To Pre Affect";
+              END;
+            END;
+
+            IF P_PreContract = TRUE THEN BEGIN  // sur analyse contrat et analyse campagne si pr'contrat
+              IF P_RecCollectionContract.isCheckPostedAnalysis(RecPostedReceiptsLine_G."No.",P_RecCollectionContract."No.") THEN
+                RecTMPPostedReceiptsLine_G.INSERT
+              ELSE
+                CLEAR(RecTMPPostedReceiptsLine_G);
+            END ELSE
+             RecTMPPostedReceiptsLine_G.INSERT;
+          END;
+        UNTIL RecPostedReceiptsLine_G.NEXT=0;
+
+        IF RecTMPPostedReceiptsLine_G.FINDSET THEN BEGIN
+          CLEAR(PageCollectReceiptToAffect_G) ;
+          PageCollectReceiptToAffect_G.InitData(RecTMPPostedReceiptsLine_G,P_RecCollectionContract."No.",
+                                                  P_PreContract,0);
+          PageCollectReceiptToAffect_G.RUNMODAL;
+        END;
+      END;
+      // <-- 20150705-CER06-TER01.01.00-1881-SDE01
+    END;
+
+    PROCEDURE AffectFromSalesContract@8053011(P_RecSalesContract@8053000 : Record 8053012);
+    VAR
+      ContractNo_L@8053004 : Code[20];
+      PreContract_L@8053003 : Boolean;
+      ContractType_L@8053002 : 'Collecte,Commercialisation';
+      cduCVLedgerMgt_L@1000000000 : Codeunit 8053377;
+      recVendor_L@1000000001 : Record 23;
+    BEGIN
+      //Lanc' . partir des contrats de collecte de vente
+
+      WITH P_RecSalesContract DO BEGIN
+        // messages initiaux
+            IF (Status = Status::Open) THEN BEGIN
+              IF NOT CONFIRM(Text8053002) THEN ERROR('');
+            END;
+        RecTMPPostedReceiptsLine_G.DELETEALL;
+          TestQuantityContract_G:=TRUE;
+        // --> 20151116-CER16-ADV01.01.00-2474-SDE01
+        recVendor_L.GET(cduCVLedgerMgt_L.GetCustVendBankFromContact(
+                            cduCVLedgerMgt_L.GetContactFromCustVendBank(P_RecSalesContract."Customer No.",0),1));
+        recVendor_L.TESTFIELD("Negoce Cereals",TRUE);
+
+        // <-- 20151116-CER16-ADV01.01.00-2474-SDE01
+
+        // filtres initiaux sur les lignes de r'ception
+        RecPostedReceipts_G.RESET;
+        RecPostedReceipts_G.SETCURRENTKEY("Species Code","Vendor No.","Campaign No.");
+        RecPostedReceipts_G.SETRANGE("Species Code","Species Code");
+        // --> 20151116-CER16-ADV01.01.00-2474-SDE01
+        //RecPostedReceipts_G.SETRANGE("Vendor No.","Customer No.");
+        RecPostedReceipts_G.SETRANGE("Vendor No.",recVendor_L."No.");
+        // <-- 20151116-CER16-ADV01.01.00-2474-SDE01
+        RecPostedReceipts_G.SETRANGE("Campaign No.","Campaign No.");
+        RecPostedReceipts_G.SETRANGE("Receipt Type",RecPostedReceipts_G."Receipt Type"::Receipt);
+        RecPostedReceipts_G.SETRANGE(Status,RecPostedReceipts_G.Status::Released);
+        // --> 20160113-CER15-ADV01.01.00-2644-NED01
+        //RecPostedReceipts_G.SETRANGE("On Behalf Of",FALSE);
+        // <-- 20160113-CER15-ADV01.01.00-2644-NED01
+        IF RecPostedReceipts_G.FINDSET( FALSE , FALSE ) THEN // avec les bons trouv's
+        REPEAT
+          IF RecPostedReceipts_G.CheckAnalysContract = TRUE THEN BEGIN  // test sur les analyses contrat
+            RecPostedReceiptsLine_G.RESET; // on cherche les lignes de bon
+            RecPostedReceiptsLine_G.SETCURRENTKEY("Receipt Type","No.");
+            RecPostedReceiptsLine_G.SETRANGE("Receipt Type",RecPostedReceipts_G."Receipt Type");
+            RecPostedReceiptsLine_G.SETRANGE("No.",RecPostedReceipts_G."No.");
+            RecPostedReceiptsLine_G.SETFILTER("Contract No.",'%1|%2',"No.",''); // N› contrat ou vide
+            RecPostedReceiptsLine_G.SETRANGE("Canceled Line",FALSE); // pas les lignes annul'es
+            RecPostedReceiptsLine_G.SETRANGE("Cancellation line",FALSE); // pas les lignes d'annulation
+            RecPostedReceiptsLine_G.SETRANGE("Resump No.",''); // pas les lignes affect'es aux reprises
+
+            // cas des produits riche et pauvres
+            IF RecSpeciesSetup_G."Rich Product" = "Item No." THEN
+              RecPostedReceiptsLine_G.SETRANGE("Product Type",RecPostedReceiptsLine_G."Product Type"::"Rich Product");
+            IF RecSpeciesSetup_G."Declassed Product" = "Item No." THEN
+              RecPostedReceiptsLine_G.SETRANGE("Product Type",RecPostedReceiptsLine_G."Product Type"::"Declassed Product");
+
+            IF RecPostedReceiptsLine_G.FINDSET( FALSE , FALSE ) THEN // pour les lignes trouv'es
+            REPEAT
+              RecTMPPostedReceiptsLine_G := RecPostedReceiptsLine_G; // on les copies dans la table temporaire
+                IF (RecPostedReceiptsLine_G."Contract No."= "No.") THEN BEGIN
+                  RecTMPPostedReceiptsLine_G.Selected:=TRUE;
+                  RecTMPPostedReceiptsLine_G."Quantity To Affect":=RecPostedReceiptsLine_G.Quantity;
+                END;
+                RecTMPPostedReceiptsLine_G.INSERT;
+            UNTIL RecPostedReceiptsLine_G.NEXT = 0;
+          END;
+        UNTIL RecPostedReceipts_G.NEXT = 0;
+
+        IF RecTMPPostedReceiptsLine_G.FINDSET THEN BEGIN
+          CLEAR(PageCollectReceiptToAffect_G) ;
+          PageCollectReceiptToAffect_G.InitData(RecTMPPostedReceiptsLine_G,P_RecSalesContract."No.",FALSE,1);
+          PageCollectReceiptToAffect_G.RUNMODAL;
+        END;
+      END;
+    END;
+
+    PROCEDURE LookUpFromPostRecep@8053000(VAR P_PostedReceiptsLine@8053000 : Record 8053104);
+    VAR
+      "<-- 3LI LOCALS -->>"@60000 : Integer;
+      RecTMPCollectionContract_L@60001 : TEMPORARY Record 8052983;
+      RecPurchContractType_L@60002 : Record 8053096;
+      SalesContract_L@60004 : Record 8053012;
+      SalesContractList_L@60003 : Page 8053019;
+      RecCMCSetup_L@60005 : Record 8052982;
+    BEGIN
+      // lanc' . partir du lookup du code contrat de la table 8053104
+
+      // --> 20141222-CER41-TER01.01.00-PSC01
+      RecCMCSetup_L.GET;
+      // <-- 20141222-CER41-TER01.01.00-PSC01
+
+      WITH P_PostedReceiptsLine DO BEGIN
+        TestPostRecep(P_PostedReceiptsLine);
+
+        // liste des contrats possibles
+        // --> 20140827-CER41-TER01.01.00-RMZ01
+        IF "Collection Type" <> "Collection Type"::Sales THEN
+        // <-- 20140827-CER41-TER01.01.00-RMZ01
+        GetContractList(TRUE,"Receipt Type","No.","Line No.","Collection Type"-1,"Product Type",RecPostedReceipts_G."Out Of Harvest",
+          RecPostedReceipts_G."Location Code",RecPostedReceipts_G."Shipment Date",RecPostedReceipts_G."Posting Date",
+                                                    RecTMPCollectionContract_G);
+
+      // --> 20140805-CER05-TER01.01.00-ENS01
+        CLEAR(RecTMPCollectionContract_L);
+        RecTMPCollectionContract_L.DELETEALL;
+
+        // --> 20140827-CER41-TER01.01.00-RMZ01
+        IF "Collection Type" = "Collection Type"::Sales THEN BEGIN
+          CLEAR(SalesContract_L);
+          SalesContract_L.FILTERGROUP := 2;
+          SalesContract_L.SETRANGE("Customer No.",RecVendor_G."No.");
+          SalesContract_L.SETRANGE(Status,SalesContract_L.Status::Locked);
+          SalesContract_L.SETRANGE("Species Code",RecSpeciesSetup_G."Species Code");
+          // --> 20141222-CER41-TER01.01.00-PSC01
+          IF NOT RecCMCSetup_L."IgnSales ctct dates res.l alc" THEN
+          BEGIN
+          // <-- 20141222-CER41-TER01.01.00-PSC01
+            SalesContract_L.SETFILTER("Starting Date",'<=%1',RecPostedReceipts_G."Shipment Date");
+            SalesContract_L.SETFILTER("Ending Date",'%1|>=%2',0D,RecPostedReceipts_G."Shipment Date");
+          // --> 20141222-CER41-TER01.01.00-PSC01
+          END;
+          // <-- 20141222-CER41-TER01.01.00-PSC01
+
+          CLEAR(SalesContractList_L);
+          SalesContractList_L.LOOKUPMODE(TRUE);
+          SalesContractList_L.SETTABLEVIEW(SalesContract_L);
+          IF SalesContractList_L.RUNMODAL = ACTION::LookupOK THEN BEGIN
+            SalesContractList_L.GETRECORD(SalesContract_L);
+            VALIDATE("Contract No.", SalesContract_L."No.");
+            //MODIFY;
+          END;
+
+        END
+        ELSE BEGIN
+        // <-- 20140827-CER41-TER01.01.00-RMZ01
+          RecTMPCollectionContract_G.RESET;
+          RecTMPCollectionContract_G.SETRANGE(Type,RecTMPCollectionContract_G.Type::Contract);
+          IF RecTMPCollectionContract_G.FINDFIRST THEN
+            REPEAT
+              IF RecPurchContractType_L.GET(RecTMPCollectionContract_G."Contract Type") THEN BEGIN
+                CASE RecPurchContractType_L."Shp. Date Ctrl. on Manual Aff." OF
+                  RecPurchContractType_L."Shp. Date Ctrl. on Manual Aff."::"Non-Controlled":
+                    BEGIN
+                      RecTMPCollectionContract_L.INIT;
+                      RecTMPCollectionContract_L.TRANSFERFIELDS(RecTMPCollectionContract_G);
+                      RecTMPCollectionContract_L.INSERT;
+                    END;
+
+                  ELSE BEGIN
+                    IF RecPostedReceipts_G."Shipment Date" IN
+                      [RecTMPCollectionContract_G."Ship Starting Date"..RecTMPCollectionContract_G."Ship Ending Date"]
+                    THEN BEGIN
+                      RecTMPCollectionContract_L.INIT;
+                      RecTMPCollectionContract_L.TRANSFERFIELDS(RecTMPCollectionContract_G);
+                      RecTMPCollectionContract_L.INSERT;
+                    END;
+                  END;
+                END;
+              END;
+            UNTIL RecTMPCollectionContract_G.NEXT = 0;
+        // <-- 20140805-CER05-TER01.01.00-ENS01
+
+          //lancement de la page
+
+        // --> 20140805-CER05-TER01.01.00-ENS01
+        //BEFORE
+        {
+            IF RecTMPCollectionContract_G.FINDSET THEN BEGIN
+              CLEAR(PageContractReceiptSelection_G) ;
+              PageContractReceiptSelection_G.LOOKUPMODE(TRUE);
+              PageContractReceiptSelection_G.InitData(RecTMPCollectionContract_G,TRUE);
+
+              IF PageContractReceiptSelection_G.RUNMODAL = ACTION::LookupOK THEN BEGIN
+                PageContractReceiptSelection_G.GETRECORD(RecTMPCollectionContract_G);
+                IF RecTMPCollectionContract_G.Priority=999 THEN
+                  "Contract Type":="Contract Type"::Commercialisation;
+                VALIDATE("Contract No.", RecTMPCollectionContract_G."No.");
+              END;
+            END;
+        }
+        // AFTER
+            IF RecTMPCollectionContract_L.FINDSET THEN BEGIN
+              CLEAR(RecTMPCollectionContract_L) ;
+              PageContractReceiptSelection_G.LOOKUPMODE(TRUE);
+              PageContractReceiptSelection_G.InitData(RecTMPCollectionContract_L,TRUE);
+              // --> 20160616-CER06-TER01.01.00-2827-NED
+              PageContractReceiptSelection_G.GetReceiptNo(P_PostedReceiptsLine."No.");
+              // <-- 20160616-CER06-TER01.01.00-2827-NED
+              IF PageContractReceiptSelection_G.RUNMODAL = ACTION::LookupOK THEN BEGIN
+                PageContractReceiptSelection_G.GETRECORD(RecTMPCollectionContract_L);
+                IF RecTMPCollectionContract_L.Priority=999 THEN
+                  "Contract Type":="Contract Type"::Commercialisation;
+                VALIDATE("Contract No.", RecTMPCollectionContract_L."No.");
+                //MODIFY;
+              END;
+            END;
+        // <-- 20140805-CER05-TER01.01.00-ENS01
+        END;
+      END;
+    END;
+
+    PROCEDURE OnValidateFromPostRecept@8053002(VAR P_PostedReceiptsLine@8053000 : Record 8053104);
+    BEGIN
+      // lanc' . partir du OnValidate du code contrat de la table 8053103
+
+      WITH P_PostedReceiptsLine DO BEGIN
+        TestPostRecep(P_PostedReceiptsLine);
+
+        // liste des contrats possibles
+        GetContractList(TRUE,"Receipt Type","No.","Line No.","Collection Type"-1,"Product Type",RecPostedReceipts_G."Out Of Harvest",
+          RecPostedReceipts_G."Location Code",RecPostedReceipts_G."Shipment Date",RecPostedReceipts_G."Posting Date",
+                                                  RecTMPCollectionContract_G);
+
+        // test si le contrat saisie est ok
+        RecTMPCollectionContract_G."No.":="Contract No.";
+        IF NOT RecTMPCollectionContract_G.FIND('=') THEN
+          ERROR(Text8053005);
+      END;
+    END;
+
+    PROCEDURE TestPostRecep@8053003(VAR P_PostedReceiptsLine@8053000 : Record 8053104);
+    VAR
+      QtyLine_L@8053001 : Decimal;
+    BEGIN
+      // test . faire sur bon valid'
+
+      WITH P_PostedReceiptsLine DO BEGIN
+        RecPostedReceipts_G.GET("Receipt Type","No.");
+        RecTMPPostedReceiptsLine_G.RESET;
+        RecTMPPostedReceiptsLine_G.DELETEALL;
+
+        RecCampaign_G.GET(RecPostedReceipts_G."Campaign No.");
+        // --> 20150705-CER06-TER01.01.00-1881-SDE02
+        {
+        // --> 20140820-CER15-TER01.01.00-RMZ01
+        IF P_PostedReceiptsLine."Distributed Vendor No." <> '' THEN
+          RecVendor_G.GET(P_PostedReceiptsLine."Distributed Vendor No.")
+        ELSE
+        // <-- 20140820-CER15-TER01.01.00-RMZ01
+          RecVendor_G.GET(RecPostedReceipts_G."Vendor No.");
+        }
+
+         RecVendor_G.GET(P_PostedReceiptsLine."Distributed Vendor No.");
+        // <--20150705-CER06-TER01.01.00-1881-SDE02
+
+        RecSpeciesSetup_G.GET(RecPostedReceipts_G."Species Code");
+
+        // tests sur le bon
+        RecPostedReceipts_G.TESTFIELD("Campaign No.");
+        RecPostedReceipts_G.TESTFIELD("Species Code");
+        RecPostedReceipts_G.TESTFIELD("Collection Type");
+
+        // --> 20140826-CER41-TER01.01.00-RMZ01
+        IF "Receipt Type" = "Receipt Type"::Resumption THEN
+          EXIT;
+        // <-- 20140826-CER41-TER01.01.00-RMZ01
+
+        //test sur les analyses obligatoires en contrat
+        IF RecPostedReceipts_G.CheckAnalysContract = FALSE
+          THEN ERROR(Text8053006);
+
+        // test sur parcelle
+        IF (RecSpeciesSetup_G."Parcel Mandatory Contract") THEN BEGIN
+          IF (RecPostedReceipts_G."Parcel Code"='') THEN
+            ERROR(Text8053004);
+          IF RecPostedReceipts_G.CheckIfParcelDateOK = FALSE THEN
+            ERROR(Text8053007);
+        END;
+
+        // test si la quantit' pas dej. affect'e
+        QtyLine_L:=0;
+        RecPostedReceiptsLine_G.RESET;
+        RecPostedReceiptsLine_G.SETRANGE(RecPostedReceiptsLine_G."Receipt Type","Receipt Type");
+        RecPostedReceiptsLine_G.SETRANGE("No.","No.");
+        RecPostedReceiptsLine_G.FINDSET(FALSE,FALSE);
+        REPEAT
+          QtyLine_L:=QtyLine_L+RecPostedReceiptsLine_G.Quantity+RecPostedReceiptsLine_G."Poor Product Quantity";
+        UNTIL RecPostedReceiptsLine_G.NEXT=0;
+        // --> 20140826-CER41-TER01.01.00-RMZ01
+        //IF QtyLine_L-Quantity>=RecPostedReceipts_G."Standard Weight" THEN
+        IF ((QtyLine_L-Quantity>=RecPostedReceipts_G."Standard Weight") AND(RecPostedReceiptsLine_G."Contract No."<>'')) THEN
+        // <-- 20140820-CER15-TER01.01.00-RMZ01
+          ERROR(Text8053003);
+      END;
+    END;
+
+    PROCEDURE GetContractList@8053007(P_Validate@8053006 : Boolean;P_ReceipType@8053001 : 'Receipt,Transfert,Resumption';P_ReceiptNo@8053014 : Code[20];P_LineNo@8053007 : Integer;P_CollectionType@8053000 : 'Purchase,Storage,Storage for job,Sales';P_ProducType@8053002 : ' ,Brut Product,Rich Product,Poor Product,Declassed Product';P_OutOfHarvest@8053009 : Boolean;P_LocationCode@8053010 : Code[10];P_LivrDate@8053011 : Date;P_PostDate@8053012 : Date;VAR P_RecTMPCollectionContract@8053015 : TEMPORARY Record 8052983);
+    VAR
+      AnalyseOK_L@8053003 : Boolean;
+      OutstandingQty_L@8053004 : Decimal;
+      CMCManagement_L@8053005 : Codeunit 8052982;
+      Excess_L@8053008 : Decimal;
+      RecCollectionContract_L@8053016 : Record 8052983;
+      SalesContract_L@60000 : Record 8053012;
+      RecItem_L@8053013 : Record 27;
+      RecCMCSetup_L@8053017 : Record 8052982;
+      PostedReceipts_L@60004 : Record 8052995;
+      PostedReceiptsLine_L@60001 : Record 8053104;
+      Receipts_L@60003 : Record 8052993;
+      ReceiptsLine_L@60002 : Record 8053103;
+    BEGIN
+      // r'cupSre la liste des contrats possibles
+
+      // --> 20141209-WI00-CMC02.02.00-FBE01
+      RecCMCSetup_L.GET;
+      // <-- 20141209-WI00-CMC02.02.00-FBE01
+
+      P_RecTMPCollectionContract.RESET;
+      P_RecTMPCollectionContract.DELETEALL;
+
+      // filtre sur les contrats . proposer
+      RecCollectionContract_L.RESET;
+
+         // Filtres initiaux (avec table initialis'es)
+      RecCollectionContract_L.SETRANGE("Campaign No.",RecCampaign_G."No.");
+      RecCollectionContract_L.SETRANGE("Vendor No.",RecVendor_G."No.");
+      RecCollectionContract_L.SETRANGE("Species Code",RecSpeciesSetup_G."Species Code");
+
+      // --> 20150109-CER06-TER01.01.00-ENS01
+      //RecCollectionContract_L.SETRANGE(Status,RecCollectionContract_L.Status::Locked);
+      IF NOT RecCMCSetup_L."Auth. Alloc. Finished Contract" THEN
+        RecCollectionContract_L.SETRANGE(Status,RecCollectionContract_L.Status::Locked)
+      ELSE
+        RecCollectionContract_L.SETFILTER(Status,'%1|%2',
+          RecCollectionContract_L.Status::Locked,RecCollectionContract_L.Status::Finished);
+      // <-- 20150109-CER06-TER01.01.00-ENS01
+
+      RecCollectionContract_L.SETRANGE(Type, RecCollectionContract_L.Type::Contract);
+
+        //Filtre sur le type collecte des lignes en fonction du type collecte du contrat
+      // --> 20140826-CER41-TER01.01.00-RMZ01
+      //IF P_ReceipType = P_ReceipType::Resumption THEN
+      //  RecCollectionContract_L.SETRANGE("Collection Type",P_CollectionType);
+      IF P_ReceipType = P_ReceipType::Resumption THEN BEGIN
+        IF NOT (RecCMCSetup_L."Allow resump./contract affect.") THEN
+          RecCollectionContract_L.SETRANGE("Collection Type",P_CollectionType)
+        ELSE
+          RecCollectionContract_L.SETFILTER("Collection Type",'%1|%2|%3',
+                  RecCollectionContract_L."Collection Type"::Purchase,
+                  RecCollectionContract_L."Collection Type"::"Storage for Job",RecCollectionContract_L."Collection Type"::Storage);
+      END;
+      // <-- 20140826-CER41-TER01.01.00-RMZ01
+
+        // filtre sur stockage ferme
+        // --> 20140924-CER11-TER01.01.00-ENS01
+        //IF P_OutOfHarvest=FALSE THEN
+        //  RecCollectionContract_L.SETRANGE("Farm Storage",P_OutOfHarvest)
+        //ELSE
+        //  RecCollectionContract_L.SETRANGE("Farm Storage");
+        IF (RecCMCSetup_L."Affectation Type" = RecCMCSetup_L."Affectation Type"::Strict) THEN
+          RecCollectionContract_L.SETRANGE("Farm Storage",P_OutOfHarvest)
+        ELSE IF (RecCMCSetup_L."Affectation Type" = RecCMCSetup_L."Affectation Type"::Harvest) THEN BEGIN
+          //IF P_RecTMPCollectionContract."Farm Storage" THEN //si contrat stockage ferme alors bon stockage ferme
+          IF RecPostedReceipts_G."Out Of Harvest" THEN //si bon stockage ferme alors contrat stockage ferme
+            RecCollectionContract_L.SETRANGE("Farm Storage",P_OutOfHarvest)
+          ELSE //si contrat non stockage ferme, pas de contr"le
+            RecCollectionContract_L.SETRANGE("Farm Storage");
+        END ELSE
+          RecCollectionContract_L.SETRANGE("Farm Storage");
+        // <-- 20140924-CER11-TER01.01.00-ENS01
+
+        // filtre sur magasin
+          //pas de filtre
+
+         // filtre sur les dates de livraisons
+      // --> 20140805-CER05-TER01.01.00-ENS01 - the next lines was comment
+      //RecCollectionContract_L.SETFILTER("Ship Starting Date",'<=%1',P_LivrDate);
+      //RecCollectionContract_L.SETFILTER("Ship Ending Date",'%1|>=%2',0D,P_LivrDate);
+      // <-- 20140805-CER05-TER01.01.00-ENS01
+
+        // filtre sur date du bon
+      // --> 20150107-CER05-TER01.01.00-ENS01
+      //RecCollectionContract_L.SETFILTER("Starting Date",'<=%1',P_PostDate);
+      //RecCollectionContract_L.SETFILTER("Ending Date",'%1|>=%2',0D,P_PostDate);
+      // --> 20150116-CER05-TER01.01.00-ENS01
+      { BEFORE
+      IF P_Validate THEN BEGIN
+        IF PostedReceiptsLine_L.GET(P_ReceipType,P_ReceiptNo,P_LineNo) THEN BEGIN
+          RecPurchContractType_G.GET(PostedReceiptsLine_L."Contract No.");
+
+          IF RecPurchContractType_G."Ctct Date Ctrl. on Manual Aff." =
+            RecPurchContractType_G."Ctct Date Ctrl. on Manual Aff."::Controlled
+          THEN BEGIN
+            RecCollectionContract_L.SETFILTER("Starting Date",'<=%1',P_PostDate);
+            RecCollectionContract_L.SETFILTER("Ending Date",'%1|>=%2',0D,P_PostDate);
+          END;
+        END;
+      END ELSE BEGIN
+        IF (P_LineNo <> 0) THEN BEGIN
+          IF ReceiptsLine_L.GET(P_ReceipType,P_ReceiptNo,P_LineNo) THEN BEGIN
+            RecPurchContractType_G.GET(ReceiptsLine_L."Contract No.");
+
+            IF RecPurchContractType_G."Ctct Date Ctrl. on Manual Aff." =
+              RecPurchContractType_G."Ctct Date Ctrl. on Manual Aff."::Controlled
+            THEN BEGIN
+              RecCollectionContract_L.SETFILTER("Starting Date",'<=%1',P_PostDate);
+              RecCollectionContract_L.SETFILTER("Ending Date",'%1|>=%2',0D,P_PostDate);
+            END;
+          END;
+        END ELSE BEGIN
+          IF Receipts_L.GET(P_ReceipType,P_ReceiptNo) THEN BEGIN
+            RecPurchContractType_G.GET(Receipts_L."Contract No.");
+
+            IF RecPurchContractType_G."Ctct Date Ctrl. on Manual Aff." =
+              RecPurchContractType_G."Ctct Date Ctrl. on Manual Aff."::Controlled
+            THEN BEGIN
+              RecCollectionContract_L.SETFILTER("Starting Date",'<=%1',P_PostDate);
+              RecCollectionContract_L.SETFILTER("Ending Date",'%1|>=%2',0D,P_PostDate);
+            END;
+          END;
+        END;
+      END;
+      // <-- 20150107-CER05-TER01.01.00-ENS01
+      }
+      // <-- 20150116-CER05-TER01.01.00-ENS01
+
+      // cas du produit riche et pauvre et declasse
+      // --> 20141209-WI00-CMC02.02.00-FBE01
+      IF NOT RecCMCSetup_L."Ignore item rec/contrat affec" THEN BEGIN
+      // <-- 20141209-WI00-CMC02.02.00-FBE01
+        IF (RecSpeciesSetup_G."Rich Product" <> '') AND (P_ProducType = P_ProducType::"Rich Product") THEN BEGIN
+          RecItem_L.GET(RecSpeciesSetup_G."Rich Product");
+          RecCollectionContract_L.SETRANGE("Species Code",RecItem_L."Species Code");
+        END;
+
+        IF (RecSpeciesSetup_G."Declassed Product"<>'') AND (P_ProducType = P_ProducType::"Declassed Product") THEN BEGIN
+          RecItem_L.GET(RecSpeciesSetup_G."Declassed Product");
+          RecCollectionContract_L.SETRANGE("Species Code",RecItem_L."Species Code");
+      END;
+
+        IF (RecSpeciesSetup_G."Poor Product" <> '') AND (P_ProducType = P_ProducType::"Poor Product") THEN BEGIN
+          RecItem_L.GET(RecSpeciesSetup_G."Poor Product");
+          RecCollectionContract_L.SETRANGE("Species Code",RecItem_L."Species Code");
+        END;
+      // --> 20150121-CER16-CMC02.02.00-2646-FHS01
+      END ELSE BEGIN
+        // --> 20150407-CER16-CMC02.02.00-2646-FHS01
+        //BEFORE
+        //IF RecSpeciesSetup_G."Rich Product" <> '' THEN BEGIN
+        //AFTER
+        IF (RecSpeciesSetup_G."Rich Product" <> '') AND (P_ProducType = P_ProducType::"Rich Product") THEN BEGIN
+        // <-- 20150407-CER16-CMC02.02.00-2646-FHS01
+          RecItem_L.GET(RecSpeciesSetup_G."Rich Product");
+          IF RecItem_L."Species Code" <> RecSpeciesSetup_G."Species Code" THEN
+            RecCollectionContract_L.SETFILTER("Species Code",  RecCollectionContract_L.GETFILTER("Species Code") + '|' +
+              RecItem_L."Species Code");
+        END;
+
+        IF (RecSpeciesSetup_G."Declassed Product"<>'') AND (P_ProducType = P_ProducType::"Declassed Product") THEN BEGIN
+          RecItem_L.GET(RecSpeciesSetup_G."Declassed Product");
+          RecCollectionContract_L.SETFILTER("Species Code",  RecCollectionContract_L.GETFILTER("Species Code") + '|' +
+            RecItem_L."Species Code");
+        END;
+
+        IF (RecSpeciesSetup_G."Poor Product" <> '') AND (P_ProducType = P_ProducType::"Poor Product") THEN BEGIN
+          RecItem_L.GET(RecSpeciesSetup_G."Poor Product");
+          // --> 20150407-CER16-CMC02.02.00-2646-FHS01
+          //BEFORE
+          //RecCollectionContract_L.SETFILTER("Species Code",  RecCollectionContract_L.GETFILTER("Species Code") + '|' +
+          //  RecItem_L."Species Code");
+          //AFTER
+          RecCollectionContract_L.SETFILTER("Species Code", RecItem_L."Species Code");
+          // <-- 20150407-CER16-CMC02.02.00-2646-FHS01
+        END;
+      // <-- 20150121-CER16-CMC02.02.00-2646-FHS01
+      END;
+
+      // sur les contrats trouv's
+      IF RecCollectionContract_L.FINDSET(FALSE, FALSE) THEN
+        REPEAT
+          TestQuantityContract_G:=FALSE;
+          // --> 20150316-CER05-TER01.01.00-222-BSI01
+          {before
+          RecPurchContractType_G.GET(RecCollectionContract_L."Contract Type");
+          after}
+          RecPurchContractType_G.SETRANGE("Contract Type",RecCollectionContract_L."Contract Type");
+          RecPurchContractType_G.SETRANGE("Enable Manual Assignment",TRUE);
+          IF RecPurchContractType_G.FIND('-') THEN;
+          // <-- 20150316-CER05-TER01.01.00-222-BSI01
+
+          IF (RecPurchContractType_G."Mandatory Quantity" =TRUE) THEN
+            TestQuantityContract_G:=TRUE;
+
+          // pas de test quantit' si reprise
+          IF P_ReceipType = P_ReceipType::Resumption THEN
+             TestQuantityContract_G:=FALSE;
+
+          // test des analyses mini ok
+          IF P_Validate THEN
+            AnalyseOK_L:=RecCollectionContract_L.isCheckPostedAnalysis(P_ReceiptNo,RecCollectionContract_L."No.")
+          ELSE
+            AnalyseOK_L := RecCollectionContract_L.isCheckAnalysis(P_ReceiptNo, RecCollectionContract_L."No.");
+
+          // --> 20141222-CER05-TER01.01.00-PSC01
+          IF AnalyseOK_L THEN BEGIN
+            // --> 20150316-CER05-TER01.01.00-222-BSI01
+            {before
+            RecPurchContractType_G.GET(RecCollectionContract_L."Contract Type");
+            after}
+            RecPurchContractType_G.SETRANGE("Contract Type",RecCollectionContract_L."Contract Type");
+            RecPurchContractType_G.SETRANGE("Enable Manual Assignment",TRUE);
+            IF RecPurchContractType_G.FIND('-') THEN;
+            // <-- 20150316-CER05-TER01.01.00-222-BSI01
+
+            CASE RecPurchContractType_G."Ctct Date Ctrl. on Manual Aff." OF
+              RecPurchContractType_G."Ctct Date Ctrl. on Manual Aff."::Controlled: BEGIN
+                IF (RecCollectionContract_L."Starting Date" IN [0D..P_PostDate]) AND
+                   ((RecCollectionContract_L."Ending Date" = 0D) OR (RecCollectionContract_L."Ending Date" IN [P_PostDate..31129999D]))
+                THEN
+                  AnalyseOK_L := TRUE
+                ELSE
+                  AnalyseOK_L := FALSE;
+              END;
+            END;
+
+          // --> 20150116-CER05-TER01.01.00-ENS01
+            CASE RecPurchContractType_G."Shp. Date Ctrl. on Manual Aff." OF
+              RecPurchContractType_G."Shp. Date Ctrl. on Manual Aff."::Controlled: BEGIN
+                IF (RecCollectionContract_L."Ship Starting Date" IN [0D..P_LivrDate]) AND
+                   ((RecCollectionContract_L."Ship Ending Date" = 0D) OR
+                    (RecCollectionContract_L."Ship Ending Date" IN [P_LivrDate..31129999D]))
+                THEN
+                  AnalyseOK_L := TRUE
+                ELSE
+                  AnalyseOK_L := FALSE;
+              END;
+            END;
+          // <-- 20150116-CER05-TER01.01.00-ENS01
+          END;
+          // <-- 20141222-CER05-TER01.01.00-PSC01
+
+          IF AnalyseOK_L THEN BEGIN
+            OutstandingQty_L := 0;
+            IF (TestQuantityContract_G=TRUE) AND (RecCollectionContract_L.Quantity<>0) THEN BEGIN
+              OutstandingQty_L := GetContractOutstandingQuantity(P_ReceiptNo,RecCollectionContract_L."No.",
+                P_ReceipType,P_Validate,RecCollectionContract_L."Vendor No.",P_LineNo,0);
+
+              // On calcul la quantit' restante sur contrat avec la tol'rance param'tr'e sur la campagne
+              RecCampaign_G.GET(RecCollectionContract_L."Campaign No.");
+              Excess_L := ( ( OutstandingQty_L ) / RecCollectionContract_L.Quantity )*100 ;
+            END;
+
+            // Insertion dans la table tempo
+            // --> 20150109-CER06-TER01.01.00-ENS01
+            // --> 20150120-CER06-TER01.01.00-RMZ01
+            OutstandingQty_L := GetContractOutstandingQuantity(P_ReceiptNo,RecCollectionContract_L."No.",
+              P_ReceipType,P_Validate,RecCollectionContract_L."Vendor No.",P_LineNo,0);
+            IF (((Excess_L >= RecCampaign_G."Min. Threshold") AND (OutstandingQty_L<>0)) OR (TestQuantityContract_G=FALSE))
+              AND(RecPurchContractType_G."Mandatory Item"=TRUE) THEN // exclu les contrats dont types sans article
+            // <-- 20150120-CER06-TER01.01.00-RMZ01
+            {
+            IF (TestQuantityContract_G = FALSE) AND
+              (RecPurchContractType_G."Mandatory Item" = TRUE) // exclu les contrats dont types sans article
+            THEN BEGIN
+              IF NOT RecCMCSetup_L."Auth. Contract Alloc. O/s Qty" THEN BEGIN
+                IF ((Excess_L >= RecCampaign_G."Min. Threshold") AND (OutstandingQty_L <> 0)) THEN BEGIN
+                  OutstandingQty_L := OutstandingQty_L + ( OutstandingQty_L * RecCampaign_G."Min. Threshold" / 100 );
+                  P_RecTMPCollectionContract.INIT;
+                  P_RecTMPCollectionContract.TRANSFERFIELDS(RecCollectionContract_L);
+                  P_RecTMPCollectionContract.Priority := RecPurchContractType_G.Priority;
+                  P_RecTMPCollectionContract."Outstanding Quantity" := OutstandingQty_L;
+                  P_RecTMPCollectionContract.INSERT;
+                END;
+              END
+            END ELSE
+            // <-- 20150109-CER06-TER01.01.00-ENS01
+            } // <-- 20150120-CER06-TER01.01.00-RMZ01   -- comment
+            BEGIN
+
+              OutstandingQty_L := OutstandingQty_L + ( OutstandingQty_L * RecCampaign_G."Min. Threshold" / 100 );
+              P_RecTMPCollectionContract.INIT;
+              P_RecTMPCollectionContract.TRANSFERFIELDS(RecCollectionContract_L);
+              P_RecTMPCollectionContract.Priority := RecPurchContractType_G.Priority;
+              P_RecTMPCollectionContract."Outstanding Quantity" := OutstandingQty_L;
+              //  --> 20150313-CER06-TER01.01.00-ENS01
+              P_RecTMPCollectionContract.Priority := RecPurchContractType_G.Priority;
+              // <--  20150313-CER06-TER01.01.00-ENS01
+              P_RecTMPCollectionContract.INSERT;
+            END;
+          END;
+        UNTIL RecCollectionContract_L.NEXT = 0;
+    END;
+
+    PROCEDURE GetContractOutstandingQuantity@8053050(ReceiptNo_P@1000000000 : Code[20];ContractNo_P@1000000001 : Code[20];ReceiptType_P@1000000002 : 'Receipt,Transfert,Resumption';Validate_P@1000000003 : Boolean;VendorNo_P@1000000004 : Code[20];LineNo_P@1000000005 : Integer;ContractType_P@8053001 : 'Collecte,Commercialisation') : Decimal;
+    VAR
+      QuantityOnReceipt_L@1000000006 : Decimal;
+      CollectionReceipt2_L@1000000007 : Record 8052993;
+      CollectionReceiptLine_L@1000000008 : Record 8053103;
+      CollectionContract_L@1000000009 : Record 8052983;
+      OutstandingQuantity_L@1000000010 : Decimal;
+      Campaign_L@1000000011 : Record 8052991;
+      Excess_L@1000000012 : Decimal;
+      StandardWeight_P@1000000013 : Decimal;
+      SalesCollectionContract_L@1000000014 : Record 8053012;
+      QtyReceived_L@1000000015 : Decimal;
+      QtyContract_L@1000000016 : Decimal;
+    BEGIN
+      // On calcul la quantit' en cours de r'ception sur d'autres lignes de bon ( bon en cours ou autres lignes
+      // de bon non valid's )
+
+      OutstandingQuantity_L := 0;
+      QuantityOnReceipt_L := 0;
+
+      CollectionReceiptLine_L.RESET;
+      CollectionReceiptLine_L.SETCURRENTKEY("Contract No.");
+      CollectionReceiptLine_L.SETRANGE("Contract No.",ContractNo_P);
+      IF CollectionReceiptLine_L.FINDSET THEN
+        REPEAT
+         IF NOT Validate_P THEN BEGIN
+            IF (ReceiptType_P<>CollectionReceiptLine_L."Receipt Type") OR (ReceiptNo_P<>CollectionReceiptLine_L."No.") OR
+              (LineNo_P<> CollectionReceiptLine_L."Line No.")
+           THEN
+             QuantityOnReceipt_L := QuantityOnReceipt_L + CollectionReceiptLine_L.Quantity;
+         END ELSE
+          QuantityOnReceipt_L := QuantityOnReceipt_L + CollectionReceiptLine_L.Quantity;
+        UNTIL CollectionReceiptLine_L.NEXT = 0;
+
+      IF ContractType_P= ContractType_P::Collecte THEN BEGIN // contrat de collecte
+        CollectionContract_L.GET(ContractNo_P);
+        Campaign_L.GET(CollectionContract_L."Campaign No.");
+        CollectionContract_L.CALCFIELDS("Qty On Post. Recept Line");
+        QtyReceived_L:=CollectionContract_L."Qty On Post. Recept Line";
+        QtyContract_L:= CollectionContract_L.Quantity +
+        // --> 20140926-CER06-TER01.01.00-RMZ01
+                    ROUND(CollectionContract_L.Quantity * (CollectionContract_L."Threshold Percentage" / 100),0.00001);
+        // <-- 20140919-CER06-TER01.01.00-RMZ01
+      END ELSE BEGIN    // contrat de commercialisation
+        SalesCollectionContract_L.GET(ContractNo_P);
+        Campaign_L.GET(SalesCollectionContract_L."Campaign No.");
+        SalesCollectionContract_L.CALCFIELDS("Quantity Received");
+        QtyReceived_L:=SalesCollectionContract_L."Quantity Received";
+        QtyContract_L:= SalesCollectionContract_L.Quantity +
+        // --> 20140926-CER06-TER01.01.00-RMZ01
+              ROUND(CollectionContract_L.Quantity * (CollectionContract_L."Threshold Percentage" / 100),0.00001);
+        // <-- 20140919-CER06-TER01.01.00-RMZ01
+      END;
+      OutstandingQuantity_L := QtyContract_L - QtyReceived_L - QuantityOnReceipt_L;
+
+      EXIT(OutstandingQuantity_L);
+    END;
+
+    PROCEDURE LookUpFromRecep@8053004(VAR P_ReceiptsLine@8053000 : Record 8053103);
+    BEGIN
+      WITH P_ReceiptsLine DO BEGIN
+
+        TestRecep(P_ReceiptsLine);
+
+      // liste des contrats possibles
+        GetContractList(FALSE,"Receipt Type","No.","Line No.",0,"Product Type",RecCollectionReceipt_G."Out Of Harvest",
+          RecCollectionReceipt_G."Location Code",RecCollectionReceipt_G."Shipment Date",RecCollectionReceipt_G."Posting Date",
+                                                  RecTMPCollectionContract_G);
+
+        //lancement de la page
+          IF RecTMPCollectionContract_G.FINDSET THEN BEGIN
+
+            CLEAR(PageContractReceiptSelection_G) ;
+            PageContractReceiptSelection_G.LOOKUPMODE(TRUE);
+            PageContractReceiptSelection_G.InitData(RecTMPCollectionContract_G,FALSE);
+
+            IF PageContractReceiptSelection_G.RUNMODAL = ACTION::LookupOK THEN BEGIN
+              PageContractReceiptSelection_G.GETRECORD(RecTMPCollectionContract_G);
+              IF RecTMPCollectionContract_G.Priority=999 THEN
+                "Contract Type":="Contract Type"::Commercialisation;
+              VALIDATE("Contract No.", RecTMPCollectionContract_G."No.");
+            END;
+          END;
+      END;
+    END;
+
+    PROCEDURE OnValidateFromRecept@8053009(VAR P_ReceiptsLine@8053000 : Record 8053103);
+    BEGIN
+      // lanc' . partir du OnValidate du code contrat de la table 8053103
+
+      WITH P_ReceiptsLine DO BEGIN
+        TestRecep(P_ReceiptsLine);
+
+        // liste des contrats possibles
+        GetContractList(FALSE,"Receipt Type","No.","Line No.",0,"Product Type",RecCollectionReceipt_G."Out Of Harvest",
+          RecCollectionReceipt_G."Location Code",RecCollectionReceipt_G."Shipment Date",RecCollectionReceipt_G."Posting Date",
+                                                  RecTMPCollectionContract_G);
+
+        // test si le contrat saisie est ok
+        RecTMPCollectionContract_G."No.":="Contract No.";
+        IF NOT RecTMPCollectionContract_G.FIND('=') THEN
+          ERROR(Text8053005);
+      END;
+    END;
+
+    PROCEDURE TestRecep@8053005(VAR P_ReceiptsLine@8053000 : Record 8053103);
+    VAR
+      QtyLine_L@8053001 : Decimal;
+    BEGIN
+      WITH P_ReceiptsLine DO BEGIN
+        RecCollectionReceipt_G.GET("Receipt Type","No.");
+        RecTMPPostedReceiptsLine_G.RESET;
+        RecTMPPostedReceiptsLine_G.DELETEALL;
+
+        RecCampaign_G.GET(RecCollectionReceipt_G."Campaign No.");
+        RecVendor_G.GET(RecCollectionReceipt_G."Vendor No.");
+        RecSpeciesSetup_G.GET(RecCollectionReceipt_G."Species Code");
+
+        // tests sur le bon
+        RecCollectionReceipt_G.TESTFIELD("Campaign No.");
+        RecCollectionReceipt_G.TESTFIELD("Species Code");
+        RecCollectionReceipt_G.TESTFIELD("Collection Type");
+
+        //test sur les analyses obligatoires en contrat
+        IF RecCollectionReceipt_G.CheckAnalysContract = FALSE
+          THEN ERROR(Text8053006);
+
+        // test sur parcelle
+        IF (RecSpeciesSetup_G."Parcel Mandatory Contract") THEN BEGIN
+          IF (RecCollectionReceipt_G."Parcel Code"='') THEN
+            ERROR(Text8053004);
+          IF RecCollectionReceipt_G.CheckIfParcelDateOK = FALSE THEN
+            ERROR(Text8053007);
+          END;
+
+        // test si la quantit' pas dej. affect'e
+        QtyLine_L:=0;
+        RecReceiptLine_G.RESET;
+        RecReceiptLine_G.SETRANGE(RecReceiptLine_G."Receipt Type","Receipt Type");
+        RecReceiptLine_G.SETRANGE("No.","No.");
+        IF RecReceiptLine_G.FINDSET(FALSE,FALSE) THEN
+          REPEAT
+            QtyLine_L:=QtyLine_L+RecReceiptLine_G.Quantity;
+          UNTIL RecReceiptLine_G.NEXT=0;
+        IF QtyLine_L-Quantity>=RecCollectionReceipt_G."Standard Weight"
+         THEN ERROR(Text8053003);
+      END;
+    END;
+
+    PROCEDURE LookUpFromRecepHead@8053010(VAR P_Receipts@8053000 : Record 8052993);
+    BEGIN
+      WITH P_Receipts DO BEGIN
+
+        TestRecepHead(P_Receipts);
+
+      // liste des contrats possibles
+        GetContractList(FALSE,"Receipt Type","No.",0,P_Receipts."Collection Type"-1,0,RecCollectionReceipt_G."Out Of Harvest",
+          RecCollectionReceipt_G."Location Code",RecCollectionReceipt_G."Shipment Date",RecCollectionReceipt_G."Posting Date",
+                                                  RecTMPCollectionContract_G);
+
+        //lancement de la page
+          IF RecTMPCollectionContract_G.FINDSET THEN BEGIN
+            CLEAR(PageContractReceiptSelection_G) ;
+            PageContractReceiptSelection_G.LOOKUPMODE(TRUE);
+            PageContractReceiptSelection_G.InitData(RecTMPCollectionContract_G,FALSE);
+
+            IF PageContractReceiptSelection_G.RUNMODAL = ACTION::LookupOK THEN BEGIN
+              PageContractReceiptSelection_G.GETRECORD(RecTMPCollectionContract_G);
+              VALIDATE("Contract No.", RecTMPCollectionContract_G."No.");
+            END;
+          END;
+      END;
+    END;
+
+    PROCEDURE OnValidateFromReceptHead@8053008(VAR P_Receipts@8053000 : Record 8052993);
+    BEGIN
+      // lanc' . partir du OnValidate du code contrat de la table 8053103
+
+      WITH P_Receipts DO BEGIN
+        TestRecepHead(P_Receipts);
+
+        // liste des contrats possibles
+        GetContractList(TRUE,"Receipt Type","No.",0,P_Receipts."Collection Type"-1,0,RecCollectionReceipt_G."Out Of Harvest",
+          RecCollectionReceipt_G."Location Code",RecCollectionReceipt_G."Shipment Date",RecCollectionReceipt_G."Posting Date",
+                                                  RecTMPCollectionContract_G);
+
+        // test si le contrat saisie est ok
+        RecTMPCollectionContract_G."No.":="Contract No.";
+        IF NOT RecTMPCollectionContract_G.FIND('=') THEN
+          ERROR(Text8053005);
+      END;
+    END;
+
+    PROCEDURE TestRecepHead@8053006(VAR P_Receipts@8053000 : Record 8052993);
+    VAR
+      QtyLine_L@8053001 : Decimal;
+    BEGIN
+      WITH P_Receipts DO BEGIN
+        RecCollectionReceipt_G.GET("Receipt Type","No.");
+        RecTMPPostedReceiptsLine_G.RESET;
+        RecTMPPostedReceiptsLine_G.DELETEALL;
+
+        RecCampaign_G.GET(RecCollectionReceipt_G."Campaign No.");
+        RecVendor_G.GET(RecCollectionReceipt_G."Vendor No.");
+        RecSpeciesSetup_G.GET(RecCollectionReceipt_G."Species Code");
+
+        // tests sur le bon
+        RecCollectionReceipt_G.TESTFIELD("Campaign No.");
+        RecCollectionReceipt_G.TESTFIELD("Species Code");
+        RecCollectionReceipt_G.TESTFIELD("Collection Type");
+
+        //test sur les analyses obligatoires en contrat
+        IF RecPostedReceipts_G.CheckAnalysContract = FALSE THEN
+          ERROR(Text8053006);
+
+        // test sur parcelle
+        IF (RecSpeciesSetup_G."Parcel Mandatory Contract") AND (RecPostedReceipts_G."Parcel Code"='') THEN
+            ERROR(Text8053004);
+      END;
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+
+      20140303-Wi00-CMC02.02.00-SDE01 : ADDOBJECT
+      20140319-Wi00-CMC02.02.00-SDE01 : ADDCODE (test sur date parcelle)
+      20140409-Wi00-CMC02.02.00-1945-SDE01 : ADDCODE (pas de filtre sur magasin + stockage ferme)
+      20140414-Wi00-CMC02.02.00-1945-SDE01 : ADDCODE (pas de filtre sur le type)
+      20140526-Wi00-CMC02.02.00-SDE01 : MODCODE (Optimisation)
+      20140805-CER05-TER01.01.00-ENS01 : ADDCODE ( "GetContractList"; "LookUpFromPostRecep)")
+                                         ADDCODE ( "AffectFromCollContract" )
+      20140820-CER15-TER01.01.00-RMZ01 : ADDCODE (TestPostRecep)
+      20140826-CER41-TER01.01.00-RMZ01 : ADDCODE (TestPostRecep,LookUpFromPostRecep,AffectFromCollContract)
+      20140925-CER16-TER01.01.00-RMZ01 : ADDCODE (GetContractList)
+      20140926-CER06-TER01.01.00-RMZ01 :ADDCODE (GetContractOutstandingQuantity)
+      20140924-CER11-TER01.01.00-ENS01 : ADDCODE ("AffectFromCollContract", "GetContractList")
+      20141203-CER03-TER01.01.00-RMZ01 : ADDCODE(AffectFromCollContract,GetContractList)
+      20141208-CER16-CMC02.02.00-FHS01 : ADDCODE (v'rification sur les analyses vis . vis des blocages)
+      20141209-WI00-CMC02.02.00-2646-FBE01 : Selection des contrats sans filtre sur articles
+      20141222-CER05-TER01.01.00-PSC01 : ADDCODE(AffectFromCollContract; GetContractList)
+      20141222-CER41-TER01.01.00-PSC01 : ADDCODE(LookUpFromPostRecep)
+      20150107-CER05-TER01.01.00-ENS01 : ADDCODE ("AffectFromCollContract","GetContractList")
+      20150109-CER06-TER01.01.00-ENS01 : ADDCODE ("GetContractList","AffectFromCollContract")
+      20150120-CER06-TER01.01.00-RMZ01 : ADDCODE (AffectFromCollContract,GetContractList);
+      20150121-CER16-CMC02.02.00-2646-FHS01 : ADDCODE (Si on peut affecter ave des espSces compatibles, dans le cas, le filtre sur les
+                                                       espSces est chang')
+      20150217-CER16-CMC02.02.00-2646-FHS01 : MODCODE (Change le mode d'affectation du bon depuis le contrat)
+      20150313-CER06-TER01.01.00-RMZ: ADDCODE(GetContractList)
+      20150316-CER05-TER01.01.00-222-BSI01 : MODCODE (Filtrer sur 'Autoriser affectation Manuelle' dans type de contrat)
+      20150320-CER16-CMC02.02.00-2646-FHS01 : MODCODE (ajoute les article sans type de produit si c'est le m^me article que le contrat)
+      20150407-CER16-CMC02.02.00-2646-FHS01 : MODCODE (Corrige problSme affectation depuis produit riche)
+      20150601-CER16-CMC02.02.00-2646-FHS01 : MODCODE (Propose les reprise ayant le m^me code espSce que le contrat sans info sur le type)
+      20150705-CER06-TER01.01.00-1881-SDE01 : MODECODE (AffectfromCollContract : refait pour prendre le founisseur . la ligne)
+      20150705-CER06-TER01.01.00-1881-SDE02 : MODECODE (Distributed Vendor)
+      20150724-CER06-TER01.01.00-2009-SDE02 : MODECODE (Correction)
+      20151116-CER16-ADV01.01.00-2474-SDE01 : ADDCODE ( test sur fournisseur n'goce)
+      20160113-CER15-ADV01.01.00-2644-NED01 : MODCODE (inclure r'ception n'goce interco lors d'affectation r'ception dans
+                                              contrat achat n'goce )
+      20160616-CER06-TER01.01.00-2827-NED01 : ADDCODE (R'cup'rer N› BR)
+
+      // --> 3LI END
+    }
+    END.
+  }
+}
+

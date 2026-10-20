@@ -1,0 +1,322 @@
+OBJECT Codeunit 8061390 CMB CLE Apply Posted Entries
+{
+  OBJECT-PROPERTIES
+  {
+    Date=15/03/16;
+    Heure=00:00:00;
+    Liste versions=CMB6.00.10.09,CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    TableNo=21;
+    Permissions=TableData 21=rimd;
+    OnRun=VAR
+            EntriesToApply@1000 : Record 21;
+            ApplicationDate@1001 : Date;
+            UpdateAnalysisView@1002 : Codeunit 410;
+            ApplicationDocNo@1000000000 : Code[20];
+            Cust_L@1000000001 : Record 18;
+          BEGIN
+            WITH Rec DO BEGIN
+              IF NOT PaymentToleracenMgt.PmtTolCust(Rec) THEN
+                EXIT;
+              GET("Entry No.");
+
+              ApplicationDate := 0D;
+              ApplicationDocNo := '';
+              EntriesToApply.SETCURRENTKEY("Customer No.","Applies-to ID");
+              EntriesToApply.SETRANGE("Customer No.","Customer No.");
+              EntriesToApply.SETRANGE("Applies-to ID","Applies-to ID");
+              EntriesToApply.FIND('-');
+              REPEAT
+                IF EntriesToApply."Posting Date" > ApplicationDate THEN BEGIN
+                  ApplicationDate := EntriesToApply."Posting Date";
+                  ApplicationDocNo := EntriesToApply."Document No.";
+                END;
+              UNTIL EntriesToApply.NEXT = 0;
+
+              GenJnlLine."Document No." := ApplicationDocNo;
+              GenJnlLine."Posting Date" := ApplicationDate;
+
+              SourceCodeSetup.GET;
+
+              GenJnlLine."Document Date" := GenJnlLine."Posting Date";
+              GenJnlLine."Account Type" := GenJnlLine."Account Type"::Customer;
+              GenJnlLine."Account No." := "Customer No.";
+              CALCFIELDS("Debit Amount","Credit Amount","Debit Amount (LCY)","Credit Amount (LCY)");
+              GenJnlLine.Correction :=
+                ("Debit Amount" < 0) OR ("Credit Amount" < 0) OR
+                ("Debit Amount (LCY)" < 0) OR ("Credit Amount (LCY)" < 0);
+              GenJnlLine."Document Type" := "Document Type";
+              GenJnlLine.Description := Description;
+              GenJnlLine."Shortcut Dimension 1 Code" := "Global Dimension 1 Code";
+              GenJnlLine."Shortcut Dimension 2 Code" := "Global Dimension 2 Code";
+              GenJnlLine."Posting Group" := "Customer Posting Group";
+              GenJnlLine."Source Type" := GenJnlLine."Source Type"::Customer;
+              GenJnlLine."Source No." := "Customer No.";
+              GenJnlLine."Source Code" := SourceCodeSetup."Sales Entry Application";
+              GenJnlLine."System-Created Entry" := TRUE;
+              // --> 20160224-FINA08-ADV01.01.00-2848-JCD01
+              IF Cust_L.GET("Customer No.") THEN
+                GenJnlLine."Intra Group Code" := Cust_L."Intra Group Code";
+              // <-- 20160224-FINA08-ADV01.01.00-2848-JCD01
+              GenJnlPostLine.CustPostApplyCustLedgEntry(GenJnlLine,Rec);
+
+              COMMIT;
+
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text004@1003 : TextConst 'ENU=The application was successfully posted though no entries have been applied.;FRA=Le lettrage a 't' valid' avec succSs bien qu''aucune 'criture n''ait 't' lettr'.';
+      SourceCodeSetup@1004 : Record 242;
+      GenJnlLine@1005 : Record 81;
+      CustLedgEntryTMP_G@1000000000 : TEMPORARY Record 21;
+      PostApplication@1006 : Form 579;
+      GenJnlCheckLine@1022 : Codeunit 11;
+      GenJnlPostLine@1007 : Codeunit 12;
+      PaymentToleracenMgt@1011 : Codeunit 426;
+      ApplyAuto_G@1000000001 : Codeunit 8053055;
+      EntryNoBeforeApplication@1009 : Integer;
+      EntryNoAfterApplication@1010 : Integer;
+
+    LOCAL PROCEDURE FindLastApplDtldCustLedgEntry@1() : Integer;
+    VAR
+      DtldCustLedgEntry@1000 : Record 379;
+    BEGIN
+      DtldCustLedgEntry.LOCKTABLE;
+      IF DtldCustLedgEntry.FIND('+') THEN
+        EXIT(DtldCustLedgEntry."Entry No.")
+      ELSE
+        EXIT(0);
+    END;
+
+    PROCEDURE ApplyAutoCustLedgEntryAmt@1000000000(CustNo_P@1000000001 : Code[20];PostApply_P@1000000000 : Boolean;CGrAccFilter_P@1000000008 : Text[250]);
+    VAR
+      SourceCodeSetup_L@1000000004 : Record 242;
+      CustLedgEntry_L@1000000002 : Record 21;
+      CustLedgEntryTA_L@1000000003 : Record 21;
+      GenJnlLine_L@1000000006 : Record 81;
+      GenJnlPostLine_L@1000000005 : Codeunit 12;
+      Cust_L@1000000007 : Record 18;
+    BEGIN
+      SourceCodeSetup_L.GET;
+
+      CustLedgEntry_L.RESET;
+      CustLedgEntry_L.SETCURRENTKEY("Customer No.",Open,Positive,"Due Date","Currency Code");
+      CustLedgEntry_L.SETRANGE("Customer No.",CustNo_P);
+      CustLedgEntry_L.SETRANGE(Open,TRUE);
+      CustLedgEntry_L.SETRANGE(Positive,TRUE);
+      IF CGrAccFilter_P <> '' THEN
+        CustLedgEntry_L.SETFILTER("Customer Posting Group",CGrAccFilter_P);
+
+      //-->20140515-FINA13-CMC02.02.00-2044-BDN01
+      CustLedgEntry_L.SETRANGE("Applies-to ID",'');
+      //<--20140515-FINA13-CMC02.02.00-2044-BDN01
+
+      IF CustLedgEntry_L.FINDFIRST THEN BEGIN
+        REPEAT
+          //Search only one document to apply
+          CustLedgEntry_L.CALCFIELDS("Remaining Amount");
+          CustLedgEntryTA_L.RESET;
+          CustLedgEntryTA_L.SETCURRENTKEY("Customer No.",Open,Positive,"Due Date","Currency Code");
+          CustLedgEntryTA_L.SETRANGE("Customer No.",CustNo_P);
+          CustLedgEntryTA_L.SETRANGE(Open,TRUE);
+          CustLedgEntryTA_L.SETRANGE(Positive,FALSE);
+          CustLedgEntryTA_L.SETRANGE("Remaining Amount",-CustLedgEntry_L."Remaining Amount");
+          CustLedgEntryTA_L.SETRANGE("GLAccountNo.",CustLedgEntry_L."GLAccountNo.");
+
+          //-->20140515-FINA13-CMC02.02.00-2044-BDN01
+          CustLedgEntryTA_L.SETRANGE("Applies-to ID",'');
+          //<--20140515-FINA13-CMC02.02.00-2044-BDN01
+
+          IF CustLedgEntryTA_L.FINDFIRST AND (CustLedgEntryTA_L.COUNT = 1) THEN BEGIN
+            //Save values on entry en entry to apply
+            CustLedgEntryTA_L.CALCFIELDS("Remaining Amount");
+            CustLedgEntry_L."Applies-to ID":=FORMAT(CustLedgEntry_L."Entry No.");
+            CustLedgEntry_L.VALIDATE("Amount to Apply",CustLedgEntry_L."Remaining Amount");
+            CustLedgEntry_L."Applying Entry":=TRUE;
+            CustLedgEntry_L.MODIFY;
+
+            CustLedgEntryTA_L."Applies-to ID" := FORMAT(CustLedgEntry_L."Entry No.");
+            CustLedgEntryTA_L.VALIDATE("Amount to Apply",CustLedgEntryTA_L."Remaining Amount");
+            CustLedgEntryTA_L.MODIFY;
+
+            // --> 20140903-FINA23/CMC02.02.00-2478-BDN01
+            IF PostApply_P THEN BEGIN
+              ApplyAuto_G.CreateAppliedEntriesHist(1,CustLedgEntry_L."Entry No.");
+              ApplyAuto_G.CreateAppliedEntriesHist(1,CustLedgEntryTA_L."Entry No.");
+            END;
+            // <-- 20140903-FINA23/CMC02.02.00-2478-BDN01
+
+            //To post ?
+            IF PostApply_P THEN BEGIN
+              GenJnlLine_L.INIT;
+              CLEAR(GenJnlLine_L);
+              CLEAR(GenJnlPostLine_L);
+              CLEAR(GenJnlPostLine);
+              GenJnlLine_L."Account Type" := GenJnlLine_L."Account Type"::Customer;
+              GenJnlLine_L."Account No." := CustLedgEntry_L."Customer No.";
+              CustLedgEntry_L.CALCFIELDS("Debit Amount","Credit Amount","Debit Amount (LCY)","Credit Amount (LCY)");
+              GenJnlLine_L.Correction :=
+                           (CustLedgEntry_L."Debit Amount" < 0) OR (CustLedgEntry_L."Credit Amount" < 0) OR
+                           (CustLedgEntry_L."Debit Amount (LCY)" < 0) OR (CustLedgEntry_L."Credit Amount (LCY)" < 0);
+              GenJnlLine_L."Document Type" := CustLedgEntry_L."Document Type";
+              GenJnlLine_L.Description := CustLedgEntry_L.Description;
+              GenJnlLine_L."Shortcut Dimension 1 Code" := CustLedgEntry_L."Global Dimension 1 Code";
+              GenJnlLine_L."Shortcut Dimension 2 Code" := CustLedgEntry_L."Global Dimension 2 Code";
+              GenJnlLine_L."Posting Group" := CustLedgEntry_L."Customer Posting Group";
+              GenJnlLine_L."Source Type" := GenJnlLine_L."Source Type"::Customer;
+              GenJnlLine_L."Source No." := CustLedgEntry_L."Customer No.";
+              GenJnlLine_L."Source Code" := SourceCodeSetup_L."Sales Entry Application";
+              GenJnlLine_L."System-Created Entry" := TRUE;
+              GenJnlLine_L."Posting Date":=TODAY;
+              GenJnlLine_L."Document No.":= CustLedgEntry_L."Document No.";
+              // --> 20160224-FINA08-ADV01.01.00-2848-JCD01
+              IF Cust_L.GET(CustNo_P) THEN
+                GenJnlLine_L."Intra Group Code" := Cust_L."Intra Group Code";
+              // <-- 20160224-FINA08-ADV01.01.00-2848-JCD01
+              GenJnlPostLine.CustPostApplyCustLedgEntry(GenJnlLine_L,CustLedgEntry_L);
+            END;
+          END;
+        UNTIL CustLedgEntry_L.NEXT=0;
+      END;
+    END;
+
+    PROCEDURE ApplyAutoCustLedgEntryBal@1000000002(CustNo_P@1000000001 : Code[20];PostApply_P@1000000000 : Boolean;DatePostDue_P@1000000009 : 'Posting Date,Due Date';CGrAccFilter_P@1000000006 : Text[250]);
+    VAR
+      CustPostingGroup_L@1000000004 : Record 92;
+      CustLedgEntry_L@1000000002 : Record 21;
+      CustLedgEntryTA_L@1000000003 : Record 21;
+      Balance_L@1000000010 : Decimal;
+      EntryQty_L@1000000011 : Integer;
+    BEGIN
+      CustPostingGroup_L.RESET;
+      CustPostingGroup_L.SETFILTER("Receivables Account",'<>%1','');
+      IF CustPostingGroup_L.FINDFIRST THEN
+        REPEAT
+          CustLedgEntry_L.RESET;
+          CASE DatePostDue_P OF
+            DatePostDue_P::"Posting Date" : CustLedgEntry_L.SETCURRENTKEY("Customer No.",Open,"GLAccountNo.","Posting Date");
+            DatePostDue_P::"Due Date" : CustLedgEntry_L.SETCURRENTKEY("Customer No.",Open,"GLAccountNo.","Due Date");
+          END;
+          CustLedgEntry_L.SETRANGE("Customer No.",CustNo_P);
+          CustLedgEntry_L.SETRANGE(Open,TRUE);
+          CustLedgEntry_L.SETRANGE("GLAccountNo.",CustPostingGroup_L."Receivables Account");
+          IF CGrAccFilter_P <> '' THEN
+            CustLedgEntry_L.SETFILTER("Customer Posting Group", CGrAccFilter_P);
+
+          //-->20140515-FINA13-CMC02.02.00-2044-BDN01
+          CustLedgEntry_L.SETRANGE("Applies-to ID",'');
+          //<--20140515-FINA13-CMC02.02.00-2044-BDN01
+
+          IF CustLedgEntry_L.FINDFIRST THEN BEGIN
+            Balance_L := 0;
+            EntryQty_L := 0;
+            CustLedgEntryTMP_G.DELETEALL;
+            REPEAT
+              CustLedgEntry_L.CALCFIELDS("Remaining Amount");
+              Balance_L := Balance_L + CustLedgEntry_L."Remaining Amount";
+              EntryQty_L := EntryQty_L + 1;
+              CustLedgEntryTMP_G.INIT;
+              CustLedgEntryTMP_G.TRANSFERFIELDS(CustLedgEntry_L);
+              CustLedgEntryTMP_G.INSERT;
+              IF (Balance_L = 0) AND (EntryQty_L > 1) THEN BEGIN
+                ApplyGroup(PostApply_P);
+                EntryQty_L := 0;
+                CustLedgEntryTMP_G.DELETEALL;
+              END;
+            UNTIL CustLedgEntry_L.NEXT=0;
+          END;
+        UNTIL CustPostingGroup_L.NEXT=0;
+    END;
+
+    PROCEDURE ApplyGroup@1000000004(PostApply_P@1000000007 : Boolean);
+    VAR
+      SourceCodeSetup_L@1000000010 : Record 242;
+      CustLedgEntryTA_L@1000000003 : Record 21;
+      GenJnlLine_L@1000000009 : Record 81;
+      GenJnlPostLine_L@1000000008 : Codeunit 12;
+      PostingGroup_L@1000000005 : Code[10];
+      ApplyID_L@1000000004 : Code[20];
+      FirstRecord_L@1000000001 : Boolean;
+      Cust_L@1000000000 : Record 18;
+    BEGIN
+      SourceCodeSetup_L.GET;
+      CustLedgEntryTMP_G.RESET;
+      CustLedgEntryTMP_G.FINDFIRST;
+      FirstRecord_L := TRUE;
+      REPEAT
+        CustLedgEntryTA_L.GET(CustLedgEntryTMP_G."Entry No.");
+        CustLedgEntryTA_L.CALCFIELDS("Remaining Amount");
+        IF FirstRecord_L THEN BEGIN
+          FirstRecord_L := FALSE;
+          ApplyID_L := FORMAT(CustLedgEntryTA_L."Entry No.");
+          CustLedgEntryTA_L."Applies-to ID" := ApplyID_L;
+          CustLedgEntryTA_L.VALIDATE("Amount to Apply",CustLedgEntryTA_L."Remaining Amount");
+          CustLedgEntryTA_L."Applying Entry":=TRUE;
+          CustLedgEntryTA_L.MODIFY;
+        END
+        ELSE BEGIN
+          CustLedgEntryTA_L."Applies-to ID" := ApplyID_L;
+          CustLedgEntryTA_L.VALIDATE("Amount to Apply",CustLedgEntryTA_L."Remaining Amount");
+          CustLedgEntryTA_L.MODIFY;
+        END;
+
+        // --> 20140903-FINA23/CMC02.02.00-2478-BDN01
+        IF PostApply_P THEN
+          ApplyAuto_G.CreateAppliedEntriesHist(1,CustLedgEntryTA_L."Entry No.");
+        // <-- 20140903-FINA23/CMC02.02.00-2478-BDN01
+
+      UNTIL CustLedgEntryTMP_G.NEXT=0;
+      CustLedgEntryTMP_G.RESET;
+      CustLedgEntryTMP_G.FINDFIRST;
+      CustLedgEntryTA_L.GET(CustLedgEntryTMP_G."Entry No.");
+
+      //To post ?
+      IF PostApply_P THEN BEGIN
+
+        GenJnlLine_L.INIT;
+        CLEAR(GenJnlLine_L);
+        CLEAR(GenJnlPostLine_L);
+        CLEAR(GenJnlPostLine);
+        GenJnlLine_L."Account Type" := GenJnlLine_L."Account Type"::Customer;
+        GenJnlLine_L."Account No." := CustLedgEntryTA_L."Customer No.";
+        GenJnlLine_L."Document Type" := CustLedgEntryTA_L."Document Type";
+        GenJnlLine_L.Description := CustLedgEntryTA_L.Description;
+        GenJnlLine_L."Shortcut Dimension 1 Code" := CustLedgEntryTA_L."Global Dimension 1 Code";
+        GenJnlLine_L."Shortcut Dimension 2 Code" := CustLedgEntryTA_L."Global Dimension 2 Code";
+        GenJnlLine_L."Posting Group" := CustLedgEntryTA_L."Customer Posting Group";
+        GenJnlLine_L."Source Type" := GenJnlLine_L."Source Type"::Customer;
+        GenJnlLine_L."Source No." := CustLedgEntryTA_L."Customer No.";
+        GenJnlLine_L."Source Code" := SourceCodeSetup_L."Sales Entry Application";
+        GenJnlLine_L."System-Created Entry" := TRUE;
+        GenJnlLine_L."Posting Date":=TODAY;
+        GenJnlLine_L."Document No.":= CustLedgEntryTA_L."Document No.";
+        // --> 20160224-FINA08-ADV01.01.00-2848-JCD01
+        IF Cust_L.GET(CustLedgEntryTA_L."Customer No.") THEN
+          GenJnlLine_L."Intra Group Code" := Cust_L."Intra Group Code";
+        // <-- 20160224-FINA08-ADV01.01.00-2848-JCD01
+
+        GenJnlPostLine.CustPostApplyCustLedgEntry(GenJnlLine_L,CustLedgEntryTA_L);
+      END;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20130528-8060990/111-CMB6.00.10.09-FEC01 : NEWOBJ (Traitement des 'critures clients).
+      20140108-FINA23/001-CMC02.02.00-BDN : ADDFCT (ApplyAutoCustLedgEntryAmt,ApplyAutoCustLedgEntryBal,ApplyGroup).
+      20140112-FINA23/001-CMC02.02.00-BDN02 : Add filter on Customer and Vendor Posting Group
+      20140515-FINA13-CMC02.02.00-2044-BDN01 : ADDCODE (Select unapplied entries to apply)
+      20140903-FINA23/CMC02.02.00-2478-BDN01 : ADDCODE (Call CreateAppliedEntriesHist when apply and post)
+      20160224-FINA08-ADV01.01.00-2848-JCD01 : ADDCODE (Ajout code intragroupe lors des lettrages)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

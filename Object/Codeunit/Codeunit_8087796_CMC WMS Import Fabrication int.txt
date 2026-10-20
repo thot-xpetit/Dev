@@ -1,0 +1,191 @@
+OBJECT Codeunit 8087796 CMC WMS Import Fabrication int
+{
+  OBJECT-PROPERTIES
+  {
+    Date=01/12/15;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    TableNo=8087784;
+    OnRun=VAR
+            "<-- 3LI LOCALS -->"@1000000039 : Integer;
+            CodeUnit_L@1000000038 : Integer;
+            ConnectorName_L@1000000037 : Code[20];
+            ImpExpFolder_L@1000000036 : Text[250];
+            LogFolder_L@1000000035 : Text[250];
+            FileLogName_L@1000000034 : Text[250];
+            ExtensionFile_L@1000000033 : Text[10];
+            PrefixFile_L@1000000032 : Text[10];
+            Result_L@1000000031 : Text[250];
+            ToolsFile_L@1000000012 : Codeunit 8053405;
+            TableSetup_L@1000000001 : Record 8053413;
+            TableFab_L@1000000000 : Record 8087784;
+            TableBOMJrnTpl_L@1000000013 : Record 88;
+            TableBOMJrnBatch_L@1000000002 : Record 234;
+            TableBOMJrnLine_L@1000000005 : Record 89;
+            int_temp_L@1000000003 : Integer;
+            NameJournal_L@1000000004 : Code[10];
+            Ligne_L@1000000006 : Integer;
+            Item_L@1000000007 : Code[20];
+            Variante_L@1000000009 : Code[20];
+            Magasin_L@1000000008 : Code[10];
+            txtTemp_L@1000000010 : Text[40];
+            Position_L@1000000011 : Integer;
+          BEGIN
+            IF ((TableSetup_L.FINDFIRST) AND (TableSetup_L.FabricationActive)) THEN BEGIN
+              CLEARLASTERROR;
+
+              IF NOT TableBOMJrnTpl_L.GET(TableSetup_L."Fab Journal Template Name") THEN BEGIN
+                ERROR(COPYSTR(STRSUBSTNO(Text0010, TableSetup_L."Fab Journal Template Name", TableBOMJrnTpl_L.TABLECAPTION),
+                  1, MAXSTRLEN(Result_L)));
+              END;
+
+              TableFab_L.SETRANGE(HoroIntegration, 0DT);
+              TableFab_L.SETRANGE(Company, Company);
+              TableFab_L.SETRANGE(Region, Region);
+              TableFab_L.SETRANGE("Location Code", "Location Code");
+              TableFab_L.SETRANGE(Date, Date);
+
+              IF TableFab_L.FINDSET THEN BEGIN
+                CodeUnit_L := TableSetup_L.FabricationCodeUnit;
+                MoteurInterface_G.GetParameter(CodeUnit_L, ConnectorName_L, ImpExpFolder_L, LogFolder_L, ExtensionFile_L, PrefixFile_L);
+                MoteurInterface_G.GetTemplatesCode (ConnectorName_L, ItemTemplateCode_G, CustomerTemplateCode_G, VendorTemplateCode_G,
+                  ContactTemplateCode_G, AccountTemplateCode_G, GlobalTemplateCode_G);
+
+                // Cr'er une nouvelle feuille : Boucler pour trouver un N› libre
+                TableBOMJrnBatch_L.SETRANGE("Journal Template Name", TableSetup_L."Fab Journal Template Name");
+                int_temp_L := 0;
+                REPEAT
+                  int_temp_L += 1;
+                  NameJournal_L := TableSetup_L."Fab Radical Feuille" + '_' + FORMAT(int_temp_L);
+                  TableBOMJrnBatch_L.SETRANGE(Name, NameJournal_L);
+                UNTIL NOT TableBOMJrnBatch_L.FINDSET();
+                TableBOMJrnBatch_L."Journal Template Name" := TableSetup_L."Fab Journal Template Name";
+                TableBOMJrnBatch_L.Name := NameJournal_L;
+                TableBOMJrnBatch_L.Description := COPYSTR('Feuille automatique' + ' ' + FORMAT(TODAY, 9),
+                  1, MAXSTRLEN(TableBOMJrnBatch_L.Description));
+                IF NOT TableBOMJrnBatch_L.INSERT(TRUE) THEN BEGIN
+                  ERROR(COPYSTR(STRSUBSTNO(Text0007, TableBOMJrnBatch_L.TABLECAPTION, TableBOMJrnBatch_L."Journal Template Name" +
+                    '-' + TableBOMJrnBatch_L.Name), 1, MAXSTRLEN(Result_L)));
+                END;
+
+                REPEAT
+                  Ligne_L +=1;
+                  CLEAR(TableBOMJrnLine_L);
+
+                  TableBOMJrnLine_L.VALIDATE("Journal Template Name", TableBOMJrnBatch_L."Journal Template Name");
+                  TableBOMJrnLine_L.VALIDATE("Journal Batch Name", TableBOMJrnBatch_L.Name);
+                  TableBOMJrnLine_L.VALIDATE("Line No.", Ligne_L);
+                  TableBOMJrnLine_L.VALIDATE("Posting Date", TableFab_L.Date);
+                  IF (TableFab_L.Quantity < 0) THEN BEGIN
+                    TableBOMJrnLine_L.VALIDATE("Entry Type", TableBOMJrnLine_L."Entry Type"::Disassembly);
+                  END ELSE BEGIN
+                    TableBOMJrnLine_L.VALIDATE("Entry Type", TableBOMJrnLine_L."Entry Type"::Assembly);
+                  END;
+                  TableBOMJrnLine_L.VALIDATE("Document No.", TableFab_L.Lot);
+
+                  // Article sur la variante sinon sur l'article
+                  CLEAR(Variante_L);
+                  txtTemp_L := MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G, 'Item Variant', '', TableFab_L.Item, TRUE, TRUE);
+                  IF txtTemp_L <> '' THEN BEGIN
+                    Position_L := 1;
+                    Item_L := ToolsFile_L.ExtractTextCsv(txtTemp_L, Position_L, 'Ø', 20);
+                    Variante_L := ToolsFile_L.ExtractTextCsv(txtTemp_L, Position_L, 'Ø', 10);
+                  END ELSE BEGIN
+                    Item_L := MoteurInterface_G.GetReferentialCorrespondance(ItemTemplateCode_G, TRUE, TableFab_L.Item, TRUE);
+                  END;
+                  IF Item_L = '' THEN BEGIN
+                    ERROR(Text0013, TableFab_L.FIELDCAPTION(TableFab_L.Item), TableFab_L.Item, TableFab_L.TABLECAPTION);
+                  END;
+                  TableBOMJrnLine_L.VALIDATE("Item No.", Item_L);
+                  TableBOMJrnLine_L.VALIDATE("Variant Code", Variante_L);
+                  TableBOMJrnLine_L.VALIDATE("Source Code", TableBOMJrnTpl_L."Source Code");
+                  Magasin_L := MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G, 'VAT Product Posting Group',
+                    'Code', TableFab_L."Location Code", TRUE, FALSE);
+                  IF Magasin_L = '' THEN BEGIN
+                    ERROR(Text0013, TableFab_L.FIELDCAPTION("Location Code"), TableFab_L."Location Code", TableFab_L.TABLECAPTION);
+                  END;
+                  TableBOMJrnLine_L.VALIDATE("Location Code", Magasin_L);
+                  //-->20151201-INT13-CMC02.02.00-ADVITAM-CDL001
+                  IF (TableFab_L.Quantity < 0) THEN BEGIN
+                    TableBOMJrnLine_L.VALIDATE(Quantity, -TableFab_L.Quantity);
+                  END ELSE BEGIN
+                  //<--20151201-INT13-CMC02.02.00-ADVITAM-CDL001
+                    TableBOMJrnLine_L.VALIDATE(Quantity, TableFab_L.Quantity);
+                  //-->20151201-INT13-CMC02.02.00-ADVITAM-CDL001
+                  END;
+                  //<--20151201-INT13-CMC02.02.00-ADVITAM-CDL001
+                  IF NOT TableBOMJrnLine_L.INSERT(TRUE) THEN BEGIN
+                    ERROR(COPYSTR(STRSUBSTNO(Text0007, TableBOMJrnLine_L.TABLECAPTION, TableBOMJrnLine_L."Journal Template Name",
+                      TableBOMJrnLine_L."Journal Batch Name", TableBOMJrnLine_L."Line No.", Ligne_L), 1, MAXSTRLEN(Result_L)));
+                  END;
+
+                  TableFab_L.HoroIntegration := CURRENTDATETIME;
+                  TableFab_L."Journal Template Name" := TableBOMJrnLine_L."Journal Template Name";
+                  TableFab_L."Journal Batch Name" := TableBOMJrnLine_L."Journal Batch Name";
+                  TableFab_L."Jrn Line No." := TableBOMJrnLine_L."Line No.";
+
+                  TableFab_L.MODIFY(TRUE);
+                UNTIL TableFab_L.NEXT = 0;
+              END;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      "<-- 3LI TEXT GLOBALS -->"@1000000009 : TextConst;
+      Text0001@1000000003 : TextConst 'FRA=Erreur code soci't' %1 invalide : doit ^tre celle param'tr'e %2 : Enregistrement %3';
+      Text0002@1000000001 : TextConst 'ENU=Error open file %1 : %2;FRA=Erreur ouverture fichier %1 : %2';
+      Text0003@1000000005 : TextConst 'FRA=Erreur flux %1/%2/%3 existe d'j. dans %4.';
+      Text0004@1000000006 : TextConst 'FRA=Erreur flux %1/%2/%3/%4 inexistant dans les exports.';
+      Text0005@1000000008 : TextConst 'ENU=Error file %1 already exist.;FRA=Erreur fichier %1 existe d'j..';
+      Text0006@1000000010 : TextConst 'FRA=Erreur trame invalide "%1" attendu "%2".';
+      Text0007@1000000013 : TextConst 'FRA=Erreur enregistrement dans table "%1" : pour "%2".';
+      Text0008@1000000002 : TextConst 'ENU=Error field %1 : Record %2;FRA="Erreur zone %1=%2 : Enregistrement %3"';
+      Text0009@1000000000 : TextConst 'ENU=Error file %1 was not exist.;FRA=Erreur fichier %1 inexistant.';
+      Text0010@1000000014 : TextConst 'FRA=Erreur "%1" inexistant dans table "%2".';
+      Text0011@1000000015 : TextConst 'FRA=Erreur flux %1/%2 type "%3" non pr'vu.';
+      Text0012@1000000016 : TextConst 'FRA=Erreur type de flux "%1" non valide : Enregistrement %2.';
+      Text0013@1000000004 : TextConst 'FRA=Erreur correspondance "%1" : "%2" non param'tr' pour "%3".';
+      Text0014@1000000007 : TextConst 'ENU=Error backup copy.;FRA=Erreur copie de sauvegarde.';
+      "<-- 3LI GLOBALS -->"@1000000012 : Integer;
+      ToolsFile_G@1000000011 : Codeunit 8053405;
+      MoteurInterface_G@1000000017 : Codeunit 8061230;
+      Text0015@1000000024 : TextConst 'FRA=Erreur Commande Usine %1-%2 inexistante.';
+      Text0016@1000000025 : TextConst 'FRA=Erreur "%1" : "%2" inexistant.';
+      Text0017@1000000026 : TextConst 'FRA=Erreur mise . jour "%1" : "%2".';
+      Text0018@1000000027 : TextConst 'FRA=Unit' "%1" non pr'vue pour %2.';
+      Text0019@1000000029 : TextConst 'FRA=Erreur article exp'dition %1 <> article commande %2 pour %3.';
+      Text0020@1000000030 : TextConst 'FRA="Expedition ""%1"" magasin ""%2"". "';
+      Text0021@1000000031 : TextConst 'FRA=Erreur int'gration Exp'dition "%1/%2/%3".';
+      Text0022@1000000018 : TextConst 'FRA=Exp'dition "%1/%2/%3:%4" int'gr'e, commande "%5".';
+      Text0023@1000000019 : TextConst 'FRA=Erreur Validation Exp'dition "%1/%2/%3:%4", commande "%5".';
+      Text0024@1000000020 : TextConst 'FRA=Exp'dition "%1/%2/%3:%4" valid'e, commande "%5".';
+      Text0025@1000000021 : TextConst 'FRA="Zone ""%1"" = ""%2"" diff'rente de l''ent^te : pour ""%3""."';
+      Text0101@1000000028 : TextConst 'FRA=Veuillez consulter le Log.';
+      ItemTemplateCode_G@1000000037 : Code[20];
+      CustomerTemplateCode_G@1000000036 : Code[20];
+      VendorTemplateCode_G@1000000035 : Code[20];
+      ContactTemplateCode_G@1000000034 : Code[20];
+      AccountTemplateCode_G@1000000033 : Code[20];
+      GlobalTemplateCode_G@1000000032 : Code[20];
+
+    PROCEDURE "<-- 3LI FUNCTIONS -->"@1000000003();
+    BEGIN
+    END;
+
+    BEGIN
+    {
+      //--> 3LI BEGIN
+      20140606-INT13-CMC02.02.00-ADVITAM-CDL : - Import fabrication vers NavAgri
+      20151201-INT13-CMC02.02.00-ADVITAM-CDL001 : - Suppression d'une fabrication : Inverser le signe de la quantit'
+      //<-- 3LI END
+    }
+    END.
+  }
+}
+

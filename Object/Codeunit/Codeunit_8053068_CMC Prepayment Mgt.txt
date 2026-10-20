@@ -1,0 +1,980 @@
+OBJECT Codeunit 8053068 CMC Prepayment Mgt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09/04/26;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      UserName_G@1000000000 : Code[20];
+
+    PROCEDURE CalcCustPrepAmnt@8053000(CustNo_P@8053001 : Code[20]) : Decimal;
+    VAR
+      PrepLogEntry_L@8053000 : Record 8053510;
+      SLPrepBuffer_L@8053002 : Record 8053522;
+    BEGIN
+      // Calcul du montant en compte d'avance de tr'sorerie pour le client.
+      PrepLogEntry_L.RESET;
+      PrepLogEntry_L.SETCURRENTKEY("Bill-to Customer No.","Main / Detailed","G/L Account No.");
+      PrepLogEntry_L.SETRANGE("Bill-to Customer No.",CustNo_P);
+      PrepLogEntry_L.SETRANGE("Main / Detailed",PrepLogEntry_L."Main / Detailed"::Main);
+      PrepLogEntry_L.CALCSUMS(Amount);
+
+      SLPrepBuffer_L.RESET;
+      SLPrepBuffer_L.SETCURRENTKEY("Customer No.","G/L Account No.");
+      SLPrepBuffer_L.SETRANGE("Customer No.",CustNo_P);
+      SLPrepBuffer_L.CALCSUMS("Prepayment Amount");
+
+      EXIT(PrepLogEntry_L.Amount + SLPrepBuffer_L."Prepayment Amount");
+    END;
+
+    PROCEDURE CalcCustMainPrepAmnt@8053014(CustNo_P@8053001 : Code[20]) : Decimal;
+    VAR
+      PrepLogEntry_L@8053000 : Record 8053510;
+      SLPrepBuffer_L@8053002 : Record 8053522;
+    BEGIN
+      // Calcul du montant en compte d'avance de tr'sorerie pour le client.
+      PrepLogEntry_L.RESET;
+      PrepLogEntry_L.SETCURRENTKEY("Bill-to Customer No.","Main / Detailed","G/L Account No.");
+      PrepLogEntry_L.SETRANGE("Bill-to Customer No.",CustNo_P);
+      PrepLogEntry_L.SETRANGE("Main / Detailed",PrepLogEntry_L."Main / Detailed"::Main);
+      PrepLogEntry_L.CALCSUMS(Amount);
+
+      SLPrepBuffer_L.RESET;
+      SLPrepBuffer_L.SETCURRENTKEY("Customer No.","G/L Account No.");
+      SLPrepBuffer_L.SETRANGE("Customer No.",CustNo_P);
+      SLPrepBuffer_L.CALCSUMS("Prepayment Amount");
+
+      EXIT(PrepLogEntry_L.Amount + SLPrepBuffer_L."Prepayment Amount");
+    END;
+
+    PROCEDURE InsertPrepDeductLines@8053006(VAR SalesHeader_P@8053000 : Record 36);
+    VAR
+      PrepLogEntry_L@8053001 : Record 8053510;
+      SalesLine_L@8053002 : Record 37;
+      TotalAmnt_L@8053003 : Decimal;
+      AmntToDeduct_L@8053004 : Decimal;
+      SLPrepBuffer_L@8053005 : Record 8053522;
+      AvailableAmnt_L@8053006 : Decimal;
+      NextLineNo_L@8053007 : Integer;
+      SalesLine2_L@8053008 : Record 37;
+    BEGIN
+      TotalAmnt_L := 0;
+
+      // Calcul du montant en compte d'avance de tr'sorerie pour le client.
+      AvailableAmnt_L := CalcCustPrepAmnt(SalesHeader_P."Bill-to Customer No.");
+
+      IF AvailableAmnt_L > 0 THEN BEGIN
+
+        // Calcul du montant TTC total de la facture
+        TotalAmnt_L := CalcDocTotal(SalesHeader_P);
+
+        // D'termination du montant . reprendre
+        IF AvailableAmnt_L >= TotalAmnt_L THEN
+          AmntToDeduct_L := TotalAmnt_L
+        ELSE
+          AmntToDeduct_L := AvailableAmnt_L;
+
+        // Insertion de la ligne de reprise
+        SalesLine_L.RESET;
+        SalesLine_L.SETRANGE("Document Type",SalesHeader_P."Document Type");
+        SalesLine_L.SETRANGE("Document No.",SalesHeader_P."No.");
+        SalesLine_L.FINDLAST;
+
+        SalesLine2_L.INIT;
+        SalesLine2_L."Document Type" := SalesHeader_P."Document Type";
+        SalesLine2_L."Document No." := SalesHeader_P."No.";
+        SalesLine2_L."Line No." := SalesLine_L."Line No." + 10000;
+        SalesLine2_L.VALIDATE(Type,SalesLine2_L.Type::"G/L Account");
+        SalesLine2_L.VALIDATE("No.",SalesHeader_P."CMC Prep. Deduct. G/L Acc. No.");
+        // --> 20260409-WI00-ADV01.01.00-43404-IJI
+        //BEFORE
+        //SalesLine2_L.VALIDATE(Quantity,1);
+        //SalesLine2_L.VALIDATE("Unit Price",-AmntToDeduct_L);
+        //AFTER
+        SalesLine2_L.VALIDATE(Quantity,-1);
+        SalesLine2_L.VALIDATE("Unit Price",ABS(AmntToDeduct_L));
+        // <-- 20260409-WI00-ADV01.01.00-43404-IJI
+        SalesLine2_L.INSERT(TRUE);
+
+        // Insertion de l'enregistrement temporaire
+        SLPrepBuffer_L.INIT;
+        SLPrepBuffer_L."Document Type" := SalesLine2_L."Document Type";
+        SLPrepBuffer_L."Document No." := SalesLine2_L."Document No.";
+        SLPrepBuffer_L."Document Line No." := SalesLine2_L."Line No.";
+        SLPrepBuffer_L."Customer No." := SalesHeader_P."Bill-to Customer No.";
+        SLPrepBuffer_L."G/L Account No." := SalesHeader_P."CMC Prep. Deduct. G/L Acc. No.";
+        SLPrepBuffer_L."Prepayment Amount" := -AmntToDeduct_L;
+        SLPrepBuffer_L.Quantity := SalesLine2_L.Quantity;
+        SLPrepBuffer_L.Type := SalesLine2_L.Type;
+        SLPrepBuffer_L."No." := SalesLine2_L."No.";
+        SLPrepBuffer_L.Description := SalesLine2_L.Description;
+        SLPrepBuffer_L."Description 2" := SalesLine2_L."Description 2";
+        SLPrepBuffer_L."Entry Type" := SLPrepBuffer_L."Entry Type"::Deduction;
+        SLPrepBuffer_L."CMC Campaign" := SalesLine2_L."CMC Campaign No.";
+        SLPrepBuffer_L.INSERT;
+
+      END;
+    END;
+
+    PROCEDURE DeletePrepDeductLines@8053001(VAR SalesHeader_P@8053000 : Record 36);
+    VAR
+      SLPrepBuffer_L@8053001 : Record 8053522;
+      SalesLine_L@8053002 : Record 37;
+    BEGIN
+      IF SalesHeader_P."CMC Prepayment" = TRUE THEN
+        EXIT;
+
+      SLPrepBuffer_L.RESET;
+      SLPrepBuffer_L.SETRANGE("Document Type",SalesHeader_P."Document Type");
+      SLPrepBuffer_L.SETRANGE("Document No.",SalesHeader_P."No.");
+      IF SLPrepBuffer_L.FINDSET THEN
+        REPEAT
+          SalesLine_L.GET(SLPrepBuffer_L."Document Type",SLPrepBuffer_L."Document No.",SLPrepBuffer_L."Document Line No.");
+          SalesLine_L.DELETE(TRUE);
+        UNTIL SLPrepBuffer_L.NEXT = 0;
+    END;
+
+    PROCEDURE CalcDocTotal@8053002(SalesHeader_P@8053001 : Record 36) : Decimal;
+    VAR
+      SalesHeader_L@8053000 : Record 36;
+      SalesPost_L@8053002 : Codeunit 80;
+      TempSalesLine_L@8053003 : TEMPORARY Record 37;
+      TotalSalesLine_L@8053010 : Record 37;
+      TotalSalesLineLCY_L@8053009 : Record 37;
+      VATAmount_L@8053008 : Decimal;
+      VATAmountText_L@8053007 : Text[30];
+      ProfitLCY_L@8053006 : Decimal;
+      ProfitPct_L@8053005 : Decimal;
+      TotalAdjCostLCY_L@8053004 : Decimal;
+    BEGIN
+      SalesHeader_L.GET(SalesHeader_P."Document Type",SalesHeader_P."No.");
+
+      SalesHeader_L.FILTERGROUP(2);
+      SalesHeader_L.SETRANGE("No.", SalesHeader_P."No.");
+      SalesHeader_L.FILTERGROUP(0);
+
+      CLEAR(SalesPost_L);
+      SalesPost_L.GetSalesLines(SalesHeader_L, TempSalesLine_L, 0);
+      CLEAR(SalesPost_L);
+      SalesPost_L.SumSalesLinesTemp(SalesHeader_L, TempSalesLine_L, 0, TotalSalesLine_L,
+        TotalSalesLineLCY_L, VATAmount_L, VATAmountText_L, ProfitLCY_L, ProfitPct_L, TotalAdjCostLCY_L);
+
+      IF SalesHeader_L."Prices Including VAT" THEN
+        EXIT(TotalSalesLine_L.Amount)
+      ELSE
+        EXIT(TotalSalesLine_L."Amount Including VAT");
+    END;
+
+    PROCEDURE DeletePrepDeductLinesFromLine@8053003(VAR SalesLine_P@8053000 : Record 37);
+    VAR
+      SLPrepBuffer_L@8053001 : Record 8053522;
+      RecPrepCMIssue_L@8053002 : Record 8053521;
+    BEGIN
+      IF SLPrepBuffer_L.GET(SalesLine_P."Document Type",SalesLine_P."Document No.",SalesLine_P."Line No.") THEN
+        SLPrepBuffer_L.DELETE;
+
+      CLEAR(RecPrepCMIssue_L);
+      RecPrepCMIssue_L.SETRANGE("Temp. Document No.",SalesLine_P."Document No.");
+      RecPrepCMIssue_L.SETRANGE("Temp. Document Line No.",SalesLine_P."Line No.");
+      IF RecPrepCMIssue_L.FIND('-') THEN BEGIN
+        RecPrepCMIssue_L."Temp. Document No." := '';
+        RecPrepCMIssue_L."Temp. Document Line No." := 0;
+        RecPrepCMIssue_L.Status := RecPrepCMIssue_L.Status::Init;
+        RecPrepCMIssue_L.MODIFY;
+      END;
+    END;
+
+    PROCEDURE FillInPrepaymentLogEntry@8053016(RecSalesHeadInv_P@8053005 : Record 36);
+    VAR
+      RecPrepLogEntry_L@8053001 : Record 8053510;
+      NextEntryNo_L@8053002 : Integer;
+      RecSalesLine_L@8053003 : Record 37;
+      RecSalesHead_L@8053004 : Record 36;
+      RecSalesLineInv_L@8053000 : Record 37;
+    BEGIN
+      //--------------------------------------------------------------------------------------------------------
+      // G'n'rer une 'criture par ligne de facture d'acompte dans la table CMC Prepayment Log Entry
+      //--------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - RecSalesHeadInv_P : Facture d'acompte
+      //  Sorties
+      //--------------------------------------------------------------------------------------------------------
+      WITH RecPrepLogEntry_L DO BEGIN
+        CLEAR(RecSalesLineInv_L);
+        RecSalesLineInv_L.SETRANGE("Document Type",RecSalesHeadInv_P."Document Type");
+        RecSalesLineInv_L.SETRANGE("Document No.",RecSalesHeadInv_P."No.");
+        IF RecSalesLineInv_L.FINDSET THEN
+        REPEAT
+          LOCKTABLE;
+          IF FINDLAST THEN
+            NextEntryNo_L := "Entry No." + 1
+          ELSE
+            NextEntryNo_L := 1;
+
+          RecSalesHead_L.GET(1,RecSalesLineInv_L."Source Order No.");
+          RecSalesLine_L.GET(1,RecSalesLineInv_L."Source Order No.",RecSalesLineInv_L."Source Order Line No.");
+
+          INIT;
+          "Entry No." := NextEntryNo_L;
+          "Document Type" := "Document Type"::Invoice;
+          "Document No." := RecSalesLineInv_L."Document No.";
+          "Document Line No." := RecSalesLineInv_L."Line No.";
+          "Order No." := RecSalesLineInv_L."Source Order No.";
+          "Order Line No." := RecSalesLineInv_L."Source Order Line No.";
+          "Entry Type" := "Entry Type"::Prepayment;
+          Amount := RecSalesLine_L.Amount;
+          Type := RecSalesLine_L.Type;
+          "No." := RecSalesLine_L."No.";
+          "Variant Code" := RecSalesLine_L."Variant Code";
+          "Location Code" := RecSalesLine_L."Location Code";
+          Description := RecSalesLine_L.Description;
+          "Description 2" := RecSalesLine_L."Description 2";
+          Quantity := RecSalesLine_L.Quantity;
+          "Source Order No." := RecSalesLineInv_L."Source Order No.";
+          "Source Order Line No." := RecSalesLineInv_L."Source Order Line No.";
+          "Posting Date" := RecSalesHead_L."Posting Date";
+          "Bill-to Customer No." := RecSalesHead_L."Bill-to Customer No.";
+          INSERT;
+        UNTIL RecSalesLineInv_L.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE FillInPrepDedLogEntry@8053004(RecSalesHeadInv_P@8053005 : Record 36);
+    VAR
+      RecPrepLogEntry_L@8053001 : Record 8053510;
+      NextEntryNo_L@8053002 : Integer;
+      RecSalesLine_L@8053003 : Record 37;
+      RecSalesHead_L@8053004 : Record 36;
+      RecSalesLineInv_L@8053000 : Record 37;
+    BEGIN
+      //--------------------------------------------------------------------------------------------------------
+      // G'n'rer une 'criture par ligne de facture d'acompte dans la table CMC Prepayment Log Entry
+      //--------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - RecSalesHeadInv_P : Facture d'acompte
+      //  Sorties
+      //--------------------------------------------------------------------------------------------------------
+      WITH RecPrepLogEntry_L DO BEGIN
+        CLEAR(RecSalesLineInv_L);
+        RecSalesLineInv_L.SETRANGE("Document Type",RecSalesHeadInv_P."Document Type");
+        RecSalesLineInv_L.SETRANGE("Document No.",RecSalesHeadInv_P."No.");
+        IF RecSalesLineInv_L.FINDSET THEN
+        REPEAT
+          LOCKTABLE;
+          IF FINDLAST THEN
+            NextEntryNo_L := "Entry No." + 1
+          ELSE
+            NextEntryNo_L := 1;
+
+          RecSalesHead_L.GET(1,RecSalesLineInv_L."Source Order No.");
+          RecSalesLine_L.GET(1,RecSalesLineInv_L."Source Order No.",RecSalesLineInv_L."Source Order Line No.");
+
+          INIT;
+          "Entry No." := NextEntryNo_L;
+          "Document Type" := "Document Type"::Invoice;
+          "Document No." := RecSalesLineInv_L."Document No.";
+          "Document Line No." := RecSalesLineInv_L."Line No.";
+          "Order No." := RecSalesLineInv_L."Source Order No.";
+          "Order Line No." := RecSalesLineInv_L."Source Order Line No.";
+          "Entry Type" := "Entry Type"::Prepayment;
+          Amount := RecSalesLine_L.Amount;
+          Type := RecSalesLine_L.Type;
+          "No." := RecSalesLine_L."No.";
+          "Variant Code" := RecSalesLine_L."Variant Code";
+          "Location Code" := RecSalesLine_L."Location Code";
+          Description := RecSalesLine_L.Description;
+          "Description 2" := RecSalesLine_L."Description 2";
+          Quantity := RecSalesLine_L.Quantity;
+          "Source Order No." := RecSalesLineInv_L."Source Order No.";
+          "Source Order Line No." := RecSalesLineInv_L."Source Order Line No.";
+          "Posting Date" := RecSalesHead_L."Posting Date";
+          "Bill-to Customer No." := RecSalesHead_L."Bill-to Customer No.";
+          "CMC Campaign" := RecSalesLineInv_L."CMC Campaign No.";
+          INSERT;
+        UNTIL RecSalesLineInv_L.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE FillInPrepLogEntry@8053005(SalesHeader_P@8053005 : Record 36;PostedDocNo_P@8053000 : Code[20];PostingDate_P@8053003 : Date);
+    VAR
+      SLPrepBuffer_L@8053006 : Record 8053522;
+      PrepLogEntry_L@8053001 : Record 8053510;
+      NextEntryNo_L@8053002 : Integer;
+      PrepLogEntry2_L@1000000000 : Record 8053510;
+      SalesLine_L@1000000001 : Record 37;
+      SalesShipmentLine_L@1000000002 : Record 111;
+      BreakRepeat_L@1000000003 : Boolean;
+    BEGIN
+      WITH PrepLogEntry_L DO BEGIN
+
+        SLPrepBuffer_L.RESET;
+        SLPrepBuffer_L.SETRANGE("Document Type",SalesHeader_P."Document Type");
+        SLPrepBuffer_L.SETRANGE("Document No.",SalesHeader_P."No.");
+        IF SLPrepBuffer_L.FINDSET THEN
+          REPEAT
+
+            LOCKTABLE;
+            IF FINDLAST THEN
+              NextEntryNo_L := "Entry No." + 1
+            ELSE
+              NextEntryNo_L := 1;
+
+            INIT;
+            "Entry No." := NextEntryNo_L;
+
+            CASE SalesHeader_P."Document Type" OF
+              SalesHeader_P."Document Type"::Invoice :
+                "Document Type" := "Document Type"::Invoice;
+              SalesHeader_P."Document Type"::"Credit Memo" :
+                "Document Type" := "Document Type"::"Credit Memo";
+            END;
+
+            "Document No." := PostedDocNo_P;
+            "Document Line No." := SLPrepBuffer_L."Document Line No.";
+            "Order No." := SLPrepBuffer_L."Order No.";
+            "Order Line No." := SLPrepBuffer_L."Order Line No.";
+            "Entry Type" := SLPrepBuffer_L."Entry Type";
+            Amount := SLPrepBuffer_L."Prepayment Amount";
+            Type := SLPrepBuffer_L.Type;
+            "No." := SLPrepBuffer_L."No.";
+            "Variant Code" := SLPrepBuffer_L."Variant Code";
+            "Location Code" := SLPrepBuffer_L."Location Code";
+            Description := SLPrepBuffer_L.Description;
+            "Description 2" := SLPrepBuffer_L."Description 2";
+            Quantity := SLPrepBuffer_L.Quantity;
+            "Posting Date" := PostingDate_P;
+            "Bill-to Customer No." := SLPrepBuffer_L."Customer No.";
+            "CMC Campaign" := SLPrepBuffer_L."CMC Campaign";
+            "Main / Detailed" := "Main / Detailed"::Detailed;
+            "G/L Account No." := SLPrepBuffer_L."G/L Account No.";
+            // --> 20230811-Wi00-ADV01.01.00-3628-CJY01
+            "Gen. Bus. Posting Group" := SLPrepBuffer_L."Gen. Bus. Posting Group";
+            "Gen. Prod. Posting Group" := SLPrepBuffer_L."Gen. Prod. Posting Group";
+            "VAT Bus. Posting Group" := SLPrepBuffer_L."VAT Bus. Posting Group";
+            "VAT Prod. Posting Group" := SLPrepBuffer_L."VAT Prod. Posting Group";
+            // <-- 20230811-Wi00-ADV01.01.00-3628-CJY01
+
+            // -> 20231129-WI00-ADV01.01.00-3635-IJI01
+            PrepLogEntry2_L.RESET;
+            PrepLogEntry2_L.SETRANGE("Order No.", SLPrepBuffer_L."Order No.");
+            PrepLogEntry2_L.SETRANGE("Order Line No.", SLPrepBuffer_L."Order Line No.");
+            PrepLogEntry2_L.SETRANGE("Entry Type", PrepLogEntry2_L."Entry Type"::Prepayment);
+            PrepLogEntry2_L.SETRANGE("Main / Detailed", PrepLogEntry2_L."Main / Detailed"::Detailed);
+            IF PrepLogEntry2_L.FINDFIRST THEN BEGIN
+              "Prep. Invoice No." := PrepLogEntry2_L."Document No.";
+              "Prep. Invoice Line  No." := PrepLogEntry2_L."Document Line No.";
+
+              // --> 20240307-WI00-ADV01.01.00-CC74464-IJI01
+              //BEFORE
+              {SalesLine_L.RESET();
+              SalesLine_L.SETRANGE("Document Type", SLPrepBuffer_L."Document Type");
+              SalesLine_L.SETRANGE("Document No.", SLPrepBuffer_L."Document No.");
+              SalesLine_L.SETRANGE(Type, SalesLine_L.Type::Item);
+              SalesLine_L.SETRANGE("No.", PrepLogEntry2_L."No.");
+              SalesLine_L.SETFILTER("Shipment No.", '<>%1', '');
+              SalesLine_L.SETFILTER("Shipment Line No.", '<>0');
+              IF SalesLine_L.FINDSET THEN
+                  REPEAT
+                    IF SalesShipmentLine_L.GET(SalesLine_L."Shipment No.", SalesLine_L."Shipment Line No.") THEN
+                      IF (SalesShipmentLine_L."Order No." = PrepLogEntry2_L."Order No.") THEN BEGIN
+                         "Invoiced Qty" := SalesShipmentLine_L.Quantity;
+                         BreakRepeat_L:=TRUE;
+                      END;
+                   UNTIL (SalesLine_L.NEXT=0)OR (BreakRepeat_L);
+              BreakRepeat_L:=FALSE;}
+              //AFTER
+              // --> 20241118-WI00-ADV01.01.00-CC86308-MRU01
+              {BEFORE
+               IF SalesLine_L.GET(SLPrepBuffer_L."Document Type",SLPrepBuffer_L."Document No.",SLPrepBuffer_L."Base Document Line No.") TH
+      EN
+                IF SalesShipmentLine_L.GET(SalesLine_L."Shipment No.", SalesLine_L."Shipment Line No.") THEN
+                  "Invoiced Qty" := SalesShipmentLine_L.Quantity;
+              // <-- 20240307-WI00-ADV01.01.00-CC74464-IJI01
+              AFTER}
+              "Invoiced Qty" := ABS(Amount / (PrepLogEntry2_L.Amount / PrepLogEntry2_L.Quantity));
+              // <-- 20241118-WI00-ADV01.01.00-CC86308-MRU01
+            END;
+            // <- 20231129-WI00-ADV01.01.00-3635-IJI01
+
+            INSERT;
+            MaintainMainPrepEntry(PrepLogEntry_L);
+          UNTIL SLPrepBuffer_L.NEXT = 0;
+
+      END;
+    END;
+
+    PROCEDURE DeleteBuffer@8053007(VAR SalesHeader_P@8053000 : Record 36);
+    VAR
+      SLPrepBuffer_L@8053001 : Record 8053522;
+    BEGIN
+      SLPrepBuffer_L.RESET;
+      SLPrepBuffer_L.SETRANGE("Document Type",SalesHeader_P."Document Type");
+      SLPrepBuffer_L.SETRANGE("Document No.",SalesHeader_P."No.");
+      SLPrepBuffer_L.DELETEALL;
+    END;
+
+    PROCEDURE FillPostedDocNo@8053008(SalesHeader_P@8053002 : Record 36;PostedDocNo_P@8053001 : Code[20]);
+    VAR
+      PreCMToIssue_L@8053000 : Record 8053521;
+    BEGIN
+      WITH PreCMToIssue_L DO BEGIN
+        RESET;
+        SETCURRENTKEY("Temp. Document No.");
+        SETRANGE("Temp. Document No.",SalesHeader_P."No.");
+        MODIFYALL("Posted Credit Memo No.",PostedDocNo_P);
+        MODIFYALL(Closed,TRUE);
+      END;
+    END;
+
+    PROCEDURE MaintainMainPrepEntry@8053009(PrepLogEntry_P@8053003 : Record 8053510);
+    VAR
+      SLPrepBuffer_L@8053002 : Record 8053522;
+      PrepLogEntry_L@8053001 : Record 8053510;
+      NextEntryNo_L@8053000 : Integer;
+      PrepLogEntry2_L@8053004 : Record 8053510;
+      CMCSetup_L@8053005 : Record 8052982;
+    BEGIN
+      WITH PrepLogEntry_L DO BEGIN
+
+        CMCSetup_L.GET;
+
+        RESET;
+        SETRANGE("Main / Detailed","Main / Detailed"::Main);
+        SETRANGE("Document Type",PrepLogEntry_P."Document Type");
+        SETRANGE("Document No.",PrepLogEntry_P."Document No.");
+        IF NOT FINDSET THEN BEGIN
+
+          CLEAR(PrepLogEntry2_L);
+          IF PrepLogEntry2_L.FINDLAST THEN
+            NextEntryNo_L := PrepLogEntry2_L."Entry No." + 1
+          ELSE NextEntryNo_L := 1;
+
+          INIT;
+          "Entry No." := NextEntryNo_L;
+          "Document Type" := PrepLogEntry_P."Document Type";
+          "Document No." := PrepLogEntry_P."Document No.";
+          "Entry Type" := PrepLogEntry_P."Entry Type";
+          "Posting Date" := PrepLogEntry_P."Posting Date";
+          "Bill-to Customer No." := PrepLogEntry_P."Bill-to Customer No.";
+
+          CASE TRUE OF
+            ("Document Type" = "Document Type"::Invoice) AND ("Entry Type" = "Entry Type"::Prepayment) :
+              Description := CMCSetup_L."Prep. Invoice Description";
+            ("Document Type" = "Document Type"::"Credit Memo") AND ("Entry Type" = "Entry Type"::Prepayment) :
+              Description := CMCSetup_L."Prep. Credit Memo Description";
+          ELSE
+            Description := CMCSetup_L."Prep. deduct. Description";
+          END;
+
+          "CMC Campaign" := PrepLogEntry_P."CMC Campaign";
+          INSERT;
+
+        END;
+        Amount += PrepLogEntry_P.Amount;
+        MODIFY;
+
+      END;
+    END;
+
+    PROCEDURE FillInPrepCMtoIssue@8053010(RecSalesLine_P@8053000 : Record 37;Qty_P@8053002 : Decimal;Which_P@8053003 : Boolean);
+    VAR
+      RecPrepCMIssue_L@8053001 : Record 8053521;
+      RecPrepLogEntry_L@8053004 : Record 8053510;
+      GPSetup_L@8053005 : Record 252;
+    BEGIN
+      // --> 20141204-APP40/001-CMC02.02.00-BSI01
+
+      // --> 20150325-APP40/001-CMC02.02.00-2858-FEC01
+      IF Which_P THEN BEGIN
+        IF RecSalesLine_P.Quantity - Qty_P - RecSalesLine_P."Quantity Shipped" <= 0 THEN
+          EXIT;
+      END ELSE BEGIN
+        IF Qty_P <= 0 THEN
+          EXIT;
+      END;
+      // <-- 20150325-APP40/001-CMC02.02.00-2858-FEC01
+
+      IF RecSalesLine_P.Type = RecSalesLine_P.Type::Item THEN BEGIN
+        CLEAR(RecPrepLogEntry_L);
+        RecPrepLogEntry_L.SETRANGE("Order No.",RecSalesLine_P."Document No.");
+        RecPrepLogEntry_L.SETRANGE("Order Line No.",RecSalesLine_P."Line No.");
+        RecPrepLogEntry_L.SETRANGE("Entry Type",RecPrepLogEntry_L."Entry Type"::Prepayment);
+        IF RecPrepLogEntry_L.FIND('-') THEN BEGIN
+          RecPrepCMIssue_L.INIT;
+          RecPrepCMIssue_L."Order No." := RecSalesLine_P."Document No.";
+          RecPrepCMIssue_L."Order Line No." := RecSalesLine_P."Line No.";
+          RecPrepCMIssue_L."Sell-to Customer No." := RecSalesLine_P."Sell-to Customer No.";
+          RecPrepCMIssue_L."Bill-to Customer No." := RecSalesLine_P."Bill-to Customer No.";
+          RecPrepCMIssue_L."Process Date" := WORKDATE;
+          RecPrepCMIssue_L."Item No." := RecSalesLine_P."No.";
+          RecPrepCMIssue_L."Item Variant Code" := RecSalesLine_P."Variant Code";
+          RecPrepCMIssue_L."Unit of Measure" := RecSalesLine_P."Unit of Measure";
+          IF Which_P THEN
+            RecPrepCMIssue_L.Quantity := RecSalesLine_P.Quantity - Qty_P - RecSalesLine_P."Quantity Shipped"
+          ELSE RecPrepCMIssue_L.Quantity := Qty_P;
+          RecPrepCMIssue_L."Unit Price" := (RecSalesLine_P."Net Unit Price" * RecSalesLine_P."Expected Prepayment %") / 100;
+          RecPrepCMIssue_L."Currency Code" := RecSalesLine_P."Currency Code";
+          RecPrepCMIssue_L.Amount := RecPrepCMIssue_L.Quantity * RecPrepCMIssue_L."Unit Price";
+          // --> 20230811-Wi00-ADV01.01.00-3628-CJY01
+          {BEFORE
+          CLEAR(GPSetup_L);
+          GPSetup_L.SETRANGE("Gen. Bus. Posting Group",RecSalesLine_P."Gen. Bus. Posting Group");
+          GPSetup_L.SETRANGE("Gen. Prod. Posting Group",RecSalesLine_P."Gen. Prod. Posting Group");
+          IF GPSetup_L.FIND('-') THEN BEGIN
+            //GPSetup_L.TESTFIELD("Sales Prepayments Account");
+            RecPrepCMIssue_L."G/L Account No." := GPSetup_L."Sales Prepayments Account";
+          END;
+          AFTER}
+          IF (Qty_P = 0) AND Which_P THEN BEGIN // cas des suppressions
+            RecPrepCMIssue_L.Quantity := RecPrepLogEntry_L.Quantity;
+            RecPrepCMIssue_L."Unit Price" := ROUND(RecPrepLogEntry_L.Amount / RecPrepLogEntry_L.Quantity, 0.01);
+            RecPrepCMIssue_L.Amount := RecPrepLogEntry_L.Amount;
+          END;
+          RecPrepCMIssue_L."G/L Account No." := RecPrepLogEntry_L."G/L Account No.";
+
+          // --> 20240719-WI00-ADV01.01.00-3666-IJI01
+          IF UserName_G <> '' THEN
+            RecPrepCMIssue_L."Created by User" := UserName_G
+          ELSE
+            RecPrepCMIssue_L."Created by User" := 'admin';
+          // <-- 20240719-WI00-ADV01.01.00-3666-IJI01
+
+          // <-- 20230811-Wi00-ADV01.01.00-3628-CJY01
+          RecPrepCMIssue_L.INSERT;
+        END;
+      END;
+      // <-- 20141204-APP40/001-CMC02.02.00-BSI01
+    END;
+
+    PROCEDURE ApprovalEntryExist@8053011(DocumentNo_P@8053000 : Code[20];LineNo_L@8053001 : Integer) Exists : Boolean;
+    VAR
+      RecApprovalEntry_L@8053002 : Record 454;
+      CMCSetup_L@8053003 : Record 8052982;
+    BEGIN
+      // --> 20160119-APP40/001-ADV01.01.00-2650-DGL01
+      CMCSetup_L.GET;
+      IF CMCSetup_L."Neg. Price Approv. Templ. Code" = '' THEN
+        EXIT(FALSE);
+      // <-- 20160119-APP40/001-ADV01.01.00-2650-DGL01
+
+
+      CLEAR(RecApprovalEntry_L);
+      WITH RecApprovalEntry_L DO BEGIN
+        // --> 20160119-APP40/001-ADV01.01.00-2650-DGL01
+        {BEFORE
+        CMCSetup_L.GET;
+        CMCSetup_L.TESTFIELD("Neg. Price Approv. Templ. Code");
+        AFTER}
+        // <-- 20160119-APP40/001-ADV01.01.00-2650-DGL01
+        SETRANGE("Table ID",DATABASE::"Sales Line");
+        SETRANGE("Document Type","Document Type"::Order);
+        SETRANGE("Document No.",DocumentNo_P);
+        SETRANGE("Document Line No.",LineNo_L);
+        SETFILTER(Status,'<>%1',Status::Canceled);
+        SETRANGE("Approval Code",CMCSetup_L."Neg. Price Approv. Templ. Code");
+        Exists := NOT ISEMPTY;
+      END;
+    END;
+
+    PROCEDURE FillSalesInvLinePrepTextLine@8053012(SalesLine_P@8053004 : Record 37;VAR SalesInvLine_P@8053001 : Record 113);
+    VAR
+      Text8053000@8053000 : TextConst 'FRA="%1  %2 - P.U = %3 - Total HT = %4 - TVA = %5 %"';
+      SLPrepBuffer_L@8053002 : Record 8053522;
+    BEGIN
+      IF SLPrepBuffer_L.GET(SalesLine_P."Document Type",SalesLine_P."Document No.",SalesLine_P."Line No.") THEN
+        SalesInvLine_P."Pre Payment Text Line" := STRSUBSTNO(Text8053000,SLPrepBuffer_L.Quantity,SLPrepBuffer_L."Unit of Measure",
+              SLPrepBuffer_L."Net Unit Price",SLPrepBuffer_L."Prepayment Amount",SalesLine_P."VAT %")
+    END;
+
+    PROCEDURE FillSalesCMLinePrepTextLine@8053013(SalesLine_P@8053004 : Record 37;VAR SalesCrMemoLine_P@8053001 : Record 115);
+    VAR
+      Text8053000@8053000 : TextConst 'FRA="%1  %2 - P.U = %3 - Total HT = %4 - TVA = %5 %"';
+      SLPrepBuffer_L@8053002 : Record 8053522;
+    BEGIN
+      IF SLPrepBuffer_L.GET(SalesLine_P."Document Type",SalesLine_P."Document No.",SalesLine_P."Line No.") THEN
+        SalesCrMemoLine_P."Pre Payment Text Line" := STRSUBSTNO(Text8053000,SLPrepBuffer_L.Quantity,SLPrepBuffer_L."Unit of Measure",
+              SLPrepBuffer_L."Net Unit Price",SLPrepBuffer_L."Prepayment Amount",SalesLine_P."VAT %")
+    END;
+
+    PROCEDURE CalcCustCampMainPrepAmnt@1000000000(CustNo_P@8053001 : Code[20];CampNo_P@1000000000 : Code[10]) : Decimal;
+    VAR
+      PrepLogEntry_L@8053000 : Record 8053510;
+      SLPrepBuffer_L@8053002 : Record 8053522;
+      TotalPrepLogEntry_L@1000000001 : Decimal;
+      TotalSLPrepBuffer_L@1000000002 : Decimal;
+    BEGIN
+      // --> 20160323-Wi00-ADV01.01.00-2883-JCD01
+      // Calcul du montant en compte d'avance de tr'sorerie pour le client.
+      PrepLogEntry_L.RESET;
+      PrepLogEntry_L.SETCURRENTKEY("Bill-to Customer No.","Main / Detailed","G/L Account No.","CMC Campaign");
+      PrepLogEntry_L.SETRANGE("Bill-to Customer No.",CustNo_P);
+      PrepLogEntry_L.SETRANGE("Main / Detailed",PrepLogEntry_L."Main / Detailed"::Main);
+      PrepLogEntry_L.SETRANGE("CMC Campaign",CampNo_P);
+      PrepLogEntry_L.CALCSUMS(Amount);
+
+      TotalSLPrepBuffer_L := 0;
+      SLPrepBuffer_L.RESET;
+      SLPrepBuffer_L.SETCURRENTKEY("Customer No.","G/L Account No.","CMC Campaign");
+      SLPrepBuffer_L.SETRANGE("Customer No.",CustNo_P);
+      SLPrepBuffer_L.SETRANGE("CMC Campaign",CampNo_P);
+      SLPrepBuffer_L.CALCSUMS("Prepayment Amount");
+
+      EXIT(PrepLogEntry_L.Amount + SLPrepBuffer_L."Prepayment Amount");
+      // <-- 20160323-Wi00-ADV01.01.00-2883-JCD01
+    END;
+
+    PROCEDURE GetGLAccountFromPrepLogEntry@1000000001(SalesOrderLine_P@1000000000 : Record 37) : Code[20];
+    VAR
+      PrepaymentLogEntry_L@1000000001 : Record 8053510;
+    BEGIN
+      // --> 20230811-Wi00-ADV01.01.00-3628-CJY01
+      PrepaymentLogEntry_L.SETCURRENTKEY("Order No.", "Order Line No.", "Document Type", "Main / Detailed");
+      IF SalesOrderLine_P."Source Order No." <> '' THEN
+          PrepaymentLogEntry_L.SETRANGE("Order No.", SalesOrderLine_P."Source Order No.")
+      ELSE
+          PrepaymentLogEntry_L.SETRANGE("Order No.", SalesOrderLine_P."Document No.");
+
+      IF SalesOrderLine_P."Source Order Line No." <> 0 THEN
+          PrepaymentLogEntry_L.SETRANGE("Order Line No.", SalesOrderLine_P."Source Order Line No.")
+      ELSE
+          PrepaymentLogEntry_L.SETRANGE("Order Line No.", SalesOrderLine_P."Line No.");
+
+      PrepaymentLogEntry_L.SETRANGE("Main / Detailed", PrepaymentLogEntry_L."Main / Detailed"::Detailed);
+      PrepaymentLogEntry_L.SETRANGE("Entry Type", PrepaymentLogEntry_L."Entry Type"::Prepayment);
+
+      IF PrepaymentLogEntry_L.FINDFIRST THEN
+          EXIT(PrepaymentLogEntry_L."G/L Account No.");
+
+      // <-- 20230811-Wi00-ADV01.01.00-3628-CJY01
+    END;
+
+    PROCEDURE CorrectVATChangePrepLogEntry@1000000002();
+    VAR
+      PrepaymentLogEntry_L@1000000000 : Record 8053510;
+      SalesInvoiceLine_L@1000000001 : Record 113;
+      SalesCrMemoLine_L@1000000002 : Record 115;
+    BEGIN
+      PrepaymentLogEntry_L.SETCURRENTKEY("Bill-to Customer No.", "Main / Detailed");
+      PrepaymentLogEntry_L.SETRANGE("Main / Detailed", PrepaymentLogEntry_L."Main / Detailed"::Detailed);
+      IF PrepaymentLogEntry_L.FINDSET THEN
+          REPEAT
+              CASE PrepaymentLogEntry_L."Document Type" OF
+                  PrepaymentLogEntry_L."Document Type"::Invoice:
+                      BEGIN
+                          IF SalesInvoiceLine_L.GET(PrepaymentLogEntry_L."Document No.", PrepaymentLogEntry_L."Document Line No.") THEN
+                            BEGIN
+                              PrepaymentLogEntry_L."Gen. Bus. Posting Group" := SalesInvoiceLine_L."Gen. Bus. Posting Group";
+                              PrepaymentLogEntry_L."Gen. Prod. Posting Group" := SalesInvoiceLine_L."Gen. Prod. Posting Group";
+                              PrepaymentLogEntry_L."VAT Bus. Posting Group" := SalesInvoiceLine_L."VAT Bus. Posting Group";
+                              PrepaymentLogEntry_L."VAT Prod. Posting Group" := SalesInvoiceLine_L."VAT Prod. Posting Group";
+                              PrepaymentLogEntry_L.MODIFY;
+                            END;
+                      END;
+                  PrepaymentLogEntry_L."Document Type"::"Credit Memo":
+                      BEGIN
+                          IF SalesCrMemoLine_L.GET(PrepaymentLogEntry_L."Document No.", PrepaymentLogEntry_L."Document Line No.") THEN
+                            BEGIN
+                              PrepaymentLogEntry_L."Gen. Bus. Posting Group" := SalesCrMemoLine_L."Gen. Bus. Posting Group";
+                              PrepaymentLogEntry_L."Gen. Prod. Posting Group" := SalesCrMemoLine_L."Gen. Prod. Posting Group";
+                              PrepaymentLogEntry_L."VAT Bus. Posting Group" := SalesCrMemoLine_L."VAT Bus. Posting Group";
+                              PrepaymentLogEntry_L."VAT Prod. Posting Group" := SalesCrMemoLine_L."VAT Prod. Posting Group";
+                              PrepaymentLogEntry_L.MODIFY;
+                            END;
+                      END;
+              END;
+          UNTIL PrepaymentLogEntry_L.NEXT = 0;
+    END;
+
+    PROCEDURE InsertPrepDeductLinesDet@1000000003(SalesHeader_P@1000000008 : Record 36);
+    VAR
+      SalesLine_L@1000000000 : Record 37;
+      SalesLine2_L@1000000001 : Record 37;
+      SalesOrderLine_L@1000000002 : Record 37;
+      SalesShipmentLine_L@1000000003 : Record 111;
+      PrepaymentLogEntry_L@1000000004 : Record 8053510;
+      SalesLinePrepBuffer_L@1000000005 : Record 8053522;
+      AmtToDeduct_L@1000000006 : Decimal;
+      AvailableAmt_L@1000000007 : Decimal;
+    BEGIN
+      // --> 20230811-Wi00-ADV01.01.00-3628-CJY01
+      // lanc' . partir du CU414
+      //SP3631
+      WITH SalesHeader_P DO BEGIN
+
+        // --> 20231003-WI00-ADV01.01.00-3631-IJI01
+        //BEFORE
+        //IF ("Document Type" = "Document Type"::Invoice) AND
+           //("CMC Prep. Deduct. G/L Acc. No." <> '')
+        //AFTER
+        IF ("Document Type" = "Document Type"::Invoice)
+        // <-- 20231003-WI00-ADV01.01.00-3631-IJI01
+        THEN BEGIN
+            SalesLine_L.RESET();
+            SalesLine_L.SETRANGE("Document Type", "Document Type");
+            SalesLine_L.SETRANGE("Document No.", "No.");
+            SalesLine_L.SETRANGE(Type, SalesLine_L.Type::Item);
+            //ligne ci-dessous reprise du Core mais semble incorrecte
+            //SalesLine_L.SETFILTER("No.", '<>0'); ?
+            //plut"t :
+            SalesLine_L.SETFILTER("No.", '<>%1','');
+            SalesLine_L.SETFILTER("Shipment No.", '<>%1', '');
+            SalesLine_L.SETFILTER("Shipment Line No.", '<>0');
+            IF SalesLine_L.FINDSET THEN
+                REPEAT
+                  IF SalesShipmentLine_L.GET(SalesLine_L."Shipment No.", SalesLine_L."Shipment Line No.") THEN BEGIN
+                    PrepaymentLogEntry_L.RESET();
+                    //TEST
+                    PrepaymentLogEntry_L.SETCURRENTKEY("Main / Detailed","Order No.","Order Line No.","Document Type","Source Order No."
+      );
+                    //TEST
+
+                    SalesOrderLine_L.GET(SalesOrderLine_L."Document Type"::Order, SalesShipmentLine_L."Order No.",
+                      SalesShipmentLine_L."Line No.");
+                    IF SalesOrderLine_L."Source Order No." <> '' THEN
+                        PrepaymentLogEntry_L.SETRANGE("Order No.", SalesOrderLine_L."Source Order No.")
+                    ELSE
+                        PrepaymentLogEntry_L.SETRANGE("Order No.", SalesShipmentLine_L."Order No.");
+                    IF SalesOrderLine_L."Source Order Line No." <> 0 THEN
+                        PrepaymentLogEntry_L.SETRANGE("Order Line No.", SalesOrderLine_L."Source Order Line No.")
+                    ELSE
+                        PrepaymentLogEntry_L.SETRANGE("Order Line No.", SalesShipmentLine_L."Order Line No.");
+                    PrepaymentLogEntry_L.SETRANGE("Main / Detailed", PrepaymentLogEntry_L."Main / Detailed"::Detailed);
+                    PrepaymentLogEntry_L.CALCSUMS(Amount);
+
+
+                    SalesLinePrepBuffer_L.RESET();
+                    //TEST
+                    //SalesLinePrepBuffer_L.SETCURRENTKEY("Customer No.", "G/L Account No.");
+                    SalesLinePrepBuffer_L.SETCURRENTKEY("Customer No.","G/L Account No.","Order No.","Order Line No.");
+                    //TEST
+                    IF SalesOrderLine_L."Source Order No." <> '' THEN
+                        SalesLinePrepBuffer_L.SETRANGE("Order No.", SalesOrderLine_L."Source Order No.")
+                    ELSE
+                        SalesLinePrepBuffer_L.SETRANGE("Order No.", SalesShipmentLine_L."Order No.");
+                    IF SalesOrderLine_L."Source Order Line No." <> 0 THEN
+                        SalesLinePrepBuffer_L.SETRANGE("Order Line No.", SalesOrderLine_L."Source Order Line No.")
+                    ELSE
+                        SalesLinePrepBuffer_L.SETRANGE("Order Line No.", SalesShipmentLine_L."Order Line No.");
+                    SalesLinePrepBuffer_L.CALCSUMS("Prepayment Amount");
+
+                    AvailableAmt_L := PrepaymentLogEntry_L.Amount + SalesLinePrepBuffer_L."Prepayment Amount";
+
+                    IF (AvailableAmt_L > 0) AND (SalesLine_L.Amount > 0) THEN BEGIN
+                        // --> 20231003-WI00-ADV01.01.00-3631-IJI01
+                        //BEFORE
+                        //IF AvailableAmt_L > SalesLine_L.Amount THEN
+                        //    AmtToDeduct_L := SalesLine_L.Amount
+                        //ELSE
+                        //    AmtToDeduct_L := AvailableAmt_L;
+                        //AFTER
+                        PrepaymentLogEntry_L.SETRANGE("Entry Type", PrepaymentLogEntry_L."Entry Type"::Prepayment);
+                        PrepaymentLogEntry_L.FINDFIRST();
+
+                        AmtToDeduct_L :=  ABS(PrepaymentLogEntry_L.Amount / PrepaymentLogEntry_L.Quantity);
+                        AmtToDeduct_L :=  ROUND(AmtToDeduct_L * SalesLine_L.Quantity,0.01);
+
+                        IF AvailableAmt_L < AmtToDeduct_L THEN
+                            AmtToDeduct_L := AvailableAmt_L;
+                        // <-- 20231003-WI00-ADV01.01.00-3631-IJI01
+
+                        // Insertion de la ligne de reprise
+                        SalesLine2_L.INIT;
+                        SalesLine2_L."Document Type" := "Document Type";
+                        SalesLine2_L."Document No." := "No.";
+                        // --> 20240319-WI00-ADV01.01.00-3645-IJI01
+                        //BEFORE
+                        //SalesLine2_L."Line No." := GetNextLine(SalesLine_L);
+                        //AFTER
+                        SalesLine2_L."Line No." := GetPrepNextLine(SalesLine_L);
+                        // <-- 20240319-WI00-ADV01.01.00-3645-IJI01
+                        SalesLine2_L.VALIDATE(Type, SalesLine2_L.Type::"G/L Account");
+                        // --> 20231003-WI00-ADV01.01.00-3631-IJI01
+                        //SalesLine2_L.VALIDATE("No.", "CMC Prep. Deduct. G/L Acc. No.");
+                        //PrepaymentLogEntry_L.SETRANGE("Entry Type", PrepaymentLogEntry_L."Entry Type"::Prepayment);
+                        //PrepaymentLogEntry_L.FINDFIRST();
+                        // <-- 20231003-WI00-ADV01.01.00-3631-IJI01
+                        // --> 20231003-WI00-ADV01.01.00-3631-IJI01
+                        SalesLine2_L.VALIDATE("No.", PrepaymentLogEntry_L."G/L Account No.");
+                        // <-- 20231003-WI00-ADV01.01.00-3631-IJI01
+                        SalesLine2_L.VALIDATE("Gen. Bus. Posting Group", PrepaymentLogEntry_L."Gen. Bus. Posting Group");
+                        SalesLine2_L.VALIDATE("Gen. Prod. Posting Group", PrepaymentLogEntry_L."Gen. Prod. Posting Group");
+                        SalesLine2_L.VALIDATE("VAT Bus. Posting Group", PrepaymentLogEntry_L."VAT Bus. Posting Group");
+                        SalesLine2_L.VALIDATE("VAT Prod. Posting Group", PrepaymentLogEntry_L."VAT Prod. Posting Group");
+                        // --> 20260409-WI00-ADV01.01.00-43404-IJI
+                        //BEFORE
+                        //SalesLine2_L.VALIDATE(Quantity, 1);
+                        //SalesLine2_L.VALIDATE("Unit Price", -AmtToDeduct_L);
+                        //AFTER
+                        SalesLine2_L.VALIDATE(Quantity, -1);
+                        SalesLine2_L.VALIDATE("Unit Price", ABS(AmtToDeduct_L));
+                        // <-- 20260409-WI00-ADV01.01.00-43404-IJI
+
+                        SalesLine2_L.INSERT(TRUE);
+
+                        // Insertion dans le tampon ligne vente acompte
+                        SalesLinePrepBuffer_L.INIT;
+                        SalesLinePrepBuffer_L."Document Type" := SalesLine2_L."Document Type";
+                        SalesLinePrepBuffer_L."Document No." := SalesLine2_L."Document No.";
+                        SalesLinePrepBuffer_L."Document Line No." := SalesLine2_L."Line No.";
+                        SalesLinePrepBuffer_L."Customer No." := "Bill-to Customer No.";
+                        // --> 20231003-WI00-ADV01.01.00-3631-IJI01
+                        //SalesLinePrepBuffer_L."G/L Account No." := "CMC Prep. Deduct. G/L Acc. No.";
+                        SalesLinePrepBuffer_L."G/L Account No." :=  PrepaymentLogEntry_L."G/L Account No.";
+                        // <-- 20231003-WI00-ADV01.01.00-3631-IJI01
+                        SalesLinePrepBuffer_L."Gen. Bus. Posting Group" := PrepaymentLogEntry_L."Gen. Bus. Posting Group";
+                        SalesLinePrepBuffer_L."Gen. Prod. Posting Group" := PrepaymentLogEntry_L."Gen. Prod. Posting Group";
+                        SalesLinePrepBuffer_L."VAT Bus. Posting Group" := PrepaymentLogEntry_L."VAT Bus. Posting Group";
+                        SalesLinePrepBuffer_L."VAT Prod. Posting Group" := PrepaymentLogEntry_L."VAT Prod. Posting Group";
+                        SalesLinePrepBuffer_L."Prepayment Amount" := -AmtToDeduct_L;
+                        SalesLinePrepBuffer_L.Quantity := SalesLine2_L.Quantity;
+                        SalesLinePrepBuffer_L.Type := SalesLine2_L.Type;
+                        SalesLinePrepBuffer_L."No." := SalesLine2_L."No.";
+                        SalesLinePrepBuffer_L.Description := SalesLine2_L.Description;
+                        SalesLinePrepBuffer_L."Description 2" := SalesLine2_L."Description 2";
+                        SalesLinePrepBuffer_L."Entry Type" := SalesLinePrepBuffer_L."Entry Type"::Deduction;
+                        SalesLinePrepBuffer_L."CMC Campaign" := SalesLine2_L."CMC Campaign No.";
+                        IF SalesOrderLine_L."Source Order No." <> '' THEN
+                            SalesLinePrepBuffer_L."Order No." := SalesOrderLine_L."Source Order No."
+                        ELSE
+                            SalesLinePrepBuffer_L."Order No." := SalesShipmentLine_L."Order No.";
+                        IF SalesOrderLine_L."Source Order Line No." <> 0 THEN
+                            SalesLinePrepBuffer_L."Order Line No." := SalesOrderLine_L."Source Order Line No."
+                        ELSE
+                            SalesLinePrepBuffer_L."Order Line No." := SalesShipmentLine_L."Order Line No.";
+
+                        // -> 20240307-WI00-ADV01.01.00-CC74464-IJI01
+                        SalesLinePrepBuffer_L."Base Document Line No." := SalesLine_L."Line No.";
+                        // <- 20240307-WI00-ADV01.01.00-CC74464-IJI01
+
+                        SalesLinePrepBuffer_L.INSERT();
+                        //LinesWereModified_P := TRUE;
+                    END;
+                  END;
+                UNTIL SalesLine_L.NEXT = 0;
+        END;
+      END;
+
+      // <-- 20230811-Wi00-ADV01.01.00-3628-CJY01
+    END;
+
+    PROCEDURE GetNextLine@1000000007(RecSalesLine_P@1000000000 : Record 37) ResNumLig_P : Integer;
+    VAR
+      RecSalesLine_L@1000000001 : Record 37;
+    BEGIN
+      // --> 20230811-Wi00-ADV01.01.00-3628-CJY01
+      RecSalesLine_L.RESET();
+      RecSalesLine_L.GET(RecSalesLine_P."Document Type", RecSalesLine_P."Document No.", RecSalesLine_P."Line No.");
+      RecSalesLine_L.SETRANGE("Document Type", RecSalesLine_L."Document Type");
+      RecSalesLine_L.SETRANGE("Document No.", RecSalesLine_L."Document No.");
+      IF RecSalesLine_L.NEXT = 0 THEN BEGIN
+          ResNumLig_P := RecSalesLine_P."Line No." + 10000
+      END ELSE BEGIN
+          //ResNumLig_P := (RecSalesLine_P."Line No." + RecSalesLine_L."Line No.") / 2
+          ResNumLig_P := (RecSalesLine_P."Line No." + RecSalesLine_L."Line No.") DIV 2
+      END;
+      // <-- 20230811-Wi00-ADV01.01.00-3628-CJY01
+    END;
+
+    PROCEDURE GetPrepNextLine@1000000004(RecSalesLine_P@1000000000 : Record 37) ResNumLig_P : Integer;
+    VAR
+      RecSalesLine_L@1000000001 : Record 37;
+    BEGIN
+      // --> 20240319-WI00-ADV01.01.00-3645-IJI01
+      RecSalesLine_L.RESET();
+      RecSalesLine_L.SETRANGE("Document Type", RecSalesLine_P."Document Type");
+      RecSalesLine_L.SETRANGE("Document No.", RecSalesLine_P."Document No.");
+      RecSalesLine_L.SETFILTER("Line No.", GetLineNoFilter(RecSalesLine_P."Line No."));
+      IF RecSalesLine_L.FINDLAST THEN BEGIN
+          //ResNumLig_P := RecSalesLine_L."Line No." + 10000
+          // > 20260318-CC105836-MRU01
+          {BEFORE
+          ResNumLig_P := (RecSalesLine_L."Line No." + GetLastLineNo(RecSalesLine_P."Line No.")) DIV 2;
+          AFTER}
+          ResNumLig_P := (RecSalesLine_L."Line No." + RecSalesLine_L.GETRANGEMAX("Line No.")) DIV 2;
+          // < 20260318-CC105836-MRU01
+      END ELSE BEGIN
+          ResNumLig_P := 10000;
+      END;
+      // <-- 20240319-WI00-ADV01.01.00-3645-IJI01
+    END;
+
+    PROCEDURE GetLineNoFilter@1000000005(LineNo_P@1000000000 : Integer) Return : Text[250];
+    VAR
+      LastNumber@1000000001 : Integer;
+      LastNumberTxt@1000000002 : Text[100];
+    BEGIN
+      // --> 20240319-WI00-ADV01.01.00-3645-IJI01
+      LastNumber := LineNo_P-1;
+      LastNumberTxt := FORMAT(LastNumber);
+      // > 20260318-CC105836-MRU01
+      {BEFORE
+      LastNumberTxt := COPYSTR(LastNumberTxt,2,STRLEN(LastNumberTxt)-1);
+      AFTER}
+      LastNumberTxt := COPYSTR(LastNumberTxt, STRLEN(LastNumberTxt) - 3, 4);
+      // < 20260318-CC105836-MRU01
+      EVALUATE(LastNumber,LastNumberTxt);
+      Return := FORMAT(LineNo_P)+'..'+FORMAT(LineNo_P+LastNumber);
+      // <-- 20240319-WI00-ADV01.01.00-3645-IJI01
+    END;
+
+    PROCEDURE GetLastLineNo@1000000012(LineNo_P@1000000000 : Integer) Return : Integer;
+    VAR
+      LastNumber@1000000001 : Integer;
+      LastNumberTxt@1000000002 : Text[100];
+    BEGIN
+      // --> 20240319-WI00-ADV01.01.00-3645-IJI01
+      LastNumber := LineNo_P-1;
+      LastNumberTxt := FORMAT(LastNumber);
+      LastNumberTxt := COPYSTR(LastNumberTxt,2,STRLEN(LastNumberTxt)-1);
+      EVALUATE(LastNumber,LastNumberTxt);
+      Return := LineNo_P+LastNumber;
+      // <-- 20240319-WI00-ADV01.01.00-3645-IJI01
+    END;
+
+    PROCEDURE SetUser@1000000006(UserName_P@1000000000 : Code[20]);
+    BEGIN
+      // --> 20240719-WI00-ADV01.01.00-3666-IJI01
+      UserName_G := UserName_P;
+      // <-- 20240719-WI00-ADV01.01.00-3666-IJI01
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20150112-APP40/001-CMC02.02.00-FEC01 : CREATE OBJ
+      20150115-APP40/001-CMC02.02.00-BSI01 : ADDCODE (Alimentation du code campagne)
+      20150121-APP40/001-CMC02.02.00-BSI01 : ADDFUNC (CalcCustMainPrepAmnt)
+      20150306-APP40/001-CMC02.02.00-BSI01 : DELETECODE (Annulation des modif : Filtrer sur compte gr)
+      20150325-APP40/001-CMC02.02.00-2858-FEC01 : ADDCODE.
+      20160119-APP40/001-ADV01.01.00-2650-DGL01 : ADDCODE (Correctif bug contr"le param'trage . rendre non bloquant si approbation
+                                                          non configur')
+      20160323-Wi00-ADV01.01.00-2883-JCD01 : ADDFUNC CalcCustCampMainPrepAmnt
+      20230811-Wi00-ADV01.01.00-3628-CJY01 : ADDCODE ('volution r'glementaire acompte TVA)
+      20230811-Wi00-ADV01.01.00-3628-CJY01 : ADDFUNC (GetGLAccountFromPrepLogEntry);
+      20230811-Wi00-ADV01.01.00-3628-CJY01 : ADDFUNC (CorrectVATChangePrepLogEntry);
+      20231003-WI00-ADV01.01.00-3631-IJI01 : MODCODE (get GL AcCOUNT from PrepEntry instead of the header);
+                                           : MODCODE (reprise prix unitaire acompte)
+      20231129-WI00-ADV01.01.00-3635-IJI01 : ADDCODE(remplir info facture acompte)
+      20240307-WI00-ADV01.01.00-CC74464-IJI01 : MODCODE (qt' factur' multi BL)
+      20240319-WI00-ADV01.01.00-3645-IJI01 : MODCODE (acompte ordre de ligne)
+      20240719-WI00-ADV01.01.00-3666-IJI01 : MODFUNC (FillInPrepCMtoIssue)
+      20240719-WI00-ADV01.01.00-3666-IJI01 : ADDFUNC (SetUser)
+      20241118-WI00-ADV01.01.00-CC86308-MRU01 : MODCODE (FillInPrepLogEntry)
+      20260409-WI00-ADV01.01.00-43404-IJI : MODCODE (inverser la signe des ligne reprise acompte)
+      20260318-CC105836-MRU01 : ADDCODE (Correctif d'termination des num'ros de ligne)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

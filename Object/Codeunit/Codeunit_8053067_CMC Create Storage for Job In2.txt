@@ -1,0 +1,491 @@
+OBJECT Codeunit 8053067 CMC Create Storage for Job In2
+{
+  OBJECT-PROPERTIES
+  {
+    Date=01/08/17;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            recPurchLine_L@8053000 : Record 39;
+          BEGIN
+            recPostedRecLineTmp_G.RESET;
+            recPostedRecLineTmp_G.SETCURRENTKEY("Purchase Document No.", "Contract No.", "Variety Code");
+            IF recPostedRecLineTmp_G.FINDSET(FALSE, FALSE) THEN
+              REPEAT
+                IntegratePostedReceiptsLine(recPostedRecLineTmp_G);
+              UNTIL recPostedRecLineTmp_G.NEXT = 0;
+
+            IF RecPurHeader_G."No." = UPPERCASE(Text8053018) THEN
+              ReceiptCount_G += 1;
+            recPurchLine_L.RESET;
+            recPurchLine_L.SETRANGE("Document Type", RecPurHeader_G."Document Type");
+            // --> 20170801-WI00-ADV01.01.00-28717-DRN
+            {BEFORE
+            RecPurchLine_L.SETRANGE("Document No.", RecPurHeader_G."No.");
+            AFTER}
+            recPurchLine_L.SETRANGE("Document No.", Text8053018);
+            // <-- 20170801-WI00-ADV01.01.00-28717-DRN
+            IF recPurchLine_L.FINDFIRST THEN BEGIN
+              recPurchLine_L.CALCSUMS("Line Amount");
+              IF recPurchLine_L."Line Amount" < 0 THEN
+                CreateCreditMemo
+              ELSE
+                CreateInvoice;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      PostingDateReq_G@8053047 : Date;
+      DocDateReq_G@8053046 : Date;
+      RecVendor_G@8053039 : Record 23;
+      NextNo_G@8053038 : Integer;
+      recPurchLineVariatPrice_G@8053037 : Record 8053005;
+      ItemDirectUnitCost_G@8053036 : Decimal;
+      ReceiptCount_G@8053033 : Integer;
+      ReceitTotalCount_G@8053032 : Integer;
+      InvoiceCount_G@8053031 : Integer;
+      CrMemoCount_G@8053030 : Integer;
+      RecPurHeader_G@8053029 : Record 38;
+      RecPurLine_G@8053028 : Record 39;
+      PurchSetup_G@8053027 : Record 312;
+      RecPurHeaderInsert_G@8053025 : Record 38;
+      RecPurLineInsert_G@8053024 : Record 39;
+      RecItem_G@8053023 : Record 27;
+      CMCCollContract_G@8053022 : Record 8052983;
+      CollContract_G@8053021 : Record 8052983;
+      PreviousVendor_G@8053020 : Code[20];
+      PreviousItem_G@8053019 : Code[20];
+      PreviousContrat_G@8053018 : Code[10];
+      ItemInvoiced_G@8053017 : Boolean;
+      recVendorTmp_G@8053016 : TEMPORARY Record 23;
+      Vendor_G@8053015 : Record 23;
+      TempDocDim_G@8053014 : TEMPORARY Record 357;
+      CMCPostedReceipts_G@8053013 : Record 8052995;
+      PreviousVariety_G@8053012 : Code[10];
+      TMPAverageReceiptAnalysis_G@8053011 : TEMPORARY Record 8053105;
+      DueDate_G@8053010 : Date;
+      PriceType_G@8053009 : ',Pre-Prepayment,Prepayment,Contract Price';
+      GroupingCode_G@8053008 : Code[10];
+      ReceiptDate_G@8053007 : Date;
+      ReceiptDateVisible_G@8053006 : Boolean INDATASET;
+      recCMCSetup_G@8053005 : Record 8052982;
+      CampaingCode_G@8053004 : Code[10];
+      VNR_G@8053003 : Code[10];
+      Text8053016@8053051 : TextConst 'ENU=Unspecified variety;FRA=Vari't' non renseign'e';
+      Text8053017@8053050 : TextConst 'ENU=Variety: %1 %2;FRA=Vari't' : %1 %2';
+      Text8053018@8053049 : TextConst 'ENU=TMP_Collect;FRA=TMP_Collect';
+      recPostedRecLineTmp_G@8053000 : TEMPORARY Record 8053104;
+      CMCCreateCollectInvoiceOpt_G@1000000000 : Codeunit 8053066;
+
+    PROCEDURE AddPostedReceiptsLine@8053001(recPostedRecLine_P@8053000 : Record 8053104);
+    BEGIN
+      recPostedRecLineTmp_G := recPostedRecLine_P;
+      IF recPostedRecLineTmp_G.INSERT THEN ;
+    END;
+
+    PROCEDURE IntegratePostedReceiptsLine@8053002(recPostedRecLine_P@8053000 : Record 8053104);
+    VAR
+      RecPurchLine_L@8053007 : Record 39;
+      recPostedReceiptsLine_L@8053006 : Record 8053104;
+      recItem_L@8053005 : Record 27;
+      Variety_L@8053004 : Record 8053070;
+      DocDim_L@8053003 : Record 357;
+      CerealsInvSch_L@8053002 : Record 8053274;
+      DueDate_L@8053001 : Date;
+    BEGIN
+      CMCPostedReceipts_G.GET(recPostedRecLine_P."Receipt Type", recPostedRecLine_P."No.");
+      ItemInvoiced_G := FALSE;
+
+      // --------------------------------------------------------------------
+      // Cr'ation Ent^te Facture si RUPTURE sur Apporteur ou Article ou contrat
+      // --------------------------------------------------------------------
+      IF ((PreviousVendor_G <> CMCPostedReceipts_G."Vendor No.") OR (PreviousItem_G <> recPostedRecLine_P."Item Contract No.")) THEN
+      BEGIN
+        RecPurchLine_L.RESET;
+        RecPurchLine_L.SETRANGE("Document Type", RecPurHeader_G."Document Type");
+        // --> 20170801-WI00-ADV01.01.00-28717-DRN
+        {BEFORE
+        RecPurchLine_L.SETRANGE("Document No.", RecPurHeader_G."No.");
+        AFTER}
+        RecPurchLine_L.SETRANGE("Document No.", Text8053018);
+        // <-- 20170801-WI00-ADV01.01.00-28717-DRN
+        IF RecPurchLine_L.FINDFIRST THEN BEGIN
+          RecPurchLine_L.CALCSUMS("Line Amount");
+          IF RecPurchLine_L."Line Amount" < 0 THEN
+            CreateCreditMemo
+          ELSE
+            CreateInvoice;
+        END;
+
+        TempDocDim_G.DELETEALL ;
+
+        CLEAR(RecPurHeader_G);
+        RecPurHeader_G.SetHideValidationDialog(TRUE);
+        RecPurHeader_G.INIT;
+        RecPurHeader_G."Document Type" := RecPurHeader_G."Document Type"::Invoice;
+        RecPurHeader_G."No." := Text8053018;
+        RecPurHeader_G.SetHideCollectifChoice(TRUE);
+
+        RecPurHeader_G.INSERT(TRUE);
+        RecPurHeader_G.VALIDATE("Posting Date", PostingDateReq_G);
+        RecPurHeader_G."Document Type" := RecPurHeader_G."Document Type"::Invoice;
+        RecPurHeader_G.VALIDATE("Buy-from Vendor No.", CMCPostedReceipts_G."Vendor No.");
+        RecPurHeader_G."Collection Invoice Type" := RecPurHeader_G."Collection Invoice Type"::Collection;
+        RecPurHeader_G."CMC Campaign No." := CMCPostedReceipts_G."Campaign No.";
+        RecPurHeader_G."Species Code" := CMCPostedReceipts_G."Species Code";
+
+        RecPurHeader_G.VALIDATE("Document Date", DocDateReq_G);
+
+        IF recCMCSetup_G."Use Cereals Invoicing Schedule" THEN BEGIN //cas du planning
+          IF CollContract_G.GET(recPostedRecLine_P."Contract No.") THEN BEGIN
+            // date nulle dans contrat ou date < date demand'e
+            IF (CollContract_G."Due Date" = 0D) OR (CollContract_G."Due Date" <= ReceiptDate_G) THEN BEGIN
+              CerealsInvSch_L.GET(CampaingCode_G, ReceiptDate_G); // on prends 'ch'ance planning
+              RecPurHeader_G.VALIDATE("Due Date", CerealsInvSch_L."Due Date");
+            END ELSE BEGIN  // date ok dans contrat
+              CLEAR(DueDate_L);
+              CerealsInvSch_L.RESET;
+              CerealsInvSch_L.SETRANGE("Campaign No.", CampaingCode_G);
+              CerealsInvSch_L.SETRANGE("Collect Ending Date", 0D, CollContract_G."Due Date"); // sur date 'ch'ance contrat
+              IF CerealsInvSch_L.FINDLAST THEN
+                RecPurHeader_G.VALIDATE("Due Date", CerealsInvSch_L."Due Date")
+              ELSE BEGIN // rien au plannig comme date nulle
+                CerealsInvSch_L.GET(CampaingCode_G, ReceiptDate_G);
+                RecPurHeader_G.VALIDATE("Due Date", CerealsInvSch_L."Due Date");
+              END;
+            END;
+          END;
+        END ELSE BEGIN
+          IF CollContract_G.GET(recPostedRecLine_P."Contract No.") THEN BEGIN
+            IF (CollContract_G."Due Date" >= RecPurHeader_G."Posting Date") THEN
+              RecPurHeader_G.VALIDATE("Due Date", CollContract_G."Due Date");
+          END;
+          IF DueDate_G <> 0D THEN
+            RecPurHeader_G.VALIDATE("Due Date", DueDate_G);
+        END;
+        CMCCreateCollectInvoiceOpt_G.InfoToHeader(RecPurHeader_G,recPostedRecLine_P); // 20151203-Wi00-ADV-2465-JLT01
+        RecPurHeader_G.MODIFY(TRUE);
+
+        NextNo_G := 10000;
+        PreviousVendor_G := CMCPostedReceipts_G."Vendor No.";
+        PreviousItem_G := recPostedRecLine_P."Item Contract No.";
+        PreviousContrat_G := recPostedRecLine_P."Contract No.";
+      END;
+
+      // --------------------------------------------------------------------
+      // Mise . jour TEMPORAIRE de la r'ception Valid'e
+      // --------------------------------------------------------------------
+      recPostedReceiptsLine_L.GET(recPostedRecLine_P."Receipt Type",recPostedRecLine_P."No.",recPostedRecLine_P."Line No.");
+      recPostedReceiptsLine_L."Purchase Document Type" := recPostedReceiptsLine_L."Purchase Document Type"::Invoice;
+      recPostedReceiptsLine_L."Purchase Document No." := RecPurHeader_G."No.";
+      recPostedReceiptsLine_L.MODIFY;
+      // --------------------------------------------------------------------
+
+      // --------------------------------------------------------------------
+      // Cr'ation Ligne Facture pour Article collect' SI NON FACTUREE
+      // --------------------------------------------------------------------
+      IF (PreviousVariety_G = '') OR ((PreviousVariety_G = VNR_G) AND  (recPostedRecLine_P."Variety Code"<>'')) THEN BEGIN
+        CLEAR(RecPurLine_G);
+        RecPurLine_G.INIT;
+        RecPurLine_G."Document Type" := RecPurHeader_G."Document Type";
+        RecPurLine_G."Document No." := RecPurHeader_G."No.";
+        RecPurLine_G."Line No." := NextNo_G;
+        RecPurLine_G.Description := '';
+        NextNo_G += 10000;
+        RecPurLine_G.INSERT(TRUE);
+        RecPurLine_G.INIT;
+        RecPurLine_G."Document Type" := RecPurHeader_G."Document Type";
+        RecPurLine_G."Document No." := RecPurHeader_G."No.";
+        RecPurLine_G."Line No." := NextNo_G;
+
+        NextNo_G += 10000;
+        RecPurLine_G.Type := RecPurLine_G.Type::" ";
+        IF Variety_L.GET(recPostedRecLine_P."Variety Code") THEN BEGIN
+          RecPurLine_G.Description := COPYSTR(STRSUBSTNO(Text8053017, Variety_L."Variety Code", Variety_L.Description), 1, 50);
+          PreviousVariety_G := recPostedRecLine_P."Variety Code";
+        END ELSE BEGIN
+          RecPurLine_G.Description := Text8053016;
+          PreviousVariety_G := VNR_G;
+        END;
+        // --> 20150312-CER15-CMC02.02.00-2820-FHS01
+        //IF recPostedRecLine_P."VAT Bus. Posting Group" <> '' THEN
+        //  RecPurLine_G.VALIDATE("VAT Bus. Posting Group", recPostedRecLine_P."VAT Bus. Posting Group");
+        // <-- 20150312-CER15-CMC02.02.00-2820-FHS01
+
+      RecPurLine_G.INSERT(TRUE);
+      END;
+
+      CLEAR(RecPurLine_G);
+      RecPurLine_G.INIT;
+      RecPurLine_G."Document Type" := RecPurHeader_G."Document Type";
+      RecPurLine_G."Document No." := RecPurHeader_G."No.";
+      RecPurLine_G."Line No." := NextNo_G;
+      NextNo_G += 10000;
+      RecPurLine_G.Type := RecPurLine_G.Type::" ";
+
+      RecPurLine_G."Collection Recept No." := CMCPostedReceipts_G."No.";
+      // mettre la ligne
+      RecPurLine_G.INSERT(TRUE);
+
+      ItemInvoiced_G := TRUE;
+      CLEAR(RecPurLine_G);
+      RecPurLine_G.INIT;
+      RecPurLine_G."Document Type" := RecPurHeader_G."Document Type";
+      RecPurLine_G."Document No." := RecPurHeader_G."No.";
+      RecPurLine_G.SETRANGE("Document Type", RecPurHeader_G."Document Type");
+      RecPurLine_G.SETRANGE("Document No.", RecPurHeader_G."No.");
+      recPostedRecLine_P.Invoiced := FALSE;
+
+      recPostedRecLine_P.InsertInvLineFromRcptLine(RecPurLine_G, TempDocDim_G, TMPAverageReceiptAnalysis_G, PriceType_G);
+
+      recPostedRecLine_P.SETRANGE("Line No.");
+      recPostedRecLine_P.SETRANGE("No.");
+      RecPurLine_G.SETRANGE("Document Type", RecPurHeader_G."Document Type");
+      RecPurLine_G.SETRANGE("Document No.", RecPurHeader_G."No.");
+      IF RecPurLine_G.FINDLAST THEN
+        NextNo_G := RecPurLine_G."Line No." + 10000
+      ELSE
+        NextNo_G := 10000;
+    END;
+
+    PROCEDURE CreateInvoice@8053005();
+    VAR
+      recPurchLineVariatPrice_L@8053000 : Record 8053005;
+      recPostedReceiptsLine_L@8053001 : Record 8053104;
+      DocDim_L@8053002 : Record 357;
+    BEGIN
+      RecPurHeaderInsert_G.INIT;
+      RecPurHeaderInsert_G.COPY(RecPurHeader_G);
+      RecPurHeaderInsert_G."Document Type" := RecPurHeaderInsert_G."Document Type"::Invoice;
+      RecPurHeaderInsert_G."No." := '';
+      RecPurHeaderInsert_G.SetHideCollectifChoice(TRUE);
+
+      RecPurHeaderInsert_G.INSERT(TRUE);
+
+      RecPurHeaderInsert_G.VALIDATE("Posting Date", PostingDateReq_G);
+      RecPurHeaderInsert_G.VALIDATE("Document Date", DocDateReq_G);
+      RecPurHeaderInsert_G.VALIDATE("Due Date", RecPurHeader_G."Due Date");
+      RecPurHeaderInsert_G."Vendor Invoice No." := RecPurHeaderInsert_G."No.";
+
+      RecPurHeaderInsert_G."Grouping Code" := GroupingCode_G;
+
+      RecPurHeaderInsert_G.MODIFY(TRUE);
+
+      CLEAR(RecPurLine_G);
+      RecPurLine_G.RESET;
+      RecPurLine_G.SETRANGE("Document Type", RecPurHeader_G."Document Type");
+      RecPurLine_G.SETRANGE("Document No.", RecPurHeader_G."No.");
+      IF RecPurLine_G.FINDSET(FALSE, FALSE) THEN
+        REPEAT
+          RecPurLineInsert_G.INIT;
+          RecPurLineInsert_G.TRANSFERFIELDS(RecPurLine_G);
+          RecPurLineInsert_G."Document No." := RecPurHeaderInsert_G."No.";
+          RecPurLineInsert_G.INSERT(TRUE);
+        UNTIL RecPurLine_G.NEXT=0;
+
+      recPurchLineVariatPrice_G.RESET;
+      recPurchLineVariatPrice_G.SETRANGE("Document Type", recPurchLineVariatPrice_G."Document Type"::Invoice);
+      recPurchLineVariatPrice_G.SETFILTER("Document No.", RecPurHeader_G."No.");
+      IF recPurchLineVariatPrice_G.FINDSET(FALSE, FALSE) THEN
+        REPEAT
+          recPurchLineVariatPrice_L.INIT;
+          recPurchLineVariatPrice_L.TRANSFERFIELDS(recPurchLineVariatPrice_G);
+          recPurchLineVariatPrice_L."Document Type" := recPurchLineVariatPrice_G."Document Type"::Invoice;
+          recPurchLineVariatPrice_L."Document No." := RecPurHeaderInsert_G."No.";
+          recPurchLineVariatPrice_L.INSERT(TRUE);
+        UNTIL recPurchLineVariatPrice_G.NEXT = 0;
+
+      TempDocDim_G.RESET;
+      TempDocDim_G.SETRANGE("Table ID", 39);
+      TempDocDim_G.SETRANGE("Document Type", TempDocDim_G."Document Type"::Invoice);
+      TempDocDim_G.SETRANGE("Document No.", RecPurHeader_G."No.");
+      IF TempDocDim_G.FINDSET THEN
+        REPEAT
+          DocDim_L.INIT;
+          DocDim_L.TRANSFERFIELDS(TempDocDim_G);
+          DocDim_L.VALIDATE("Table ID", 39);
+          DocDim_L.VALIDATE("Document Type", DocDim_L."Document Type"::Invoice);
+          DocDim_L.VALIDATE("Document No.", RecPurHeaderInsert_G."No.");
+          DocDim_L.VALIDATE("Line No." , TempDocDim_G."Line No.");
+          DocDim_L.VALIDATE("Dimension Code", TempDocDim_G."Dimension Code");
+          DocDim_L.VALIDATE("Dimension Value Code", TempDocDim_G."Dimension Value Code");
+          DocDim_L.INSERT(TRUE);
+        UNTIL TempDocDim_G.NEXT = 0;
+        TempDocDim_G.DELETEALL(TRUE);
+
+      // --------------------------------------------------------------------
+      // Mise . jour de la r'ception Valid'e
+      // --------------------------------------------------------------------
+      recPostedReceiptsLine_L.SETCURRENTKEY("Purchase Document No.");
+      recPostedReceiptsLine_L.SETRANGE("Purchase Document No.", RecPurHeader_G."No.");
+      recPostedReceiptsLine_L.MODIFYALL("Purchase Document Type", RecPurHeaderInsert_G."Document Type", FALSE);
+      recPostedReceiptsLine_L.MODIFYALL("Purchase Document No.", RecPurHeaderInsert_G."No.", FALSE);
+      // --------------------------------------------------------------------
+
+      recPurchLineVariatPrice_G.DELETEALL(TRUE);
+      RecPurHeader_G.DELETE(TRUE);
+      CLEAR(RecPurHeader_G);
+
+      InvoiceCount_G := InvoiceCount_G + 1;
+    END;
+
+    PROCEDURE CreateCreditMemo@8053006();
+    VAR
+      recPurchLineVariatPrice_L@8053000 : Record 8053005;
+      recPostedReceiptsLine_L@8053001 : Record 8053104;
+      DocDim_L@8053002 : Record 357;
+    BEGIN
+      RecPurHeaderInsert_G.INIT;
+      RecPurHeaderInsert_G.COPY(RecPurHeader_G);
+      RecPurHeaderInsert_G."Document Type" := RecPurHeaderInsert_G."Document Type"::"Credit Memo";
+      RecPurHeaderInsert_G."No." := '';
+      RecPurHeaderInsert_G."Pmt. Discount Date" := 0D;
+      RecPurHeaderInsert_G.SetHideCollectifChoice(TRUE);
+
+      RecPurHeaderInsert_G.INSERT(TRUE);
+
+      RecPurHeaderInsert_G.VALIDATE("Posting Date", PostingDateReq_G);
+      RecPurHeaderInsert_G.VALIDATE("Document Date", DocDateReq_G);
+      RecPurHeaderInsert_G.VALIDATE("Due Date", RecPurHeader_G."Due Date");
+
+      RecPurHeaderInsert_G."Grouping Code" := GroupingCode_G;
+
+      RecPurHeaderInsert_G.MODIFY(TRUE);
+
+      CLEAR(RecPurLine_G);
+      RecPurLine_G.RESET;
+      RecPurLine_G.SETRANGE("Document Type", RecPurHeader_G."Document Type");
+      RecPurLine_G.SETRANGE("Document No.", RecPurHeader_G."No.");
+      IF RecPurLine_G.FINDSET(FALSE, FALSE) THEN
+        REPEAT
+          RecPurLineInsert_G.INIT;
+          RecPurLineInsert_G.TRANSFERFIELDS(RecPurLine_G);
+          RecPurLineInsert_G."Document Type" := RecPurHeaderInsert_G."Document Type";
+          RecPurLineInsert_G."Document No." := RecPurHeaderInsert_G."No.";
+          RecPurLineInsert_G.INSERT(TRUE);
+          IF RecPurLine_G.Type <> RecPurLine_G.Type::" " THEN BEGIN
+            RecPurLineInsert_G.VALIDATE("Qty. to Receive", 0);
+            RecPurLineInsert_G.VALIDATE(Quantity, -RecPurLine_G.Quantity);
+            RecPurLineInsert_G.VALIDATE("Direct Unit Cost", RecPurLine_G."Direct Unit Cost");
+            RecPurLineInsert_G."Tax Vat Base Amount" := -RecPurLine_G."Tax Vat Base Amount";
+            RecPurLineInsert_G.VALIDATE("VAT Base Amount", -RecPurLineInsert_G."VAT Base Amount");
+          END;
+          RecPurLineInsert_G.MODIFY(TRUE);
+        UNTIL RecPurLine_G.NEXT = 0;
+
+      recPurchLineVariatPrice_G.RESET;
+      recPurchLineVariatPrice_G.SETRANGE("Document Type", recPurchLineVariatPrice_G."Document Type"::Invoice);
+      recPurchLineVariatPrice_G.SETRANGE("Document No.", RecPurHeader_G."No.");
+      IF recPurchLineVariatPrice_G.FINDSET(FALSE, FALSE) THEN
+        REPEAT
+          recPurchLineVariatPrice_L.INIT;
+          recPurchLineVariatPrice_L.TRANSFERFIELDS(recPurchLineVariatPrice_G);
+          recPurchLineVariatPrice_L."Document Type" := recPurchLineVariatPrice_G."Document Type"::"Credit Memo";
+          recPurchLineVariatPrice_L."Document No." := RecPurHeaderInsert_G."No.";
+          recPurchLineVariatPrice_L.INSERT(TRUE);
+        UNTIL recPurchLineVariatPrice_G.NEXT = 0;
+
+      TempDocDim_G.RESET;
+      TempDocDim_G.SETRANGE("Table ID", 39);
+      TempDocDim_G.SETRANGE("Document Type", TempDocDim_G."Document Type"::Invoice);
+      TempDocDim_G.SETRANGE("Document No.", RecPurHeader_G."No.");
+      IF TempDocDim_G.FINDSET THEN
+        REPEAT
+          DocDim_L.INIT;
+          DocDim_L.TRANSFERFIELDS(TempDocDim_G);
+          DocDim_L."Document Type" := DocDim_L."Document Type"::"Credit Memo";
+          DocDim_L."Document No." := RecPurHeaderInsert_G."No.";
+          DocDim_L.INSERT(TRUE);
+        UNTIL TempDocDim_G.NEXT = 0;
+        TempDocDim_G.DELETEALL(TRUE);
+
+
+      // --------------------------------------------------------------------
+      // Mise . jour de la r'ception Valid'e
+      // --------------------------------------------------------------------
+      recPostedReceiptsLine_L.SETCURRENTKEY("Purchase Document No.");
+      recPostedReceiptsLine_L.SETRANGE("Purchase Document No.", RecPurHeader_G."No.");
+      recPostedReceiptsLine_L.MODIFYALL("Purchase Document Type", RecPurHeaderInsert_G."Document Type", FALSE);
+      recPostedReceiptsLine_L.MODIFYALL("Purchase Document No.", RecPurHeaderInsert_G."No.", FALSE);
+      // --------------------------------------------------------------------
+
+      recPurchLineVariatPrice_G.DELETEALL(TRUE);
+      RecPurHeader_G.DELETE(TRUE);
+      CLEAR(RecPurHeader_G);
+
+      CrMemoCount_G := CrMemoCount_G + 1;
+    END;
+
+    PROCEDURE IsLineToInvoice@8053007() : Boolean;
+    VAR
+      PostedReceiptLine_L@8053000 : Record 8052997;
+    BEGIN
+      PostedReceiptLine_L.RESET;
+      PostedReceiptLine_L.SETCURRENTKEY("Receipt Type", "Posted Receipt No.");
+      PostedReceiptLine_L.SETRANGE("Receipt Type", CMCPostedReceipts_G."Receipt Type");
+      PostedReceiptLine_L.SETRANGE("Posted Receipt No.", CMCPostedReceipts_G."No.");
+      PostedReceiptLine_L.SETRANGE(Invoiced, FALSE);
+      PostedReceiptLine_L.SETFILTER("Line Type", '<>%1', PostedReceiptLine_L."Line Type"::Complement);
+      IF PostedReceiptLine_L.FINDFIRST THEN
+        EXIT(TRUE);
+    END;
+
+    PROCEDURE Init@8053004(recPurchSetup_P@8053001 : Record 312;recCMCSetup_P@8053000 : Record 8052982;PostingDateReq_P@8053002 : Date;DocDateReq_P@8053003 : Date;ReceiptDate_P@8053004 : Date;DueDate_P@8053005 : Date;GroupingCode_P@8053006 : Code[10];VNR_P@8053007 : Code[10];CampaingCode_P@8053008 : Code[10]);
+    BEGIN
+      TMPAverageReceiptAnalysis_G.RESET;
+      TMPAverageReceiptAnalysis_G.DELETEALL;
+
+      PreviousVariety_G := '';
+
+      PurchSetup_G := recPurchSetup_P;
+      recCMCSetup_G := recCMCSetup_P;
+
+      PostingDateReq_G := PostingDateReq_P;
+      DocDateReq_G := DocDateReq_P;
+      ReceiptDate_G := ReceiptDate_P;
+      DueDate_G := DueDate_P;
+      GroupingCode_G := GroupingCode_P;
+      VNR_G := VNR_P;
+      CampaingCode_G := CampaingCode_P;
+    END;
+
+    PROCEDURE SetDataItemFilter@8053009(VAR recPostedReceipts_P@8053000 : Record 8052995);
+    BEGIN
+      CMCPostedReceipts_G.COPYFILTERS(recPostedReceipts_P);
+    END;
+
+    PROCEDURE ResetPrevious@8053000();
+    BEGIN
+      PreviousContrat_G := '';
+      PreviousVendor_G := '';
+      PreviousItem_G := '';
+      PreviousVariety_G := '';
+    END;
+
+    PROCEDURE GetResult@8053003(VAR InvoiceCountVar_P@8053000 : Integer;VAR CrMemoCountVar_P@8053001 : Integer);
+    BEGIN
+      InvoiceCountVar_P += InvoiceCount_G;
+      CrMemoCountVar_P += CrMemoCount_G;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+
+      20141117-CER15-CMC02.02.00-2584-FHS01 : NEWOBJ (Nouvelle version optimis'e)
+      20150108-FIN29/001-CMC02.02.00-FHS01 : ADDCODE (Gestion VAT Bus. Posting Group)
+      20150312-CER15-CMC02.02.00-2820-FHS01 : MODCODE (rSgle un problSme de groupe compta TVA)
+      20151203-Wi00-ADV-2465-JLT01 : ADDFUNC InfoToHeader - R'cup'rer dans ent^tes Activit',Famille, s-Famille + Campagne
+      20170801-WI00-ADV01.01.00-28717-DRN : MODCODE (Correction bug si enregistrement T39 avec Document Type=Devis et N›='' existe)
+      // <-- 3LI BEGIN
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,175 @@
+OBJECT Codeunit 1230 SEPA DD-Export File
+{
+  OBJECT-PROPERTIES
+  {
+    Date=30/10/14;
+    Heure=00:00:00;
+    Liste versions=TFS288071,CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    TableNo=1208;
+    OnRun=VAR
+            DirectDebitCollection@1003 : Record 1207;
+            DirectDebitCollectionEntry@1005 : Record 1208;
+            BankAccount@1004 : Record 270;
+            DDExportXMLPortID@1000 : Integer;
+          BEGIN
+            DirectDebitCollectionEntry.COPY(Rec);
+            TESTFIELD("Direct Debit Collection No.");
+            DirectDebitCollection.GET("Direct Debit Collection No.");
+            DirectDebitCollection.TESTFIELD("To Bank Account No.");
+            BankAccount.GET(DirectDebitCollection."To Bank Account No.");
+            BankAccount.TESTFIELD(IBAN);
+            BankAccount.TESTFIELD("SWIFT Code");
+            DirectDebitCollection.LOCKTABLE;
+            DirectDebitCollection.DeletePaymentFileErrors;
+            COMMIT;
+            DDExportXMLPortID := XMLPORT::"SEPA DD pain.008.001.02";
+            // --> 20140522-WI00-CMC02.02.00-2069-AKH01
+            CASE TRUE OF
+              USeFromReport_G:
+              BEGIN
+                IF NOT ExportFromReport(Rec,DDExportXMLPortID,DirectDebitCollection.Identifier) THEN
+                  ERROR('');
+              END
+              ELSE
+            // <-- 20140522-WI00-CMC02.02.00-2069-AKH01
+                IF NOT Export(Rec,DDExportXMLPortID,DirectDebitCollection.Identifier) THEN
+                  ERROR('');
+            // --> 20140522-WI00-CMC02.02.00-2069-AKH01
+            END;
+            // <-- 20140522-WI00-CMC02.02.00-2069-AKH01
+            DirectDebitCollectionEntry.SETRANGE("Direct Debit Collection No.",DirectDebitCollection."No.");
+            DirectDebitCollectionEntry.MODIFYALL(Status,DirectDebitCollectionEntry.Status::"File Created");
+            DirectDebitCollection.Status := DirectDebitCollection.Status::"File Created";
+            DirectDebitCollection.MODIFY;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      USeFromReport_G@8053000 : Boolean;
+      FileName_G@8053001 : Text[1024];
+
+    PROCEDURE Export@2(VAR DirectDebitCollectionEntry@1006 : Record 1208;XMLPortID@1004 : Integer;FileName@1003 : Text[1024]) : Boolean;
+    VAR
+      TempBlob@1002 : Record 99008535;
+      FileManagement@1001 : Codeunit 419;
+      OutStr@1000 : OutStream;
+    BEGIN
+      TempBlob.INIT;
+      TempBlob.Blob.CREATEOUTSTREAM(OutStr);
+      XMLPORT.EXPORT(XMLPortID,OutStr,DirectDebitCollectionEntry);
+      PostProcessXMLDocument(TempBlob);
+      EXIT(FileManagement.BLOBExport(TempBlob,STRSUBSTNO('%1.XML',FileName),TRUE) <> '');
+    END;
+
+    LOCAL PROCEDURE PostProcessXMLDocument@4(VAR TempBlob@1000 : Record 99008535);
+    VAR
+      XMLDoc@1001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{F6D90F11-9C73-11D3-B32E-00C04F990BB4}:'Microsoft XML, v3.0'.DOMDocument";
+      XMLNode@1002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode";
+      InStr@1003 : InStream;
+      OutStr@1004 : OutStream;
+    BEGIN
+      CREATE(XMLDoc);
+      TempBlob.Blob.CREATEINSTREAM(InStr);
+      XMLDoc.load(InStr);
+      XMLNode := XMLDoc.documentElement;
+      DeleteEmptyXMLNodes(XMLNode);
+      CLEAR(TempBlob);
+      TempBlob.Blob.CREATEOUTSTREAM(OutStr);
+      XMLDoc.save(OutStr);
+    END;
+
+    LOCAL PROCEDURE DeleteEmptyXMLNodes@3(VAR XMLNode@1000 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode");
+    VAR
+      XMLChildNode@1001 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF80-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNode";
+      XMLDomNodeList@1002 : Automation "{F5078F18-C551-11D3-89B9-0000F81FE221} 3.0:{2933BF82-7B36-11D2-B20E-00C04F983E60}:'Microsoft XML, v3.0'.IXMLDOMNodeList";
+      i@1003 : Integer;
+    BEGIN
+      IF XMLNode.nodeTypeString = 'element' THEN BEGIN
+        IF NOT XMLNode.hasChildNodes THEN BEGIN
+          IF (XMLNode.xml = '<' + XMLNode.nodeName + ' xmlns="' + XMLNode.namespaceURI + '"/>') THEN
+            XMLNode := XMLNode.parentNode.removeChild(XMLNode);
+        END ELSE BEGIN
+          XMLDomNodeList := XMLNode.childNodes;
+          FOR i := 1 TO XMLDomNodeList.length DO BEGIN
+            XMLChildNode := XMLDomNodeList.nextNode();
+            DeleteEmptyXMLNodes(XMLChildNode);
+          END;
+          IF NOT XMLNode.hasChildNodes THEN
+            XMLNode := XMLNode.parentNode.removeChild(XMLNode);
+        END;
+      END;
+    END;
+
+    PROCEDURE SetReportParam@8053001(USeFromReport_P@8053001 : Boolean;FileName_P@8053000 : Text[1024]);
+    BEGIN
+      USeFromReport_G := USeFromReport_P;
+      FileName_G := FileName_P;
+    END;
+
+    PROCEDURE ExportFromReport@8053000(VAR DirectDebitCollectionEntry@1006 : Record 1208;XMLPortID@1004 : Integer;FileName@1003 : Text[1024]) : Boolean;
+    VAR
+      SEPA@8053005 : XMLport 1010;
+      GLSetup_L@8053004 : Record 98;
+      Outstream_L@8053003 : OutStream;
+      File_L@8053002 : File;
+      ToFile_L@8053001 : Text[260];
+      ToFolder_L@8053000 : Text[1024];
+      FileName_L@8053006 : Text[260];
+      Text001_L@8053007 : TextConst 'ENU=Text Files|*.txt|All Files|*.*;FRA=Fichiers texte|*.txt|Tous les fichiers|*.*';
+      "3TierAutomationMgt_L"@8053008 : Codeunit 419;
+      Text000_L@8053009 : TextConst 'ENU=Save As;FRA=Enregistrer sous';
+    BEGIN
+      // --> 20140522-WI00-CMC02.02.00-2069-AKH01
+      CLEAR(Outstream_L);
+      // --> 20140711-WI00-CMC02.02.00-BRA01
+      IF ISSERVICETIER THEN BEGIN
+        FileName_L := "3TierAutomationMgt_L".EnvironFileName('','');
+        File_L.CREATE(FileName_L );
+      END ELSE
+      // <-- 20140711-WI00-CMC02.02.00-BRA01
+      File_L.CREATE(FileName_G );
+      File_L.CREATEOUTSTREAM(Outstream_L);
+      SEPA.SETDESTINATION(Outstream_L);
+      SEPA.SETTABLEVIEW(DirectDebitCollectionEntry);
+      SEPA.EXPORT;
+      File_L.CLOSE;
+      // <-- 20140522-WI00-CMC02.02.00-2069-AKH01
+
+      // --> 20140711-WI00-CMC02.02.00-BRA01
+      IF ISSERVICETIER THEN
+        DownloadToFile(FileName_L,FileName_G);
+      EXIT(TRUE);
+      // <-- 20140711-WI00-CMC02.02.00-BRA01
+    END;
+
+    LOCAL PROCEDURE DownloadToFile@1010000(TempFileName@1010000 : Text[1024];FileName@1010001 : Text[1024]);
+    VAR
+      TierAutoMgt@1120000 : Codeunit 419;
+      FileObject@8053000 : Automation "{F935DC20-1CF0-11D0-ADB9-00C04FD58A0B} 1.0:{0D43FE01-F093-11CF-8940-00A0C9054228}:'Windows Script Host Object Model'.FileSystemObject";
+    BEGIN
+      TempFileName := TierAutoMgt.DownloadTempFile(TempFileName);
+      IF ISCLEAR(FileObject) THEN
+        CREATE(FileObject,TRUE,TRUE);
+      IF FileObject.FileExists(FileName) THEN
+        FileObject.DeleteFile(FileName,TRUE);
+      FileObject.MoveFile(TempFileName,FileName);
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+
+      20140522-WI00-CMC02.02.00-2069-AKH01 : ADDCODE(gestion des fichiers de pr'lSvement SEPA)
+      20140711-WI00-CMC02.02.00-BRA01 : MODCODE (DOWNLOAD et pbm li' . la cr'ation de fichier sur autre serveur et chgt de statut)
+
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

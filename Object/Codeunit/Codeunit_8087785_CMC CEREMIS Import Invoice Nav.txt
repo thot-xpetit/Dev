@@ -1,0 +1,588 @@
+OBJECT Codeunit 8087785 CMC CEREMIS Import Invoice Nav
+{
+  OBJECT-PROPERTIES
+  {
+    Date=01/06/26;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    TableNo=8053407;
+    OnRun=VAR
+            "<-- 3LI LOCALS -->"@1000000002 : Integer;
+            TableSetup_L@1000000001 : Record 8053406;
+            TableSasImport_L@1000000000 : Record 8053407;
+            TableSasImport2_L@1000000017 : Record 8053407;
+            TableExpBL_L@1000000030 : Record 8053454;
+            TableSalesHeader_L@1000000003 : Record 36;
+            TableSalesLine_L@1000000004 : Record 37;
+            TableCeremisItem_L@1000000019 : Record 8087763;
+            TableSalesContract_L@1000000028 : Record 8053012;
+            TableItemCharge_L@1000000031 : Record 5809;
+            TemDocDim_L@1000000034 : TEMPORARY Record 357;
+            TableClient_L@1000000037 : Record 18;
+            TablePostDeliv_L@1000000038 : Record 8053014;
+            TableDftDim_L@1000000041 : Record 352;
+            CMCDimension_L@1000000033 : Codeunit 8053004;
+            EnteteCree_L@1000000005 : Boolean;
+            Line_L@1000000006 : Integer;
+            Result_L@1000000007 : Text[250];
+            CodeUnit_L@1000000008 : Integer;
+            ConnectorName_L@1000000013 : Code[20];
+            ImpExpFolder_L@1000000012 : Text[250];
+            LogFolder_L@1000000011 : Text[250];
+            ExtensionFile_L@1000000010 : Text[10];
+            PrefixFile_L@1000000009 : Text[10];
+            Magasin_L@1000000014 : Code[10];
+            Payment_L@1000000015 : Code[20];
+            Tva_L@1000000016 : Code[10];
+            Taux_L@1000000018 : Decimal;
+            ProduitPrec_L@1000000020 : Text[30];
+            LocationPrec_L@1000000021 : Code[10];
+            ClientLivPrec_L@1000000025 : Code[20];
+            ClientLiv_L@1000000026 : Code[20];
+            Trait_L@1000000022 : Boolean;
+            Boucle_L@1000000023 : Integer;
+            Valid_L@1000000024 : Boolean;
+            Contract_L@1000000027 : Code[20];
+            CustRef_L@1000000029 : Text[30];
+            Produit_L@1000000032 : Code[20];
+            Bon_L@1000000035 : Code[8];
+            cduReleaseSalDoc_L@1000000036 : Codeunit 414;
+            Qte_L@1000000039 : Decimal;
+            Signe_L@1000000040 : Integer;
+            Ana2_L@1000000042 : Code[20];
+          BEGIN
+            EnteteCree_L := FALSE;
+
+            // 2 Boucle : 1 ==> Contr"le, 2 Enregistre.
+            Boucle_L := 1;
+            Valid_L := FALSE;
+            CLEAR(ProduitPrec_L);
+            WHILE (Boucle_L <= 2) DO BEGIN
+              CLEAR(TableSasImport_L);
+              TableSasImport_L.SETRANGE("Integration Date", 0D, 0D);
+              TableSasImport_L.SETRANGE(Type, Type);
+              TableSasImport_L.SETRANGE(No, No);
+
+              IF TableSasImport_L.FINDSET THEN BEGIN
+                IF Boucle_L = 1 THEN BEGIN
+                  IF TableSetup_L.FINDFIRST THEN BEGIN
+                  END;
+                  CodeUnit_L := TableSetup_L."Invoice CodeUnit Connecteur";
+                  MoteurInterface_G.GetParameter(CodeUnit_L, ConnectorName_L, ImpExpFolder_L, LogFolder_L, ExtensionFile_L, PrefixFile_L);
+                  MoteurInterface_G.GetTemplatesCode (ConnectorName_L, ItemTemplateCode_G, CustomerTemplateCode_G, VendorTemplateCode_G,
+                    ContactTemplateCode_G, AccountTemplateCode_G, GlobalTemplateCode_G);
+                  // R'cup'ration N› contrat
+                  CLEAR(TableSasImport2_L);
+                  IF NOT TableSasImport2_L.GET(TableSasImport_L.Type::Contract, TableSasImport_L."Contract No",
+                    TableSasImport_L."Sub-Contract No") THEN BEGIN
+                    ERROR(COPYSTR(STRSUBSTNO(Text0014, FORMAT(TableSasImport_L.Type::Contract) + '-' + TableSasImport_L."Contract No" + '-' +
+                      TableSasImport_L."Sub-Contract No", TableSasImport_L.TABLECAPTION, TableSasImport_L.No, TableSasImport_L."Sub-No"),
+                      1, MAXSTRLEN(Result_L)));
+                  END ELSE BEGIN
+                    Contract_L := TableSasImport2_L."NAV No";
+                    IF NOT TableSalesContract_L.GET(Contract_L) THEN BEGIN
+                      ERROR(COPYSTR(STRSUBSTNO(Text0014, Contract_L, TableSalesContract_L.TABLECAPTION,
+                        TableSasImport_L.No, TableSasImport_L."Sub-No"), 1, MAXSTRLEN(Result_L)));
+                    END ELSE BEGIN
+                      CustRef_L := TableSalesContract_L."Customer Reference";
+                    END;
+                  END;
+                END;
+
+                REPEAT
+                  // Contr"le
+                  IF NOT EVALUATE(Line_L, TableSasImport_L."Sub-No") THEN BEGIN
+                    ERROR(COPYSTR(STRSUBSTNO(Text0006, TableSasImport_L.FIELDCAPTION("Sub-No"),
+                      TableSasImport_L."Sub-No", TableSasImport_L.No, TableSasImport_L."Sub-No"), 1, MAXSTRLEN(Result_L)));
+                  END;
+
+                  //-->20240620-Int07-CMC02.02.00-CDL011
+                  IF NOT TableSetup_L."Invoice location Posted Delive" THEN BEGIN
+                  //<--20240620-Int07-CMC02.02.00-CDL011
+                    IF LocationPrec_L <> TableSasImport_L."Location Code" THEN BEGIN
+                      Magasin_L := MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G, 'Location', 'Code',
+                        TableSasImport_L."Location Code", TRUE, TRUE);
+                      IF Magasin_L = '' THEN BEGIN
+                        ERROR(COPYSTR(STRSUBSTNO(Text0013, TableSasImport_L.FIELDCAPTION("Location Code"),
+                          TableSasImport_L."Location Code", TableSasImport_L.No, TableSasImport_L."Sub-No"), 1, MAXSTRLEN(Result_L)));
+                      END;
+                      LocationPrec_L := TableSasImport_L."Location Code";
+                    END;
+                  //-->20240620-Int07-CMC02.02.00-CDL011
+                  END;
+                  //<--20240620-Int07-CMC02.02.00-CDL011
+
+                  // Non mode de paiement : Celui du client.
+                  //Payment_L := MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G, 'Payment Method', 'Code',
+                  //  TableSasImport_L."Payment Method", TRUE, TRUE);
+                  //IF Payment_L = '' THEN BEGIN
+                  //  ERROR(COPYSTR(STRSUBSTNO(Text0013, TableSasImport_L.FIELDCAPTION("Payment Method"),
+                  //    TableSasImport_L."Payment Method", TableSasImport_L.No, TableSasImport_L."Sub-No"), 1, MAXSTRLEN(Result_L)));
+                  //END;
+                  IF TableSasImport_L."Price incident Code" = 'PRI' THEN BEGIN
+                    // Recherche TVA
+                    CLEAR(Taux_L);
+                    TableSasImport2_L.SETRANGE(Type, TableSasImport_L.Type);
+                    TableSasImport2_L.SETRANGE(No, TableSasImport_L.No);
+                    TableSasImport2_L.SETRANGE("Campaign No", TableSasImport_L."Campaign No");
+                    TableSasImport2_L.SETRANGE("Price incident Code", 'TVA');
+                    TableSasImport2_L.SETRANGE("VAT Code", TableSasImport_L."VAT Code");
+                    IF TableSasImport2_L.FINDFIRST() THEN BEGIN
+                      Taux_L := TableSasImport2_L."VAT %";
+                    END;
+                  END;
+
+                  IF TableSasImport_L."VAT Code" = '' THEN BEGIN
+                    CLEAR(Tva_L);
+                  END ELSE BEGIN
+                    Tva_L := MoteurInterface_G.Getcorrespondance(GlobalTemplateCode_G, 'VAT Product Posting Group', 'Code',
+                      FORMAT(Taux_L), TRUE, TRUE);
+                    IF Tva_L = '' THEN BEGIN
+                      ERROR(COPYSTR(STRSUBSTNO(Text0013, TableSasImport_L.FIELDCAPTION("VAT %"),
+                        FORMAT(Taux_L), TableSasImport_L.No, TableSasImport_L."Sub-No"), 1, MAXSTRLEN(Result_L)));
+                    END;
+                  END;
+                  IF ProduitPrec_L <> TableSasImport_L."Item No" THEN BEGIN
+                    IF NOT TableCeremisItem_L.GET(TableSasImport_L."Item No") THEN BEGIN
+                      ERROR(COPYSTR(STRSUBSTNO(Text0014, TableSasImport_L."Item No",
+                        TableCeremisItem_L.TABLECAPTION, TableSasImport_L.No, TableSasImport_L."Sub-No"), 1, MAXSTRLEN(Result_L)));
+                    END;
+                    ProduitPrec_L := TableSasImport_L."Item No";
+                  END;
+            //      IF ClientLivPrec_L <> TableSasImport_L."Ship-to Customer No" THEN BEGIN
+            //        ClientLiv_L := MoteurInterface_G.GetReferentialCorrespondance(CustomerTemplateCode_G, TRUE,
+            //          TableSasImport_L."Ship-to Customer No", TRUE);
+            //        IF ClientLiv_L = '' THEN BEGIN
+            //          ERROR(COPYSTR(STRSUBSTNO(Text0020,
+            //            TableSasImport_L.FIELDCAPTION(TableSasImport_L."Ship-to Customer No"), TableSasImport_L."Ship-to Customer No",
+            //            TableSasImport_L.No) ,1, MAXSTRLEN(Result_L)));
+            //        END;
+            //        ClientLivPrec_L := TableSasImport_L."Ship-to Customer No";
+            //      END;
+
+                  // Si validation
+                  IF Valid_L THEN BEGIN
+                    // Cr'ation de l'ent^te
+                    IF NOT EnteteCree_L THEN BEGIN
+                      EnteteCree_L := TRUE;
+
+                      CLEAR(TableSalesHeader_L);
+                      TableSalesHeader_L.INIT;
+                      TableSalesHeader_L.SetHideValidationDialog(TRUE);
+                      TableSalesHeader_L.SetHideCollectifChoice(TRUE);
+                      IF TableSasImport_L."F/A" = 'A' THEN BEGIN
+                        TableSalesHeader_L.VALIDATE("Document Type", TableSalesHeader_L."Document Type"::"Credit Memo");
+                        Signe_L := -1;
+                        //-->20240614-Int07-CMC02.02.00-CDL009
+                        IF TableSetup_L."Doc. Category Code Credit Memo" <> '' THEN BEGIN
+                          TableSalesHeader_L.VALIDATE("Doc. Category Code", TableSetup_L."Doc. Category Code Credit Memo");
+                        END;
+                        //<--20240614-Int07-CMC02.02.00-CDL009
+                      END ELSE BEGIN
+                        TableSalesHeader_L.VALIDATE("Document Type", TableSalesHeader_L."Document Type"::Invoice);
+                        Signe_L := 1;
+                        //-->20240614-Int07-CMC02.02.00-CDL009
+                        IF TableSetup_L."Doc. Category Code" <> '' THEN BEGIN
+                          TableSalesHeader_L.VALIDATE("Doc. Category Code", TableSetup_L."Doc. Category Code");
+                        END;
+                        //<--20240614-Int07-CMC02.02.00-CDL009
+                      END;
+                      TableSalesHeader_L.VALIDATE("Invoice Type", TableSalesHeader_L."Invoice Type"::Cereal);
+                      TableSalesHeader_L.LOCKTABLE;
+                      TableSalesHeader_L.INSERT(TRUE);
+                      TableSalesHeader_L.VALIDATE("Sell-to Customer No.", TableSetup_L."Bill-to Customer No.");
+                      Payment_L := TableSalesHeader_L."Payment Method Code";
+                      TableSalesHeader_L.VALIDATE("External Document No.", TableSasImport_L.No);
+                      TableSalesHeader_L.VALIDATE("Posting Date", TableSasImport_L."Document Date");
+                      TableSalesHeader_L.VALIDATE("Document Date", TableSasImport_L."Document Date");
+                      // Non mode de paiement : Celui du client.
+            // C01 Pas bonne faire plus loin          TableSalesHeader_L.VALIDATE("Payment Method Code", Payment_L);
+                      TableSalesHeader_L.VALIDATE("CMC Campaign No.", TableSasImport_L."Campaign No");
+            // C01 Pas bonne faire plus loin          TableSalesHeader_L.VALIDATE("Due Date", TableSasImport_L."Due Date");
+                      TableSalesHeader_L.VALIDATE("Posting Description", 'Facture ' + TableSalesHeader_L."Bill-to Name" + ' N.' +
+                        TableSasImport_L.No);
+                      TableSalesHeader_L.VALIDATE("Transport Method", TableSasImport_L."Transport Condition");
+                      TableSalesHeader_L.VALIDATE("Sales Contract No.", Contract_L);
+                      TableSalesHeader_L."Your Reference" := CustRef_L;
+                      TableSalesHeader_L.VALIDATE("Payment Method Code", Payment_L);
+                      TableSalesHeader_L.VALIDATE("Due Date", TableSasImport_L."Due Date");
+                      IF TableSasImport_L."VAT Bus" = 'S' THEN BEGIN
+                        TableSalesHeader_L.VALIDATE("Gen. Bus. Posting Group", TableSetup_L."Customer Posting Group Sus");
+                        TableSalesHeader_L.VALIDATE("VAT Bus. Posting Group", TableSetup_L."VAT Bus. Posting Group Sus");
+                      //-->20150505-Int24-CMC02.02.00-ADVITAM-CDL003
+                      END ELSE BEGIN
+                        IF TableClient_L.GET(TableSalesHeader_L."Bill-to Customer No.") THEN BEGIN
+                          TableSalesHeader_L.VALIDATE("Gen. Bus. Posting Group", TableClient_L."Gen. Bus. Posting Group");
+                          TableSalesHeader_L.VALIDATE("VAT Bus. Posting Group", TableClient_L."VAT Bus. Posting Group");
+                        END;
+                      //<--20150505-Int24-CMC02.02.00-ADVITAM-CDL003
+                      END;
+
+                      // --> 20260528-WI00-ADV01.01.00-45084-CJY
+                      TableSalesHeader_L."Send to Approved Platform" := TableSalesHeader_L."Send to Approved Platform"::No;
+                      TableSalesHeader_L."Animal Trading" := TRUE;
+                      // <-- 20260528-WI00-ADV01.01.00-45084-CJY
+                      TableSalesHeader_L.MODIFY(TRUE);
+                    END;
+                    // Cr'ation des lignes
+                    Trait_L := TRUE;
+                    CASE TableSasImport_L."Price incident Code" OF
+                      'HT', 'NET', 'TTC', 'TVA': BEGIN
+                        Trait_L := FALSE;
+                      END;
+                    END;
+                    IF (Trait_L) THEN BEGIN
+                      CLEAR(TableSalesLine_L);
+                      //-->20150730-Int24-CMC02.02.00-ADVITAM-CDL006
+                      IF TableSasImport_L.Amount <> 0 THEN BEGIN
+                        //<--20150730-Int24-CMC02.02.00-ADVITAM-CDL006
+                        TableSalesLine_L.VALIDATE("Document Type", TableSalesHeader_L."Document Type");
+                        TableSalesLine_L.VALIDATE("Document No.", TableSalesHeader_L."No.");
+                        TableSalesLine_L.VALIDATE("Line No.", Line_L);
+              //          TableSalesLine_L.VALIDATE(TableSalesLine_L."Ship-to Code", ClientLiv_L);
+                        TableSalesLine_L.VALIDATE("Location Code", Magasin_L);
+                        //-->20150511-Int24-CMC02.02.00-ADVITAM-CDL004
+                        // BEFORE
+                        {
+                        IF ((TableSasImport_L."Price incident Code" = 'PRI')) THEN BEGIN
+                        }
+                        IF ((TableSasImport_L."Price incident Code" = 'PRI') OR
+                          (TableSasImport_L."Price incident Code" = 'ACO')) THEN BEGIN
+                        //<--20150511-Int24-CMC02.02.00-ADVITAM-CDL004
+                          TableSalesLine_L.VALIDATE(Type, TableSalesLine_L.Type::Item);
+                          TableSalesLine_L.VALIDATE("No.", TableCeremisItem_L."No.");
+                        END ELSE BEGIN
+                          TableSalesLine_L.VALIDATE(Type, TableSalesLine_L.Type::"Charge (Item)");
+                          TableSalesLine_L.VALIDATE("No.", TableSasImport_L."Price incident Code");
+                        END;
+                        // Prendre la quantit'
+                        // BEFORE
+                        {
+                        IF TableSasImport_L.Quantity < 0 THEN BEGIN
+                          Qte_L := -TableSasImport_L."Standard Weight";
+                        END ELSE BEGIN
+                          Qte_L := TableSasImport_L."Standard Weight";
+                        END;
+                        }
+                        Qte_L := TableSasImport_L.Quantity * Signe_L;
+              //IF TableSasImport_L.No = '004019360' THEN BEGIN
+              //MESSAGE('1:%1:%2:%3:%4', TableSasImport_L."Price incident Code", Qte_L, TableSalesLine_L.Quantity,
+              //TableSasImport_L."Standard Weight");
+              //END;
+
+                        IF TableSasImport_L."Price incident Code" <> 'ESC' THEN BEGIN
+                          TableSalesLine_L.VALIDATE(Quantity, Qte_L);
+                          TableSalesLine_L.VALIDATE("Unit Price", TableSasImport_L."Price incident");
+                        END ELSE BEGIN
+                          //-->20161102-Int24-CMC02.02.00-ADVITAM-CDL007
+                          // BEFORE
+                          {
+                          TableSalesLine_L.VALIDATE(Quantity, 1 * Signe_L);
+                          }
+                          // AFTER
+                          TableSalesLine_L.VALIDATE(Quantity, 1);
+                          //<--20161102-Int24-CMC02.02.00-ADVITAM-CDL007
+                          TableSalesLine_L.VALIDATE("Unit Price", TableSasImport_L.Amount * Signe_L);
+                        END;
+
+                        TableSalesLine_L.VALIDATE(Amount, TableSasImport_L.Amount * Signe_L);
+                        TableSalesLine_L.VALIDATE("Truck Registration", TableSasImport_L."Truck Registration No");
+                        //-->20240614-Int07-CMC02.02.00-CDL010
+                        IF NOT TableSetup_L."Do not use delivery type" THEN BEGIN
+                          //<--20240614-Int07-CMC02.02.00-CDL010
+                          TableExpBL_L.SETRANGE("Delivery Type", TableExpBL_L."Delivery Type"::Delivery);
+                          //-->20240614-Int07-CMC02.02.00-CDL010
+                        END;
+                        //<--20240614-Int07-CMC02.02.00-CDL010
+                        //-->20240610-INT07-CMC02.02.00-CDL008
+                        CASE TableSetup_L."Delivery No. code length" OF
+                          0, 9: BEGIN
+                            // Un'al au 11/06/2024
+                            //<--20240610-INT07-CMC02.02.00-CDL008
+                            // NavAgri bon envoy' sur 7 car : C'r'mis renvoi sur 9 avec 2 0 devant.
+                            CASE STRLEN(TableSasImport_L."Delivery No") OF
+                              9: BEGIN
+                                IF (COPYSTR(TableSasImport_L."Delivery No", 1, 2) <> '00') THEN BEGIN
+                                  ERROR(COPYSTR(STRSUBSTNO(Text0001, TableSasImport_L.FIELDCAPTION(TableSasImport_L."Delivery No"),
+                                    TableSasImport_L."Delivery No", 7, TableSasImport_L.No, TableSasImport_L."Sub-No"), 1, MAXSTRLEN(Result_L)
+            ))
+                                END ELSE BEGIN
+                                  Bon_L := COPYSTR(TableSasImport_L."Delivery No", 3, 7);
+                                END;
+                              END;
+                              8: BEGIN
+                                IF (COPYSTR(TableSasImport_L."Delivery No", 1, 1) <> '0') THEN BEGIN
+                                  ERROR(COPYSTR(STRSUBSTNO(Text0001, TableSasImport_L.FIELDCAPTION(TableSasImport_L."Delivery No"),
+                                    TableSasImport_L."Delivery No", 7, TableSasImport_L.No, TableSasImport_L."Sub-No"), 1, MAXSTRLEN(Result_L)
+            ))
+                                END ELSE BEGIN
+                                  Bon_L := COPYSTR(TableSasImport_L."Delivery No", 2, 7);
+                                END;
+                              END;
+                              ELSE BEGIN
+                                Bon_L := TableSasImport_L."Delivery No";
+                              END;
+                            END;
+                            //-->20240610-INT07-CMC02.02.00-CDL008
+                          END;
+                          10: BEGIN
+                            // Ternov'o NavAgri bon envoy' sur 8 car : C'r'mis renvoi sur 9 avec 1 0 devant.
+                            CASE STRLEN(TableSasImport_L."Delivery No") OF
+                              9: BEGIN
+                                IF (COPYSTR(TableSasImport_L."Delivery No", 1, 1) <> '0') THEN BEGIN
+                                  ERROR(COPYSTR(STRSUBSTNO(Text0001, TableSasImport_L.FIELDCAPTION(TableSasImport_L."Delivery No"),
+                                    TableSasImport_L."Delivery No", 8, TableSasImport_L.No, TableSasImport_L."Sub-No"), 1, MAXSTRLEN(Result_L)
+            ))
+                                END ELSE BEGIN
+                                  Bon_L := COPYSTR(TableSasImport_L."Delivery No", 2, 8);
+                                END;
+                              END;
+                              ELSE BEGIN
+                                Bon_L := TableSasImport_L."Delivery No";
+                              END;
+                            END;
+                          END;
+                          11: BEGIN
+                            Bon_L := TableSasImport_L."Delivery No";
+                          END;
+                        END;
+                        //<--20240610-INT07-CMC02.02.00-CDL008
+
+                        TableExpBL_L.SETRANGE("No.Ceremis", Bon_L);
+                        IF NOT TableExpBL_L.FINDFIRST() THEN BEGIN
+                          ERROR(COPYSTR(STRSUBSTNO(Text0014, Bon_L, TableExpBL_L.TABLECAPTION,
+                            TableSasImport_L.No, TableSasImport_L."Sub-No"), 1, MAXSTRLEN(Result_L)));
+                        END ELSE BEGIN
+                          TableSalesLine_L.VALIDATE("Posted Delivery No.", TableExpBL_L."No.");
+                        END;
+
+                        //-->20240620-Int07-CMC02.02.00-CDL011
+                        IF TableSetup_L."Invoice location Posted Delive" THEN BEGIN
+                          // Utilisation magasin du bon de sortie au lieu de celui de C'r'mis.
+                          IF NOT TablePostDeliv_L.GET(TableExpBL_L."Delivery Type", TableExpBL_L."No.") THEN BEGIN
+                            ERROR(COPYSTR(STRSUBSTNO(Text0014, STRSUBSTNO('%1/%2', TableExpBL_L."Delivery Type", TableExpBL_L."No.")
+                              , TablePostDeliv_L.TABLECAPTION, TableSasImport_L.No, TableSasImport_L."Sub-No"), 1, MAXSTRLEN(Result_L)));
+                          END ELSE BEGIN
+                            Magasin_L := TablePostDeliv_L."Location Code";
+                            LocationPrec_L := TablePostDeliv_L."Location Code";
+                          END;
+                        END;
+                        //<--20240620-Int07-CMC02.02.00-CDL011
+
+              //          IF Tva_L <> '' THEN BEGIN
+              //            TableSalesLine_L.VALIDATE("VAT Prod. Posting Group", Tva_L);
+              //          END;
+
+                        TableSalesLine_L.INSERT(TRUE);
+                        TableSalesLine_L.VALIDATE("Location Code", Magasin_L);
+                        TableSalesLine_L.MODIFY(TRUE);
+
+                        TableSasImport_L."NAV No" := TableSalesHeader_L."No.";
+                        TableSasImport_L."NAV Line No" := TableSalesLine_L."Line No.";
+                      //-->20150730-Int24-CMC02.02.00-ADVITAM-CDL006
+                      END;
+                      //<--20150730-Int24-CMC02.02.00-ADVITAM-CDL006
+                    END;
+                    // Top int'gr'.
+                    TableSasImport_L."Integration Date" := TODAY;
+                    TableSasImport_L.MODIFY(TRUE);
+                  END;
+                UNTIL TableSasImport_L.NEXT = 0;
+                // Rapprochement des frais annexes de la ligne de Facture article (NET).
+                // Si validation
+                IF Valid_L THEN BEGIN
+                  TableSasImport_L.SETFILTER("Integration Date", '<> %1', 0D);
+                  TableSasImport_L.SETRANGE(Type, Type);
+                  TableSasImport_L.SETRANGE(No, No);
+                  TableSasImport_L.SETRANGE("NAV No", TableSalesHeader_L."No.");
+                  IF TableSasImport_L.FINDSET THEN BEGIN
+                    REPEAT
+                      //-->20150511-Int24-CMC02.02.00-ADVITAM-CDL004
+                      // BEFORE
+                      {
+                      IF TableSasImport_L."Price incident Code" <> 'PRI' THEN BEGIN
+                      }
+                      // AFTER
+                      IF ((TableSasImport_L."Price incident Code" <> 'PRI') AND
+                        (TableSasImport_L."Price incident Code" <> 'ACO')) THEN BEGIN
+                        //<--20150511-Int24-CMC02.02.00-ADVITAM-CDL004
+                        // Rechercher la ligne de facture du 'PRI'
+                        CLEAR(TableSasImport2_L);
+                        TableSasImport2_L.SETFILTER("Integration Date", '<> %1', 0D);
+                        TableSasImport2_L.SETRANGE(Type, Type);
+                        TableSasImport2_L.SETRANGE(No, No);
+                        TableSasImport2_L.SETRANGE("NAV No", TableSalesHeader_L."No.");
+                        TableSasImport2_L.SETRANGE("Delivery No", TableSasImport_L."Delivery No");
+                        TableSasImport2_L.SETRANGE("Price incident Code", 'PRI');
+                        //-->20150511-Int24-CMC02.02.00-ADVITAM-CDL004
+                        IF TableSasImport2_L.ISEMPTY THEN BEGIN
+                          TableSasImport2_L.SETRANGE("Price incident Code", 'ACO');
+                        END;
+                        //<--20150511-Int24-CMC02.02.00-ADVITAM-CDL004
+                        IF NOT TableSasImport2_L.FINDFIRST THEN BEGIN
+                          //-->20150505-Int24-CMC02.02.00-ADVITAM-CDL002
+                          // BEFORE
+                          {
+                          ERROR(COPYSTR(STRSUBSTNO(Text0014, TableSalesHeader_L."No." + '-' + TableSasImport_L."Delivery No" + '-PRI',
+                            TableSasImport2_L.TABLECAPTION, TableSasImport_L.No, TableSasImport_L."Sub-No"),
+                            1, MAXSTRLEN(Result_L)));
+                          }
+                          //<--20150505-Int24-CMC02.02.00-ADVITAM-CDL002
+                        END ELSE BEGIN
+                          CLEAR(TableItemCharge_L);
+                          // Cr'ation rattachement Frais annexe
+                          IF TableSasImport_L."F/A" = 'A' THEN BEGIN
+                            TableItemCharge_L.VALIDATE("Applies-to Doc. Type", TableItemCharge_L."Applies-to Doc. Type"::"Credit Memo");
+                          END ELSE BEGIN
+                            TableItemCharge_L.VALIDATE("Applies-to Doc. Type", TableItemCharge_L."Applies-to Doc. Type"::Invoice);
+                          END;
+
+                          IF NOT TableSalesLine_L.GET(TableItemCharge_L."Applies-to Doc. Type", TableSasImport2_L."NAV No",
+                            TableSasImport2_L."NAV Line No") THEN BEGIN
+                            ERROR(COPYSTR(STRSUBSTNO(Text0014, FORMAT(TableItemCharge_L."Applies-to Doc. Type") + '-' +
+                              TableSasImport2_L."NAV No" + '-' + FORMAT(TableSasImport2_L."NAV Line No"), TableSalesLine_L.TABLECAPTION,
+                              TableSasImport_L.No, TableSasImport_L."Sub-No"), 1, MAXSTRLEN(Result_L)));
+                          END ELSE BEGIN
+                            Produit_L := TableSalesLine_L."No.";
+                            IF NOT TableSalesLine_L.GET(TableItemCharge_L."Applies-to Doc. Type", TableSasImport_L."NAV No",
+                              TableSasImport_L."NAV Line No") THEN BEGIN
+
+                              ERROR(COPYSTR(STRSUBSTNO(Text0014, FORMAT(TableItemCharge_L."Applies-to Doc. Type") + '-' +
+                                TableSasImport_L."NAV No" + '-' + FORMAT(TableSasImport_L."NAV Line No"), TableSalesLine_L.TABLECAPTION,
+                                TableSasImport_L.No, TableSasImport_L."Sub-No"), 1, MAXSTRLEN(Result_L)));
+                            END ELSE BEGIN
+
+                              TableItemCharge_L.VALIDATE("Applies-to Doc. No.", TableSasImport2_L."NAV No");
+                              TableItemCharge_L.VALIDATE("Applies-to Doc. Line No.", TableSasImport2_L."NAV Line No");
+
+                              TableItemCharge_L.VALIDATE("Document Type", TableItemCharge_L."Applies-to Doc. Type");
+                              TableItemCharge_L.VALIDATE("Document No.", TableSasImport_L."NAV No");
+                              TableItemCharge_L.VALIDATE("Document Line No.", TableSasImport_L."NAV Line No");
+                              TableItemCharge_L.VALIDATE(TableItemCharge_L."Line No.", 1);
+                              TableItemCharge_L.VALIDATE(TableItemCharge_L."Item No.", Produit_L);
+                              TableItemCharge_L.VALIDATE(TableItemCharge_L."Item Charge No.", TableSasImport_L."Price incident Code");
+                              TableItemCharge_L.VALIDATE(TableItemCharge_L."Qty. to Assign", TableSalesLine_L.Quantity);
+                              TableItemCharge_L.VALIDATE(TableItemCharge_L."Unit Cost", TableSasImport_L."Price incident");
+                              TableItemCharge_L.VALIDATE(TableItemCharge_L."Amount to Assign", TableSalesLine_L.Amount);
+
+                              TableItemCharge_L.INSERT(TRUE);
+
+                              //-->20150601-Int24-CMC02.02.00-ADVITAM-CDL005
+                              IF TableSalesHeader_L."Document Type" <> TableSalesHeader_L."Document Type"::"Credit Memo" THEN BEGIN
+                              //<--20150601-Int24-CMC02.02.00-ADVITAM-CDL005
+                                TableSalesLine_L.VALIDATE("Item Charge Root Line No.", TableSasImport2_L."NAV Line No");
+                              //-->20150601-Int24-CMC02.02.00-ADVITAM-CDL005
+                              END;
+                              //<--20150601-Int24-CMC02.02.00-ADVITAM-CDL005
+                              TableSalesLine_L.MODIFY(TRUE);
+
+                              // M.j axe analytique
+                              CMCDimension_L.DimFromSales(TemDocDim_L, TableSalesLine_L);
+            //MESSAGE('4:%1:%2:%3', Produit_L, TableSalesLine_L."Shortcut Dimension 2 Code", Ana2_L);
+                              //-->20150601-Int24-CMC02.02.00-ADVITAM-CDL005
+                              IF TableSalesHeader_L."Document Type" = TableSalesHeader_L."Document Type"::"Credit Memo" THEN BEGIN
+                                CLEAR(Ana2_L);
+                                IF TableDftDim_L.GET(27, Produit_L, TableDftDim_L.Type::"Regular Dimension", 'PRODUIT')
+                                  THEN BEGIN
+            //MESSAGE('1:%1:%2:%3', Produit_L, TableSalesLine_L."Shortcut Dimension 2 Code", Ana2_L);
+                                  Ana2_L := TableDftDim_L."Dimension Value Code";
+                                END;
+                                 TableSalesLine_L.VALIDATE("Shortcut Dimension 2 Code", Ana2_L);
+                              END;
+            //    MESSAGE('2:%1:%2:%3', Produit_L, TableSalesLine_L."Shortcut Dimension 2 Code", Ana2_L);
+                          //<--20150601-Int24-CMC02.02.00-ADVITAM-CDL005
+
+                            END;
+                          END;
+                        END;
+                      END ELSE BEGIN
+                          IF TableSasImport_L."F/A" = 'A' THEN BEGIN
+                            TableSalesLine_L."Document Type" := TableSalesLine_L."Document Type"::"Credit Memo";
+                          END ELSE BEGIN
+                            TableSalesLine_L."Document Type" := TableSalesLine_L."Document Type"::Invoice;
+                          END;
+
+                        IF NOT TableSalesLine_L.GET(TableSalesLine_L."Document Type", TableSasImport_L."NAV No",
+                          TableSasImport_L."NAV Line No") THEN BEGIN
+
+                          ERROR(COPYSTR(STRSUBSTNO(Text0014, FORMAT(TableSalesLine_L."Document Type") + '-' +
+                            TableSasImport_L."NAV No" + '-' + FORMAT(TableSasImport_L."NAV Line No"), TableSalesLine_L.TABLECAPTION,
+                            TableSasImport_L.No, TableSasImport_L."Sub-No"), 1, MAXSTRLEN(Result_L)));
+                        END ELSE BEGIN
+                          // M.j axe analytique
+                          CMCDimension_L.DimFromSales(TemDocDim_L, TableSalesLine_L);
+                        END;
+                      END;
+                    UNTIL TableSasImport_L.NEXT = 0;
+                  END;
+                END;
+              END;
+
+              // Boucle Suivante la validation.
+              Boucle_L += 1;
+              Valid_L := TRUE;
+            END;
+            // Lancer la facture.
+            //-->20150504-Int07-CMC02.02.00-ADVITAM-CDL001
+            cduReleaseSalDoc_L.PerformManualRelease(TableSalesHeader_L);
+            //<--20150504-Int07-CMC02.02.00-ADVITAM-CDL001
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      "<-- 3LI TEXT GLOBALS -->"@1000000006 : TextConst;
+      Text0001@1000000013 : TextConst 'FRA="Erreur zone ""%1""=""%2"" longeur maximale autoris' ""%3"" : Enregistrement : ""%4-%5""."';
+      Text0006@1000000000 : TextConst 'ENU="Error field %1 = %2 For Record %3";FRA="Erreur zone ""%1""=""%2"" pour Enregistrement : ""%3-%4""."';
+      "<-- 3LI GLOBALS -->"@1000000009 : Integer;
+      MoteurInterface_G@1000000008 : Codeunit 8061230;
+      ItemTemplateCode_G@1000000007 : Code[20];
+      CustomerTemplateCode_G@1000000005 : Code[20];
+      VendorTemplateCode_G@1000000004 : Code[20];
+      ContactTemplateCode_G@1000000003 : Code[20];
+      AccountTemplateCode_G@1000000002 : Code[20];
+      GlobalTemplateCode_G@1000000001 : Code[20];
+      Text0013@1000000010 : TextConst 'FRA=Erreur correspondance "%1" : "%2" non param'tr' pour "%3-%4".';
+      Text0014@1000000011 : TextConst 'FRA=Erreur "%1" inexistant dans table "%2" :pour "%3-%4".';
+      Text0020@1000000012 : TextConst 'ENU="Error Corresponding ""%1"" : ""%2"" Doesn''t exist forOrder : ""%3"" ";FRA="Erreur correspondance ""%1"" : ""%2"" non param'tr'e pour Ordre : ""%3"" "';
+
+    BEGIN
+    {
+      //--> 3LI BEGIN
+      20140401-Int07-CMC02.02.00-ADVITAM-CDL : - Importation table interface factures CEREMIS vers table NavAgri T36, T37.
+      20150504-Int07-CMC02.02.00-ADVITAM-CDL001 - Ajout lancement de la facture.
+                                                  + Ajout variables Locale : "cduReleaseSalDoc_L"
+      20150505-Int24-CMC02.02.00-ADVITAM-CDL002 : - Rendre facultatif ligne PRI si ligne ACO.
+      20150505-Int24-CMC02.02.00-ADVITAM-CDL003 : - ProblSme validation manque le groupe compta march' (ne s'initialise pas avec le
+                                                    le fournisseur, Bruno Rumori m'a d'j. fait chang' cela dans une interface comptable
+                                                    en forÎant avec le groupe du fournisseur).
+      20150511-Int24-CMC02.02.00-ADVITAM-CDL004 : - Faire les frais annexes sur le "PRI" sinon sur "ACO"
+      20150601-Int24-CMC02.02.00-ADVITAM-CDL005 : - Ne pas remplir "N› Origine ligne frais annexe" : Pb sur Avoir ==> Forcer analytique
+                                                    produit.
+      20150730-Int24-CMC02.02.00-ADVITAM-CDL006 : - Ne pas prendre les lignes avec montant . 0.
+      20161102-Int24-CMC02.02.00-ADVITAM-CDL007 : - "ESC"ompte : Quantit' (-1) fausse ==> Montant faux.
+                                                    + Il faut garder un signe positif pour la quantit' forc' . 1.
+      20240610-INT07-CMC02.02.00-CDL008 : Taille bon NavAgri <> pour Un'al & Ternov'o et c'r'mis renvoi 9 num'ric.
+      20240614-Int07-CMC02.02.00-CDL009 : D'marrage Ternov'o : Code regroupement initialis' . "APPROS" utiliser la bonne cat'gorie
+                                          de document.
+                                          Ajout zone 230 : "Doc. Category Code"
+                                          Ajout zone 235 : "Doc. Category Code Credit Memo"
+      20240614-Int07-CMC02.02.00-CDL010 : - Ne pas tenir compte du type de mouvement suivant le param'trage.
+                                            ==> La table 8053014 cl' type mouvement + N› de bon : Mais utilisation de souche donc
+                                                le N› de bon est unique quelque soit le type de mouvement.
+                                          Ajout zone 240 : "Do not use delivery type"
+      20240620-Int07-CMC02.02.00-CDL011 : - Ternov'o magasin de livraison diff'rent de celui connu chez C'r'mis ==> Utiliser le magasin
+                                            de l'exp'dition (T8053014) : Ajout d'un param'trage pour le faire.
+                                          Ajout zone 250 : "Invoice location Posted Delive"
+
+      20260528-WI00-ADV01.01.00-45084-CJY : MODCODE (ne pas envoyer . la PA + autofacturation = oui)
+      //<-- 3LI BEGIN
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,339 @@
+OBJECT Codeunit 60074 Exelience Purch Order Export
+{
+  OBJECT-PROPERTIES
+  {
+    Date=04/06/19;
+    Heure=00:00:00;
+    Liste versions=SP3361,SP3386;
+  }
+  PROPERTIES
+  {
+    TableNo=8061230;
+    OnRun=BEGIN
+            CodeUnit_G := Processing;
+
+            recPurchaseSetup_G.GET;
+
+            recPurchaseHeader_G.SETRANGE("No.", recPurchaseSetup_G."Order Export - Order No.");
+            IF recPurchaseHeader_G.FINDFIRST THEN BEGIN
+              ExportPurchOrder;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      CodeUnit_G@60019 : Integer;
+      cduMoteurInterface_G@60018 : Codeunit 8061230;
+      cduToolsFile_G@60017 : Codeunit 8053405;
+      ConnectorName_G@60016 : Code[20];
+      ImpExpFolder_G@60015 : Text[256];
+      LogFolder_G@60014 : Text[256];
+      ExtensionFile_G@60013 : Text[10];
+      PrefixFile_G@60012 : Text[10];
+      ItemTemplateCode_G@60011 : Code[20];
+      CustomerTemplateCode_G@60010 : Code[20];
+      VendorTemplateCode_G@60009 : Code[20];
+      ContactTemplateCode_G@60008 : Code[20];
+      AccountTemplateCode_G@60007 : Code[20];
+      GlobalTemplateCode_G@60006 : Code[20];
+      TxtEcrit_G@60005 : Text[1024];
+      LineNo_G@60004 : Integer;
+      FileOutstream_G@60003 : OutStream;
+      cduFormatFieldsManage_G@60001 : Codeunit 8060985;
+      FileCreationDateTime_G@60000 : DateTime;
+      Text60000@60020 : TextConst 'ENU=Error Creating File %1 \%2.;FRA=Erreur cr'ation fichier %1 \%2.';
+      recPurchaseHeader_G@60002 : Record 38;
+      recCompanyInformation_G@60021 : Record 79;
+      recLocation_G@60022 : Record 14;
+      Text60001@60023 : TextConst 'ENU=Order No. %1, line no. %2 : correspondence between items was not completed;FRA=Commande N› %1, ligne n› %2 : la correspondance entres les articles n''a pas 't' r'alis'e';
+      Text60002@60024 : TextConst 'ENU=Order No. %1, line no. %2 has an Exelience Item disabled;FRA=La Commande N› %1, ligne n› %2 possSde un article d'sactiv' Exelience';
+      recPurchaseSetup_G@60025 : Record 312;
+      Text60003@60026 : TextConst 'ENU=Order No. %1 hasn''t Location Code;FRA=la Commande %1 ne possSde pas de Code Magasin';
+      LocationRegistrationNo_G@60027 : Code[17];
+
+    PROCEDURE ExportPurchOrder@60001();
+    VAR
+      FileLogName_L@60001 : Text[256];
+    BEGIN
+      // Entr'es:
+      // - Filename_P : Nom du Fichier de la commande . g'n'rer
+      // Sorties:
+      // - Result_L : Erreur Retourn'e , Vide Si Ok
+      //----------------------------------------------------------------------------------------------------------------------------------
+      cduMoteurInterface_G.GetParameter(CodeUnit_G, ConnectorName_G, ImpExpFolder_G, LogFolder_G, ExtensionFile_G, PrefixFile_G);
+      cduMoteurInterface_G.GetTemplatesCode (ConnectorName_G, ItemTemplateCode_G, CustomerTemplateCode_G, VendorTemplateCode_G,
+        ContactTemplateCode_G, AccountTemplateCode_G, GlobalTemplateCode_G);
+      // --> 20181220-Wi00-ADV01.01.00-3386-MRU01
+      {BEFORE
+      cduToolsFile_G.LogInit(LogFolder_G, 'EXEL_ORDER');
+      AFTER}
+      cduToolsFile_G.LogInit(LogFolder_G, ConnectorName_G);
+      // <-- 20181220-Wi00-ADV01.01.00-3386-MRU01
+      cduToolsFile_G.LogInitCodeUnit(CodeUnit_G);
+
+      ExportTexte();
+
+      FileLogName_L := cduToolsFile_G.LogName;
+      cduToolsFile_G.LogClose();
+
+      // Pour g'rer le ROLLBACK.
+      IF cduToolsFile_G.LogErreurType() = 'E' THEN BEGIN
+        ERROR('ERREUR ' + FileLogName_L);
+      END ELSE BEGIN
+        IF cduToolsFile_G.LogErreurType() = 'I' THEN BEGIN
+          cduMoteurInterface_G.InsertLog(CodeUnit_G, FileLogName_L);
+        END ELSE BEGIN
+          cduMoteurInterface_G.InsertOk(CodeUnit_G);
+        END;
+      END;
+    END;
+
+    PROCEDURE ExportTexte@60005() Result_L : Text[256];
+    VAR
+      FileNameOuvert_L@60002 : Boolean;
+      NbCarEcrit_L@60001 : Integer;
+      FileName_L@60004 : Text[256];
+      FilePath_L@60007 : Text[256];
+      FileN_L@60006 : Text[256];
+      FileTemp_L@60008 : Text[256];
+      FileExport_L@60009 : File;
+      recPurchaseLine_L@60000 : Record 39;
+      recSNOItem_L@60003 : Record 60100;
+    BEGIN
+      //R'cup'ration des informations soci't' + magasin
+      recCompanyInformation_G.GET;
+
+
+      IF NOT recLocation_G.GET(recPurchaseHeader_G."Location Code") THEN BEGIN
+        cduToolsFile_G.LogWriteErreur(STRSUBSTNO(Text60003, recPurchaseHeader_G."No."));
+        LocationRegistrationNo_G := '';
+      END ELSE
+        LocationRegistrationNo_G := recLocation_G."Registration No.";
+
+      //Date de cr'ation du fichier
+      FileCreationDateTime_G := CURRENTDATETIME;
+
+      FileNameOuvert_L := FALSE;
+      NbCarEcrit_L := 0;
+
+      // Cr'ation du fichier F_U_E_COMMANDE_JJ_MM_SSAA_HH_MN_SS.txt ou F_T_E_COMMANDE_JJ_MM_SSAA_HH_MN_SS.txt
+      FileName_L := ImpExpFolder_G + '\' + DELCHR(PrefixFile_G, '<>', ' ') + FORMAT(CURRENTDATETIME, 0,
+        '<Day,2>_<Month,2>_<Year4>_<Hours24,2>_<Minutes,2>_<Seconds,2>') + '.' + DELCHR(ExtensionFile_G, '<>', ' ');
+      cduToolsFile_G.LogInitFileExecute(FileName_L);
+      cduToolsFile_G.SplitFilename(FileName_L, FilePath_L, FileN_L);
+      FileTemp_L := FilePath_L + 'Temp_' + FileN_L;
+      IF NOT FileExport_L.CREATE(FileTemp_L) THEN BEGIN
+        cduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text60000, FileTemp_L, GETLASTERRORTEXT), 1, MAXSTRLEN(Result_L)));
+        CLEARLASTERROR;
+      END ELSE BEGIN
+        FileExport_L.CREATEOUTSTREAM(FileOutstream_G);
+        FileNameOuvert_L := TRUE;
+
+        //Export de la commande d'achat pass'e en paramStre
+        LineNo_G := 1;
+
+        //Insertion de la ligne D'but Interchange
+        InitLine('D');
+        FillField(13, AddConvertedText(recCompanyInformation_G."GLN Code"));
+        FillField(17, '');
+        FillField(13, AddConvertedText(COPYSTR(recCompanyInformation_G."Seed Partner GLN Code", 1, 13)));
+        FillField(17, '');
+        FillField(14, FORMAT(FileCreationDateTime_G, 0, '<Day,2><Month,2><Year4><Hours24,2><Minutes,2><Seconds,2>'));
+        FillField(15, 'ORDERS');
+        InsertLine;
+
+        //Insertion de la ligne Ent^te Commande
+        InitLine('E');
+        FillField(17, AddConvertedText(recPurchaseHeader_G."No."));
+        FillField(8, cduFormatFieldsManage_G.FormDateAAAAMMJJ(recPurchaseHeader_G."Order Date"));
+        FillField(2, '');
+        FillField(2, '');
+        FillField(3, 'EUR');
+        FillField(3, '');
+        FillField(8, '');
+        FillField(1, '');
+        FillField(8, '');
+        FillField(16, '');
+        FillField(17, '');
+        FillField(1, '');
+        FillField(8, '');
+        FillField(35, '');
+        FillField(8, '');
+        InsertLine;
+
+        //Insertion des lignes Ent^te Adresse
+        InsertAddressHeader('A', recPurchaseHeader_G."No.", recCompanyInformation_G."GLN Code", '', '', '', '');
+        InsertAddressHeader('A', recPurchaseHeader_G."No.", '', COPYSTR(recCompanyInformation_G."Seed Partner GLN Code",1,13), '','','')
+      ;
+        InsertAddressHeader('A', recPurchaseHeader_G."No.", '', '', LocationRegistrationNo_G, '', '');
+        InsertAddressHeader('A', recPurchaseHeader_G."No.", '', '', '', recCompanyInformation_G."GLN Code", '');
+        InsertAddressHeader('A', recPurchaseHeader_G."No.", '', '', '', '', recCompanyInformation_G."GLN Code");
+
+        //Insertion des lignes de la commande
+        LineNo_G := 1;
+        recPurchaseLine_L.SETRANGE("Document Type", recPurchaseHeader_G."Document Type");
+        recPurchaseLine_L.SETRANGE("Document No.", recPurchaseHeader_G."No.");
+        recPurchaseLine_L.SETRANGE(Type, recPurchaseLine_L.Type::Item);
+        IF recPurchaseLine_L.FINDFIRST THEN REPEAT
+          InitLine('L');
+          FillField(17, AddConvertedText(recPurchaseHeader_G."No."));
+          FillDecimalField(4, 0, FORMAT(LineNo_G));
+          FillField(13, '');
+          FillField(35, '');
+          FillDecimalField(7, 3, FORMAT(ROUND(recPurchaseLine_L.Quantity, 0.001)));
+          FillField(3, AddConvertedText(COPYSTR(recPurchaseLine_L."Unit of Measure Code",1,3)));
+          FillField(16, '');
+          FillField(3, '');
+
+          //Gestion de la correspondance avec les articles SNO
+          recSNOItem_L.RESET;
+          recSNOItem_L.SETRANGE("Correspondance num'ro article", recPurchaseLine_L."No.");
+          //Si l'article a un Code Variante, on filtre 'galement dessus, sinon on filtre sur vide ou $ (valeur par d'faut . terme)
+          IF recPurchaseLine_L."Variant Code" <> '' THEN
+            recSNOItem_L.SETRANGE("Correspondance Code Variante", recPurchaseLine_L."Variant Code")
+          ELSE
+            recSNOItem_L.SETFILTER("Correspondance Code Variante", '%1|%2', '', '$');
+
+          IF NOT recSNOItem_L.FINDFIRST THEN
+            cduToolsFile_G.LogWriteErreur(STRSUBSTNO(Text60001, recPurchaseHeader_G."No.", LineNo_G))
+          ELSE
+            IF UPPERCASE(recSNOItem_L."Statut produit") = 'NON' THEN
+              cduToolsFile_G.LogWriteErreur(STRSUBSTNO(Text60002, recPurchaseHeader_G."No.", LineNo_G))
+            ELSE
+              FillField(35, recSNOItem_L."Code produit");
+
+          FillField(3, '');
+          FillField(17, '');
+          FillField(35, '');
+          InsertLine;
+        UNTIL recPurchaseLine_L.NEXT = 0;
+
+        NbCarEcrit_L := FileExport_L.LEN;
+        FileExport_L.CLOSE;
+      END;
+
+      IF (NbCarEcrit_L > 0) THEN BEGIN
+        IF cduToolsFile_G.LogErreurType() = 'E' THEN BEGIN
+          IF FileNameOuvert_L THEN BEGIN
+            FILE.ERASE(FileTemp_L);
+          END;
+        END ELSE BEGIN
+          IF RENAME(FileTemp_L, FileName_L) THEN BEGIN
+          END;
+        END;
+      END ELSE BEGIN
+        IF FileNameOuvert_L THEN BEGIN
+          FILE.ERASE(FileTemp_L);
+        END;
+      END;
+    END;
+
+    PROCEDURE InitLine@60008(LineType_P@60000 : Text[20]);
+    BEGIN
+      TxtEcrit_G := '';
+      TxtEcrit_G += LineType_P;
+    END;
+
+    PROCEDURE InsertLine@60003();
+    BEGIN
+      FileOutstream_G.WRITETEXT(TxtEcrit_G);
+      FileOutstream_G.WRITETEXT();
+      LineNo_G += 1;
+    END;
+
+    PROCEDURE InsertAddressHeader@60000(Flag_P@60001 : Text[1];OrderNo_P@60004 : Code[35];OrderedFrom_P@60003 : Text[50];OrderedTo_P@60002 : Text[50];DeliveredTo_P@60005 : Text[50];InvoicedTo_P@60006 : Text[50];InvoicedOnBehalfOf_P@60007 : Text[50]);
+    VAR
+      i_L@60000 : Integer;
+    BEGIN
+      FOR i_L := 1 TO 30 DO BEGIN
+        CASE i_L OF
+          1: InitLine(Flag_P);
+          2: FillField(35, AddConvertedText(OrderNo_P));
+          3: FillField(13, AddConvertedText(OrderedFrom_P));
+          5: FillField(13, AddConvertedText(OrderedTo_P));
+          8: FillField(17, AddConvertedText(DeliveredTo_P));
+          13: FillField(13, AddConvertedText(InvoicedTo_P));
+          15: FillField(13, AddConvertedText(InvoicedOnBehalfOf_P));
+          4,6,11,14,16,19 : FillField(17, '');
+          7,10 : FillField(13, '');
+          9,12,17,20 : FillField(15, '');
+          18 : FillField(13, '');
+          26 : FillField(3, '');
+          28,29 : FillField(25, '');
+        ELSE
+          FillField(35, '');
+        END;
+      END;
+
+      InsertLine;
+    END;
+
+    PROCEDURE AddConvertedText@60011(Text_P@60000 : Text[500]) : Text[500];
+    BEGIN
+      EXIT(CONVERTSTR(cduFormatFieldsManage_G.Ascii2Ansi(Text_P), ';', ','));
+    END;
+
+    PROCEDURE FillField@60002(Length_P@60000 : Integer;FieldText_P@60002 : Text[500]);
+    VAR
+      i_L@60001 : Integer;
+    BEGIN
+      //Insertion d'espaces pour remplir la taille du champ
+      TxtEcrit_G += FieldText_P;
+
+      IF (Length_P <> 0) AND (Length_P > STRLEN(FieldText_P)) THEN BEGIN
+        FOR i_L := STRLEN(FieldText_P) TO Length_P - 1 DO BEGIN
+          TxtEcrit_G += ' ';
+        END;
+      END;
+    END;
+
+    PROCEDURE FillDecimalField@60007(Length_P@60000 : Integer;DecimalLength_P@60001 : Integer;FieldText_P@60003 : Text[500]);
+    VAR
+      i_L@60002 : Integer;
+      LengthBeforeComma_L@60004 : Integer;
+      LengthAfterComma_L@60005 : Integer;
+    BEGIN
+      // --> 20190604-WI00-ADV01.01.00-42946-MRU01
+      //Suppression des s'parateurs de miliers
+      FieldText_P := DELCHR(FieldText_P, '=', '˜'); //Symbole groupement des chiffres
+      FieldText_P := DELCHR(FieldText_P, '=', ' '); //Espace Standard au cas o-
+      // <-- 20190604-WI00-ADV01.01.00-42946-MRU01
+
+      //Insertion de 0 avant et 'ventuellement aprSs la virgule dans le cas d'un D'cimal pour remplir la taille du champ
+      IF STRPOS(FieldText_P, ',') <> 0 THEN BEGIN
+        LengthBeforeComma_L := STRLEN(COPYSTR(FieldText_P, 1, STRPOS(FieldText_P, ',') - 1));
+        LengthAfterComma_L := STRLEN(COPYSTR(FieldText_P, STRPOS(FieldText_P, ',') + 1));
+      END ELSE BEGIN
+        LengthBeforeComma_L := STRLEN(FieldText_P);
+        LengthAfterComma_L := 0;
+      END;
+
+      IF (Length_P <> 0) AND (Length_P > LengthBeforeComma_L) THEN BEGIN
+        FOR i_L := LengthBeforeComma_L TO Length_P - 1 DO BEGIN
+          TxtEcrit_G += '0';
+        END;
+      END;
+
+      TxtEcrit_G += DELCHR(FieldText_P, '=', ',');
+
+      IF (DecimalLength_P <> 0) AND (DecimalLength_P > LengthAfterComma_L) THEN BEGIN
+        FOR i_L := LengthAfterComma_L TO DecimalLength_P - 1 DO BEGIN
+          TxtEcrit_G += '0';
+        END;
+      END;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20181119-WI00-ADV01.01.00-3361-MRU01 : CREATE OBJECT
+      20181220-Wi00-ADV01.01.00-3386-MRU01 Passage du ConnecteurName pour le nom du log
+      20190604-WI00-ADV01.01.00-42946-MRU01 : MODCODE (Suppression des s'parateurs de miliers)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

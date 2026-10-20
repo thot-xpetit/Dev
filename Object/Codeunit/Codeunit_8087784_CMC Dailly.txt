@@ -1,0 +1,128 @@
+OBJECT Codeunit 8087784 CMC Dailly
+{
+  OBJECT-PROPERTIES
+  {
+    Date=10/10/14;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    TableNo=8061230;
+    OnRun=VAR
+            TableParam_L@1000000002 : Record 8053450;
+            TableCustLedgEnt_L@1000000000 : Record 21;
+            TableDailly_L@1000000001 : Record 8087782;
+            TableClient_L@1000000006 : Record 18;
+            TableConnecteur_L@1000000008 : Record 8061230;
+            PremierFois_L@1000000003 : Boolean;
+            FileLogName_L@1000000004 : Text[255];
+            result_L@1000000005 : Text[250];
+            FileName_L@1000000007 : Text[255];
+          BEGIN
+            IF (TableParam_L.FINDFIRST AND TableParam_L."Dailly active") THEN BEGIN
+              CodeUnit_G := Processing;
+              MoteurInterface_G.GetParameter(CodeUnit_G, ConnectorName_G, ImpExpFolder_G, LogFolder_G, ExtensionFile_G, PrefixFile_G);
+              FileName_L := ImpExpFolder_G + '\' + COMPANYNAME + ReportDailly.OBJECTID() + '.pdf';
+              ToolsFile_G.LogInit(LogFolder_G, 'COMPTA');
+              ToolsFile_G.LogInitCodeUnit(CodeUnit_G);
+
+              IF TableParam_L."Dailly Last Entry No." = 0 THEN BEGIN
+                PremierFois_L := TRUE;
+              END;
+              IF NOT PremierFois_L THEN BEGIN
+                TableCustLedgEnt_L.SETFILTER("Entry No.", '> %1', TableParam_L."Dailly Last Entry No.");
+              END ELSE BEGIN
+                TableCustLedgEnt_L.SETFILTER(TableCustLedgEnt_L."Due Date", '> %1', TODAY);
+              END;
+              TableCustLedgEnt_L.SETFILTER(TableCustLedgEnt_L."Document Type", '%1|%2', TableCustLedgEnt_L."Document Type"::Invoice,
+                TableCustLedgEnt_L."Document Type"::"Credit Memo");
+              IF TableCustLedgEnt_L.FINDSET THEN BEGIN
+                REPEAT
+                  TableDailly_L.TRANSFERFIELDS(TableCustLedgEnt_L);
+                  TableCustLedgEnt_L.CALCFIELDS(Amount);
+                  TableDailly_L.Amount := TableCustLedgEnt_L.Amount;
+                  IF (TableClient_L.GET(TableCustLedgEnt_L."Customer No.") AND (NOT TableClient_L."Dailly Export")) THEN BEGIN
+                    TableDailly_L.Banque := 'R';
+                  END ELSE BEGIN
+                    TableDailly_L.Banque := TableParam_L."Dailly Banque";
+                  END;
+
+                  IF NOT TableDailly_L.INSERT THEN BEGIN
+                    ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0002, TableParam_L.TABLECAPTION,TableDailly_L."Entry No."),
+                      1, MAXSTRLEN(result_L)));
+                  END;
+                UNTIL TableCustLedgEnt_L.NEXT = 0;
+
+                //----------------------------------------------
+                // M'moriser dernier enregistrement trait'.
+                //----------------------------------------------
+                TableParam_L."Dailly Last Entry No." := TableCustLedgEnt_L."Entry No.";
+                IF NOT TableParam_L.MODIFY THEN BEGIN
+                  ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0001, TableParam_L.TABLECAPTION), 1, MAXSTRLEN(result_L)));
+                END;
+              END;
+              //----------------------------------------------
+              // Edition journaliSre.
+              //----------------------------------------------
+              IF ReportDailly.SAVEASPDF(FileName_L) THEN BEGIN
+                IF TableConnecteur_L.GET(ConnectorName_G) THEN BEGIN
+                  IF TableConnecteur_L."Mail Notification Information" <> '' THEN BEGIN
+                    ToolsFile_G.SendMail(TableConnecteur_L."Mail Notification Information",
+                      FileName_L, '%B: %C: ' + ReportDailly.OBJECTID());
+                  END;
+                END;
+              END;
+
+              // Pour g'rer le ROLLBACK.
+              FileLogName_L := ToolsFile_G.LogName;
+              ToolsFile_G.LogClose();
+
+              IF ToolsFile_G.LogErreurType() = 'E' THEN BEGIN
+                ERROR('ERREUR ' + FileLogName_L);
+              END ELSE BEGIN
+                IF ToolsFile_G.LogErreurType() = 'I' THEN BEGIN
+                  MoteurInterface_G.InsertLog(CodeUnit_G, FileLogName_L);
+                END ELSE BEGIN
+                  MoteurInterface_G.InsertOk(CodeUnit_G);
+                END;
+              END;
+
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      "<-- 3LI GLOBALS -->"@1000000009 : Integer;
+      ToolsFile_G@1000000008 : Codeunit 8053405;
+      MoteurInterface_G@1000000007 : Codeunit 8061230;
+      ConnectorName_G@1000000006 : Code[20];
+      ImpExpFolder_G@1000000005 : Text[256];
+      LogFolder_G@1000000004 : Text[256];
+      ExtensionFile_G@1000000003 : Text[10];
+      PrefixFile_G@1000000002 : Text[10];
+      CodeUnit_G@1000000001 : Integer;
+      "<-- 3LI TEXT GLOBALS -->"@1000000000 : TextConst;
+      Text0001@1000000010 : TextConst 'FRA=Erreur mise . jour table "%1".';
+      Text0002@1000000011 : TextConst 'FRA=Erreur mise . jour table "%1" enregistrement "%2".';
+      ReportDailly@1000000012 : Report 50026;
+
+    BEGIN
+    {
+      //--> 3LI BEGIN
+      20140929-Int02-CMC02.02.00-ADVITAM-CDL : - Interface Dailly : Constitue fichier journalier + Report journalier.
+      - S'lection enregistrement :
+        + Prendre les type "Facture" & "Avoir"
+        + PremiSre fois :
+          Ne prendre que les 'critures non 'chue (date 'ch'ance > jour).
+        + AprSs.
+          Toutes.
+        + Ecriture non d'j. prise ==> > dernier N› trait'.
+      //<-- 3LI END
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,686 @@
+OBJECT Codeunit 60077 Import commandes Sas Poseo
+{
+  OBJECT-PROPERTIES
+  {
+    Date=08/04/21;
+    Heure=00:00:00;
+    Liste versions=SP3422;
+  }
+  PROPERTIES
+  {
+    TableNo=8061230;
+    OnRun=VAR
+            "<-- 3LI LOCALS -->"@1000000001 : Integer;
+            TableImportHead_L@1000000003 : Record 8087767;
+            TableImportLine_L@1000000004 : Record 8087768;
+            TablePurchaseHeader_L@1000000014 : Record 38;
+            TablePurchaseLine_L@1000000015 : Record 39;
+            TablePurchRcptLine_L@1000000017 : Record 121;
+            TableItemCrossRef_L@1000000008 : Record 5717;
+            PurchaseHeader_L@1000000016 : Boolean;
+            TableItem_L@1000000006 : Record 27;
+            UniteEdi_L@1000000002 : Code[10];
+            UniteSicapa_L@1000000005 : Code[10];
+            ConvUnite_L@1000000007 : Decimal;
+            Result_L@1000000000 : Text[255];
+            FileLogName_L@1000000009 : Text[256];
+            CodeCompany_L@1000000010 : Code[10];
+            WorkTable_L@1000000011 : Record 60099;
+            WrkTable_L@1000000012 : Record 60099;
+            BooErrorToSas_L@1000000013 : Boolean;
+            WorkTableForAccuse_L@1000000019 : Record 60099;
+            Guid_Value_L@1000000020 : GUID;
+            PoseoSetup_L@1000000021 : Record 60109;
+          BEGIN
+            PoseoSetup_L.GET;
+            IF PoseoSetup_L."Generation Accu 1" THEN BEGIN
+              PoseoSetup_L.TESTFIELD("Folder Export Acc1");
+              PoseoSetup_L.TESTFIELD("Prefix Accus' 1");
+              PoseoSetup_L.TESTFIELD("File extension Acc1");
+            END;
+
+            CodeUnit_G := Processing;
+            CmC_Company_G.GET(COMPANYNAME);
+            CodeCompany_L := COMPANYNAME;
+            LaunchMoteurInterface_G.GET("Connector Name");
+            //mise . jour de la derniSre date ex'cution lors de la premiSre fois
+            IF LaunchMoteurInterface_G."Last Execution" = 0DT THEN BEGIN
+              LaunchMoteurInterface_G."Last Execution" := CURRENTDATETIME;
+              LaunchMoteurInterface_G.MODIFY;
+            END;
+
+            MoteurInterface_G.GetParameter(CodeUnit_G, ConnectorName_G, ImpExpFolder_G, LogFolder_G, ExtensionFile_G, PrefixFile_G);
+            MoteurInterface_G.GetTemplatesCode(ConnectorName_G, ItemTemplateCode_G, CustomerTemplateCode_G, VendorTemplateCode_G,
+              ContactTemplateCode_G, AccountTemplateCode_G, GlobalTemplateCode_G);
+            ToolsFile_G.LogInit(LogFolder_G, 'ISAGRI');
+            ToolsFile_G.LogInitCodeUnit(CodeUnit_G);
+
+
+            //controle param'trage sp'cifique POSEO ?
+
+            IF ("File in use" <> '') THEN BEGIN
+              BooErrorToSas_L := FALSE;
+
+              IF NOT CODEUNIT.RUN(60036, Rec) THEN BEGIN
+                BooErrorToSas_L := TRUE;
+                ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0003, "File in use", GETLASTERRORTEXT), 1, MAXSTRLEN(Result_L)));
+                COMMIT;
+              END;
+
+              //WrkTableToSas;
+              //d'placement du fichier
+              IF NOT BooErrorToSas_L THEN BEGIN
+                IF NOT ToolsFile_G.FileRenameSav("File in use", 'Sav', TRUE) THEN BEGIN
+                  ToolsFile_G.LogWriteErreur(STRSUBSTNO(Text65003, "File in use"));
+                END
+                ELSE BEGIN
+                END;
+
+              END
+              ELSE BEGIN
+                IF NOT ToolsFile_G.FileRenameSav("File in use", 'Error', TRUE) THEN BEGIN
+                  ToolsFile_G.LogWriteErreur(STRSUBSTNO(Text65002, "File in use"));
+                END
+                ELSE BEGIN
+                  //ToolsFile_G.LogWriteErreur(STRSUBSTNO(Text65001, "File in use"));
+                  ERROR(STRSUBSTNO(Text65001, "File in use"));
+                  COMMIT;
+                  CLEARLASTERROR;
+                END;
+
+              END;
+
+            END ELSE BEGIN
+              WrkTableHeaderToSas();
+
+
+              GenerateAccused(Rec,PoseoSetup_L,Result_L);
+
+              //COMMIT;
+              CLEAR(Guid_Value_L);
+              WrkTableCleanDoc(Guid_Value_L);
+              COMMIT;
+
+              // Pour g'rer le ROLLBACK.
+              CLEAR(Result_L);
+              FileLogName_L := ToolsFile_G.LogName;
+              ToolsFile_G.LogClose();
+              IF ToolsFile_G.LogErreurType() = 'E' THEN BEGIN
+                Result_L := 'ERREUR ' + FileLogName_L;
+                ERROR(Result_L);
+              END ELSE BEGIN
+                IF ToolsFile_G.LogErreurType() = 'I' THEN BEGIN
+                  Result_L := Text0008;
+                  MoteurInterface_G.InsertLog(CodeUnit_G, FileLogName_L);
+                END ELSE BEGIN
+                  MoteurInterface_G.InsertOk(CodeUnit_G);
+                END;
+              END;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      "<-- 3LI TEXT GLOBALS -->"@1000000002 : TextConst;
+      Text0001@1000000010 : TextConst 'ENU=Error Table "%1" doesn''t exist \Company : %2;FRA=Erreur Table "%1" inexistante \Societe : %2';
+      Text0002@1000000003 : TextConst 'ENU=Error file %1 doesn''t exist.;FRA=Erreur fichier "%1" inexistant.';
+      Text0003@1000000014 : TextConst 'ENU=Error open file %1 : %2;FRA=Erreur ouverture fichier %1 : %2';
+      Text0004@1000000000 : TextConst 'FRA=Erreur "%1" inexistant dans table "%2" : Enregistrement "%3".';
+      Text0005@1000000022 : TextConst 'ENU=Error Corresponding "%1" : "%2" Doesn''t exist for Order : "%3", Line : "%4";FRA=Erreur correspondance "%1" : "%2" non param'tr'e pour : "%3", ligne : "%4".';
+      Text0006@1000000027 : TextConst 'ENU="Error field %1 = %2 For Record %3";FRA="Erreur zone ""%1""=""%2"" pour Enregistrement : ""%3"""';
+      "<-- 3LI GLOBALS -->"@1000000001 : Integer;
+      CodeUnit_G@1000000025 : Integer;
+      MoteurInterface_G@1000000021 : Codeunit 8061230;
+      ToolsFile_G@1000000020 : Codeunit 8053405;
+      ConnectorName_G@1000000019 : Code[20];
+      ImpExpFolder_G@1000000018 : Text[256];
+      LogFolder_G@1000000017 : Text[256];
+      ExtensionFile_G@1000000016 : Text[10];
+      PrefixFile_G@1000000015 : Text[30];
+      ItemTemplateCode_G@1000000009 : Code[20];
+      CustomerTemplateCode_G@1000000008 : Code[20];
+      VendorTemplateCode_G@1000000007 : Code[20];
+      ContactTemplateCode_G@1000000006 : Code[20];
+      AccountTemplateCode_G@1000000005 : Code[20];
+      GlobalTemplateCode_G@1000000004 : Code[20];
+      Text0008@1000000024 : TextConst 'ENU=Error field %1 : Record %2;FRA="Erreur zone ""%1""=""%2"" : Enregistrement ""%3-%4""."';
+      Text0009@1000000033 : TextConst 'FRA=Info Suppression changement prix "%1" Quantit' "%2" : Enregistrement "%3-%4".';
+      Text0010@1000000029 : TextConst 'ENU=Error INSERT table %1 : %2;FRA=Erreur INSERT table "%1" : "%2"';
+      Text0014@1000000013 : TextConst 'FRA=Erreur MODIFY table "%1" : "%2-%3"';
+      Text0016@1000000030 : TextConst 'FRA=Produit "%1-%2" unit' sicapa "%3" non convertible unit' Nav "%4" pour "%5-%6".';
+      Text0021@1000000028 : TextConst 'FRA=Erreur int'gration "%1-%2".';
+      Text0022@1000000026 : TextConst 'FRA="""%1-%2"" int'gr'e dans ""%3""."';
+      Text0023@1000000012 : TextConst 'FRA="""%1"" modifi' de ""%2"" . ""%3""."';
+      Text0024@1000000023 : TextConst 'FRA=Erreur "%1" d'j. trait' ?';
+      Text0025@1000000032 : TextConst 'FRA=Erreur validation "%1-%2".';
+      Text0026@1000000031 : TextConst 'FRA="""%1-%2"" validation de ""%3""."';
+      Text0027@1000000034 : TextConst 'FRA=Pas de validation "%1" si mouvement restant . int'grer.';
+      Text0028@1000000036 : TextConst 'FRA=Erreur dupplication tourn'e "%1".';
+      Text0029@1000000035 : TextConst 'FRA="""%1"" dupplication tourn'e."';
+      Text0030@1000000037 : TextConst 'FRA=Pas de dupplication tourn'e "%1" si mouvement restant . int'grer.';
+      Text0031@1000000038 : TextConst 'FRA=Erreur N› document "%1" doit ^tre le m^me que celui ent^te "%2" : Enr "%3"';
+      Text1000@1000000011 : TextConst 'ENU=Error backup copy.;FRA=Erreur copie de sauvegarde.';
+      Text0050@1000000039 : TextConst 'FRA=Erreur r'f'rence externe non modifi'e dans prodat "%1" : "%2" non param'tr'e pour : "%3", ligne : "%4".';
+      Text0051@1000000040 : TextConst 'FRA=Erreur de transfert du Sas vers Table import. Elt : %1';
+      Text60000@1000000041 : TextConst 'FRA=Impossible de transformer composant Sas en ligne Pack Table import.  Elt : %1, la ligne pack a d'ja 't' trait' par l''inteface.';
+      Text60001@1000000042 : TextConst 'FRA=Impossible de retrouver la ligne de document originale de sortie pour ce composant (N› %1, N› ligne %2)';
+      Text8053600@1000000043 : TextConst 'ENU=OK;FRA=OK';
+      Text8053601@1000000048 : TextConst 'ENU=Issue Read;FRA=ProblSme de lecture';
+      Text8053602@1000000050 : TextConst 'ENU=Issue Write;FRA=ProblSme d'''criture';
+      Text8053603@1000000047 : TextConst 'ENU=File doesn''t exist;FRA=Le fichier n''existe pas';
+      Text8053604@1000000046 : TextConst 'ENU=Destination folder doesn''t exist;FRA=Le dossier de destination n''existe pas';
+      Text8053605@1000000045 : TextConst 'ENU=Destination File already exist;FRA=Le fichier de destination existe d'j.';
+      Text8053606@1000000044 : TextConst 'ENU=Company with no active interface;FRA=La soci't' n''a pas l''interface active';
+      SetupAlreadyRead_G@1000000049 : Boolean;
+      LaunchMoteurInterface_G@1000000051 : Record 8061230;
+      CmC_Company_G@1000000052 : Record 8053075;
+      Text65000@1000000053 : TextConst 'FRA=Erreur lors de l''import de fichier %1, la premiSre ligne ne commence ni par "E" ni par "L".';
+      CuWrkTableToSas_G@1000000054 : Codeunit 60036;
+      Text65001@1000000055 : TextConst 'FRA=Erreur lors du traitement d''import du fichier. Le fichier a 't' d'plac' dans le repertoire Error.';
+      Text65002@1000000056 : TextConst 'FRA=Erreur lors de la copie du fichier dans le r'pertoire "Error"';
+      Text65003@1000000057 : TextConst 'FRA=Erreur lors de la copie du fichier dans le r'pertoire "Sav"';
+      Text65004@1000000058 : TextConst 'FRA=Erreur lors de la g'n'ration de l''accus' r'ception SAS : %1';
+      Text66001@1000000059 : TextConst 'FRA=Erreur de transfert de la table de travail vers le SAS %1 : %2';
+
+    PROCEDURE ReadFileToWrkTable@1000000014(Filename_P@1000000000 : Text[1000];CompanyNo_P@1000000001 : Code[10];ArchiveFile_P@1000000002 : Boolean) Result_L : Text[30];
+    VAR
+      File_L@1000000003 : File;
+      FileStream_L@1000000004 : InStream;
+      Line_L@1000000006 : Text[1000];
+      CharLF_L@1000000007 : Char;
+      CharRC_L@1000000008 : Char;
+      EndLine_L@1000000009 : Text[2];
+      recCrmOrganisation_L@8053600 : Record 8053075;
+      cduFormatFieldsMgt_L@8053601 : Codeunit 8060985;
+      LineToCut_L@1000000005 : Text[1000];
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Lit et lance l'action de d'coupage du fichier
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - Filename_P : adresse et nom du fichier
+      //    - CompanyNo_P : N› de soci't' . qui appartient le fichier
+      //    - DeleteFile_P : Indique si le fichier doit ^tre supprim'
+      //----------------------------------------------------------------------------------------------------------------------------------
+
+      GetSetup();
+
+      //Initialisation des variables locales
+      Result_L := Text8053600;
+      CharLF_L := 10;
+      CharRC_L := 13;
+      EndLine_L := FORMAT(CharLF_L) + FORMAT(CharRC_L);
+      recCrmOrganisation_L.GET(CompanyNo_P);
+
+      //V'rification si le fichier exist
+      IF NOT(EXISTS(Filename_P)) THEN
+        Result_L := Text8053603;
+
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //Ouverture du fichier pour lire du texte en lecture seule
+      //----------------------------------------------------------------------------------------------------------------------------------
+        IF Result_L = Text8053600 THEN BEGIN
+          File_L.WRITEMODE(FALSE);
+          File_L.TEXTMODE(TRUE);
+          IF NOT(File_L.OPEN(Filename_P)) THEN
+            Result_L := Text8053601;
+        END;
+
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //D'coupage du fichier pour r'cup'rer chaque ligne
+      //----------------------------------------------------------------------------------------------------------------------------------
+        IF Result_L = Text8053600 THEN BEGIN
+          File_L.CREATEINSTREAM(FileStream_L);
+            REPEAT
+              IF FileStream_L.READTEXT(Line_L) > 0 THEN BEGIN
+                //conversion de ANSI vers ASCII
+                Line_L := cduFormatFieldsMgt_L.Ansi2Ascii(Line_L);
+                Line_L := DELCHR(Line_L, '=', EndLine_L);
+                LineToCut_L := Line_L;
+                ReadLine(Filename_P, recCrmOrganisation_L, LineToCut_L);
+              END;
+            UNTIL FileStream_L.EOS = TRUE;
+
+            //Fermeture du fichier aprSs traitement
+            File_L.CLOSE;
+            {//d'placement du fichier
+            IF NOT ToolsFile_G.FileRenameSav(Filename_P, 'Sav', TRUE) THEN BEGIN
+              ToolsFile_G.LogWriteErreur(STRSUBSTNO(Text1000, Filename_P));
+            END
+            ELSE BEGIN
+              //si tout se passe bien jusqu'au transfert de fichier, on commit pour figer
+              //l'import dans la table de travail
+              //COMMIT;
+            END;
+            }
+        END;
+      //COMMIT;
+
+
+      EXIT(Result_L);
+    END;
+
+    PROCEDURE GetSetup@8053683();
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Permet de r'cup'rer le param'trage de l'interface en faisant le moins possible de lecture dans la BDD
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //  Sorties
+      //----------------------------------------------------------------------------------------------------------------------------------
+      IF SetupAlreadyRead_G = FALSE THEN BEGIN
+        //recCRMSetup_G.GET();
+        SetupAlreadyRead_G := TRUE;
+      END;
+    END;
+
+    PROCEDURE ReadLine@1000000017(Filename_P@8053602 : Text[1000];recCrmOrganisation_P@8053601 : Record 8053075;Line_P@1000000000 : Text[1000]);
+    VAR
+      Origine_L@8053603 : Text[50];
+      CodeEvent_L@8053604 : Text[50];
+      User_L@8053605 : Text[50];
+      BufferLine_L@8053606 : Text[1000];
+      Position_L@8053607 : Integer;
+      i_L@8053608 : Integer;
+      GuidTxtHeader_L@1000000001 : Text[50];
+      recJournal_L@8053600 : Record 8053603;
+      cduSynchroError_L@8053609 : Codeunit 8053601;
+      recJournalSearch_L@8053610 : Record 8053603;
+      cduAddError_L@8053611 : Codeunit 8053603;
+      "-----------------------"@1000000002 : Integer;
+      IdLine_L@1000000003 : Code[1];
+      Tc_L@1000000004 : Code[10];
+      ModLiv_L@1000000005 : Code[10];
+      CodeMag_L@1000000006 : Code[10];
+      CodeAdd_L@1000000007 : Code[10];
+      DateDebutLiv_L@1000000008 : Date;
+      DateFinLiv_L@1000000009 : Date;
+      CommentLiv_L@1000000010 : Text[80];
+      CommentFac_L@1000000011 : Text[80];
+      OrderDate_L@1000000012 : Date;
+      Repartition_L@1000000013 : Code[1];
+      CodeClient_L@1000000014 : Code[20];
+      WrkTable_L@1000000015 : Record 60099;
+      GuidTxtLine_L@1000000016 : Text[50];
+      CodeArticleVariante_L@1000000017 : Text[32];
+      QteUv_L@1000000018 : Text[30];
+      PrixNet_L@1000000019 : Text[30];
+      PrixTarif_L@1000000020 : Code[10];
+      PrixMoyen_L@1000000021 : Code[1];
+      CodeSaison_L@1000000022 : Text[15];
+      DateDebutLivLine_L@1000000024 : Date;
+      DateFinLivLine_L@1000000023 : Date;
+      ModeLivLine_L@1000000025 : Text[15];
+      CodeMagLine_L@1000000026 : Text[15];
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // D'coupe la ligne pass'e en paramStre pour la traiter
+      // Attention, COMMIT dans cette fonction
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - Filename_P : adresse et nom du fichier
+      //    - recCrmOrganisation_P : Soci't' . l'origine de la demande
+      //    - Line_P : Ligne . traiter
+      //  Sorties
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Format de la ligne :
+      //    - Origine           : Pas utilis'
+      //    - Code 'vSnement    : Indique l'action qui doit ^tre trait'
+      //    - Utilisateur       : Pas utilis'
+      //    - ParamStre         : Donn'es de l''vSnement
+      //----------------------------------------------------------------------------------------------------------------------------------
+      BufferLine_L := Line_P;
+      IdLine_L := ReadNextItem(BufferLine_L);
+
+
+      //traitement ligne de type ent^te
+      IF IdLine_L = 'E' THEN BEGIN
+        CodeClient_L := ReadNextItem(BufferLine_L);
+        GuidTxtHeader_L := FormatGuid(ReadNextItem(BufferLine_L));
+        Tc_L:= ReadNextItem(BufferLine_L);
+        ModLiv_L := ReadNextItem(BufferLine_L);
+        CodeMag_L := ReadNextItem(BufferLine_L);
+        CodeAdd_L := ReadNextItem(BufferLine_L);
+        EVALUATE(DateDebutLiv_L,ReadNextItem(BufferLine_L));
+        EVALUATE(DateFinLiv_L,ReadNextItem(BufferLine_L));
+        CommentLiv_L := ReadNextItem(BufferLine_L);
+        CommentFac_L := ReadNextItem(BufferLine_L);
+        EVALUATE(OrderDate_L,ReadNextItem(BufferLine_L));
+        Repartition_L := ReadNextItem(BufferLine_L);
+      END;
+      //traitement ligne de type ligne
+      IF IdLine_L = 'L' THEN BEGIN
+        CodeClient_L := ReadNextItem(BufferLine_L);
+        GuidTxtHeader_L := FormatGuid(ReadNextItem(BufferLine_L));
+        CodeArticleVariante_L := ReadNextItem(BufferLine_L);
+        GuidTxtLine_L := FormatGuid(ReadNextItem(BufferLine_L));
+        QteUv_L := ReadNextItem(BufferLine_L);
+        QteUv_L := CONVERTSTR(QteUv_L, '.', ',');
+        PrixNet_L := ReadNextItem(BufferLine_L);
+        PrixNet_L := CONVERTSTR(PrixNet_L, '.', ',');
+        //IF EVALUATE(QteUv_L,ReadNextItem(BufferLine_L)) THEN;
+        //IF EVALUATE(PrixNet_L,ReadNextItem(BufferLine_L)) THEN;
+        PrixTarif_L := ReadNextItem(BufferLine_L);
+        PrixMoyen_L := ReadNextItem(BufferLine_L);
+        CodeSaison_L := ReadNextItem(BufferLine_L);
+        EVALUATE(DateDebutLivLine_L,ReadNextItem(BufferLine_L));
+        EVALUATE(DateFinLivLine_L,ReadNextItem(BufferLine_L));
+        ModeLivLine_L := ReadNextItem(BufferLine_L);
+        CodeMagLine_L := ReadNextItem(BufferLine_L);
+
+      END;
+
+      //Ecriture dans la table de travail
+      WrkTable_L.LOCKTABLE;
+      WrkTable_L.INIT;
+      IF ((IdLine_L = 'E') OR (IdLine_L = 'L')) THEN BEGIN
+        WrkTable_L."Entry No." := FindNextNo;
+        WrkTable_L.Type := WrkTable_L.Type::Import;
+        WrkTable_L."Identifiant ligne" := IdLine_L;
+        WrkTable_L.Client := CodeClient_L;
+        WrkTable_L."File Name" := COPYSTR(Filename_P,1,250);
+        WrkTable_L."Date Time Integration" := CREATEDATETIME(TODAY,TIME);
+
+        IF IdLine_L = 'E' THEN BEGIN
+          //ligne type ent^te
+          WrkTable_L."GUID Header" := GuidTxtHeader_L;
+          WrkTable_L.TC := Tc_L;
+          WrkTable_L."Code Mode Liv Header" := ModLiv_L;
+          WrkTable_L."Code Mag Header" := CodeMag_L;
+          WrkTable_L."Code Adresse" := CodeAdd_L;
+          WrkTable_L."Date Debut Liv Header" := DateDebutLiv_L;
+          WrkTable_L."Date Fin Liv Header" := DateFinLiv_L;
+          WrkTable_L."Commentaire Liv" := CommentLiv_L;
+          WrkTable_L."Commentaire Fac" := CommentFac_L;
+          WrkTable_L."Date Commande" := OrderDate_L;
+          IF Repartition_L = 'O' THEN
+            WrkTable_L."A repartir" := TRUE
+          ELSE
+            WrkTable_L."A repartir" := FALSE;
+        END
+        ELSE BEGIN
+          //ligne type ligne
+
+          WrkTable_L."GUID Header" := GuidTxtHeader_L;
+          WrkTable_L."Code article variante" := CodeArticleVariante_L;
+          WrkTable_L."GUID Line" := GuidTxtLine_L;
+          WrkTable_L."Quantity UV" := QteUv_L;
+          WrkTable_L."Prix net" := PrixNet_L;
+          WrkTable_L."Application Prix tarif" := PrixTarif_L;
+          WrkTable_L."Application Prix Moyen" := PrixMoyen_L;
+          WrkTable_L."Code Saison" := CodeSaison_L;
+          WrkTable_L."Date debut liv ligne" := DateDebutLivLine_L;
+          WrkTable_L."Date fin liv ligne" := DateFinLivLine_L;
+          WrkTable_L."Code mode Liv Ligne" := ModeLivLine_L;
+          WrkTable_L."Code Mag ligne" := CodeMagLine_L;
+        END;
+
+        WrkTable_L.INSERT;
+      END;
+    END;
+
+    PROCEDURE DeleteFile@1000000018(Filename_P@1000000000 : Text[1000]) Result_L : Text[30];
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Supprime le fichier indiqu' en paramStre
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - Filename_P : adresse et nom du fichier
+      //  Sorties
+      //    - Result_L : l'action c'est d'roul' correctement ou non :
+      //                  * Text8053600 : OK
+      //                  * Text8053602 : ProblSme d''criture
+      //                  * Text8053603 : Le fichier n'existe pas
+      //----------------------------------------------------------------------------------------------------------------------------------
+      Result_L := Text8053600;
+
+      IF NOT(EXISTS(Filename_P)) THEN
+        Result_L := Text8053603;
+
+      IF ERASE(Filename_P) = FALSE THEN
+        Result_L := Text8053602;
+
+      EXIT(Result_L);
+    END;
+
+    PROCEDURE ReadNextItem@8053600(VAR Var_Line_P@8053600 : Text[1000]) Result_L : Text[50];
+    VAR
+      Position_L@8053601 : Integer;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // R'cupSre le prochain 'l'ment de la liste 'tant s'par' par des ; et l'enlSve de la liste
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - Var_Line_P : Ligne . traiter
+      //  Sorties
+      //    - Result_L : la prochain 'l'ment de la liste
+      //----------------------------------------------------------------------------------------------------------------------------------
+
+      Position_L := STRPOS(Var_Line_P, ';');
+      IF Position_L > 0 THEN BEGIN
+        Result_L := COPYSTR(Var_Line_P, 1, Position_L - 1);
+        Var_Line_P := COPYSTR(Var_Line_P, Position_L + 1, STRLEN(Var_Line_P));
+      END ELSE BEGIN
+      //Dernier 'l'ment de la liste
+        Result_L := Var_Line_P;
+        Var_Line_P := '';
+      END;
+      //MESSAGE('-%1-',Result_L);
+      EXIT(Result_L);
+    END;
+
+    PROCEDURE FormatGuid@8053609(Guid_P@8053600 : Text[50]) Result_L : Text[50];
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Permet de mettre les accolades au GUID texte retourn' par le connecteur pour l'utiliser dans NAV
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - Guid_P : GUID MS CRM
+      //  Sorties
+      //    - Result_L : GUID format'
+      //----------------------------------------------------------------------------------------------------------------------------------
+      IF STRLEN(Guid_P) = 36 THEN
+        Result_L := '{' + Guid_P + '}'
+      ELSE
+        Result_L := Guid_P;
+      EXIT(Result_L);
+    END;
+
+    PROCEDURE FindNextNo@1000000011() : Integer;
+    VAR
+      WrkTable_L@1000000000 : Record 60099;
+    BEGIN
+      WrkTable_L.RESET;
+      IF WrkTable_L.FINDLAST THEN
+        EXIT(WrkTable_L."Entry No." + 1)
+      ELSE
+        EXIT(1);
+    END;
+
+    PROCEDURE WrkTableToSas@1000000000();
+    VAR
+      WrkTable_L@1000000000 : Record 60099;
+      IsagriSASOrderHeader_L@1000000001 : Record 60094;
+      IsagriSASOrderLine_L@1000000002 : Record 60095;
+      IsagriSASOrderHeaderManage_L@1000000003 : Record 60094;
+    BEGIN
+      //passage des donn'es de la table de travail vers le sas de commande
+      WrkTable_L.RESET;
+      WrkTable_L.SETRANGE(Treated,FALSE);
+      WrkTable_L.SETRANGE(Type,WrkTable_L.Type::Import);
+      IF WrkTable_L.FINDSET THEN REPEAT
+        CASE WrkTable_L."Identifiant ligne" OF
+        'E' : //Ent^te commande
+          //2 possibilit's : ent^te . cr'er ou . modifier
+          // si l'ent^te est encore dans le SAS c'est que la commande n'existe pas dans Navagri
+          BEGIN
+              //test existance commande dans le SAS ?
+
+              //cr'ation ou modification
+              IsagriSASOrderHeaderManage_L.INIT;
+              IsagriSASOrderHeaderManage_L.VALIDATE("Isagri CRM Guid",WrkTable_L."GUID Header");
+              IsagriSASOrderHeaderManage_L.VALIDATE("Sell-to Customer No.",WrkTable_L.Client);
+              IsagriSASOrderHeaderManage_L.VALIDATE("No.",'SAS');
+              //remplissage auto avec 'l'ment code adresse ("001" etc)
+              IsagriSASOrderHeaderManage_L.VALIDATE("Ship-to Code",WrkTable_L."Code Adresse");
+              {IsagriSASOrderHeaderManage_L.VALIDATE("Ship-to Code"
+              IsagriSASOrderHeaderManage_L.VALIDATE("Ship-to Address"
+              IsagriSASOrderHeaderManage_L.VALIDATE("Ship-to Address 2"
+              IsagriSASOrderHeaderManage_L.VALIDATE("Ship-to City"
+              }
+              //
+              //code blocage table 8053226 (coche "envoi Isagri")
+              //fonction gestion blocage
+              IsagriSASOrderHeaderManage_L.VALIDATE("Shipment Method Code",WrkTable_L."Code Mode Liv Header");
+              IsagriSASOrderHeaderManage_L.VALIDATE("Location Code",WrkTable_L."Code Mag Header");
+              IsagriSASOrderHeaderManage_L.VALIDATE("Salesperson Code",WrkTable_L.TC);
+              //IsagriSASOrderHeaderManage_L."Ship-to Post Code"
+              IsagriSASOrderHeaderManage_L.VALIDATE(NA,WrkTable_L."Code Mode Liv Header");
+              //date debut de livraison dans le fichier reÎu ("Date Debut Liv Header")
+              //si vide => attente info C'cile
+              IF WrkTable_L."Date Debut Liv Header" <> 0D THEN
+                IsagriSASOrderHeaderManage_L."Requested Delivery Date" := WrkTable_L."Date Debut Liv Header"
+              ELSE
+                IsagriSASOrderHeaderManage_L."Requested Delivery Date" := 0D;
+              //pas de gestion de modification, l'envoi de la commande par Isagri ne peut avoir lieu qu'une fois
+
+              //diff'rent du champ standard navision "creation date" lors de la cr'ation de la commande elle m^me
+              IF IsagriSASOrderHeaderManage_L."Creation Date" = 0DT THEN
+                IsagriSASOrderHeaderManage_L."Creation Date" := CREATEDATETIME(TODAY,TIME);
+              //IsagriSASOrderHeaderManage_L."Modification Date"
+
+
+
+
+
+
+              IsagriSASOrderHeaderManage_L.INSERT;
+
+          END;
+
+        'L' : //Ligne commande
+          BEGIN
+
+          END;
+
+        END;
+      UNTIL WrkTable_L.NEXT = 0;
+    END;
+
+    PROCEDURE WrkTableHeaderToSas@1000000007();
+    VAR
+      WrkTable_L@1000000000 : Record 60099;
+      WrkTable2_L@1000000004 : Record 60099;
+      IsagriSetup_L@1000000001 : Record 60096;
+      IsagriWrk2Sas_L@1000000002 : Codeunit 60042;
+      Result_L@1000000003 : Text[255];
+    BEGIN
+      WITH WrkTable_L DO BEGIN
+        RESET;
+        SETRANGE(Origine,Origine::Poseo);
+        SETRANGE(Type,WrkTable_L.Type::Import);
+        SETRANGE("Identifiant ligne",'E');
+        IF FINDSET THEN
+          REPEAT
+            IF NOT Treated THEN BEGIN
+              IF NOT CODEUNIT.RUN(60042,WrkTable_L) THEN BEGIN
+                ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text66001,
+                  FORMAT(WrkTable_L."GUID Header"),
+                  GETLASTERRORTEXT), 1, MAXSTRLEN(Result_L)));
+                // --> 20210408-WI00-ADV01.01.00-CC11151-MRU01
+                MovePoseoFile(WrkTable_L."File Name");
+                // <-- 20210408-WI00-ADV01.01.00-CC11151-MRU01
+              END
+              ELSE BEGIN
+                COMMIT;
+              END;
+            END;
+          UNTIL NEXT = 0;
+      END;//WITH
+      COMMIT;
+
+      //Suppression des lignes . ne pas traiter
+      WITH WrkTable_L DO BEGIN
+        RESET;
+        SETRANGE(Origine,Origine::Poseo);
+        SETRANGE(Treated,FALSE);
+        SETRANGE(Type,WrkTable_L.Type::Import);
+        IF NOT ISEMPTY THEN
+          DELETEALL(FALSE);
+      END;//WITH
+      COMMIT;
+    END;
+
+    PROCEDURE WrkTableCleanDoc@1000000004(GUID_Value_P@1000000002 : GUID);
+    VAR
+      WrkTable_L@1000000000 : Record 60099;
+      WrkTableLigne_L@1000000001 : Record 60099;
+    BEGIN
+      WrkTable_L.SETRANGE(Type,WrkTable_L.Type::Import);
+      WrkTable_L.SETRANGE("Identifiant ligne",'E');
+      IF NOT ISNULLGUID(GUID_Value_P) THEN
+        WrkTable_L.SETRANGE("GUID Header",GUID_Value_P);
+      IF WrkTable_L.FINDSET THEN
+        REPEAT
+          WrkTableLigne_L.SETRANGE("GUID Header",WrkTable_L."GUID Header");
+          IF NOT WrkTableLigne_L.ISEMPTY THEN
+            WrkTableLigne_L.DELETEALL;
+        UNTIL WrkTable_L.NEXT = 0;
+      COMMIT;
+    END;
+
+    PROCEDURE GenerateAccused@1000000001(Rec_P@1000000001 : Record 8061230;PoseoSetup_L@1000000002 : Record 60109;Result_L@1000000003 : Text[255]);
+    VAR
+      WorkTableForAccuse_L@1000000000 : Record 60099;
+    BEGIN
+      //g'n'ration du fichier accus' r'ception 1
+      //on doit envoyer . ISAGRI un fichier r'cap des lignes int'gr'es dans le SAS
+      IF PoseoSetup_L."Generation Accu 1" THEN BEGIN
+        WorkTableForAccuse_L.RESET;
+        // --> 20191010-WI00-ADV01.01.00-45548-MRU01
+        WorkTableForAccuse_L.SETRANGE(Origine, WorkTableForAccuse_L.Origine::Poseo);
+        // <-- 20191010-WI00-ADV01.01.00-45548-MRU01
+        IF NOT WorkTableForAccuse_L.ISEMPTY THEN BEGIN
+            IF NOT CODEUNIT.RUN(60080, Rec_P) THEN BEGIN
+              // --> 20191010-WI00-ADV01.01.00-45548-MRU01
+      //ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text65004, Rec_P."File in use", GETLASTERRORTEXT), 1, MAXSTRLEN(Result_L)));
+              ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text65004, GETLASTERRORTEXT), 1, MAXSTRLEN(Result_L)));
+              // <-- 20191010-WI00-ADV01.01.00-45548-MRU01
+            END;
+        END;
+      END;
+    END;
+
+    PROCEDURE MovePoseoFile@1000000005(NewFileText_P@1000000000 : Text[250]);
+    VAR
+      OldFile_L@1000000001 : Record 2000000022;
+      FileName_L@1000000002 : Text[250];
+    BEGIN
+      // --> 20210408-WI00-ADV01.01.00-CC11151-MRU01
+      FileName_L := NewFileText_P;
+      WHILE STRPOS(FileName_L, '\') <> 0 DO BEGIN
+        FileName_L := COPYSTR(FileName_L, 1 + STRPOS(FileName_L, '\'));
+      END;
+
+      OldFile_L.RESET;
+      OldFile_L.SETRANGE(Path, LaunchMoteurInterface_G."Folder Import/export" + '\SAV');
+      OldFile_L.SETFILTER(Name, FileName_L + '*');
+      IF OldFile_L.FINDFIRST THEN
+        IF NOT FILE.COPY(OldFile_L.Path + '\' + OldFile_L.Name, NewFileText_P) THEN;
+      // <-- 20210408-WI00-ADV01.01.00-CC11151-MRU01
+    END;
+
+    BEGIN
+    {
+      //--> 3LI BEGIN
+      20190624-WI00-ADV01.01.00-3422-CJY01 CREATE Object
+      20191010-WI00-ADV01.01.00-45548-MRU01 : MODCODE (Filtrage sur l'origine lors de la g'n'ration de l'accus')
+      20210408-WI00-ADV01.01.00-CC11151-MRU01 : ADDCODE (Gestion problSme de transfert WrkTable -> SAS)
+      //<-- 3LI END
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,1405 @@
+OBJECT Codeunit 8053009 CMC Create Sales ECD Cr.Memo
+{
+  OBJECT-PROPERTIES
+  {
+    Date=28/04/26;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,TER01.01.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    TableNo=8053089;
+    Permissions=TableData 5802=rim;
+    OnRun=VAR
+            "<< 3LI LOCALS >>"@8053000 : Integer;
+            pgePost_L@8053001 : Page 8053032;
+            TotalQuantity_L@8053002 : Decimal;
+            CreditAmount_L@8053003 : Decimal;
+          BEGIN
+            CLEAR(pgePost_L);
+            ECDLedgerEntry_G.COPYFILTERS(Rec);
+
+            pgePost_L.SetECDType(1);
+            pgePost_L.SetQuantityToPost(Quantity_G);
+            pgePost_L.SetAmountToPost(Amount_G);
+            pgePost_L.SetSourceNo("Source No.");
+            // --> 20140915-APP33-CMC02.02.00-FDA01
+            pgePost_L.SetDueDateVisibility_G(TRUE);
+            // <-- 20140915-APP33-CMC02.02.00-FDA01
+
+            IF NOT HidePageInfo_G THEN BEGIN
+
+              IF pgePost_L.RUNMODAL = ACTION::OK THEN BEGIN
+
+                Amount_G := pgePost_L.GetAmount();
+                // --> 20150518-APP03-TER01.01.00-312-BSI01
+                ApplyOrigineDueDate_G := pgePost_L.GetApplyOrigineDueDate;
+                // <-- 20150518-APP03-TER01.01.00-312-BSI01
+                pgePost_L.GetDocNo(DocNo_G);
+                pgePost_L.GetSourceNo(CustomerNo_G);
+                // --> 20140915-APP33-CMC02.02.00-FDA01
+                //Before
+                //pgePost_L.GetDates(PostingDate_G, DocDate_G);
+                //After
+                pgePost_L.GetDates2(PostingDate_G, DocDate_G, DueDate_G);
+                // <-- 20140915-APP33-CMC02.02.00-FDA01
+
+                // --> 20150518-APP03-TER01.01.00-312-BSI01
+                {before
+                  IF Amount_G > 0 THEN
+                    CreateCreditMemo(Rec)
+                  ELSE
+                    CreateInvoice(Rec)
+                after}
+                // --> 20161010-WI00-ADV01.01.00-3148-CJY01
+                IF NOT BooNotFromPage_G THEN BEGIN
+                  pgePost_L.SetDimensionInfo(AxeGenAvoir_G,DimValueAxeGenAvoir_G);
+                  pgePost_L.GetVATSetup(ApplyItemVAT_G);
+                  pgePost_L.SetVATProdPostingGroupInfo(GroupeComptaTvaArticle_G);
+
+                  IF ((NOT ApplyItemVAT_G) AND (GroupeComptaTvaArticle_G = '')) THEN
+                    ERROR(Text60001);
+
+                END;
+                // <-- 20161010-WI00-ADV01.01.00-3148-CJY01
+
+                IF Amount_G > 0 THEN BEGIN
+                  IF ApplyOrigineDueDate_G THEN
+                    CreateSplittedCreditMemo(Rec)
+                  ELSE
+                    CreateCreditMemo(Rec);
+                END
+                ELSE BEGIN
+                  IF ApplyOrigineDueDate_G THEN
+                    CreateSplittedInvoice(Rec)
+                  ELSE
+                    CreateInvoice(Rec);
+                END;
+                // <-- 20150518-APP03-TER01.01.00-312-BSI01
+              END;
+
+            END ELSE BEGIN
+
+              // --> 20150518-APP03-TER01.01.00-312-BSI01
+              {before
+                IF Amount_G > 0 THEN
+                  CreateCreditMemo(Rec)
+                ELSE
+                  CreateInvoice(Rec)
+              after}
+              IF Amount_G > 0 THEN BEGIN
+                IF ApplyOrigineDueDate_G THEN
+                  CreateSplittedCreditMemo(Rec)
+                ELSE
+                  CreateCreditMemo(Rec);
+              END
+              ELSE BEGIN
+                IF ApplyOrigineDueDate_G THEN
+                  CreateSplittedInvoice(Rec)
+                ELSE
+                  CreateInvoice(Rec);
+              END;
+              // <-- 20150518-APP03-TER01.01.00-312-BSI01
+
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      "<< 3LI TEXT GLOBALS >>"@8053000 : TextConst;
+      Text8053001@8053001 : TextConst 'ENU=You can''t create a Credit Note for 2 different Vendors;FRA=Vous ne pouvez pas cr'er d''avoir sur 2 fournisseurs diff'rents';
+      Text8053002@8053002 : TextConst 'ENU=You can''t create a Credit Memo for 2 different Items;FRA=Vous ne pouvez pas cr'er d''avoir sur 2 articles diff'rents';
+      Text8053003@8053003 : TextConst 'ENU=Credit Memo Amount can''t be Zero;FRA=Le montant de l''avoir ne peut pas ^tre nul';
+      Text8053004@8053006 : TextConst 'ENU=Nothing to do;FRA=Rien . g'n'rer';
+      Text8053005@8053007 : TextConst 'ENU=Canceled by user;FRA=Action annul'e par l''utilisateur';
+      Text8053006@8053008 : TextConst 'ENU="You must select Value Entry No. %1, linked to document %2 %3  ";FRA=Vous devez s'lectionner l'''criture valeur %1 correspondant au document %2 %3';
+      Text8053007@8053009 : TextConst 'ENU=ECD %1;FRA=RFC %1';
+      Text8053008@8053010 : TextConst 'FRA=Vous devez s'lectionner des factures du m^me fournisseur';
+      Text8053009@8053011 : TextConst 'FRA=Voulez-vous mettre . 0 les RFC ?';
+      "<< 3LI GLOBALS >>"@8053004 : Integer;
+      cduCMCDimensions_G@8053019 : Codeunit 8053004;
+      cduDimMgt_G@8053020 : Codeunit 408;
+      ECDLedgerEntry_G@8053012 : Record 8053089;
+      DocNo_G@8053017 : Code[20];
+      Quantity_G@8053016 : Decimal;
+      Amount_G@8053005 : Decimal;
+      AmountToAss_G@8053013 : Decimal;
+      PostingDate_G@8053014 : Date;
+      DocDate_G@8053015 : Date;
+      CustomerNo_G@1180250002 : Code[20];
+      HidePageInfo_G@8053018 : Boolean;
+      Text8053010@8053021 : TextConst 'ENU=Reference Invoice n› : %1;FRA=N› facture de r'f'rence : %1';
+      Text8053011@8053023 : TextConst 'ENU=Sales ECD Credit Memo;FRA=Avoir RFC Vente';
+      Text8053012@8053022 : TextConst 'ENU=Sales ECD Invoice;FRA=Facture RFC Vente';
+      DueDate_G@8053024 : Date;
+      ApplyOrigineDueDate_G@60000 : Boolean;
+      PostingDoc_G@60001 : Boolean;
+      DocType_G@60002 : 'Facture,Avoir';
+      AxeGenAvoir_G@1000000002 : Code[20];
+      DimValueAxeGenAvoir_G@1000000001 : Code[20];
+      DocumentDimension_G@1000000000 : Record 357;
+      Text60000@1000000003 : TextConst 'FRA=Veuillez saisir une valeur pour l''axe %1 avant de lancer la g'n'ration.';
+      BooNotFromPage_G@1000000004 : Boolean;
+      ApplyItemVAT_G@1000000005 : Boolean;
+      Text60001@1000000006 : TextConst 'FRA=Vous devez choisir un groupe compta produit TVA si vous d'cochez "Appliquer TVA Article"';
+      GroupeComptaTvaArticle_G@1000000007 : Code[10];
+
+    PROCEDURE "<< 3LI FUNCTIONS >>"@8053002();
+    BEGIN
+    END;
+
+    PROCEDURE SetHidePageInfo@8053004(HidePageInfo_P@8053000 : Boolean);
+    BEGIN
+      HidePageInfo_G := HidePageInfo_P;
+    END;
+
+    PROCEDURE SetQuantity@8053005(Quantity_P@8053000 : Decimal);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Affecte la quantit' de l'avoir g'n'r'
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Entr'es : Quantity_P : Quantit' de l'avoir . g'n'rer
+      //----------------------------------------------------------------------------------------------------------------------------------
+      Quantity_G := Quantity_P;
+    END;
+
+    PROCEDURE SetAmount@8053001(Amount_P@8053000 : Decimal);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Affecte le montant de l'avoir g'n'r'
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Entr'es : Amount_P : Montant de l'avoir . g'n'rer
+      //----------------------------------------------------------------------------------------------------------------------------------
+      Amount_G := Amount_P;
+    END;
+
+    PROCEDURE SetCustomerNo@8053007(CustomerNo_P@8053000 : Code[20]);
+    BEGIN
+      CustomerNo_G := CustomerNo_P;
+    END;
+
+    PROCEDURE SetPostingDate@8053008(PostingDate_P@8053000 : Date);
+    BEGIN
+      PostingDate_G := PostingDate_P;
+    END;
+
+    PROCEDURE SetDocumentDate@8053009(DocumentDate_P@8053000 : Date);
+    BEGIN
+      DocDate_G := DocumentDate_P;
+    END;
+
+    PROCEDURE SetRecordsToTemp@8053003(VAR ECDLedgerEntry_P_@8053000 : Record 8053089;VAR ECDLedgerEntryTemp_P_@8053001 : TEMPORARY Record 8053089);
+    BEGIN
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Copie les enregistrements en table temporaire pour traitement.
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Entrees :
+      //  - ECDLedgerEntry_P_ ....: Ecritures RFC facture . copier
+      //  - ECDLedgerEntryTemp_P_ : Table temporaire . remplir
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      ECDLedgerEntryTemp_P_.DELETEALL;
+
+      IF ECDLedgerEntry_P_.FIND('-') THEN BEGIN
+        REPEAT
+          ECDLedgerEntryTemp_P_ := ECDLedgerEntry_P_;
+          ECDLedgerEntryTemp_P_.INSERT;
+        UNTIL ECDLedgerEntry_P_.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE CreateCreditMemo@8053006(VAR ECDLedgerEntry_P_@8053000 : Record 8053089);
+    VAR
+      "<< 3LI LOCALS >>"@8053004 : Integer;
+      CMCSetup_L@8053006 : Record 8052982;
+      DocDimTemp_L@8053016 : TEMPORARY Record 357;
+      ItemLedgerEntry_L@8053005 : Record 32;
+      ECDLedgerEntry_L@8053014 : Record 8053089;
+      ECDLedgerEntryTemp_L@8053003 : TEMPORARY Record 8053089;
+      ECDLedgerEntryTemp2_L@8053013 : TEMPORARY Record 8053089;
+      SalesHeader_L@8053009 : Record 36;
+      SalesLine_L@8053008 : Record 37;
+      SalesItemChargeAssignment_L@8053007 : Record 5809;
+      Item_L@8053012 : Record 27;
+      TotalQuantity_L@8053002 : Decimal;
+      UnitAmount_L@8053001 : Decimal;
+      LineNo_L@8053010 : Integer;
+      LinePurchNo_L@8053011 : Integer;
+      VATRateChangeConversion_L@8053015 : Codeunit 550;
+      ItemVariant_L@8053017 : Record 5401;
+      RecSalesDiscount_L@60000 : Record 8053174;
+    BEGIN
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // G'nSre l'avoir de RFC
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Entrees : ECDLedgerEntry_P_ : Ecritures RFC . partir desquelles la RFC sera calcul'e
+      // ---------------------------------------------------------------------------------------------------------------------------------
+
+      SetRecordsToTemp(ECDLedgerEntry_P_, ECDLedgerEntryTemp_L);
+
+      SetRecordsToTemp2(ECDLedgerEntry_P_, ECDLedgerEntryTemp2_L);
+
+
+      LinePurchNo_L := 10000;
+
+      IF DocNo_G = '' THEN BEGIN
+        SalesHeader_L.INIT;
+        SalesHeader_L."Document Type" := SalesHeader_L."Document Type"::"Credit Memo";
+        SalesHeader_L."No." := '';
+        SalesHeader_L.INSERT(TRUE);
+        SalesHeader_L.VALIDATE("Sell-to Customer No.", CustomerNo_G);
+        SalesHeader_L.VALIDATE(ECD , TRUE);
+        // --> 20260428-WI00-ADV01.01.00-44778-CJY01
+        SalesHeader_L.CheckSendToAPSalesEcd;
+        // <-- // --> 20260428-WI00-ADV01.01.00-44778-CJY01
+        SalesHeader_L.VALIDATE("Posting Date", PostingDate_G);
+        SalesHeader_L.VALIDATE("Document Date", DocDate_G);
+        // --> 20140915-APP33-CMC02.02.00-FDA01
+        SalesHeader_L.VALIDATE("Due Date", DueDate_G);
+        // <-- 20140915-APP33-CMC02.02.00-FDA01
+        SalesHeader_L.VALIDATE("Posting Description", Text8053011);
+        SalesHeader_L.MODIFY(TRUE);
+        DocNo_G := SalesHeader_L."No.";
+      END ELSE BEGIN
+        SalesHeader_L.GET(SalesHeader_L."Document Type"::"Credit Memo", DocNo_G);
+        SalesLine_L.SETRANGE("Document Type", SalesHeader_L."Document Type");
+        SalesLine_L.SETRANGE("Document No.", SalesHeader_L."No.");
+        IF SalesLine_L.FINDLAST THEN
+          LinePurchNo_L := SalesLine_L."Line No." + 10000;
+      END;
+
+      CMCSetup_L.GET;
+
+      ECDLedgerEntryTemp2_L.RESET;
+
+      IF ECDLedgerEntryTemp2_L.FINDSET THEN
+      REPEAT
+        Item_L.GET(ECDLedgerEntryTemp2_L."Item No.");
+        SalesLine_L.INIT;
+        SalesLine_L."Document Type" := SalesLine_L."Document Type"::"Credit Memo";
+        SalesLine_L.VALIDATE("Document No.", SalesHeader_L."No.");
+        SalesLine_L.VALIDATE("Line No.", LinePurchNo_L);
+        SalesLine_L.Type := SalesLine_L.Type::" ";
+        SalesLine_L.Description := STRSUBSTNO(Text8053010, ECDLedgerEntryTemp2_L."Document No.");
+        SalesLine_L.INSERT(TRUE);
+
+        LinePurchNo_L := LinePurchNo_L + 10000;
+
+        SalesLine_L.INIT;
+        SalesLine_L."Document Type" := SalesLine_L."Document Type"::"Credit Memo";
+        SalesLine_L.VALIDATE("Document No.", SalesHeader_L."No.");
+        SalesLine_L.VALIDATE("Line No.", LinePurchNo_L);
+        SalesLine_L.INSERT(TRUE);
+
+        SalesLine_L.VALIDATE(Type, SalesLine_L.Type::"Charge (Item)");
+        SalesLine_L.VALIDATE("No.", CMCSetup_L."ECD Cr.Memo Item Charge");
+
+        // --> 20150423-APP33-TER01.01.00-280-BSI01
+        IF NOT RecSalesDiscount_L.GET(ECDLedgerEntryTemp2_L."Discount Code") THEN
+          CLEAR(RecSalesDiscount_L);
+
+        IF RecSalesDiscount_L."Line Description" <> '' THEN BEGIN
+          IF (ECDLedgerEntryTemp2_L."Variant Code" <> '') AND
+             (ItemVariant_L.GET(ECDLedgerEntryTemp2_L."Item No.",ECDLedgerEntryTemp2_L."Variant Code"))
+          THEN
+            SalesLine_L.VALIDATE(Description,COPYSTR(STRSUBSTNO(RecSalesDiscount_L."Line Description",ItemVariant_L.Description),1,
+              MAXSTRLEN(SalesLine_L.Description)))
+          ELSE
+            SalesLine_L.VALIDATE(Description,COPYSTR(STRSUBSTNO(RecSalesDiscount_L."Line Description",Item_L.Description),1,
+              MAXSTRLEN(SalesLine_L.Description)));
+        END ELSE BEGIN
+        // <-- 20150423-APP33-TER01.01.00-280-BSI01
+          IF (ECDLedgerEntryTemp2_L."Variant Code" <> '') AND
+             (ItemVariant_L.GET(ECDLedgerEntryTemp2_L."Item No.",ECDLedgerEntryTemp2_L."Variant Code"))
+          THEN
+            SalesLine_L.VALIDATE(Description,COPYSTR(STRSUBSTNO(Text8053007,ItemVariant_L.Description),1,
+              MAXSTRLEN(SalesLine_L.Description)))
+          ELSE
+            SalesLine_L.VALIDATE(Description,COPYSTR(STRSUBSTNO(Text8053007,Item_L.Description),1,
+              MAXSTRLEN(SalesLine_L.Description)));
+
+        END;
+        SalesLine_L.VALIDATE(Quantity, -ECDLedgerEntryTemp2_L."Invoiced Quantity");
+
+        VATRateChangeConversion_L.GetOldVat(ECDLedgerEntryTemp2_L."Posting Date",
+          SalesLine_L."Gen. Prod. Posting Group",Item_L."VAT Prod. Posting Group",Item_L."No.");
+        // --> 20161010-WI00-ADV01.01.00-3148-CJY01
+        {BEFORE
+        SalesLine_L.VALIDATE("VAT Prod. Posting Group",Item_L."VAT Prod. Posting Group");
+        AFTER}
+        IF NOT BooNotFromPage_G THEN BEGIN
+          IF ApplyItemVAT_G THEN
+            SalesLine_L.VALIDATE("VAT Prod. Posting Group",Item_L."VAT Prod. Posting Group")
+          ELSE
+            SalesLine_L.VALIDATE("VAT Prod. Posting Group",GroupeComptaTvaArticle_G);
+        END
+        ELSE BEGIN
+          SalesLine_L.VALIDATE("VAT Prod. Posting Group",Item_L."VAT Prod. Posting Group");
+        END;
+        // <-- 20161010-WI00-ADV01.01.00-3148-CJY01
+        IF SalesLine_L.Quantity <> 0 THEN
+          SalesLine_L.VALIDATE("Unit Price", -ECDLedgerEntryTemp2_L."ECD Unit Price to Invoice" / SalesLine_L.Quantity);
+
+        // --> 20150206-Wi00-CMC02.02.00-2745-SDE01 : ADDCODE
+        SalesLine_L."Location Code":=ECDLedgerEntryTemp2_L."Location Code";
+        // <-- 20150206-Wi00-CMC02.02.00-2745-SDE01 : ADDCODE
+
+        SalesLine_L.MODIFY(TRUE);
+
+        // ------------------------------------------------------------------------
+        // Copie Axes Analytiques Article
+        // ------------------------------------------------------------------------
+        cduCMCDimensions_G.DimSalesFromItem(DocDimTemp_L, SalesLine_L, Item_L."No.");
+        cduDimMgt_G.TransferTempToDimToDocDim(DocDimTemp_L);
+        // ------------------------------------------------------------------------
+        // --> 20161010-WI00-ADV01.01.00-3148-CJY01
+        //on cr'e notre analytique si n'cessaire
+        IF NOT BooNotFromPage_G THEN BEGIN
+          IF AxeGenAvoir_G <> '' THEN BEGIN
+            IF DimValueAxeGenAvoir_G = '' THEN
+              ERROR(Text60000,AxeGenAvoir_G);
+            //On cr'e notre ligne analytique
+            DocumentDimension_G."Table ID" := 37;
+            DocumentDimension_G."Document Type" := DocumentDimension_G."Document Type"::"Credit Memo";
+            DocumentDimension_G."Document No." := SalesLine_L."Document No.";
+            DocumentDimension_G."Line No." := SalesLine_L."Line No.";
+            DocumentDimension_G.Type := 0;
+            DocumentDimension_G."Dimension Code" := AxeGenAvoir_G;
+            DocumentDimension_G."Dimension Value Code" := DimValueAxeGenAvoir_G;
+            IF NOT DocumentDimension_G.INSERT(TRUE) THEN
+              DocumentDimension_G.MODIFY(TRUE);
+
+          END;
+        END;
+        // <-- 20161010-WI00-ADV01.01.00-3148-CJY01
+
+        LinePurchNo_L := LinePurchNo_L + 10000;
+        // --> 20160914-WI00-ADV01.01.00-3101-CJY01
+        {BEFORE
+        ECDLedgerEntryTemp_L.SETCURRENTKEY("Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group");
+        AFTER}
+        // --> 20170126-WI00-ADV01.01.00-24651-CJY01
+        {BEFORE
+        ECDLedgerEntryTemp_L.SETCURRENTKEY("Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group","ECD Unit Price to Invoice");
+        AFTER}
+        ECDLedgerEntryTemp_L.SETCURRENTKEY("Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group","Rupture Prix Unit Fac");
+
+
+        // <-- 20170126-WI00-ADV01.01.00-24651-CJY01
+        // <-- 20160914-WI00-ADV01.01.00-3101-CJY01
+        ECDLedgerEntryTemp_L.SETRANGE("Item No.", ECDLedgerEntryTemp2_L."Item No.");
+        ECDLedgerEntryTemp_L.SETRANGE("VAT Bus. Posting Group", ECDLedgerEntryTemp2_L."VAT Bus. Posting Group");
+        ECDLedgerEntryTemp_L.SETRANGE("VAT Prod. Posting Group", ECDLedgerEntryTemp2_L."VAT Prod. Posting Group");
+        ECDLedgerEntryTemp_L.SETRANGE("Document No.", ECDLedgerEntryTemp2_L."Document No.");
+        // --> 20170201-WI00-ADV01.01.00-24651-CJY02
+        ECDLedgerEntryTemp_L.SETRANGE("Rupture Prix Unit Fac", ECDLedgerEntryTemp2_L."Rupture Prix Unit Fac");
+        // <-- 20170201-WI00-ADV01.01.00-24651-CJY02
+
+
+        ECDLedgerEntryTemp_L.FINDSET;
+
+        REPEAT
+
+          ItemLedgerEntry_L.GET(ECDLedgerEntryTemp_L."Item Ledger Entry No.");
+
+          SalesItemChargeAssignment_L.RESET;
+          SalesItemChargeAssignment_L.SETRANGE("Document Type", SalesLine_L."Document Type");
+          SalesItemChargeAssignment_L.SETRANGE("Document No.", SalesLine_L."Document No.");
+          SalesItemChargeAssignment_L.SETRANGE("Document Line No.", SalesLine_L."Line No.");
+          // --> 20170201-WI00-ADV01.01.00-24651-CJY02
+          SalesItemChargeAssignment_L.SETRANGE("Unit Cost", ECDLedgerEntryTemp_L."Rupture Prix Unit Fac");
+          // <-- 20170201-WI00-ADV01.01.00-24651-CJY02
+
+          LineNo_L := 10000;
+          IF SalesItemChargeAssignment_L.FINDLAST THEN
+            LineNo_L := SalesItemChargeAssignment_L."Line No." + 10000;
+
+          SalesItemChargeAssignment_L.INIT;
+          SalesItemChargeAssignment_L."Document Type" := SalesLine_L."Document Type";
+          SalesItemChargeAssignment_L."Document No." := SalesLine_L."Document No.";
+          SalesItemChargeAssignment_L."Document Line No." := SalesLine_L."Line No.";
+          SalesItemChargeAssignment_L."Line No." := LineNo_L;
+
+          SalesItemChargeAssignment_L."Applies-to Doc. Type" := GetDocType(ItemLedgerEntry_L."Document Type");
+          SalesItemChargeAssignment_L."Applies-to Doc. No." := ItemLedgerEntry_L."Document No.";
+          SalesItemChargeAssignment_L."Applies-to Doc. Line No." := ItemLedgerEntry_L."Document Line No.";
+
+          SalesItemChargeAssignment_L.VALIDATE("Item Charge No.", CMCSetup_L."ECD Cr.Memo Item Charge");
+          SalesItemChargeAssignment_L.VALIDATE("Item No.", ItemLedgerEntry_L."Item No.");
+          SalesItemChargeAssignment_L.VALIDATE("Unit Cost", ECDLedgerEntryTemp_L."ECD Unit Price to Invoice");
+          SalesItemChargeAssignment_L."ECD Invoice Entry" := ECDLedgerEntryTemp_L."Entry No.";
+
+          SalesItemChargeAssignment_L.INSERT(TRUE);
+
+          SalesItemChargeAssignment_L.VALIDATE("Qty. to Assign",
+                SalesItemChargeAssignment_L."Qty. to Assign" + (-ECDLedgerEntryTemp_L."Valued Quantity"));
+
+          SalesItemChargeAssignment_L."Amount to Assign" :=
+            SalesItemChargeAssignment_L."Qty. to Assign" * ECDLedgerEntryTemp_L."ECD Unit Price to Invoice";
+          SalesItemChargeAssignment_L.MODIFY(TRUE);
+
+          IF ECDLedgerEntry_L.GET(ECDLedgerEntryTemp_L."Entry No.") THEN BEGIN
+            ECDLedgerEntry_L."ECD Unit Price to Invoice" := 0;
+            // --> 20170126-WI00-ADV01.01.00-24651-CJY01
+            ECDLedgerEntry_L."Rupture Prix Unit Fac" := 0;
+            // <-- 20170126-WI00-ADV01.01.00-24651-CJY01
+            ECDLedgerEntry_L.MODIFY(TRUE);
+          END;
+
+        UNTIL ECDLedgerEntryTemp_L.NEXT =0;
+
+      UNTIL ECDLedgerEntryTemp2_L.NEXT=0;
+      // --> 20150601-APP03-TER01.01.00-312-BSI01
+      ValidateDocuments(DocType_G::Avoir,SalesHeader_L."No.");
+      // <-- 20150601-APP03-TER01.01.00-312-BSI01
+    END;
+
+    PROCEDURE CreateInvoice@8053000(VAR ECDLedgerEntry_P_@8053000 : Record 8053089);
+    VAR
+      "<< 3LI LOCALS >>"@8053004 : Integer;
+      CMCSetup_L@8053006 : Record 8052982;
+      DocDimTemp_L@8053016 : TEMPORARY Record 357;
+      ItemLedgerEntry_L@8053005 : Record 32;
+      ECDLedgerEntry_L@8053014 : Record 8053089;
+      ECDLedgerEntryTemp_L@8053003 : TEMPORARY Record 8053089;
+      ECDLedgerEntryTemp2_L@8053013 : TEMPORARY Record 8053089;
+      SalesHeader_L@8053009 : Record 36;
+      SalesLine_L@8053008 : Record 37;
+      SalesItemChargeAssignment_L@8053007 : Record 5809;
+      Item_L@8053012 : Record 27;
+      TotalQuantity_L@8053002 : Decimal;
+      UnitAmount_L@8053001 : Decimal;
+      LineNo_L@8053010 : Integer;
+      LinePurchNo_L@8053011 : Integer;
+      VATRateChangeConversion_L@8053015 : Codeunit 550;
+      ItemVariant_L@8053017 : Record 5401;
+      RecSalesDiscount_L@60000 : Record 8053174;
+    BEGIN
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // G'nSre la facture de RFC
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Entrees : ECDLedgerEntry_P_ : Ecritures RFC . partir desquelles la RFC sera calcul'e
+      // ---------------------------------------------------------------------------------------------------------------------------------
+
+      SetRecordsToTemp(ECDLedgerEntry_P_, ECDLedgerEntryTemp_L);
+
+      SetRecordsToTemp2(ECDLedgerEntry_P_, ECDLedgerEntryTemp2_L);
+
+      LinePurchNo_L := 10000;
+
+      IF DocNo_G = '' THEN BEGIN
+        SalesHeader_L.INIT;
+        SalesHeader_L."Document Type" := SalesHeader_L."Document Type"::Invoice;
+        SalesHeader_L."No." := '';
+        SalesHeader_L.INSERT(TRUE);
+        SalesHeader_L.VALIDATE("Sell-to Customer No.", CustomerNo_G);
+        SalesHeader_L.VALIDATE(ECD , TRUE);
+        // --> 20260428-WI00-ADV01.01.00-44778-CJY01
+        SalesHeader_L.CheckSendToAPSalesEcd;
+        // <-- // --> 20260428-WI00-ADV01.01.00-44778-CJY01
+
+        SalesHeader_L.VALIDATE("Posting Date", PostingDate_G);
+        SalesHeader_L.VALIDATE("Document Date", DocDate_G);
+        // --> 20140915-APP33-CMC02.02.00-FDA01
+        SalesHeader_L.VALIDATE("Due Date", DueDate_G);
+        // <-- 20140915-APP33-CMC02.02.00-FDA01
+        SalesHeader_L.VALIDATE("Posting Description", Text8053012);
+        SalesHeader_L.MODIFY(TRUE);
+        DocNo_G := SalesHeader_L."No.";
+      END ELSE BEGIN
+        SalesHeader_L.GET(SalesHeader_L."Document Type"::Invoice, DocNo_G);
+        SalesLine_L.SETRANGE("Document Type", SalesHeader_L."Document Type");
+        SalesLine_L.SETRANGE("Document No.", SalesHeader_L."No.");
+        IF SalesLine_L.FINDLAST THEN
+          LinePurchNo_L := SalesLine_L."Line No." + 10000;
+      END;
+
+      CMCSetup_L.GET;
+
+      ECDLedgerEntryTemp2_L.RESET;
+
+      IF ECDLedgerEntryTemp2_L.FINDSET THEN
+      REPEAT
+        Item_L.GET(ECDLedgerEntryTemp2_L."Item No.");
+
+        SalesLine_L.INIT;
+        SalesLine_L."Document Type" := SalesLine_L."Document Type"::Invoice;
+        SalesLine_L.VALIDATE("Document No.", SalesHeader_L."No.");
+        SalesLine_L.VALIDATE("Line No.", LinePurchNo_L);
+        SalesLine_L.Type := SalesLine_L.Type::" ";
+        SalesLine_L.Description := STRSUBSTNO(Text8053010, ECDLedgerEntryTemp2_L."Document No.");
+        SalesLine_L.INSERT(TRUE);
+        LinePurchNo_L := LinePurchNo_L + 10000;
+
+        SalesLine_L.INIT;
+        SalesLine_L."Document Type" := SalesLine_L."Document Type"::Invoice;
+        SalesLine_L.VALIDATE("Document No.", SalesHeader_L."No.");
+        SalesLine_L.VALIDATE("Line No.", LinePurchNo_L);
+        SalesLine_L.INSERT(TRUE);
+
+        SalesLine_L.VALIDATE(Type, SalesLine_L.Type::"Charge (Item)");
+        SalesLine_L.VALIDATE("No.", CMCSetup_L."ECD Cr.Memo Item Charge");
+
+        // --> 20150423-APP33-TER01.01.00-280-BSI01
+        IF NOT RecSalesDiscount_L.GET(ECDLedgerEntryTemp2_L."Discount Code") THEN
+          CLEAR(RecSalesDiscount_L);
+
+        IF RecSalesDiscount_L."Line Description" <> '' THEN BEGIN
+          IF (ECDLedgerEntryTemp2_L."Variant Code" <> '') AND
+             (ItemVariant_L.GET(ECDLedgerEntryTemp2_L."Item No.",ECDLedgerEntryTemp2_L."Variant Code"))
+          THEN
+            SalesLine_L.VALIDATE(Description,COPYSTR(STRSUBSTNO(RecSalesDiscount_L."Line Description",ItemVariant_L.Description),1,
+              MAXSTRLEN(SalesLine_L.Description)))
+          ELSE
+            SalesLine_L.VALIDATE(Description,COPYSTR(STRSUBSTNO(RecSalesDiscount_L."Line Description",Item_L.Description),1,
+              MAXSTRLEN(SalesLine_L.Description)));
+        END ELSE BEGIN
+        // <-- 20150423-APP33-TER01.01.00-280-BSI01
+
+
+        IF (ECDLedgerEntryTemp2_L."Variant Code" <> '') AND
+           (ItemVariant_L.GET(ECDLedgerEntryTemp2_L."Item No.",ECDLedgerEntryTemp2_L."Variant Code"))
+        THEN
+          SalesLine_L.VALIDATE(Description,COPYSTR(STRSUBSTNO(Text8053007,ItemVariant_L.Description),1,
+            MAXSTRLEN(SalesLine_L.Description)))
+        ELSE
+          SalesLine_L.VALIDATE(Description,COPYSTR(STRSUBSTNO(Text8053007,Item_L.Description),1,
+            MAXSTRLEN(SalesLine_L.Description)));
+        END;
+        SalesLine_L.VALIDATE(Quantity, ECDLedgerEntryTemp2_L."Invoiced Quantity");
+
+        VATRateChangeConversion_L.GetOldVat(ECDLedgerEntryTemp2_L."Posting Date",
+          SalesLine_L."Gen. Prod. Posting Group",Item_L."VAT Prod. Posting Group",Item_L."No.");
+        // --> 20161010-WI00-ADV01.01.00-3148-CJY01
+        {BEFORE
+        SalesLine_L.VALIDATE("VAT Prod. Posting Group",Item_L."VAT Prod. Posting Group");
+        AFTER}
+        IF NOT BooNotFromPage_G THEN BEGIN
+          IF ApplyItemVAT_G THEN
+            SalesLine_L.VALIDATE("VAT Prod. Posting Group",Item_L."VAT Prod. Posting Group")
+          ELSE
+            SalesLine_L.VALIDATE("VAT Prod. Posting Group",GroupeComptaTvaArticle_G);
+        END
+        ELSE BEGIN
+          SalesLine_L.VALIDATE("VAT Prod. Posting Group",Item_L."VAT Prod. Posting Group");
+        END;
+        // <-- 20161010-WI00-ADV01.01.00-3148-CJY01
+
+        IF SalesLine_L.Quantity <> 0 THEN
+          SalesLine_L.VALIDATE("Unit Price", ECDLedgerEntryTemp2_L."ECD Unit Price to Invoice" / SalesLine_L.Quantity);
+
+        // --> 20150206-Wi00-CMC02.02.00-2745-SDE01 : ADDCODE
+        SalesLine_L."Location Code":=ECDLedgerEntryTemp2_L."Location Code";
+        // <-- 20150206-Wi00-CMC02.02.00-2745-SDE01 : ADDCODE
+
+
+        SalesLine_L.MODIFY(TRUE);
+
+        // ------------------------------------------------------------------------
+        // Copie Axes Analytiques Article
+        // ------------------------------------------------------------------------
+        cduCMCDimensions_G.DimSalesFromItem(DocDimTemp_L, SalesLine_L, Item_L."No.");
+        cduDimMgt_G.TransferTempToDimToDocDim(DocDimTemp_L);
+        // ------------------------------------------------------------------------
+        // --> 20161010-WI00-ADV01.01.00-3148-CJY01
+        //on cr'e notre analytique si n'cessaire
+        IF NOT BooNotFromPage_G THEN BEGIN
+          IF AxeGenAvoir_G <> '' THEN BEGIN
+            IF DimValueAxeGenAvoir_G = '' THEN
+              ERROR(Text60000,AxeGenAvoir_G);
+            //On cr'e notre ligne analytique
+            DocumentDimension_G."Table ID" := 37;
+            DocumentDimension_G."Document Type" := DocumentDimension_G."Document Type"::Invoice;
+            DocumentDimension_G."Document No." := SalesLine_L."Document No.";
+            DocumentDimension_G."Line No." := SalesLine_L."Line No.";
+            DocumentDimension_G.Type := 0;
+            DocumentDimension_G."Dimension Code" := AxeGenAvoir_G;
+            DocumentDimension_G."Dimension Value Code" := DimValueAxeGenAvoir_G;
+            IF NOT DocumentDimension_G.INSERT(TRUE) THEN
+              DocumentDimension_G.MODIFY(TRUE);
+
+          END;
+        END;
+
+        // <-- 20161010-WI00-ADV01.01.00-3148-CJY01
+
+        LinePurchNo_L := LinePurchNo_L + 10000;
+        // --> 20170126-WI00-ADV01.01.00-24651-CJY01
+        {BEFORE
+        ECDLedgerEntryTemp_L.SETCURRENTKEY("Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group");
+        AFTER}
+        ECDLedgerEntryTemp_L.SETCURRENTKEY("Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group","Rupture Prix Unit Fac");
+        // <-- 20170126-WI00-ADV01.01.00-24651-CJY01
+        ECDLedgerEntryTemp_L.SETRANGE("Item No.", ECDLedgerEntryTemp2_L."Item No.");
+        ECDLedgerEntryTemp_L.SETRANGE("VAT Bus. Posting Group", ECDLedgerEntryTemp2_L."VAT Bus. Posting Group");
+        ECDLedgerEntryTemp_L.SETRANGE("VAT Prod. Posting Group", ECDLedgerEntryTemp2_L."VAT Prod. Posting Group");
+        ECDLedgerEntryTemp_L.SETRANGE("Document No.", ECDLedgerEntryTemp2_L."Document No.");
+        // --> 20170201-WI00-ADV01.01.00-24651-CJY02
+        ECDLedgerEntryTemp_L.SETRANGE("Rupture Prix Unit Fac", ECDLedgerEntryTemp2_L."Rupture Prix Unit Fac");
+        // <-- 20170201-WI00-ADV01.01.00-24651-CJY02
+
+        ECDLedgerEntryTemp_L.FINDSET;
+
+        REPEAT
+
+          ItemLedgerEntry_L.GET(ECDLedgerEntryTemp_L."Item Ledger Entry No.");
+
+          SalesItemChargeAssignment_L.RESET;
+          SalesItemChargeAssignment_L.SETRANGE("Document Type", SalesLine_L."Document Type");
+          SalesItemChargeAssignment_L.SETRANGE("Document No.", SalesLine_L."Document No.");
+          SalesItemChargeAssignment_L.SETRANGE("Document Line No.", SalesLine_L."Line No.");
+          // --> 20170201-WI00-ADV01.01.00-24651-CJY02
+          SalesItemChargeAssignment_L.SETRANGE("Unit Cost", ECDLedgerEntryTemp_L."Rupture Prix Unit Fac");
+          // <-- 20170201-WI00-ADV01.01.00-24651-CJY02
+
+          LineNo_L := 10000;
+          IF SalesItemChargeAssignment_L.FINDLAST THEN
+            LineNo_L := SalesItemChargeAssignment_L."Line No." + 10000;
+
+          SalesItemChargeAssignment_L.INIT;
+          SalesItemChargeAssignment_L."Document Type" := SalesLine_L."Document Type";
+          SalesItemChargeAssignment_L."Document No." := SalesLine_L."Document No.";
+          SalesItemChargeAssignment_L."Document Line No." := SalesLine_L."Line No.";
+          SalesItemChargeAssignment_L."Line No." := LineNo_L;
+
+          SalesItemChargeAssignment_L."Applies-to Doc. Type" := GetDocType(ItemLedgerEntry_L."Document Type");
+          SalesItemChargeAssignment_L."Applies-to Doc. No." := ItemLedgerEntry_L."Document No.";
+          SalesItemChargeAssignment_L."Applies-to Doc. Line No." := ItemLedgerEntry_L."Document Line No.";
+
+          SalesItemChargeAssignment_L.VALIDATE("Item Charge No.", CMCSetup_L."ECD Cr.Memo Item Charge");
+          SalesItemChargeAssignment_L.VALIDATE("Item No.", ItemLedgerEntry_L."Item No.");
+          SalesItemChargeAssignment_L.VALIDATE("Unit Cost", ECDLedgerEntryTemp_L."ECD Unit Price to Invoice");
+
+          SalesItemChargeAssignment_L."ECD Invoice Entry" := ECDLedgerEntryTemp2_L."Entry No.";
+          SalesItemChargeAssignment_L.INSERT(TRUE);
+
+          SalesItemChargeAssignment_L.VALIDATE("Qty. to Assign",
+                SalesItemChargeAssignment_L."Qty. to Assign" + ECDLedgerEntryTemp_L."Valued Quantity");
+
+          SalesItemChargeAssignment_L."Amount to Assign" :=
+            SalesItemChargeAssignment_L."Qty. to Assign" * ECDLedgerEntryTemp_L."ECD Unit Price to Invoice";
+
+          SalesItemChargeAssignment_L.MODIFY(TRUE);
+
+          // -----------------------------------------------------------------------
+          IF ECDLedgerEntry_L.GET(ECDLedgerEntryTemp2_L."Entry No.") THEN BEGIN
+            ECDLedgerEntry_L."ECD Unit Price to Invoice" := 0;
+            // --> 20170126-WI00-ADV01.01.00-24651-CJY01
+            ECDLedgerEntry_L."Rupture Prix Unit Fac" := 0;
+            // <-- 20170126-WI00-ADV01.01.00-24651-CJY01
+            ECDLedgerEntry_L.MODIFY(TRUE);
+          END;
+          // -----------------------------------------------------------------------
+
+        UNTIL ECDLedgerEntryTemp_L.NEXT =0;
+
+      UNTIL ECDLedgerEntryTemp2_L.NEXT=0;
+
+      // --> 20150601-APP03-TER01.01.00-312-BSI01
+      ValidateDocuments(DocType_G::Facture,SalesHeader_L."No.");
+      // <-- 20150601-APP03-TER01.01.00-312-BSI01
+    END;
+
+    PROCEDURE GetDocType@8053010(DocType_P@8053000 : Integer) GetDocType_L : Integer;
+    BEGIN
+      GetDocType_L := 0;
+
+      CASE DocType_P OF
+
+        1 : GetDocType_L := 6;
+        2 : GetDocType_L := 8;
+        3 : GetDocType_L := 7;
+        4 : GetDocType_L := 9;
+
+        5 : GetDocType_L := 6;
+        6 : GetDocType_L := 11;
+        7 : GetDocType_L := 8;
+        8 : GetDocType_L := 12;
+
+      END;
+
+      EXIT(GetDocType_L);
+    END;
+
+    PROCEDURE GetDocNo@8053013() : Code[20];
+    BEGIN
+      EXIT(DocNo_G);
+    END;
+
+    PROCEDURE SetRecordsToTemp2@8053012(VAR ECDLedgerEntry_P_@8053000 : Record 8053089;VAR ECDLedgerEntryTemp_P_@8053001 : TEMPORARY Record 8053089);
+    BEGIN
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Copie les enregistrements en table temporaire pour traitement pour regroupement article
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Entrees :
+      //  - ECDLedgerEntry_P_ ....: Ecritures RFC . copier
+      //  - ECDLedgerEntryTemp_P_ : Table temporaire . remplir
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      ECDLedgerEntryTemp_P_.DELETEALL;
+      IF ECDLedgerEntry_P_.FINDSET(FALSE,FALSE) THEN BEGIN
+
+        REPEAT
+          // --> 20160914-WI00-ADV01.01.00-3101-CJY01
+
+          {BEFORE
+          ECDLedgerEntryTemp_P_.SETCURRENTKEY("Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group");
+          AFTER}
+          // --> 20170126-WI00-ADV01.01.00-24651-CJY01
+          {BEFORE
+          ECDLedgerEntryTemp_P_.SETCURRENTKEY("Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group","ECD Unit Price to Invoice")
+      ;   AFTER}
+          ECDLedgerEntryTemp_P_.SETCURRENTKEY("Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group","Rupture Prix Unit Fac");
+
+          // <-- 20170126-WI00-ADV01.01.00-24651-CJY01
+          // <-- 20160914-WI00-ADV01.01.00-3101-CJY01
+          ECDLedgerEntryTemp_P_.SETRANGE("Item No.", ECDLedgerEntry_P_."Item No.");
+          ECDLedgerEntryTemp_P_.SETRANGE("VAT Bus. Posting Group", ECDLedgerEntry_P_."VAT Bus. Posting Group");
+          ECDLedgerEntryTemp_P_.SETRANGE("VAT Prod. Posting Group", ECDLedgerEntry_P_."VAT Prod. Posting Group");
+          ECDLedgerEntryTemp_P_.SETRANGE("Document No.", ECDLedgerEntry_P_."Document No.");
+          // --> 20160914-WI00-ADV01.01.00-3101-CJY01
+          // --> 20170126-WI00-ADV01.01.00-24651-CJY01
+          {BEFORE
+          ECDLedgerEntryTemp_P_.SETRANGE("ECD Unit Price to Invoice", ECDLedgerEntry_P_."Ecd Unit Price To Invoice");
+          AFTER}
+          ECDLedgerEntryTemp_P_.SETRANGE("Rupture Prix Unit Fac", ECDLedgerEntry_P_."Rupture Prix Unit Fac");
+          //MESSAGE('%1',ECDLedgerEntry_P_."Rupture Prix Unit Fac");
+          // --> 20170126-WI00-ADV01.01.00-24651-CJY01
+          // <-- 20160914-WI00-ADV01.01.00-3101-CJY01
+
+          IF NOT ECDLedgerEntryTemp_P_.FINDFIRST THEN BEGIN
+
+            ECDLedgerEntryTemp_P_.RESET;
+            ECDLedgerEntryTemp_P_ := ECDLedgerEntry_P_;
+            ECDLedgerEntryTemp_P_."ECD Unit Price to Invoice" :=
+              ECDLedgerEntryTemp_P_."ECD Unit Price to Invoice" * ECDLedgerEntry_P_."Invoiced Quantity";
+
+            ECDLedgerEntryTemp_P_.INSERT;
+
+          END ELSE BEGIN
+
+            ECDLedgerEntryTemp_P_."Invoiced Quantity" :=
+              ECDLedgerEntryTemp_P_."Invoiced Quantity" + ECDLedgerEntry_P_."Invoiced Quantity";
+
+            ECDLedgerEntryTemp_P_."ECD Unit Price to Invoice" :=
+              ECDLedgerEntryTemp_P_."ECD Unit Price to Invoice" +
+              (ECDLedgerEntry_P_."ECD Unit Price to Invoice" * ECDLedgerEntry_P_."Invoiced Quantity");
+
+            ECDLedgerEntryTemp_P_.MODIFY;
+
+          END;
+
+        UNTIL ECDLedgerEntry_P_.NEXT = 0;
+
+      END;
+    END;
+
+    PROCEDURE SetDueDate@8053011(DueDate_P@8053000 : Date);
+    BEGIN
+      // --> 20140915-APP33-CMC02.02.00-FDA01
+      DueDate_G := DueDate_P;
+      // <-- 20140915-APP33-CMC02.02.00-FDA01
+    END;
+
+    PROCEDURE CreateSplittedCreditMemo@60001(VAR ECDLedgerEntry_P_@8053000 : Record 8053089);
+    VAR
+      "<< 3LI LOCALS >>"@8053004 : Integer;
+      CMCSetup_L@8053006 : Record 8052982;
+      DocDimTemp_L@8053016 : TEMPORARY Record 357;
+      ItemLedgerEntry_L@8053005 : Record 32;
+      ECDLedgerEntry_L@8053014 : Record 8053089;
+      ECDLedgerEntryTemp_L@8053003 : TEMPORARY Record 8053089;
+      ECDLedgerEntryTemp2_L@8053013 : TEMPORARY Record 8053089;
+      ECDLedgerEntryTemp3_L@60001 : TEMPORARY Record 8053089;
+      SalesHeader_L@8053009 : Record 36;
+      SalesLine_L@8053008 : Record 37;
+      SalesItemChargeAssignment_L@8053007 : Record 5809;
+      Item_L@8053012 : Record 27;
+      TotalQuantity_L@8053002 : Decimal;
+      UnitAmount_L@8053001 : Decimal;
+      LineNo_L@8053010 : Integer;
+      LinePurchNo_L@8053011 : Integer;
+      VATRateChangeConversion_L@8053015 : Codeunit 550;
+      ItemVariant_L@8053017 : Record 5401;
+      RecSalesDiscount_L@60000 : Record 8053174;
+    BEGIN
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // G'nSre l'avoir de RFC
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Entrees : ECDLedgerEntry_P_ : Ecritures RFC . partir desquelles la RFC sera calcul'e
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      CMCSetup_L.GET;
+      SetRecordsToTemp(ECDLedgerEntry_P_, ECDLedgerEntryTemp_L);
+      SetRecordsToTemp2(ECDLedgerEntry_P_, ECDLedgerEntryTemp2_L);
+      SetRecordsToTemp3(ECDLedgerEntry_P_, ECDLedgerEntryTemp3_L);
+      LinePurchNo_L := 10000;
+
+      CLEAR(ECDLedgerEntryTemp3_L);
+      ECDLedgerEntryTemp3_L.SETCURRENTKEY("Due Date");
+      IF ECDLedgerEntryTemp3_L.FIND('-') THEN
+      REPEAT
+        CLEAR(SalesHeader_L);
+        SalesHeader_L.SETRANGE("Document Type",SalesHeader_L."Document Type"::"Credit Memo");
+        SalesHeader_L.SETRANGE("Due Date",ECDLedgerEntryTemp3_L."Due Date");
+        // --> 20150601-APP03-TER01.01.00-1836-BSI01
+        SalesHeader_L.SETRANGE("Sell-to Customer No.",CustomerNo_G);
+        // <-- 20150601-APP03-TER01.01.00-1836-BSI01
+        IF NOT SalesHeader_L.FINDSET THEN BEGIN
+          SalesHeader_L.INIT;
+          SalesHeader_L."Document Type" := SalesHeader_L."Document Type"::"Credit Memo";
+          SalesHeader_L."No." := '';
+          SalesHeader_L.INSERT(TRUE);
+          SalesHeader_L.VALIDATE("Sell-to Customer No.", CustomerNo_G);
+          SalesHeader_L.VALIDATE(ECD , TRUE);
+          // --> 20260428-WI00-ADV01.01.00-44778-CJY01
+          SalesHeader_L.CheckSendToAPSalesEcd;
+          // <-- // --> 20260428-WI00-ADV01.01.00-44778-CJY01
+
+          SalesHeader_L.VALIDATE("Posting Date", PostingDate_G);
+          SalesHeader_L.VALIDATE("Document Date", DocDate_G);
+          SalesHeader_L."Due Date" := ECDLedgerEntryTemp3_L."Due Date";
+          SalesHeader_L.VALIDATE("Posting Description", Text8053011);
+          SalesHeader_L.MODIFY(TRUE);
+          DocNo_G := SalesHeader_L."No.";
+        END ELSE BEGIN
+          SalesLine_L.SETRANGE("Document Type", SalesHeader_L."Document Type");
+          SalesLine_L.SETRANGE("Document No.", SalesHeader_L."No.");
+          IF SalesLine_L.FINDLAST THEN
+            LinePurchNo_L := SalesLine_L."Line No." + 10000;
+        END;
+
+        CLEAR(ECDLedgerEntryTemp2_L);
+        ECDLedgerEntryTemp2_L.SETRANGE("Document No.",ECDLedgerEntryTemp3_L."Document No.");
+        IF ECDLedgerEntryTemp2_L.FINDSET THEN
+        REPEAT
+          Item_L.GET(ECDLedgerEntryTemp2_L."Item No.");
+          SalesLine_L.INIT;
+          SalesLine_L."Document Type" := SalesLine_L."Document Type"::"Credit Memo";
+          SalesLine_L.VALIDATE("Document No.", SalesHeader_L."No.");
+          SalesLine_L.VALIDATE("Line No.", LinePurchNo_L);
+          SalesLine_L.Type := SalesLine_L.Type::" ";
+          SalesLine_L.Description := STRSUBSTNO(Text8053010, ECDLedgerEntryTemp2_L."Document No.");
+          SalesLine_L.INSERT(TRUE);
+          LinePurchNo_L := LinePurchNo_L + 10000;
+          SalesLine_L.INIT;
+          SalesLine_L."Document Type" := SalesLine_L."Document Type"::"Credit Memo";
+          SalesLine_L.VALIDATE("Document No.", SalesHeader_L."No.");
+          SalesLine_L.VALIDATE("Line No.", LinePurchNo_L);
+          SalesLine_L.INSERT(TRUE);
+          SalesLine_L.VALIDATE(Type, SalesLine_L.Type::"Charge (Item)");
+          SalesLine_L.VALIDATE("No.", CMCSetup_L."ECD Cr.Memo Item Charge");
+
+          IF NOT RecSalesDiscount_L.GET(ECDLedgerEntryTemp2_L."Discount Code") THEN
+            CLEAR(RecSalesDiscount_L);
+
+          IF RecSalesDiscount_L."Line Description" <> '' THEN BEGIN
+            IF (ECDLedgerEntryTemp2_L."Variant Code" <> '') AND
+               (ItemVariant_L.GET(ECDLedgerEntryTemp2_L."Item No.",ECDLedgerEntryTemp2_L."Variant Code"))
+            THEN
+              SalesLine_L.VALIDATE(Description,COPYSTR(STRSUBSTNO(RecSalesDiscount_L."Line Description",ItemVariant_L.Description),1,
+                MAXSTRLEN(SalesLine_L.Description)))
+            ELSE
+              SalesLine_L.VALIDATE(Description,COPYSTR(STRSUBSTNO(RecSalesDiscount_L."Line Description",Item_L.Description),1,
+                MAXSTRLEN(SalesLine_L.Description)));
+          END ELSE BEGIN
+            IF (ECDLedgerEntryTemp2_L."Variant Code" <> '') AND
+               (ItemVariant_L.GET(ECDLedgerEntryTemp2_L."Item No.",ECDLedgerEntryTemp2_L."Variant Code"))
+            THEN
+              SalesLine_L.VALIDATE(Description,COPYSTR(STRSUBSTNO(Text8053007,ItemVariant_L.Description),1,
+                MAXSTRLEN(SalesLine_L.Description)))
+            ELSE
+              SalesLine_L.VALIDATE(Description,COPYSTR(STRSUBSTNO(Text8053007,Item_L.Description),1,
+                MAXSTRLEN(SalesLine_L.Description)));
+          END;
+          SalesLine_L.VALIDATE(Quantity, -ECDLedgerEntryTemp2_L."Invoiced Quantity");
+          VATRateChangeConversion_L.GetOldVat(ECDLedgerEntryTemp2_L."Posting Date",
+            SalesLine_L."Gen. Prod. Posting Group",Item_L."VAT Prod. Posting Group",Item_L."No.");
+          // --> 20161010-WI00-ADV01.01.00-3148-CJY01
+          {BEFORE
+          SalesLine_L.VALIDATE("VAT Prod. Posting Group",Item_L."VAT Prod. Posting Group");
+          AFTER}
+          IF NOT BooNotFromPage_G THEN BEGIN
+            IF ApplyItemVAT_G THEN
+              SalesLine_L.VALIDATE("VAT Prod. Posting Group",Item_L."VAT Prod. Posting Group")
+            ELSE
+              SalesLine_L.VALIDATE("VAT Prod. Posting Group",GroupeComptaTvaArticle_G);
+          END
+          ELSE BEGIN
+          SalesLine_L.VALIDATE("VAT Prod. Posting Group",Item_L."VAT Prod. Posting Group");
+          END;
+          // <-- 20161010-WI00-ADV01.01.00-3148-CJY01
+
+          IF SalesLine_L.Quantity <> 0 THEN
+            SalesLine_L.VALIDATE("Unit Price", -ECDLedgerEntryTemp2_L."ECD Unit Price to Invoice" / SalesLine_L.Quantity);
+          SalesLine_L."Location Code":=ECDLedgerEntryTemp2_L."Location Code";
+          SalesLine_L.MODIFY(TRUE);
+          // ------------------------------------------------------------------------
+          // Copie Axes Analytiques Article
+          // ------------------------------------------------------------------------
+          cduCMCDimensions_G.DimSalesFromItem(DocDimTemp_L, SalesLine_L, Item_L."No.");
+          cduDimMgt_G.TransferTempToDimToDocDim(DocDimTemp_L);
+          // ------------------------------------------------------------------------
+          // --> 20161010-WI00-ADV01.01.00-3148-CJY01
+          //on cr'e notre analytique si n'cessaire
+          IF NOT BooNotFromPage_G THEN BEGIN
+            IF AxeGenAvoir_G <> '' THEN BEGIN
+              IF DimValueAxeGenAvoir_G = '' THEN
+                ERROR(Text60000,AxeGenAvoir_G);
+              //On cr'e notre ligne analytique
+              DocumentDimension_G."Table ID" := 37;
+              DocumentDimension_G."Document Type" := DocumentDimension_G."Document Type"::"Credit Memo";
+              DocumentDimension_G."Document No." := SalesLine_L."Document No.";
+              DocumentDimension_G."Line No." := SalesLine_L."Line No.";
+              DocumentDimension_G.Type := 0;
+              DocumentDimension_G."Dimension Code" := AxeGenAvoir_G;
+              DocumentDimension_G."Dimension Value Code" := DimValueAxeGenAvoir_G;
+              IF NOT DocumentDimension_G.INSERT(TRUE) THEN
+                DocumentDimension_G.MODIFY(TRUE);
+
+            END;
+          END;
+          // <-- 20161010-WI00-ADV01.01.00-3148-CJY01
+
+          LinePurchNo_L := LinePurchNo_L + 10000;
+          // --> 20160914-WI00-ADV01.01.00-3101-CJY01
+          {BEFORE
+          ECDLedgerEntryTemp_L.SETCURRENTKEY("Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group");
+          AFTER}
+          // --> 20170126-WI00-ADV01.01.00-24651-CJY01
+          {BEFORE
+          ECDLedgerEntryTemp_L.SETCURRENTKEY("Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group","ECD Unit Price to Invoice");
+          AFTER}
+          ECDLedgerEntryTemp_L.SETCURRENTKEY("Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group","Rupture Prix Unit Fac");
+
+          // <-- 20170126-WI00-ADV01.01.00-24651-CJY01
+          // <-- 20160914-WI00-ADV01.01.00-3101-CJY01
+          ECDLedgerEntryTemp_L.SETRANGE("Item No.", ECDLedgerEntryTemp2_L."Item No.");
+          ECDLedgerEntryTemp_L.SETRANGE("VAT Bus. Posting Group", ECDLedgerEntryTemp2_L."VAT Bus. Posting Group");
+          ECDLedgerEntryTemp_L.SETRANGE("VAT Prod. Posting Group", ECDLedgerEntryTemp2_L."VAT Prod. Posting Group");
+          ECDLedgerEntryTemp_L.SETRANGE("Document No.", ECDLedgerEntryTemp2_L."Document No.");
+          // --> 20160914-WI00-ADV01.01.00-3101-CJY01
+          // --> 20170126-WI00-ADV01.01.00-24651-CJY01
+          //Retrait du code ci-dessous
+          {BEFORE
+          ECDLedgerEntryTemp_L.SETRANGE("ECD Unit Price to Invoice", ECDLedgerEntryTemp2_L."ECD Unit Price to Invoice"
+                                         / ECDLedgerEntryTemp2_L."Invoiced Quantity");
+          AFTER}
+          // <-- 20170126-WI00-ADV01.01.00-24651-CJY01
+          // <-- 20160914-WI00-ADV01.01.00-3101-CJY01
+          // --> 20170201-WI00-ADV01.01.00-24651-CJY02
+          ECDLedgerEntryTemp_L.SETRANGE("Rupture Prix Unit Fac", ECDLedgerEntryTemp2_L."Rupture Prix Unit Fac");
+          // <-- 20170201-WI00-ADV01.01.00-24651-CJY02
+
+          ECDLedgerEntryTemp_L.FINDSET;
+          REPEAT
+            ItemLedgerEntry_L.GET(ECDLedgerEntryTemp_L."Item Ledger Entry No.");
+            SalesItemChargeAssignment_L.RESET;
+            SalesItemChargeAssignment_L.SETRANGE("Document Type", SalesLine_L."Document Type");
+            SalesItemChargeAssignment_L.SETRANGE("Document No.", SalesLine_L."Document No.");
+            SalesItemChargeAssignment_L.SETRANGE("Document Line No.", SalesLine_L."Line No.");
+            // --> 20170201-WI00-ADV01.01.00-24651-CJY02
+            SalesItemChargeAssignment_L.SETRANGE("Unit Cost", ECDLedgerEntryTemp_L."Rupture Prix Unit Fac");
+            // <-- 20170201-WI00-ADV01.01.00-24651-CJY02
+
+            LineNo_L := 10000;
+            IF SalesItemChargeAssignment_L.FINDLAST THEN
+              LineNo_L := SalesItemChargeAssignment_L."Line No." + 10000;
+            SalesItemChargeAssignment_L.INIT;
+            SalesItemChargeAssignment_L."Document Type" := SalesLine_L."Document Type";
+            SalesItemChargeAssignment_L."Document No." := SalesLine_L."Document No.";
+            SalesItemChargeAssignment_L."Document Line No." := SalesLine_L."Line No.";
+            SalesItemChargeAssignment_L."Line No." := LineNo_L;
+            SalesItemChargeAssignment_L."Applies-to Doc. Type" := GetDocType(ItemLedgerEntry_L."Document Type");
+            SalesItemChargeAssignment_L."Applies-to Doc. No." := ItemLedgerEntry_L."Document No.";
+            SalesItemChargeAssignment_L."Applies-to Doc. Line No." := ItemLedgerEntry_L."Document Line No.";
+            SalesItemChargeAssignment_L.VALIDATE("Item Charge No.", CMCSetup_L."ECD Cr.Memo Item Charge");
+            SalesItemChargeAssignment_L.VALIDATE("Item No.", ItemLedgerEntry_L."Item No.");
+            SalesItemChargeAssignment_L.VALIDATE("Unit Cost", ECDLedgerEntryTemp_L."ECD Unit Price to Invoice");
+            SalesItemChargeAssignment_L."ECD Invoice Entry" := ECDLedgerEntryTemp_L."Entry No.";
+            SalesItemChargeAssignment_L.INSERT(TRUE);
+            SalesItemChargeAssignment_L.VALIDATE("Qty. to Assign",
+                  SalesItemChargeAssignment_L."Qty. to Assign" + (-ECDLedgerEntryTemp_L."Valued Quantity"));
+            SalesItemChargeAssignment_L."Amount to Assign" :=
+              SalesItemChargeAssignment_L."Qty. to Assign" * ECDLedgerEntryTemp_L."ECD Unit Price to Invoice";
+            SalesItemChargeAssignment_L.MODIFY(TRUE);
+            IF ECDLedgerEntry_L.GET(ECDLedgerEntryTemp_L."Entry No.") THEN BEGIN
+              ECDLedgerEntry_L."ECD Unit Price to Invoice" := 0;
+              // --> 20170126-WI00-ADV01.01.00-24651-CJY01
+              ECDLedgerEntry_L."Rupture Prix Unit Fac" := 0;
+              // <-- 20170126-WI00-ADV01.01.00-24651-CJY01
+              ECDLedgerEntry_L.MODIFY(TRUE);
+            END;
+          UNTIL ECDLedgerEntryTemp_L.NEXT =0;
+        UNTIL ECDLedgerEntryTemp2_L.NEXT=0;
+        // --> 20150601-APP03-TER01.01.00-312-BSI01
+        ValidateDocuments(DocType_G::Avoir,SalesHeader_L."No.");
+        // <-- 20150601-APP03-TER01.01.00-312-BSI01
+      UNTIL ECDLedgerEntryTemp3_L.NEXT = 0;
+    END;
+
+    PROCEDURE CreateSplittedInvoice@60000(VAR ECDLedgerEntry_P_@8053000 : Record 8053089);
+    VAR
+      "<< 3LI LOCALS >>"@8053004 : Integer;
+      CMCSetup_L@8053006 : Record 8052982;
+      DocDimTemp_L@8053016 : TEMPORARY Record 357;
+      ItemLedgerEntry_L@8053005 : Record 32;
+      ECDLedgerEntry_L@8053014 : Record 8053089;
+      ECDLedgerEntryTemp_L@8053003 : TEMPORARY Record 8053089;
+      ECDLedgerEntryTemp2_L@8053013 : TEMPORARY Record 8053089;
+      SalesHeader_L@8053009 : Record 36;
+      SalesLine_L@8053008 : Record 37;
+      SalesItemChargeAssignment_L@8053007 : Record 5809;
+      Item_L@8053012 : Record 27;
+      TotalQuantity_L@8053002 : Decimal;
+      UnitAmount_L@8053001 : Decimal;
+      LineNo_L@8053010 : Integer;
+      LinePurchNo_L@8053011 : Integer;
+      VATRateChangeConversion_L@8053015 : Codeunit 550;
+      ItemVariant_L@8053017 : Record 5401;
+      RecSalesDiscount_L@60000 : Record 8053174;
+      ECDLedgerEntryTemp3_L@60001 : TEMPORARY Record 8053089;
+    BEGIN
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // G'nSre la facture de RFC
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Entrees : ECDLedgerEntry_P_ : Ecritures RFC . partir desquelles la RFC sera calcul'e
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      CMCSetup_L.GET;
+      SetRecordsToTemp(ECDLedgerEntry_P_, ECDLedgerEntryTemp_L);
+      SetRecordsToTemp2(ECDLedgerEntry_P_, ECDLedgerEntryTemp2_L);
+      SetRecordsToTemp3(ECDLedgerEntry_P_, ECDLedgerEntryTemp3_L);
+      LinePurchNo_L := 10000;
+
+      CLEAR(ECDLedgerEntryTemp3_L);
+      ECDLedgerEntryTemp3_L.SETCURRENTKEY("Due Date");
+      IF ECDLedgerEntryTemp3_L.FINDSET THEN
+      REPEAT
+        CLEAR(SalesHeader_L);
+        SalesHeader_L.SETRANGE("Document Type",SalesHeader_L."Document Type"::Invoice);
+        SalesHeader_L.SETRANGE("Due Date",ECDLedgerEntryTemp3_L."Due Date");
+        // --> 20150601-APP03-TER01.01.00-1836-BSI01
+        SalesHeader_L.SETRANGE("Sell-to Customer No.",CustomerNo_G);
+        // <-- 20150601-APP03-TER01.01.00-1836-BSI01
+        IF NOT SalesHeader_L.FINDSET THEN BEGIN
+          SalesHeader_L.INIT;
+          SalesHeader_L."Document Type" := SalesHeader_L."Document Type"::Invoice;
+          SalesHeader_L."No." := '';
+          SalesHeader_L.INSERT(TRUE);
+          SalesHeader_L.VALIDATE("Sell-to Customer No.", CustomerNo_G);
+          SalesHeader_L.VALIDATE(ECD , TRUE);
+          SalesHeader_L.VALIDATE("Posting Date", PostingDate_G);
+          SalesHeader_L.VALIDATE("Document Date", DocDate_G);
+          SalesHeader_L."Due Date" := ECDLedgerEntryTemp3_L."Due Date";
+          SalesHeader_L.VALIDATE("Posting Description", Text8053012);
+          SalesHeader_L.MODIFY(TRUE);
+          DocNo_G := SalesHeader_L."No.";
+        END ELSE BEGIN
+          SalesLine_L.SETRANGE("Document Type", SalesHeader_L."Document Type");
+          SalesLine_L.SETRANGE("Document No.", SalesHeader_L."No.");
+          IF SalesLine_L.FINDLAST THEN
+            LinePurchNo_L := SalesLine_L."Line No." + 10000;
+        END;
+
+        CLEAR(ECDLedgerEntryTemp2_L);
+        ECDLedgerEntryTemp2_L.SETRANGE("Document No.",ECDLedgerEntryTemp3_L."Document No.");
+        IF ECDLedgerEntryTemp2_L.FINDSET THEN
+        REPEAT
+          Item_L.GET(ECDLedgerEntryTemp2_L."Item No.");
+          SalesLine_L.INIT;
+          SalesLine_L."Document Type" := SalesLine_L."Document Type"::Invoice;
+          SalesLine_L.VALIDATE("Document No.", SalesHeader_L."No.");
+          SalesLine_L.VALIDATE("Line No.", LinePurchNo_L);
+          SalesLine_L.Type := SalesLine_L.Type::" ";
+          SalesLine_L.Description := STRSUBSTNO(Text8053010, ECDLedgerEntryTemp2_L."Document No.");
+          SalesLine_L.INSERT(TRUE);
+          LinePurchNo_L := LinePurchNo_L + 10000;
+          SalesLine_L.INIT;
+          SalesLine_L."Document Type" := SalesLine_L."Document Type"::Invoice;
+          SalesLine_L.VALIDATE("Document No.", SalesHeader_L."No.");
+          SalesLine_L.VALIDATE("Line No.", LinePurchNo_L);
+          SalesLine_L.INSERT(TRUE);
+          SalesLine_L.VALIDATE(Type, SalesLine_L.Type::"Charge (Item)");
+          SalesLine_L.VALIDATE("No.", CMCSetup_L."ECD Cr.Memo Item Charge");
+          IF NOT RecSalesDiscount_L.GET(ECDLedgerEntryTemp2_L."Discount Code") THEN
+            CLEAR(RecSalesDiscount_L);
+          IF RecSalesDiscount_L."Line Description" <> '' THEN BEGIN
+            IF (ECDLedgerEntryTemp2_L."Variant Code" <> '') AND
+               (ItemVariant_L.GET(ECDLedgerEntryTemp2_L."Item No.",ECDLedgerEntryTemp2_L."Variant Code"))
+            THEN
+              SalesLine_L.VALIDATE(Description,COPYSTR(STRSUBSTNO(RecSalesDiscount_L."Line Description",ItemVariant_L.Description),1,
+                MAXSTRLEN(SalesLine_L.Description)))
+            ELSE
+              SalesLine_L.VALIDATE(Description,COPYSTR(STRSUBSTNO(RecSalesDiscount_L."Line Description",Item_L.Description),1,
+                MAXSTRLEN(SalesLine_L.Description)));
+          END ELSE BEGIN
+          IF (ECDLedgerEntryTemp2_L."Variant Code" <> '') AND
+             (ItemVariant_L.GET(ECDLedgerEntryTemp2_L."Item No.",ECDLedgerEntryTemp2_L."Variant Code"))
+          THEN
+            SalesLine_L.VALIDATE(Description,COPYSTR(STRSUBSTNO(Text8053007,ItemVariant_L.Description),1,
+              MAXSTRLEN(SalesLine_L.Description)))
+          ELSE
+            SalesLine_L.VALIDATE(Description,COPYSTR(STRSUBSTNO(Text8053007,Item_L.Description),1,
+              MAXSTRLEN(SalesLine_L.Description)));
+          END;
+          SalesLine_L.VALIDATE(Quantity, ECDLedgerEntryTemp2_L."Invoiced Quantity");
+
+          VATRateChangeConversion_L.GetOldVat(ECDLedgerEntryTemp2_L."Posting Date",
+            SalesLine_L."Gen. Prod. Posting Group",Item_L."VAT Prod. Posting Group",Item_L."No.");
+          // --> 20161010-WI00-ADV01.01.00-3148-CJY01
+          {BEFORE
+          SalesLine_L.VALIDATE("VAT Prod. Posting Group",Item_L."VAT Prod. Posting Group");
+          AFTER}
+          IF NOT BooNotFromPage_G THEN BEGIN
+            IF ApplyItemVAT_G THEN
+              SalesLine_L.VALIDATE("VAT Prod. Posting Group",Item_L."VAT Prod. Posting Group")
+            ELSE
+              SalesLine_L.VALIDATE("VAT Prod. Posting Group",GroupeComptaTvaArticle_G);
+          END
+          ELSE BEGIN
+          SalesLine_L.VALIDATE("VAT Prod. Posting Group",Item_L."VAT Prod. Posting Group");
+          END;
+          // <-- 20161010-WI00-ADV01.01.00-3148-CJY01
+
+          IF SalesLine_L.Quantity <> 0 THEN
+            SalesLine_L.VALIDATE("Unit Price", ECDLedgerEntryTemp2_L."ECD Unit Price to Invoice" / SalesLine_L.Quantity);
+
+          SalesLine_L."Location Code":=ECDLedgerEntryTemp2_L."Location Code";
+          SalesLine_L.MODIFY(TRUE);
+
+          // ------------------------------------------------------------------------
+          // Copie Axes Analytiques Article
+          // ------------------------------------------------------------------------
+          cduCMCDimensions_G.DimSalesFromItem(DocDimTemp_L, SalesLine_L, Item_L."No.");
+          cduDimMgt_G.TransferTempToDimToDocDim(DocDimTemp_L);
+          // ------------------------------------------------------------------------
+          // --> 20161010-WI00-ADV01.01.00-3148-CJY01
+          //on cr'e notre analytique si n'cessaire
+          IF NOT BooNotFromPage_G THEN BEGIN
+            IF AxeGenAvoir_G <> '' THEN BEGIN
+              IF DimValueAxeGenAvoir_G = '' THEN
+                ERROR(Text60000,AxeGenAvoir_G);
+              //On cr'e notre ligne analytique
+              DocumentDimension_G."Table ID" := 37;
+              DocumentDimension_G."Document Type" := DocumentDimension_G."Document Type"::Invoice;
+              DocumentDimension_G."Document No." := SalesLine_L."Document No.";
+              DocumentDimension_G."Line No." := SalesLine_L."Line No.";
+              DocumentDimension_G.Type := 0;
+              DocumentDimension_G."Dimension Code" := AxeGenAvoir_G;
+              DocumentDimension_G."Dimension Value Code" := DimValueAxeGenAvoir_G;
+              IF NOT DocumentDimension_G.INSERT(TRUE) THEN
+                DocumentDimension_G.MODIFY(TRUE);
+
+            END;
+          END;
+          // <-- 20161010-WI00-ADV01.01.00-3148-CJY01
+
+          LinePurchNo_L := LinePurchNo_L + 10000;
+          // --> 20170126-WI00-ADV01.01.00-24651-CJY01
+          {BEFORE
+          ECDLedgerEntryTemp_L.SETCURRENTKEY("Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group");
+          AFTER}
+          ECDLedgerEntryTemp_L.SETCURRENTKEY("Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group","Rupture Prix Unit Fac");
+          // <-- 20170126-WI00-ADV01.01.00-24651-CJY01
+
+          ECDLedgerEntryTemp_L.SETRANGE("Item No.", ECDLedgerEntryTemp2_L."Item No.");
+          ECDLedgerEntryTemp_L.SETRANGE("VAT Bus. Posting Group", ECDLedgerEntryTemp2_L."VAT Bus. Posting Group");
+          ECDLedgerEntryTemp_L.SETRANGE("VAT Prod. Posting Group", ECDLedgerEntryTemp2_L."VAT Prod. Posting Group");
+          ECDLedgerEntryTemp_L.SETRANGE("Document No.", ECDLedgerEntryTemp2_L."Document No.");
+          // --> 20170201-WI00-ADV01.01.00-24651-CJY02
+          ECDLedgerEntryTemp_L.SETRANGE("Rupture Prix Unit Fac", ECDLedgerEntryTemp2_L."Rupture Prix Unit Fac");
+          // <-- 20170201-WI00-ADV01.01.00-24651-CJY02
+
+          ECDLedgerEntryTemp_L.FINDSET;
+          REPEAT
+            ItemLedgerEntry_L.GET(ECDLedgerEntryTemp_L."Item Ledger Entry No.");
+            SalesItemChargeAssignment_L.RESET;
+            SalesItemChargeAssignment_L.SETRANGE("Document Type", SalesLine_L."Document Type");
+            SalesItemChargeAssignment_L.SETRANGE("Document No.", SalesLine_L."Document No.");
+            SalesItemChargeAssignment_L.SETRANGE("Document Line No.", SalesLine_L."Line No.");
+            // --> 20170201-WI00-ADV01.01.00-24651-CJY02
+            SalesItemChargeAssignment_L.SETRANGE("Unit Cost", ECDLedgerEntryTemp_L."Rupture Prix Unit Fac");
+            // <-- 20170201-WI00-ADV01.01.00-24651-CJY02
+
+            LineNo_L := 10000;
+            IF SalesItemChargeAssignment_L.FINDLAST THEN
+              LineNo_L := SalesItemChargeAssignment_L."Line No." + 10000;
+
+            SalesItemChargeAssignment_L.INIT;
+            SalesItemChargeAssignment_L."Document Type" := SalesLine_L."Document Type";
+            SalesItemChargeAssignment_L."Document No." := SalesLine_L."Document No.";
+            SalesItemChargeAssignment_L."Document Line No." := SalesLine_L."Line No.";
+            SalesItemChargeAssignment_L."Line No." := LineNo_L;
+
+            SalesItemChargeAssignment_L."Applies-to Doc. Type" := GetDocType(ItemLedgerEntry_L."Document Type");
+            SalesItemChargeAssignment_L."Applies-to Doc. No." := ItemLedgerEntry_L."Document No.";
+            SalesItemChargeAssignment_L."Applies-to Doc. Line No." := ItemLedgerEntry_L."Document Line No.";
+
+            SalesItemChargeAssignment_L.VALIDATE("Item Charge No.", CMCSetup_L."ECD Cr.Memo Item Charge");
+            SalesItemChargeAssignment_L.VALIDATE("Item No.", ItemLedgerEntry_L."Item No.");
+            SalesItemChargeAssignment_L.VALIDATE("Unit Cost", ECDLedgerEntryTemp_L."ECD Unit Price to Invoice");
+
+            SalesItemChargeAssignment_L."ECD Invoice Entry" := ECDLedgerEntryTemp2_L."Entry No.";
+            SalesItemChargeAssignment_L.INSERT(TRUE);
+
+            SalesItemChargeAssignment_L.VALIDATE("Qty. to Assign",
+                  SalesItemChargeAssignment_L."Qty. to Assign" + ECDLedgerEntryTemp_L."Valued Quantity");
+
+            SalesItemChargeAssignment_L."Amount to Assign" :=
+              SalesItemChargeAssignment_L."Qty. to Assign" * ECDLedgerEntryTemp_L."ECD Unit Price to Invoice";
+
+            SalesItemChargeAssignment_L.MODIFY(TRUE);
+
+            // -----------------------------------------------------------------------
+            IF ECDLedgerEntry_L.GET(ECDLedgerEntryTemp2_L."Entry No.") THEN BEGIN
+              ECDLedgerEntry_L."ECD Unit Price to Invoice" := 0;
+              // --> 20170126-WI00-ADV01.01.00-24651-CJY01
+              ECDLedgerEntry_L."Rupture Prix Unit Fac" := 0;
+              // <-- 20170126-WI00-ADV01.01.00-24651-CJY01
+              ECDLedgerEntry_L.MODIFY(TRUE);
+            END;
+            // -----------------------------------------------------------------------
+
+          UNTIL ECDLedgerEntryTemp_L.NEXT =0;
+        UNTIL ECDLedgerEntryTemp2_L.NEXT=0;
+        // --> 20150601-APP03-TER01.01.00-312-BSI01
+        ValidateDocuments(DocType_G::Facture,SalesHeader_L."No.");
+        // <-- 20150601-APP03-TER01.01.00-312-BSI01
+      UNTIL ECDLedgerEntryTemp3_L.NEXT=0
+    END;
+
+    PROCEDURE SetRecordsToTemp3@60005(VAR ECDLedgerEntry_P_@8053000 : Record 8053089;VAR ECDLedgerEntryTemp_P_@8053001 : TEMPORARY Record 8053089);
+    VAR
+      RecSalesInvoiceHead_L@60000 : Record 112;
+      RecSalesCrMemoHead_L@60001 : Record 114;
+    BEGIN
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Copie les enregistrements en table temporaire pour traitement pour regroupement article par date 'ch'ance
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      // Entrees :
+      //  - ECDLedgerEntry_P_ ....: Ecritures RFC . copier
+      //  - ECDLedgerEntryTemp_P_ : Table temporaire . remplir
+      // ---------------------------------------------------------------------------------------------------------------------------------
+      ECDLedgerEntryTemp_P_.DELETEALL;
+      IF ECDLedgerEntry_P_.FINDSET(FALSE,FALSE) THEN
+      REPEAT
+        // --> 20160314-APP03-ADV01.01.00-2855-CJY01
+        {BEFORE
+        ECDLedgerEntryTemp_P_.SETCURRENTKEY("Item No.","VAT Bus. Posting Group","VAT Prod. Posting Group");
+        AFTER}
+        ECDLedgerEntryTemp_P_.SETCURRENTKEY("Due Date");
+        // <-- 20160314-APP03-ADV01.01.00-2855-CJY01
+        // -->20151214-APP03-TER01.01.00-2598-DGL01
+        //ECDLedgerEntryTemp_P_.SETRANGE("Item No.", ECDLedgerEntry_P_."Item No.");
+        // <--20151214-APP03-TER01.01.00-2598-DGL01
+        // --> 20160314-APP03-ADV01.01.00-2855-CJY01
+        {BEFORE
+        ECDLedgerEntryTemp_P_.SETRANGE("VAT Bus. Posting Group", ECDLedgerEntry_P_."VAT Bus. Posting Group");
+        ECDLedgerEntryTemp_P_.SETRANGE("VAT Prod. Posting Group", ECDLedgerEntry_P_."VAT Prod. Posting Group");
+        }
+        // <-- 20160314-APP03-ADV01.01.00-2855-CJY01
+
+        ECDLedgerEntryTemp_P_.SETRANGE("Document No.", ECDLedgerEntry_P_."Document No.");
+        IF NOT ECDLedgerEntryTemp_P_.FINDFIRST THEN BEGIN
+          ECDLedgerEntryTemp_P_.RESET;
+          ECDLedgerEntryTemp_P_ := ECDLedgerEntry_P_;
+
+          CASE ECDLedgerEntryTemp_P_."Document Type" OF
+            ECDLedgerEntryTemp_P_."Document Type"::"Sales Invoice" : BEGIN
+              RecSalesInvoiceHead_L.GET(ECDLedgerEntryTemp_P_."Document No.");
+              ECDLedgerEntryTemp_P_."Due Date" := RecSalesInvoiceHead_L."Due Date";
+            END;
+            ECDLedgerEntryTemp_P_."Document Type"::"Sales Credit Memo" : BEGIN
+              RecSalesCrMemoHead_L.GET(ECDLedgerEntryTemp_P_."Document No.");
+              ECDLedgerEntryTemp_P_."Due Date" := RecSalesCrMemoHead_L."Due Date";
+            END;
+          END;
+          ECDLedgerEntryTemp_P_.INSERT;
+        END;
+      UNTIL ECDLedgerEntry_P_.NEXT = 0;
+    END;
+
+    PROCEDURE SetApplyOrigineDueDate@60003(ApplyOrigineDueDate_P@60000 : Boolean);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Reprendre la date d''ch'ance d'orgine
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Entr'es : ApplyOrigineDueDate_P : Reprendre la date d''ch'ance d'orgine selon le param
+      //----------------------------------------------------------------------------------------------------------------------------------
+      ApplyOrigineDueDate_G := ApplyOrigineDueDate_P;
+    END;
+
+    PROCEDURE ValidateDocuments@60002(DocType_P@60004 : 'Facture,Avoir';DocNo_P@60003 : Code[20]);
+    VAR
+      cduSalesPost_L@60000 : Codeunit 80;
+      CduReleaseSalesDoc_L@60001 : Codeunit 414;
+      SalesHeader_L@60002 : Record 36;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Valider les pr'-documents g'n'r's
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Entr'es : DocNo_P : N› Document . valider
+      //           DocType_P : Type Document . valider
+      //----------------------------------------------------------------------------------------------------------------------------------
+      IF DocType_P = DocType_P::Avoir THEN
+        SalesHeader_L.GET(SalesHeader_L."Document Type"::"Credit Memo", DocNo_P);
+      IF DocType_P = DocType_P::Facture THEN
+        SalesHeader_L.GET(SalesHeader_L."Document Type"::Invoice, DocNo_P);
+
+      CduReleaseSalesDoc_L.RUN(SalesHeader_L);
+
+      IF PostingDoc_G THEN BEGIN
+        cduSalesPost_L.RUN(SalesHeader_L);
+        COMMIT;
+      END;
+    END;
+
+    PROCEDURE SetPostDocument@60006(PostingDoc_P@60000 : Boolean);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // D'terminer si on doit valider les documents g'n'r's ou non
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Entr'es : PostingDoc_P : Valeur du bool
+      //----------------------------------------------------------------------------------------------------------------------------------
+      PostingDoc_G := PostingDoc_P;
+    END;
+
+    PROCEDURE SetNotFromPage@1000000001(BooNotFromPage_P@1000000000 : Boolean);
+    BEGIN
+      BooNotFromPage_G := BooNotFromPage_P;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20111205-APP05-CMC02.01.00-PRD01 : CREATEOBJECT
+      20140418-APP33-CMC02.02.00-1994-JLT01 : Division par z'ro + recup old tva RFC
+      20140519-APP33-CMC02.02.00-ID6435-OAR01 : ADDCODE (Use Item Variant Description If ECD Has Variant Code)
+      20140604-APP33-CMC02.02.00-2195-JLT01 : Rattachement des frais annexes aux lignes de RFC si article pr'sent 2x
+      20140915-APP33-CMC02.02.00-FDA01 : ADDFUNC (SetDueDate)
+                                         ADDCODE (Managed Due Date)
+      20150206-Wi00-CMC02.02.00-2745-SDE01 : ADDCODE
+      20150423-APP33-TER01.01.00-280-BSI01 : ADDCODE (Parametrer la designation)
+      20150518-APP03-TER01.01.00-312-BSI01 : ADDFUNCs (CreateSplittedCreditMemo
+                                                       CreateSplittedInvoice
+                                                       SetRecordsToTemp3
+                                                       SetApplyOrigineDueDate)
+                                                       MODCODE (Prendre en compte le paramStre "Appliquer 'ch'ance de la piSce origine")
+      20150601-APP03-TER01.01.00-312-BSI01 : ADDFUCNs (ValidateDocuments,SetPostDocument)
+                                             ADDCODE (Appel de la fonction ValidateDocuments)
+      20150630-APP03-TER01.01.00-1836-BSI01 : ADDCODE (G'rer une rupture par client)
+      20151214-APP03-TER01.01.00-2598-DGL01 : MODCODE (Correctif bug doublement ligne : SetRecordsToTemp3)
+      20160314-APP03-ADV01.01.00-2855-CJY01 : MODCODE (correction erreur groupement date 'ch'ance)
+      20160914-WI00-ADV01.01.00-3101-CJY01 : MODCODE (correction, prise en compte rupture montant)
+      20161010-WI00-ADV01.01.00-3148-CJY01 : ADDCODE (Dimension Management in Invoice/Credit-Memo generation)
+      20170126-WI00-ADV01.01.00-24651-CJY01 : MODCODE (Correction bug cr'ation Avoir RFC d- . la Tracabilit')
+      20170201-WI00-ADV01.01.00-24651-CJY02 : MODCODE (Gestion de montant unitaire diff'rent pour une meme ligne document avec n lots)
+
+      20260428-WI00-ADV01.01.00-44778-CJY01: ADDFUNCT(gestion plateforme PA pour RFC vente)
+
+
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,919 @@
+OBJECT Table 25000 Kit Sales Line
+{
+  OBJECT-PROPERTIES
+  {
+    Date=22/05/24;
+    Heure=00:00:00;
+    Liste versions=KITNA5.00,CMC02.01.00,ADV01.01.00,SP3648;
+  }
+  PROPERTIES
+  {
+    OnInsert=BEGIN
+               TestStatusOpen;
+               GetKitLine;
+               KitLine.TESTFIELD("Build Kit",TRUE); // already tested for type<>blank
+               KitManagement.RollUpPrice(Rec,3);
+               IF "Extended Quantity" <> 0 THEN
+                 ReserveKitSalesLine.VerifyQuantity(Rec,xRec);
+             END;
+
+    OnModify=BEGIN
+               TestStatusOpen;
+               KitManagement.RollUpPrice(Rec,1);
+
+               IF ("Extended Quantity" <> 0) AND ItemExists(xRec."No.") THEN
+                 ReserveKitSalesLine.VerifyChange(Rec,xRec);
+             END;
+
+    OnDelete=VAR
+               CapableToPromise@1480000 : Codeunit 99000886;
+             BEGIN
+               GetKitLine;
+               TestStatusOpen;
+               IF NOT QtyShippedCheckSuspend THEN
+                 KitLine.TESTFIELD("Quantity Shipped",0);
+
+               IF NOT SkipPricing THEN
+                 KitManagement.RollUpPrice(Rec,2);
+
+               IF ("Extended Quantity" <> 0) AND ItemExists("No.") THEN BEGIN
+                 ReserveKitSalesLine.DeleteLine(Rec);
+                 CALCFIELDS("Reserved Qty. (Base)");
+                 TESTFIELD("Reserved Qty. (Base)",0);
+                 WhseValidateSourceLine.KitSalesLineDelete(Rec);
+               END;
+
+               CapableToPromise.RemoveReqLines("Document No.","Document Line No.","Line No.",0,FALSE);
+             END;
+
+    OnRename=BEGIN
+               ERROR(Text001,TABLECAPTION);
+             END;
+
+    CaptionML=[ENU=Kit Sales Line;
+               FRA=Ligne vente kit];
+    PasteIsValid=Non;
+    LookupFormID=Form25010;
+    DrillDownFormID=Form25010;
+  }
+  FIELDS
+  {
+    { 1   ;   ;Document Type       ;Option        ;CaptionML=[ENU=Document Type;
+                                                              FRA=Type document];
+                                                   OptionCaptionML=[ENU=Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order;
+                                                                    FRA=Devis,Commande,Facture,Avoir,Commande ouverte,Retour];
+                                                   OptionString=Quote,Order,Invoice,Credit Memo,Blanket Order,Return Order }
+    { 2   ;   ;Document No.        ;Code20        ;TableRelation="Sales Header".No. WHERE (Document Type=FIELD(Document Type));
+                                                   CaptionML=[ENU=Document No.;
+                                                              FRA=N› document] }
+    { 3   ;   ;Document Line No.   ;Integer       ;TableRelation="Sales Line"."Line No." WHERE (Document Type=FIELD(Document Type),
+                                                                                                Document No.=FIELD(Document No.));
+                                                   CaptionML=[ENU=Document Line No.;
+                                                              FRA=N› ligne document] }
+    { 4   ;   ;Line No.            ;Integer       ;CaptionML=[ENU=Line No.;
+                                                              FRA=N› ligne] }
+    { 5   ;   ;Type                ;Option        ;OnValidate=BEGIN
+                                                                TESTFIELD("Extended Quantity",0);;
+                                                                xKitSalesLine := Rec;
+                                                                INIT;
+                                                                Type := xKitSalesLine.Type;
+                                                                InitCompLine;
+                                                                CompLine.VALIDATE(Type);
+                                                                xKitSalesLine := Rec;
+                                                                INIT;
+                                                                Type := xKitSalesLine.Type;
+                                                              END;
+
+                                                   CaptionML=[ENU=Type;
+                                                              FRA=Type];
+                                                   OptionCaptionML=[ENU=" ,Item,,Resource,Setup Resource";
+                                                                    FRA=" ,Article,,Ressource,Ressource paramStres"];
+                                                   OptionString=[ ,Item,,Resource,Setup Resource] }
+    { 6   ;   ;No.                 ;Code20        ;TableRelation=IF (Type=CONST(Item)) Item
+                                                                 ELSE IF (Type=FILTER(Resource|Setup Resource)) Resource;
+                                                   OnValidate=VAR
+                                                                Item_L@1000000000 : Record 27;
+                                                                SaveItemSalesBlocked_L@1000000001 : Boolean;
+                                                                CMCSetup_L@1000000002 : Record 8052982;
+                                                              BEGIN
+                                                                TESTFIELD("Extended Quantity",0);;
+                                                                // --> 20171124-WI00-ADV01.01.00-3286-FBE01
+                                                                CheckManualModifyAuthorized(CurrFieldNo = FIELDNO("No."),FIELDCAPTION("No.") );
+                                                                // <-- 20171124-WI00-ADV01.01.00-3286-FBE01
+
+                                                                CheckItemAvailable;
+
+                                                                // --> 20240521-WI00-ADV01.01.00-3648-SAN01
+                                                                CMCSetup_L.GET;
+                                                                // <-- 20240521-WI00-ADV01.01.00-3648-SAN01
+
+                                                                xKitSalesLine := Rec;
+                                                                INIT;
+                                                                Type := xKitSalesLine.Type;
+                                                                "No." := xKitSalesLine."No.";
+                                                                IF "No." = '' THEN
+                                                                  EXIT;
+                                                                InitCompLine;
+                                                                // --> 20240521-WI00-ADV01.01.00-3648-SAN01
+                                                                IF (CompLine.Type = CompLine.Type::Item) AND (CMCSetup_L."No Ctrl On The Item In Kit") THEN BEGIN
+                                                                   IF Item_L.GET(CompLine."No.") THEN BEGIN
+                                                                      SaveItemSalesBlocked_L := Item_L."Blocked For Sales";
+                                                                      Item_L."Blocked For Sales" := FALSE;
+                                                                      Item_L.MODIFY;
+                                                                   END;
+                                                                END;
+
+                                                                IF (CMCSetup_L."No Ctrl On The Item In Kit") THEN
+                                                                  CompLine.NotCtrlSaisonForKitComponent(TRUE)
+                                                                ELSE  CompLine.NotCtrlSaisonForKitComponent(FALSE);
+                                                                // <-- 20240521-WI00-ADV01.01.00-3648-SAN01
+
+                                                                CompLine.VALIDATE("No.");
+
+                                                                // --> 20240521-WI00-ADV01.01.00-3648-SAN01
+                                                                IF (CompLine.Type = CompLine.Type::Item) AND (CMCSetup_L."No Ctrl On The Item In Kit") THEN BEGIN
+                                                                   IF Item_L.GET(CompLine."No.") THEN BEGIN
+                                                                      Item_L."Blocked For Sales" :=  SaveItemSalesBlocked_L;
+                                                                      Item_L.MODIFY;
+                                                                   END;
+                                                                END;
+                                                                // <-- 20240521-WI00-ADV01.01.00-3648-SAN01
+
+                                                                Description := CompLine.Description;
+                                                                "Description 2" := CompLine."Description 2";
+                                                                "Shipment Date" := CompLine."Shipment Date";
+                                                                "Shortcut Dimension 1 Code" := CompLine."Shortcut Dimension 1 Code";
+                                                                "Shortcut Dimension 2 Code" := CompLine."Shortcut Dimension 2 Code";
+                                                                Reserve := CompLine.Reserve;
+                                                                "Unit of Measure Code" := CompLine."Unit of Measure Code";
+                                                                "Unit of Measure" := CompLine."Unit of Measure";
+                                                                "Qty. per Unit of Measure" := CompLine."Qty. per Unit of Measure";
+                                                                "Unit Cost (LCY)" := CompLine."Unit Cost (LCY)";
+                                                                "Unit Cost" := CompLine."Unit Cost";
+                                                                VALIDATE("Unit Price",CompLine."Unit Price");
+
+                                                                // Loc. code can have been overwritten above if code is different on sales header than on sales line.
+                                                                "Location Code" := KitLine."Location Code";
+                                                                IF Type = Type::Item THEN BEGIN
+                                                                  CompLine."Location Code" := KitLine."Location Code";
+                                                                  CompLine.VALIDATE("Variant Code");
+                                                                  "Bin Code" := CompLine."Bin Code";
+                                                                END;
+
+                                                                // --> 20111128-APP08-CMC02.01.00-BRA01
+                                                                // --> 20180123-WI00-ADV01.01.00-3330-CJY01
+                                                                IF NoManageIndivisibleQty = FALSE THEN
+                                                                // <-- 20180123-WI00-ADV01.01.00-3330-CJY01
+                                                                IF Type=Type::Item THEN
+                                                                  ItemIndivQtyMgt_G.CheckIndivQty("No.","Variant Code","Quantity per (Base)");
+
+                                                                // <-- 20111128-APP08-CMC02.01.00-BRA01
+                                                              END;
+
+                                                   CaptionML=[ENU=No.;
+                                                              FRA=N›] }
+    { 7   ;   ;Description         ;Text50        ;CaptionML=[ENU=Description;
+                                                              FRA=D'signation] }
+    { 8   ;   ;Description 2       ;Text50        ;CaptionML=[ENU=Description 2;
+                                                              FRA=D'signation 2] }
+    { 9   ;   ;Variant Code        ;Code10        ;TableRelation=IF (Type=CONST(Item)) "Item Variant".Code WHERE (Item No.=FIELD(No.));
+                                                   OnValidate=BEGIN
+                                                                TESTFIELD("Extended Quantity",0);;
+
+                                                                IF xRec."Variant Code" <> "Variant Code" THEN BEGIN
+                                                                  TestKitLine;
+                                                                  "Applies-to Entry" := 0;
+                                                                END;
+
+                                                                IF Reserve <> Reserve::Always THEN
+                                                                  CheckItemAvailable;
+
+                                                                InitCompLine;
+                                                                CompLine.VALIDATE("Variant Code","Variant Code");
+                                                                Description := CompLine.Description;
+                                                                "Description 2" := CompLine."Description 2";
+                                                                "Unit Cost (LCY)" := CompLine."Unit Cost (LCY)";
+                                                                "Unit Cost" := CompLine."Unit Cost";
+                                                                VALIDATE("Unit Price",CompLine."Unit Price");
+                                                                "Bin Code" := CompLine."Bin Code";
+
+                                                                // --> 20111128-APP08-CMC02.01.00-BRA01
+                                                                // --> 20180123-WI00-ADV01.01.00-3330-CJY01
+                                                                IF NoManageIndivisibleQty = FALSE THEN
+                                                                // <-- 20180123-WI00-ADV01.01.00-3330-CJY01
+                                                                IF Type=Type::Item THEN
+                                                                  ItemIndivQtyMgt_G.CheckIndivQty("No.","Variant Code","Quantity per (Base)");
+
+                                                                // <-- 20111128-APP08-CMC02.01.00-BRA01
+                                                              END;
+
+                                                   CaptionML=[ENU=Variant Code;
+                                                              FRA=Code variante] }
+    { 10  ;   ;Location Code       ;Code10        ;TableRelation=Location;
+                                                   CaptionML=[ENU=Location Code;
+                                                              FRA=Code magasin];
+                                                   Editable=Non }
+    { 11  ;   ;Unit of Measure Code;Code10        ;TableRelation=IF (Type=CONST(Item)) "Item Unit of Measure".Code WHERE (Item No.=FIELD(No.))
+                                                                 ELSE IF (Type=FILTER(Resource|Setup Resource)) "Resource Unit of Measure".Code WHERE (Resource No.=FIELD(No.))
+                                                                 ELSE "Unit of Measure";
+                                                   OnValidate=BEGIN
+                                                                "Applies-to Entry" := 0;
+                                                                InitCompLine;
+                                                                CompLine.VALIDATE("Unit of Measure Code","Unit of Measure Code");
+                                                                "Unit of Measure" := CompLine."Unit of Measure";
+                                                                "Qty. per Unit of Measure" := CompLine."Qty. per Unit of Measure";
+                                                                "Unit Cost (LCY)" := CompLine."Unit Cost (LCY)";
+                                                                "Unit Cost" := CompLine."Unit Cost";
+                                                                "Unit Price" := CompLine."Unit Price";
+                                                                VALIDATE("Quantity per");
+
+                                                                // --> 20111128-APP08-CMC02.01.00-BRA01
+                                                                // --> 20180123-WI00-ADV01.01.00-3330-CJY01
+                                                                IF NoManageIndivisibleQty = FALSE THEN
+                                                                // <-- 20180123-WI00-ADV01.01.00-3330-CJY01
+                                                                IF Type=Type::Item THEN
+                                                                  ItemIndivQtyMgt_G.CheckIndivQty("No.","Variant Code","Quantity per (Base)");
+
+                                                                // <-- 20111128-APP08-CMC02.01.00-BRA01
+                                                              END;
+
+                                                   CaptionML=[ENU=Unit of Measure Code;
+                                                              FRA=Code unit'] }
+    { 12  ;   ;Unit of Measure     ;Text10        ;CaptionML=[ENU=Unit of Measure;
+                                                              FRA=Unit'] }
+    { 13  ;   ;Qty. per Unit of Measure;Decimal   ;InitValue=1;
+                                                   CaptionML=[ENU=Qty. per Unit of Measure;
+                                                              FRA=Quantit' par unit'];
+                                                   DecimalPlaces=0:5;
+                                                   Editable=Non }
+    { 14  ;   ;Quantity per        ;Decimal       ;OnValidate=BEGIN
+                                                                TESTFIELD("No.");
+                                                                IF "Quantity per" < 0 THEN
+                                                                  FIELDERROR("Quantity per",Text25001);
+                                                                "Quantity per (Base)" := ROUND("Quantity per" * "Qty. per Unit of Measure",0.00001);
+                                                                "Applies-to Entry" := 0;
+
+                                                                // --> 20171124-WI00-ADV01.01.00-3286-FBE01
+                                                                CheckManualModifyAuthorized(CurrFieldNo = FIELDNO("Quantity per"),FIELDCAPTION("Quantity per") );
+                                                                // <-- 20171124-WI00-ADV01.01.00-3286-FBE01
+
+                                                                // --> 20111116-APP08-CMC02.01.00-BRA01
+                                                                // --> 20180123-WI00-ADV01.01.00-3330-CJY01
+                                                                IF NoManageIndivisibleQty = FALSE THEN
+                                                                // <-- 20180123-WI00-ADV01.01.00-3330-CJY01
+                                                                IF Type=Type::Item THEN
+                                                                  ItemIndivQtyMgt_G.CheckIndivQty("No.","Variant Code","Quantity per (Base)");
+                                                                // <-- 20111116-APP08-CMC02.01.00-BRA01
+
+                                                                InitCompLine;
+                                                                CASE Type OF
+                                                                  Type::Item,Type::Resource:
+                                                                    BEGIN
+                                                                      "Extended Quantity" := "Quantity per" * KitLine."Quantity (Base)";
+                                                                      "Extended Quantity (Base)" := "Quantity per (Base)" * KitLine."Quantity (Base)";
+                                                                      "Outstanding Quantity" := "Quantity per" * KitLine."Outstanding Qty. (Base)";
+                                                                      "Outstanding Qty. (Base)" := "Quantity per (Base)" * KitLine."Outstanding Qty. (Base)";
+                                                                    END;
+                                                                  Type::"Setup Resource":
+                                                                    BEGIN
+                                                                      "Extended Quantity" := "Quantity per";
+                                                                      "Extended Quantity (Base)" := "Quantity per (Base)";
+                                                                      "Outstanding Quantity" := "Quantity per";
+                                                                      "Outstanding Qty. (Base)" := "Quantity per (Base)";
+                                                                    END;
+                                                                END;
+                                                                IF Reserve <> Reserve::Always THEN
+                                                                  CheckItemAvailable;
+                                                                CompLine."Unit of Measure Code" := "Unit of Measure Code";
+                                                                CompLine."Qty. per Unit of Measure" := "Qty. per Unit of Measure";
+                                                                CompLine."Unit Price" := "Unit Price";
+                                                                CompLine.VALIDATE(Quantity,"Extended Quantity");
+                                                                VALIDATE("Unit Price",CompLine."Unit Price");
+
+                                                                IF Type = Type::Item THEN
+                                                                  IF (xRec."Extended Quantity" <> "Extended Quantity") OR (xRec."Extended Quantity (Base)" <> "Extended Quantity (Base)") THEN
+                                                                BEGIN
+                                                                    ReserveKitSalesLine.VerifyQuantity(Rec,xRec);
+                                                                    WhseValidateSourceLine.KitSalesLineVerifyChange(Rec,xRec);
+                                                                  END;
+                                                              END;
+
+                                                   CaptionML=[ENU=Quantity per;
+                                                              FRA=Quantit' par];
+                                                   DecimalPlaces=0:5;
+                                                   MinValue=0 }
+    { 15  ;   ;Quantity per (Base) ;Decimal       ;CaptionML=[ENU=Quantity per (Base);
+                                                              FRA=Quantit' par (base)];
+                                                   DecimalPlaces=0:5;
+                                                   Editable=Non }
+    { 16  ;   ;Extended Quantity   ;Decimal       ;CaptionML=[ENU=Extended Quantity;
+                                                              FRA=Quantit' 'tendue];
+                                                   DecimalPlaces=0:5;
+                                                   Editable=Non }
+    { 17  ;   ;Extended Quantity (Base);Decimal   ;CaptionML=[ENU=Extended Quantity (Base);
+                                                              FRA=Quantit' 'tendue (base)];
+                                                   DecimalPlaces=0:5;
+                                                   Editable=Non }
+    { 18  ;   ;Outstanding Quantity;Decimal       ;CaptionML=[ENU=Outstanding Quantity;
+                                                              FRA=Quantit' restante];
+                                                   DecimalPlaces=0:5;
+                                                   Editable=Non }
+    { 19  ;   ;Outstanding Qty. (Base);Decimal    ;CaptionML=[ENU=Outstanding Qty. (Base);
+                                                              FRA=Quantit' ouverte (base)];
+                                                   DecimalPlaces=0:5;
+                                                   Editable=Non }
+    { 20  ;   ;Reserved Quantity   ;Decimal       ;FieldClass=FlowField;
+                                                   CalcFormula=-Sum("Reservation Entry".Quantity WHERE (Source ID=FIELD(Document No.),
+                                                                                                        Source Ref. No.=FIELD(Line No.),
+                                                                                                        Source Type=CONST(25000),
+                                                                                                        Source Subtype=FIELD(Document Type),
+                                                                                                        Source Prod. Order Line=FIELD(Document Line No.),
+                                                                                                        Reservation Status=CONST(Reservation)));
+                                                   CaptionML=[ENU=Reserved Quantity;
+                                                              FRA=Quantit' r'serv'e];
+                                                   DecimalPlaces=0:5;
+                                                   Editable=Non }
+    { 21  ;   ;Reserved Qty. (Base);Decimal       ;FieldClass=FlowField;
+                                                   CalcFormula=-Sum("Reservation Entry"."Quantity (Base)" WHERE (Source ID=FIELD(Document No.),
+                                                                                                                 Source Ref. No.=FIELD(Line No.),
+                                                                                                                 Source Type=CONST(25000),
+                                                                                                                 Source Subtype=FIELD(Document Type),
+                                                                                                                 Source Prod. Order Line=FIELD(Document Line No.),
+                                                                                                                 Reservation Status=CONST(Reservation)));
+                                                   CaptionML=[ENU=Reserved Qty. (Base);
+                                                              FRA=Quantit' r'serv'e (base)];
+                                                   DecimalPlaces=0:5;
+                                                   Editable=Non }
+    { 22  ;   ;Reserve             ;Option        ;OnValidate=BEGIN
+                                                                IF Reserve <> Reserve::Never THEN BEGIN
+                                                                  TESTFIELD(Type,Type::Item);
+                                                                  TESTFIELD("No.");
+                                                                END;
+                                                                CALCFIELDS("Reserved Qty. (Base)");
+                                                                IF (Reserve = Reserve::Never) AND ("Reserved Qty. (Base)" > 0) THEN
+                                                                  TESTFIELD("Reserved Qty. (Base)",0);
+
+                                                                IF xRec.Reserve = Reserve::Always THEN BEGIN
+                                                                  Item.GET("No.");
+                                                                  IF Item.Reserve = Item.Reserve::Always THEN
+                                                                    TESTFIELD(Reserve,Reserve::Always);
+                                                                END;
+                                                              END;
+
+                                                   CaptionML=[ENU=Reserve;
+                                                              FRA=R'server];
+                                                   OptionCaptionML=[ENU=Never,Optional,Always;
+                                                                    FRA=Jamais,Manuel,Toujours];
+                                                   OptionString=Never,Optional,Always }
+    { 23  ;   ;Shipment Date       ;Date          ;OnValidate=VAR
+                                                                CheckDateConflict@1480000 : Codeunit 99000815;
+                                                              BEGIN
+                                                                IF ("Extended Quantity" <> 0) AND
+                                                                   (Reserve <> Reserve::Never)
+                                                                THEN
+                                                                  CheckDateConflict.KitSalesLineCheck(Rec,FALSE);
+                                                              END;
+
+                                                   CaptionML=[ENU=Shipment Date;
+                                                              FRA=Date exp'dition];
+                                                   Editable=Non }
+    { 26  ;   ;Shortcut Dimension 1 Code;Code20   ;TableRelation="Dimension Value".Code WHERE (Global Dimension No.=CONST(1));
+                                                   CaptionML=[ENU=Shortcut Dimension 1 Code;
+                                                              FRA=Code raccourci axe 1];
+                                                   Editable=Non;
+                                                   CaptionClass='1,2,1' }
+    { 27  ;   ;Shortcut Dimension 2 Code;Code20   ;TableRelation="Dimension Value".Code WHERE (Global Dimension No.=CONST(2));
+                                                   CaptionML=[ENU=Shortcut Dimension 2 Code;
+                                                              FRA=Code raccourci axe 2];
+                                                   Editable=Non;
+                                                   CaptionClass='1,2,2' }
+    { 28  ;   ;Applies-to Entry    ;Integer       ;OnValidate=VAR
+                                                                ItemLedgEntry@1000 : Record 32;
+                                                              BEGIN
+                                                                IF "Applies-to Entry" <> 0 THEN BEGIN
+                                                                  ItemLedgEntry.GET("Applies-to Entry");
+                                                                  ItemLedgEntry.TESTFIELD("Location Code","Location Code");
+                                                                  ItemLedgEntry.TESTFIELD("Variant Code","Variant Code");
+
+                                                                  TESTFIELD(Type,Type::Item);
+                                                                  TESTFIELD("Extended Quantity");
+                                                                  InitCompLine;
+                                                                  CompLine.Quantity := "Extended Quantity";
+                                                                  CompLine.VALIDATE("Appl.-to Item Entry","Applies-to Entry");
+                                                                  ItemLedgEntry.GET("Applies-to Entry");
+
+                                                                  "Unit Cost (LCY)" := CompLine."Unit Cost (LCY)";
+                                                                  "Unit Cost" := CompLine."Unit Cost";
+                                                                END;
+                                                              END;
+
+                                                   OnLookup=BEGIN
+                                                              SelectItemEntry;
+                                                            END;
+
+                                                   CaptionML=[ENU=Applies-to Entry;
+                                                              FRA=Ecriture lettrage] }
+    { 29  ;   ;Bin Code            ;Code20        ;TableRelation=IF (Type=CONST(Item)) "Bin Content"."Bin Code" WHERE (Location Code=FIELD(Location Code),
+                                                                                                                       Item No.=FIELD(No.),
+                                                                                                                       Variant Code=FIELD(Variant Code));
+                                                   OnValidate=BEGIN
+                                                                IF xRec."Bin Code" <> "Bin Code" THEN
+                                                                  TestKitLine;
+                                                                InitCompLine;
+                                                                CompLine."Variant Code" := "Variant Code";
+                                                                CompLine.VALIDATE("Bin Code","Bin Code");
+                                                              END;
+
+                                                   CaptionML=[ENU=Bin Code;
+                                                              FRA=Code emplacement] }
+    { 30  ;   ;Unit Cost (LCY)     ;Decimal       ;OnValidate=BEGIN
+                                                                IF (CurrFieldNo = FIELDNO("Unit Cost (LCY)")) AND
+                                                                   (Type = Type::Item) AND ("No." <> '') THEN BEGIN
+                                                                  Item.GET("No.");
+                                                                  IF Item."Costing Method" = Item."Costing Method"::Standard THEN
+                                                                    ERROR(
+                                                                      Text25000,
+                                                                      FIELDCAPTION("Unit Cost"),Item.FIELDCAPTION("Costing Method"),Item."Costing Method")
+                                                                END;
+                                                                InitCompLine;
+                                                                CompLine.VALIDATE("Unit Cost (LCY)","Unit Cost (LCY)");
+                                                                "Unit Cost" := CompLine."Unit Cost";
+                                                              END;
+
+                                                   CaptionML=[ENU=Unit Cost (LCY);
+                                                              FRA=Co-t unitaire DS];
+                                                   AutoFormatType=2 }
+    { 31  ;   ;Unit Cost           ;Decimal       ;CaptionML=[ENU=Unit Cost;
+                                                              FRA=Co-t unitaire];
+                                                   Editable=Non;
+                                                   AutoFormatType=2;
+                                                   AutoFormatExpr=GetCurrencyCode }
+    { 32  ;   ;Unit Price          ;Decimal       ;OnValidate=BEGIN
+                                                                TESTFIELD(Type);
+                                                                IF (CurrFieldNo <> 0) AND
+                                                                   ("Quantity per" <> 0) AND
+                                                                   (("Unit Price" <> xRec."Unit Price") OR
+                                                                    ("Quantity per" <> xRec."Quantity per"))
+                                                                THEN
+                                                                  KitManagement.RollUpPrice(Rec,1);
+                                                              END;
+
+                                                   CaptionML=[ENU=Unit Price;
+                                                              FRA=Prix unitaire];
+                                                   AutoFormatType=2;
+                                                   AutoFormatExpr=GetCurrencyCode;
+                                                   CaptionClass=GetCaptionClass(FIELDNO("Unit Price")) }
+    { 33  ;   ;Pick Qty.           ;Decimal       ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("Warehouse Activity Line"."Qty. Outstanding" WHERE (Activity Type=FILTER(<>Put-away),
+                                                                                                                       Source Type=CONST(25000),
+                                                                                                                       Source Subtype=FIELD(Document Type),
+                                                                                                                       Source No.=FIELD(Document No.),
+                                                                                                                       Source Line No.=FIELD(Document Line No.),
+                                                                                                                       Source Subline No.=FIELD(Line No.),
+                                                                                                                       Unit of Measure Code=FIELD(Unit of Measure Code),
+                                                                                                                       Action Type=FILTER(' '|Place),
+                                                                                                                       Original Breakbulk=CONST(Non),
+                                                                                                                       Breakbulk No.=CONST(0)));
+                                                   CaptionML=[ENU=Pick Qty.;
+                                                              FRA=Pr'lever qt'];
+                                                   DecimalPlaces=0:5;
+                                                   Editable=Non }
+    { 34  ;   ;Pick Qty. (Base)    ;Decimal       ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("Warehouse Activity Line"."Qty. Outstanding (Base)" WHERE (Activity Type=FILTER(<>Put-away),
+                                                                                                                              Source Type=CONST(25000),
+                                                                                                                              Source Subtype=FIELD(Document Type),
+                                                                                                                              Source No.=FIELD(Document No.),
+                                                                                                                              Source Line No.=FIELD(Document Line No.),
+                                                                                                                              Source Subline No.=FIELD(Line No.),
+                                                                                                                              Unit of Measure Code=FIELD(Unit of Measure Code),
+                                                                                                                              Action Type=FILTER(' '|Place),
+                                                                                                                              Original Breakbulk=CONST(Non),
+                                                                                                                              Breakbulk No.=CONST(0)));
+                                                   CaptionML=[ENU=Pick Qty. (Base);
+                                                              FRA=Pr'lever qt' (base)];
+                                                   DecimalPlaces=0:5;
+                                                   Editable=Non }
+    { 35  ;   ;Qty. Picked         ;Decimal       ;CaptionML=[ENU=Qty. Picked;
+                                                              FRA=Qt' pr'lev'e];
+                                                   DecimalPlaces=0:5;
+                                                   Editable=Non }
+    { 36  ;   ;Qty. Picked (Base)  ;Decimal       ;CaptionML=[ENU=Qty. Picked (Base);
+                                                              FRA=Qt' pr'lev'e (base)];
+                                                   DecimalPlaces=0:5;
+                                                   Editable=Non }
+    { 37  ;   ;Completely Picked   ;Boolean       ;CaptionML=[ENU=Completely Picked;
+                                                              FRA=EntiSrement pr'l'v'];
+                                                   Editable=Non }
+    { 38  ;   ;Quantity Shipped (Base);Decimal    ;CaptionML=[ENU=Quantity Shipped (Base);
+                                                              FRA=Quantit' exp'di'e (base)];
+                                                   DecimalPlaces=0:5;
+                                                   Editable=Non }
+    { 8053000;;Blanket Order No.   ;Code20        ;TableRelation="Sales Header".No. WHERE (Document Type=CONST(Blanket Order));
+                                                   TestTableRelation=Non;
+                                                   CaptionML=[ENU=Blanket Order No.;
+                                                              FRA=N› commande ouverte];
+                                                   Description=CMC01.04;
+                                                   Editable=Non }
+    { 8053001;;Blanket Order Line No.;Integer     ;TableRelation="Sales Line"."Line No." WHERE (Document Type=CONST(Blanket Order),
+                                                                                                Document No.=FIELD(Blanket Order No.));
+                                                   TestTableRelation=Non;
+                                                   CaptionML=[ENU=Blanket Order Line No.;
+                                                              FRA=N› ligne cde ouverte];
+                                                   Description=CMC01.04;
+                                                   Editable=Non }
+  }
+  KEYS
+  {
+    {    ;Document Type,Document No.,Document Line No.,Line No.;
+                                                   Clustered=Oui }
+    {    ;Document Type,Type,No.,Variant Code,Location Code,Shipment Date;
+                                                   SumIndexFields=Outstanding Qty. (Base),Quantity Shipped (Base),Qty. Picked (Base) }
+    { Non;Document Type,Type,No.,Variant Code,Shortcut Dimension 1 Code,Shortcut Dimension 2 Code,Location Code,Shipment Date;
+                                                   SumIndexFields=Outstanding Qty. (Base);
+                                                   KeyGroups=Item(Dim) }
+    {    ;Document Type,Type,No.,Variant Code,Location Code,Shipment Date,Blanket Order No.,Blanket Order Line No.;
+                                                   SumIndexFields=Outstanding Qty. (Base) }
+  }
+  FIELDGROUPS
+  {
+  }
+  CODE
+  {
+    VAR
+      KitLine@1480000 : Record 37;
+      KitLine2@1480009 : Record 37;
+      CompLine@1480005 : Record 37;
+      xKitSalesLine@1480001 : Record 25000;
+      Text000@1480011 : TextConst 'ENU=Automatic reservation is not possible.\Reserve items manually?;FRA=La r'servation automatique n''est pas possible.\Souhaitez-vous r'server les articles manuellement ?';
+      Text001@1480015 : TextConst 'ENU=You cannot rename a %1.;FRA=Vous ne pouvez pas renommer un(e) %1.';
+      Text25000@1480002 : TextConst 'ENU=You cannot change %1 when %2 is %3.;FRA=Vous ne pouvez pas modifier %1 si %2 est %3.';
+      Item@1480003 : Record 27;
+      KitManagement@1480007 : Codeunit 25000;
+      ReserveKitSalesLine@1480008 : Codeunit 25001;
+      WhseValidateSourceLine@1480014 : Codeunit 5777;
+      UseKitLine2@1480004 : Boolean;
+      Text25001@1480006 : TextConst 'ENU=must be positive;FRA=doit ^tre de signe positif';
+      SkipPricing@1480010 : Boolean;
+      QtyShippedCheckSuspend@1480012 : Boolean;
+      StatusCheckSuspended@1480013 : Boolean;
+      "<-- 3LI GLOABLS -->"@8053000 : Integer;
+      ItemIndivQtyMgt_G@8053001 : Codeunit 8060997;
+      Text50000@1000000000 : TextConst 'ENU="You can''t modify %1 if %2 = %3 in %4.";FRA="Vous ne pouvez pas modifier ""%1"" quand ""%2"" = %3 dans ""%4""."';
+      CallByWhseShipment_G@1000000001 : Boolean;
+      BooNoManageIndQty_G@1000000002 : Boolean;
+
+    PROCEDURE GetCurrencyCode@1() : Code[10];
+    VAR
+      SalesHeader@1000 : Record 36;
+    BEGIN
+      IF ("Document Type" = SalesHeader."Document Type") AND
+         ("Document No." = SalesHeader."No.")
+      THEN
+        EXIT(SalesHeader."Currency Code");
+      IF SalesHeader.GET("Document Type","Document No.") THEN
+        EXIT(SalesHeader."Currency Code");
+      EXIT('');
+    END;
+
+    LOCAL PROCEDURE GetCaptionClass@34(FieldNumber@1000 : Integer) : Text[80];
+    VAR
+      SalesHeader@1001 : Record 36;
+    BEGIN
+      IF NOT SalesHeader.GET("Document Type","Document No.") THEN BEGIN
+        SalesHeader."No." := '';
+        SalesHeader.INIT;
+      END;
+      IF SalesHeader."Prices Including VAT" THEN
+        EXIT('2,1,' + GetFieldCaption(FieldNumber))
+      ELSE
+        EXIT('2,0,' + GetFieldCaption(FieldNumber));
+    END;
+
+    LOCAL PROCEDURE GetFieldCaption@31(FieldNumber@1000 : Integer) : Text[100];
+    VAR
+      Field@1001 : Record 2000000041;
+    BEGIN
+      Field.GET(DATABASE::"Kit Sales Line",FieldNumber);
+      EXIT(Field."Field Caption");
+    END;
+
+    PROCEDURE GetKitLine@1480001();
+    BEGIN
+      IF UseKitLine2 THEN
+        KitLine := KitLine2
+      ELSE BEGIN
+        TESTFIELD("Document No.");
+        IF ("Document Type" <> KitLine."Document Type") OR
+           ("Document No." <> KitLine."Document No.") OR
+           ("Document Line No." <> KitLine."Line No.")
+        THEN
+          KitLine.GET("Document Type","Document No.","Document Line No.");
+      END;
+    END;
+
+    PROCEDURE TestKitLine@1480005();
+    BEGIN
+      GetKitLine;
+      KitLine.TESTFIELD("Qty. Shipped Not Invoiced",0);
+      KitLine.TESTFIELD("Shipment No.",'');
+      KitLine.TESTFIELD("Return Qty. Rcd. Not Invd.",0);
+      KitLine.TESTFIELD("Return Receipt No.",'');
+    END;
+
+    PROCEDURE InitCompLine@1480000();
+    BEGIN
+      GetKitLine;
+      KitLine.TESTFIELD("Build Kit",TRUE);
+      KitLine.TESTFIELD("Quantity Shipped",0);
+      CompLine := KitLine;
+      CompLine."Line No." := 0; // to avoid doc.dim to be really inserted.
+      CASE Type OF
+        Type::" ":
+          CompLine.Type := CompLine.Type::" ";
+        Type::Item:
+          CompLine.Type := CompLine.Type::Item;
+        Type::Resource, Type::"Setup Resource":
+          CompLine.Type := CompLine.Type::Resource;
+      END;
+      CompLine."No." := "No.";
+      CompLine."Shipment Date" := "Shipment Date";
+      CompLine."Variant Code" := "Variant Code";
+      CompLine."Unit of Measure Code" := "Unit of Measure Code";
+      CompLine.Quantity := 0;
+      CompLine."Unit Price" := "Unit Price";
+      CompLine."Build Kit" := FALSE;
+      CompLine.SetHideValidationDialog(TRUE);
+      // --> 20171213-WI00-ADV01.01.00-3286-FBE01
+      CompLine.SuspendStatusCheck(TRUE);
+      // <--  20171213-WI00-ADV01.01.00-3286-FBE01
+    END;
+
+    PROCEDURE ItemAvailability@12(AvailabilityType@1000 : 'Date,Variant,Location,Bin');
+    VAR
+      Item@1480000 : Record 27;
+      ItemAvailByDate@1480003 : Form 157;
+      ItemAvailByVar@1480002 : Form 5414;
+      ItemAvailByLoc@1480001 : Form 492;
+    BEGIN
+      TESTFIELD(Type,Type::Item);
+      TESTFIELD("No.");
+      Item.RESET;
+      Item.GET("No.");
+      Item.SETRANGE("No.","No.");
+      Item.SETRANGE("Date Filter",0D,"Shipment Date");
+
+      CASE AvailabilityType OF
+        AvailabilityType::Date:
+          BEGIN
+            Item.SETRANGE("Variant Filter","Variant Code");
+            Item.SETRANGE("Location Filter","Location Code");
+            CLEAR(ItemAvailByDate);
+            ItemAvailByDate.LOOKUPMODE(FALSE);
+            ItemAvailByDate.SETRECORD(Item);
+            ItemAvailByDate.SETTABLEVIEW(Item);
+            ItemAvailByDate.RUNMODAL;
+          END;
+        AvailabilityType::Variant:
+          BEGIN
+            Item.SETRANGE("Location Filter","Location Code");
+            CLEAR(ItemAvailByVar);
+            ItemAvailByVar.LOOKUPMODE(FALSE);
+            ItemAvailByVar.SETRECORD(Item);
+            ItemAvailByVar.SETTABLEVIEW(Item);
+            ItemAvailByVar.RUNMODAL;
+          END;
+        AvailabilityType::Location:
+          BEGIN
+            Item.SETRANGE("Variant Filter","Variant Code");
+            CLEAR(ItemAvailByLoc);
+            ItemAvailByLoc.LOOKUPMODE(FALSE);
+            ItemAvailByLoc.SETRECORD(Item);
+            ItemAvailByLoc.SETTABLEVIEW(Item);
+            ItemAvailByLoc.RUNMODAL;
+          END;
+      END;
+    END;
+
+    PROCEDURE ShowReservation@10();
+    VAR
+      Reservation@1480000 : Form 498;
+    BEGIN
+      TESTFIELD(Type,Type::Item);
+      TESTFIELD("No.");
+      TESTFIELD(Reserve);
+      CLEAR(Reservation);
+      Reservation.SetKitSalesLine(Rec);
+      Reservation.RUNMODAL;
+    END;
+
+    PROCEDURE ShowReservationEntries@21(Modal@1000 : Boolean);
+    VAR
+      ReservEntry@1480001 : Record 337;
+      ReservEngineMgt@1480000 : Codeunit 99000831;
+    BEGIN
+      TESTFIELD(Type,Type::Item);
+      TESTFIELD("No.");
+      ReservEngineMgt.InitFilterAndSortingLookupFor(ReservEntry,TRUE);
+      ReserveKitSalesLine.FilterReservFor(ReservEntry,Rec);
+      IF Modal THEN
+        FORM.RUNMODAL(FORM::"Reservation Entries",ReservEntry)
+      ELSE
+        FORM.RUN(FORM::"Reservation Entries",ReservEntry);
+    END;
+
+    PROCEDURE AutoReserve@11();
+    VAR
+      ReservMgt@1480000 : Codeunit 99000845;
+      FullAutoReservation@1480001 : Boolean;
+    BEGIN
+      TESTFIELD(Type,Type::Item);
+      TESTFIELD("No.");
+
+      IF ReserveKitSalesLine.ReservQuantity(Rec) <> 0 THEN BEGIN
+        ReservMgt.SetKitSalesLine(Rec);
+        TESTFIELD("Shipment Date");
+        ReservMgt.AutoReserve(FullAutoReservation,'',"Shipment Date",ReserveKitSalesLine.ReservQuantity(Rec));
+        FIND;
+        IF NOT FullAutoReservation THEN BEGIN
+          COMMIT;
+          IF CONFIRM(Text000,TRUE) THEN BEGIN
+            ShowReservation;
+            FIND;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE OpenItemTrackingLines@6500();
+    BEGIN
+      // --> 20171212-WI00-ADV01.01.00-3286-CJY01
+      {BEFORE
+      IF NOT ("Document Type" IN ["Document Type"::Quote,"Document Type"::Order,"Document Type"::Invoice]) THEN
+        FIELDERROR("Document Type");
+      AFTER}
+      IF NOT ("Document Type" IN ["Document Type"::Quote,"Document Type"::Order,"Document Type"::Invoice,
+        "Document Type"::"Return Order"]) THEN
+        FIELDERROR("Document Type");
+      // <-- 20171212-WI00-ADV01.01.00-3286-CJY01
+      TESTFIELD(Type,Type::Item);
+      TESTFIELD("No.");
+      TESTFIELD("Extended Quantity (Base)");
+      // --> 20171127-WI00-ADV01.01.00-3286-FBE01
+      ReserveKitSalesLine.SetCallByWhseShipment(CallByWhseShipment_G);
+      // <-- 20171127-WI00-ADV01.01.00-3286-FBE01
+      ReserveKitSalesLine.CallItemTracking(Rec);
+    END;
+
+    LOCAL PROCEDURE SelectItemEntry@8();
+    VAR
+      ItemLedgEntry@1001 : Record 32;
+      KitSalesLine2@1002 : Record 25000;
+    BEGIN
+      ItemLedgEntry.SETCURRENTKEY("Item No.",Open);
+      ItemLedgEntry.SETRANGE("Item No.","No.");
+      IF "Location Code" <> '' THEN
+        ItemLedgEntry.SETRANGE("Location Code","Location Code");
+      ItemLedgEntry.SETRANGE("Variant Code","Variant Code");
+      ItemLedgEntry.SETRANGE(Positive,TRUE);
+      ItemLedgEntry.SETRANGE(Open,TRUE);
+
+      IF FORM.RUNMODAL(FORM::"Item Ledger Entries",ItemLedgEntry) = ACTION::LookupOK THEN BEGIN
+        KitSalesLine2 := Rec;
+        KitSalesLine2.VALIDATE("Applies-to Entry",ItemLedgEntry."Entry No.");
+        IF Reserve <> Reserve::Always THEN
+          CheckItemAvailable;
+        Rec := KitSalesLine2;
+      END;
+    END;
+
+    PROCEDURE SetKitLine@1480002(NewSalesLine@1480000 : Record 37);
+    BEGIN
+      UseKitLine2 := TRUE;
+      KitLine2 := NewSalesLine;
+    END;
+
+    LOCAL PROCEDURE CheckItemAvailable@4();
+    VAR
+      SalesHeader@1480001 : Record 36;
+      ItemCheckAvail@1480000 : Codeunit 311;
+    BEGIN
+      IF "Shipment Date" = 0D THEN BEGIN
+        SalesHeader.GET("Document Type","Document No.");
+        IF SalesHeader."Shipment Date" <> 0D THEN
+          "Shipment Date" := SalesHeader."Shipment Date"
+        ELSE
+          "Shipment Date" := WORKDATE;
+      END;
+
+      IF (CurrFieldNo <> 0) AND GUIALLOWED AND
+         ("Document Type" IN ["Document Type"::Order,"Document Type"::Invoice]) AND
+         (Type = Type::Item) AND ("No." <> '') AND
+         ("Outstanding Quantity" > 0)
+      THEN
+        ItemCheckAvail.KitSalesLineCheck2(Rec);
+    END;
+
+    PROCEDURE ItemExists@54(ItemNo@1000 : Code[20]) : Boolean;
+    VAR
+      Item2@1001 : Record 27;
+    BEGIN
+      IF Type = Type::Item THEN
+        IF NOT Item2.GET(ItemNo) THEN
+          EXIT(FALSE);
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE SetSkipPricing@1480004();
+    BEGIN
+      SkipPricing := TRUE;
+    END;
+
+    PROCEDURE SuspendQtyShippedCheck@39(Suspend@1000 : Boolean);
+    BEGIN
+      QtyShippedCheckSuspend := Suspend;
+    END;
+
+    PROCEDURE SuspendStatusCheck@1480003(Suspend@1000 : Boolean);
+    BEGIN
+      StatusCheckSuspended := Suspend;
+    END;
+
+    LOCAL PROCEDURE TestStatusOpen@33();
+    VAR
+      SalesHeader@1480000 : Record 36;
+    BEGIN
+      IF StatusCheckSuspended THEN
+        EXIT;
+      TESTFIELD("Document No.");
+      IF ("Document Type" <> SalesHeader."Document Type") OR ("Document No." <> SalesHeader."No.") THEN
+        SalesHeader.GET("Document Type","Document No.");
+      SalesHeader.TESTFIELD(Status,SalesHeader.Status::Open);
+    END;
+
+    PROCEDURE "<-- 3LI FUNCTIONS -->"@1000000000();
+    BEGIN
+    END;
+
+    PROCEDURE CheckManualModifyAuthorized@1000000001(Manual_P@1000000000 : Boolean;FieldCaption_P@1000000002 : Text[100]);
+    VAR
+      RecCMCSetup_L@1000000001 : Record 8052982;
+    BEGIN
+      // --> 20171124-WI00-ADV01.01.00-3286-FBE01
+      IF NOT Manual_P THEN
+        EXIT;
+      IF Type=Type::Item THEN BEGIN
+        RecCMCSetup_L.GET;
+        IF RecCMCSetup_L."Block Line Kit Manual Modif." THEN BEGIN
+          ERROR(Text50000,FieldCaption_P,RecCMCSetup_L.FIELDCAPTION("Block Line Kit Manual Modif."),
+                FORMAT(RecCMCSetup_L."Block Line Kit Manual Modif."),RecCMCSetup_L.TABLECAPTION);
+        END;
+      END;
+      // <-- 20171124-WI00-ADV01.01.00-3286-FBE01
+    END;
+
+    PROCEDURE SetCallByWhseShipment@1000000002(CallByWhseShipment_P@1000000000 : Boolean);
+    BEGIN
+      // --> 20171127-WI00-ADV01.01.00-3286-FBE01
+      CallByWhseShipment_G := CallByWhseShipment_P;
+      // <-- 20171127-WI00-ADV01.01.00-3286-FBE01
+    END;
+
+    PROCEDURE NoManageIndivisibleQty@1000000007() : Boolean;
+    VAR
+      CMCSetup_L@60000 : Record 8052982;
+    BEGIN
+      // --> 20180123-WI00-ADV01.01.00-3330-CJY01
+      CMCSetup_L.GET;
+      IF CMCSetup_L."No Ind. Qty. Controle On Comp." THEN
+        EXIT(TRUE);
+
+
+      EXIT(FALSE);
+      // <-- 20180123-WI00-ADV01.01.00-3330-CJY01
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+
+      20110601-Wi00-CMC01.04 : Version RTM 01.04 - NavAgri
+      20111116-APP08-CMC02.01.00-BRA01 : ADDCODE (Check Item Qty Indiv.)
+      20111128-APP08-CMC02.01.00-BRA01 : ADDCODE
+      20171124-WI00-ADV01.01.00-3286-FBE01 : ADDFUNCT(CheckManualModifyAuthorized)
+      20171124-WI00-ADV01.01.00-3286-FBE01 : ADDCODE ("No." - OnValidate, Appel de CheckManualModifyAuthorized)
+      20171124-WI00-ADV01.01.00-3286-FBE01 : ADDCODE ("Quantity per" - OnValidate, Appel de CheckManualModifyAuthorized)
+      20171124-WI00-ADV01.01.00-3286-FBE01 : ADDGLOBAL(Text50000)
+      20171127-WI00-ADV01.01.00-3286-FBE01 : ADDFUNCT(SetCallByWhseShipment)
+      20171127-WI00-ADV01.01.00-3286-FBE01 : ADDGLOBAL(CallByWhseShipment_G)
+      20171127-WI00-ADV01.01.00-3286-FBE01 : MODFUNCT(OpenItemTrackingLines, passage de parametre au Cdu 25001 afin d'indiquer
+                                              les qt's . exp'dier de l'exp'dition au lieu de celle de la ligne de commande)
+      20171212-WI00-ADV01.01.00-3286-CJY01 : MODCODE(ouverture appel traÎabilit' au retour vente)
+      20171213-WI00-ADV01.01.00-3286-FBE01 : MODFUNCT (InitCompLine, Appel de SuspendStatusCheck(TRUE) de T37)
+      20180123-WI00-ADV01.01.00-3330-CJY01 : MODFUNCT (le check de la qt' indivisible ne se fait qu'on fonction du param Navagri)
+      20240521-WI00-ADV01.01.00-3648-SAN01 : MODCODE (Validate "No.")
+      // --> 3LI END
+    }
+    END.
+  }
+}
+

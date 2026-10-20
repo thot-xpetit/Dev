@@ -1,0 +1,2975 @@
+OBJECT Codeunit 8053008 CMC SalesRemQtyMgt
+{
+  OBJECT-PROPERTIES
+  {
+    Date=26/06/26;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,CMB6.00.10.09,TER01.01.00,LogA07-SCT00.00.00,3450;
+  }
+  PROPERTIES
+  {
+    TableNo=37;
+    OnRun=VAR
+            Text8053000_L@8053002 : TextConst 'FRA=Il n''y a rien . traiter.;ENI=There is nothing to treat.';
+            Text8053001_L@8053001 : TextConst 'ENU=Line %1 %2 %3 has modified since its extraction, ples reload your data.;FRA=La ligne %1 %2 %3 a 't' modifi'e depuis son extraction, veuillez recharger vos donn'es.';
+            Text8053002_L@8053000 : TextConst 'ENU=Lines Treatment...;FRA=Traitement des lignes...';
+            ReleaseOpen_L@8053008 : Codeunit 414;
+            TempToInsertSalesLine_L@8053007 : TEMPORARY Record 37;
+            Win_L@8053006 : Dialog;
+            SalesPostPrep_L@8053005 : Codeunit 442;
+            LastSalesHeader_L@8053004 : Record 36;
+            SalesLocalLine_L@8053003 : Record 37;
+            Text8053003_L@8053009 : TextConst 'FRA=Voulez-vous valider ces %1 actions?;ENI=Would you like to post lines?';
+            OrderToRelease_L@8053010 : Boolean;
+            cduWhseSalesRelease_L@8053011 : Codeunit 5771;
+            cduLogisticsTourMngt_L@8053012 : Codeunit 8052991;
+            PaymentTerms_L@8053013 : Record 3;
+            TmpNameValBuffer_L@8053014 : TEMPORARY Record 823;
+            SaveStatus_L@8053015 : Integer;
+            CUWhPostShip_L@8053016 : Codeunit 5763;
+            DetailedSLMgt_L@8053017 : Codeunit 8053043;
+            ApprovalManagement_L@8053018 : Codeunit 439;
+            RecKitSalesLine_L@60000 : Record 25000;
+          BEGIN
+            // --> 20161020-WI00-ADV01.01.00-3109-JCD01
+            {BEFORE
+            GlobalSalesLineTmp_G.SETFILTER("Remainder Process Type", '<>%1',GlobalSalesLineTmp_G."Remainder Process Type"::" ");
+            GlobalSalesLineTmp_G.SETRANGE("Remainder Error", FALSE);
+
+            IF NOT GlobalSalesLineTmp_G.FINDSET THEN
+              ERROR(Text8053000_L);
+
+            IF NOT CONFIRM(Text8053003_L, FALSE, GlobalSalesLineTmp_G.COUNT) THEN
+              EXIT;
+
+            // --> 20150325-APP30-CMC02.02.00-2853-FEC01
+            TmpSalesHeader_G.RESET;
+            TmpSalesHeader_G.DELETEALL;
+            // <-- 20150325-APP30-CMC02.02.00-2853-FEC01
+
+            Win_L.OPEN(Text8053002_L);
+
+            REPEAT
+            AFTER}
+            GlobalSalesLineTmp_G.COPY(Rec);
+            GlobalSalesLineTmp_G.INSERT;
+            GlobalSalesLineTmp_G.FINDSET;
+
+            // <-- 20161020-WI00-ADV01.01.00-3109-JCD01
+              IF NOT CheckSalesLine(GlobalSalesLineTmp_G) THEN
+                ERROR(Text8053001_L);
+              GetSalesHeader(GlobalSalesLineTmp_G);
+              SalesHeader_G."Posting Date" := WORKDATE;
+              SalesHeader_G."Document Date" := WORKDATE;
+
+              // --> 20150325-APP30-CMC02.02.00-2853-FEC02
+              TmpSalesHeader_G.INIT;
+              TmpSalesHeader_G."Document Type" := SalesHeader_G."Document Type";
+              TmpSalesHeader_G."No." := SalesHeader_G."No.";
+              IF TmpSalesHeader_G.INSERT THEN;
+              // <-- 20150325-APP30-CMC02.02.00-2853-FEC02
+
+              PrevSeasonIDNo_G := SalesLine_G."Season ID No.";
+              PrevCampaignNo_G := SalesLine_G."CMC Campaign No.";
+
+              OrderToRelease_L := FALSE;
+              IF SalesHeader_G.Status = SalesHeader_G.Status::Released THEN
+                OrderToRelease_L := TRUE;
+              IF OrderToRelease_L = TRUE THEN BEGIN
+                cduWhseSalesRelease_L.Reopen(SalesHeader_G);
+                cduLogisticsTourMngt_L.Reopen(SalesHeader_G);
+              END;
+              SalesHeader_G.SetHideValidationDialog(TRUE);
+
+              CreateChangeLog(GlobalSalesLineTmp_G);
+
+              CASE GlobalSalesLineTmp_G."Remainder Process Type" OF
+                GlobalSalesLineTmp_G."Remainder Process Type"::Cancel: BEGIN
+                  TempToInsertSalesLine_L.DELETEALL;
+                  TempToInsertSalesLine_L.INIT;
+                  TempToInsertSalesLine_L.TRANSFERFIELDS(GlobalSalesLineTmp_G);
+                  TempToInsertSalesLine_L."Line No." := TempToInsertSalesLine_L."Line No." + 1;
+                  TempToInsertSalesLine_L.INSERT;
+
+
+                  // --> 20151211-APP28-TER01.01.00-2500-CJY01
+                  SalesLine_G.MODIFY(TRUE);
+                  // <-- 20151211-APP28-TER01.01.00-2500-CJY01
+
+                  // --> 20160222-App30-ADV01.01.00-2704-DDS01
+                  FromDefalquerSalesLine_G := TRUE;
+                  // <-- 20160222-App30-ADV01.01.00-2704-DDS01
+                  // --> 20160219-App17-ADV01.01.00-2669-JCD01
+                  {
+                  //BEFORE
+                  DefalquerSalesLine(SalesLine_G, TempToInsertSalesLine_L, TRUE);
+                  //AFTER
+                  }
+                  // --> 20191209-WI00-ADV01.01.00-3450-MRU01
+                  SalesLine_G.SuspendQuotasMessage(TRUE);
+                  // <-- 20191209-WI00-ADV01.01.00-3450-MRU01
+                  DefalquerSalesLine(SalesLine_G, TempToInsertSalesLine_L, TRUE,FALSE);
+                  // <-- 20160219-App17-ADV01.01.00-2669-JCD01
+
+                  // --> 20141219-APP40/001-CMC02.02.00-BSI01
+                  CUPrepaymentMgt_G.FillInPrepCMtoIssue(GlobalSalesLineTmp_G,GlobalSalesLineTmp_G."Qty to Reallocate",FALSE);
+                  // <-- 20141219-APP40/001-CMC02.02.00-BSI01
+                END;
+                GlobalSalesLineTmp_G."Remainder Process Type"::Reallocate: BEGIN
+                  GlobalSalesLineTmp_G.TESTFIELD("Remainder New Location Code");
+                  CASE TRUE OF
+                    (GlobalSalesLineTmp_G."Qty. Shipped (Base)" = 0): BEGIN
+                      SalesLine_G.SetHideValidationDialog(TRUE);
+                      SalesLine_G.SuspendStatusCheck(TRUE);
+                      SalesLine_G.VALIDATE("Location Code", GlobalSalesLineTmp_G."Remainder New Location Code");
+                      SalesLine_G.MODIFY(TRUE);
+                      // --> 20171215-WI00-ADV01.01.00-3286-CJY01
+                      IF SalesLine_G."Build Kit" THEN BEGIN
+                        RecKitSalesLine_L.SETRANGE("Document Type" ,SalesLine_G."Document Type" );
+                        RecKitSalesLine_L.SETRANGE("Document No.", SalesLine_G."Document No." );
+                        RecKitSalesLine_L.SETRANGE("Document Line No." ,SalesLine_G."Line No.");
+                        IF RecKitSalesLine_L.FINDSET(TRUE,FALSE) THEN REPEAT
+                          RecKitSalesLine_L."Location Code" := SalesLine_G."Location Code";
+                          RecKitSalesLine_L.MODIFY;
+                        UNTIL RecKitSalesLine_L.NEXT = 0;
+
+                      END;
+                      // <-- 20171215-WI00-ADV01.01.00-3286-CJY01
+                    END;
+
+                    (GlobalSalesLineTmp_G."Qty. Shipped (Base)"<>0): BEGIN
+                      TempToInsertSalesLine_L.DELETEALL;
+                      TempToInsertSalesLine_L.INIT;
+                      TempToInsertSalesLine_L.TRANSFERFIELDS(GlobalSalesLineTmp_G);
+                      TempToInsertSalesLine_L."Line No." := TempToInsertSalesLine_L."Line No." + 1;
+                      TempToInsertSalesLine_L.INSERT;
+                      // --> 20160219-App17-ADV01.01.00-2669-JCD01
+                      {BEFORE
+                      DefalquerSalesLine(SalesLine_G,TempToInsertSalesLine_L,FALSE);
+                      AFTER}
+                      DefalquerSalesLine(SalesLine_G,TempToInsertSalesLine_L,FALSE,FALSE);
+                      // <-- 20160219-App17-ADV01.01.00-2669-JCD01
+
+                    END;
+                  END;
+                END;
+                GlobalSalesLineTmp_G."Remainder Process Type"::"Change Item": BEGIN
+                  IF (GlobalSalesLineTmp_G."Prepmt. Amt. Inv."= 0) THEN BEGIN
+                    GlobalSalesLineTmp_G.TESTFIELD("Remainder New Item No.");
+                    CASE TRUE OF
+                      (GlobalSalesLineTmp_G."Qty. Shipped (Base)"=0): BEGIN
+                        SalesLine_G.SetHideValidationDialog(TRUE);
+                        SalesLine_G.SuspendStatusCheck(TRUE);
+                        IF (NOT GlobalSalesLineTmp_G."Remainder Update Price") THEN BEGIN
+                          GlobalSalesLineTmp_G."Negotiated Price" := TRUE;
+                          GlobalSalesLineTmp_G."Mutated Price" := TRUE;
+                        END ELSE
+                          GlobalSalesLineTmp_G."Negotiated Price" := FALSE;
+                        CheckSalesReallocateQty(GlobalSalesLineTmp_G, GlobalSalesLineTmp_G."Remainder Qty Rounding Method");
+                        // --> 20150806-WI00-ADV01.01.00-2071-PSI01
+                        //BEFORE
+                        //SalesLine_G.VALIDATE(Quantity, 0);
+                        SaveStatus_L := SalesLine_G."Document Status";
+                        // --> 20150811-Wi00-ADV01.01.00-2071-FHS01
+                        SalesLine_G."Variant Code" := '';
+                        // <-- 20150811-Wi00-ADV01.01.00-2071-FHS01
+                        // --> 20150820-Wi00-ADV01.01.00-2151-FHS01
+                        SalesLine_G.VALIDATE(Quantity, 0);
+                        // <-- 20150820-Wi00-ADV01.01.00-2151-FHS01
+
+                        SalesLine_G.VALIDATE("No.", GlobalSalesLineTmp_G."Remainder New Item No.");
+                        SalesLine_G."Document Status" := SaveStatus_L;
+                        SalesLine_G.VALIDATE("Variant Code", GlobalSalesLineTmp_G."Remainder New Variant Code");
+                        // AFTER
+                        SalesLine_G.VALIDATE(Quantity, 0);
+                        // <-- 20150806-WI00-ADV01.01.00-2071-PSI01
+
+                        // --> 20200212-WI00-ADV01.01.00-48375-MRU01
+                        IF SalesLine_G."Build Kit" THEN
+                          SalesLine_G.RefreshKitSalesLines; //Modify cach'
+                        // <-- 20200212-WI00-ADV01.01.00-48375-MRU01
+
+                        SalesLine_G.VALIDATE(Quantity, GlobalSalesLineTmp_G."Qty to Reallocate");
+                        SalesLine_G.VALIDATE("Location Code", GlobalSalesLineTmp_G."Location Code");
+
+                        IF NOT GlobalSalesLineTmp_G."Remainder Update Price" THEN BEGIN
+                          SalesLine_G.VALIDATE("Unit Price", GlobalSalesLineTmp_G."Unit Price");
+                          SalesLine_G."Net Unit Price" := GlobalSalesLineTmp_G."Net Unit Price";
+                        END;
+                        SalesLine_G."Negotiated Price" := GlobalSalesLineTmp_G."Negotiated Price";
+                        SalesLine_G."Mutated Price" := GlobalSalesLineTmp_G."Mutated Price";
+
+                        //Old Data
+                        SalesLine_G."Purchase Order No." := GlobalSalesLineTmp_G."Purchase Order No.";
+                        SalesLine_G."Purch. Order Line No." := GlobalSalesLineTmp_G."Purch. Order Line No.";
+                        SalesLine_G."Drop Shipment" := GlobalSalesLineTmp_G."Drop Shipment";
+                        SalesLine_G."Attached to Line No." := GlobalSalesLineTmp_G."Attached to Line No.";
+                        SalesLine_G."Blanket Order No." := GlobalSalesLineTmp_G."Blanket Order No.";
+                        SalesLine_G."Blanket Order Line No." := GlobalSalesLineTmp_G."Blanket Order Line No.";
+                        SalesLine_G."System-Created Entry" := GlobalSalesLineTmp_G."System-Created Entry";
+                        SalesLine_G."IC Partner Ref. Type" := GlobalSalesLineTmp_G."IC Partner Ref. Type";
+                        SalesLine_G."IC Partner Reference" := GlobalSalesLineTmp_G."IC Partner Reference";
+                        SalesLine_G."Prepayment %" := GlobalSalesLineTmp_G."Prepayment %";
+                        SalesLine_G."Prepmt. Line Amount" := GlobalSalesLineTmp_G."Prepmt. Line Amount";
+                        SalesLine_G."Prepmt. Amt. Inv." := GlobalSalesLineTmp_G."Prepmt. Amt. Inv.";
+                        SalesLine_G."Prepmt. Amt. Incl. VAT" := GlobalSalesLineTmp_G."Prepmt. Amt. Incl. VAT";
+                        SalesLine_G."Prepayment Amount" := GlobalSalesLineTmp_G."Prepayment Amount";
+                        SalesLine_G."Prepmt. VAT Base Amt." := GlobalSalesLineTmp_G."Prepmt. VAT Base Amt.";
+                        SalesLine_G."Prepayment VAT %" := GlobalSalesLineTmp_G."Prepayment VAT %";
+                        SalesLine_G."Prepmt. VAT Calc. Type" := GlobalSalesLineTmp_G."Prepmt. VAT Calc. Type";
+                        SalesLine_G."Prepayment VAT Identifier" := GlobalSalesLineTmp_G."Prepayment VAT Identifier";
+                        SalesLine_G."Prepayment Tax Area Code" := GlobalSalesLineTmp_G."Prepayment Tax Area Code";
+                        SalesLine_G."Prepayment Tax Liable" := GlobalSalesLineTmp_G."Prepayment Tax Liable";
+                        SalesLine_G."Prepayment Tax Group Code" := GlobalSalesLineTmp_G."Prepayment Tax Group Code";
+                        SalesLine_G."Prepmt Amt to Deduct" := GlobalSalesLineTmp_G."Prepmt Amt to Deduct";
+                        SalesLine_G."Prepmt Amt Deducted" := GlobalSalesLineTmp_G."Prepmt Amt Deducted";
+                        SalesLine_G."Prepayment Line" := GlobalSalesLineTmp_G."Prepayment Line";
+                        SalesLine_G."Prepmt. Amount Inv. Incl. VAT" := GlobalSalesLineTmp_G."Prepmt. Amount Inv. Incl. VAT";
+                        SalesLine_G."Prepmt. Amount Inv. (LCY)" := GlobalSalesLineTmp_G."Prepmt. Amount Inv. (LCY)";
+                        SalesLine_G."IC Partner Code" := GlobalSalesLineTmp_G."IC Partner Code";
+                        SalesLine_G."Prepayment VAT Difference" := GlobalSalesLineTmp_G."Prepayment VAT Difference";
+                        SalesLine_G."Prepmt VAT Diff. to Deduct" := GlobalSalesLineTmp_G."Prepmt VAT Diff. to Deduct";
+                        SalesLine_G."Prepmt VAT Diff. Deducted" := GlobalSalesLineTmp_G."Prepmt VAT Diff. Deducted";
+                        SalesLine_G."Purch. Blanket Order No." := '';
+                        SalesLine_G."Purch. Blanket Order Line No." := 0;
+                        SalesLine_G."Blanket Order No." := '';
+                        SalesLine_G."Blanket Order Line No." := 0;
+
+                        SetNewSeasonID(SalesLine_G,PrevSeasonIDNo_G,PrevCampaignNo_G);
+
+                        SalesLine_G.MODIFY(TRUE);
+                        SalesLineValorisation(SalesLine_G);
+                      END;
+                      (GlobalSalesLineTmp_G."Qty. Shipped (Base)"<>0): BEGIN
+                        TempToInsertSalesLine_L.DELETEALL;
+                        IF (NOT GlobalSalesLineTmp_G."Remainder Update Price") THEN BEGIN
+                          GlobalSalesLineTmp_G."Negotiated Price" := TRUE;
+                          GlobalSalesLineTmp_G."Mutated Price" := TRUE;
+                        END ELSE
+                          GlobalSalesLineTmp_G."Negotiated Price" := FALSE;
+                        TempToInsertSalesLine_L.INIT;
+                        TempToInsertSalesLine_L.TRANSFERFIELDS(GlobalSalesLineTmp_G);
+                        TempToInsertSalesLine_L."Line No." := TempToInsertSalesLine_L."Line No." + 1;
+                        TempToInsertSalesLine_L."No." := GlobalSalesLineTmp_G."Remainder New Item No.";
+                        TempToInsertSalesLine_L."Variant Code" := GlobalSalesLineTmp_G."Remainder New Variant Code";
+                        IF NOT GlobalSalesLineTmp_G."Remainder Update Price" THEN BEGIN
+                          TempToInsertSalesLine_L."Negotiated Price" := TRUE;
+                          TempToInsertSalesLine_L."Mutated Price" := TRUE;
+                        END ELSE
+                          TempToInsertSalesLine_L."Negotiated Price" := FALSE;
+                        TempToInsertSalesLine_L.INSERT;
+                        // --> 20160219-App17-ADV01.01.00-2669-JCD01
+                        {BEFORE
+                        DefalquerSalesLine(SalesLine_G, TempToInsertSalesLine_L,FALSE);
+                        AFTER}
+                        DefalquerSalesLine(SalesLine_G, TempToInsertSalesLine_L,FALSE,FALSE);
+                        // <-- 20160219-App17-ADV01.01.00-2669-JCD01
+
+                      END;
+                    END;
+                    // --> 20150325-APP30-CMC02.02.00-2853-FEC03
+                    {
+                    ReleaseOpen_L.RUN(SalesHeader_G);
+                    }
+                    // <-- 20150325-APP30-CMC02.02.00-2853-FEC03
+                  END;
+                END;
+              END;
+              IF OrderToRelease_L = TRUE THEN BEGIN
+                cduWhseSalesRelease_L.Release(SalesHeader_G);
+                cduLogisticsTourMngt_L.Release(SalesHeader_G);
+              END;
+            // --> 20161020-WI00-ADV01.01.00-3109-JCD01
+            {
+            UNTIL GlobalSalesLineTmp_G.NEXT = 0;
+            }
+            // <-- 20161020-WI00-ADV01.01.00-3109-JCD01
+            GlobalSalesLineTmp_G.SETRANGE("Remainder Process Type", GlobalSalesLineTmp_G."Remainder Process Type"::Cancel);
+            GlobalSalesLineTmp_G.SETFILTER("Prepmt. Line Amount", '<>0');
+
+            LastSalesHeader_L.INIT;
+            IF GlobalSalesLineTmp_G.FINDSET THEN
+              REPEAT
+                GetSalesHeader(GlobalSalesLineTmp_G);
+                IF (SalesHeader_G."Document Type" <> LastSalesHeader_L."Document Type") OR
+                   (LastSalesHeader_L."No." <> SalesHeader_G."No.")
+                THEN BEGIN
+                  LastSalesHeader_L.GET(SalesHeader_G."Document Type", SalesHeader_G."No.");
+                  CLEAR(SalesPostPrep_L);
+                  SalesPostPrep_L.SetCancelSalesLine(TRUE);
+                  SalesHeader_G."Posting Date" := WORKDATE;
+                  SalesHeader_G."Document Date" := WORKDATE;
+                  IF PaymentTerms_L.GET(SalesHeader_G."Payment Terms Code") THEN
+                    SalesHeader_G."Due Date" := CALCDATE(PaymentTerms_L."Due Date Calculation", WORKDATE)
+                  ELSE
+                    SalesHeader_G."Due Date" := WORKDATE;
+                  SalesHeader_G."Prepayment Due Date" := SalesHeader_G."Due Date";
+                  SalesPostPrep_L.CreditMemo(SalesHeader_G);
+                  IF OrderToRelease_L THEN BEGIN
+                    SalesHeader_G.Status := SalesHeader_G.Status::Released;
+                    SalesHeader_G.MODIFY;
+                  END;
+                  SalesLocalLine_L.RESET;
+                  SalesLocalLine_L.SETRANGE("Document Type", SalesHeader_G."Document Type");
+                  SalesLocalLine_L.SETFILTER("Document No.", SalesHeader_G."No.");
+                  SalesLocalLine_L.SETRANGE("Include in Prepmt Cred. Memo", TRUE);
+                  // --> 20171005-WI00-ADV01.01.00-29507-CJY01
+                  {BEFORE
+                  SalesLocalLine_L.DELETEALL;
+                  AFTER}
+                  IF SalesLocalLine_L.FINDSET THEN REPEAT
+                    SalesLocalLine_L.FctSilentPurchOrderTreatLd(TRUE);
+                    SalesLocalLine_L.DELETE(TRUE);
+                  UNTIL SalesLocalLine_L.NEXT = 0;
+                  // <-- 20171005-WI00-ADV01.01.00-29507-CJY01
+                END;
+              UNTIL GlobalSalesLineTmp_G.NEXT = 0;
+
+            LastSalesHeader_L.INIT;
+            GlobalSalesLineTmp_G.SETRANGE("Remainder Process Type", GlobalSalesLineTmp_G."Remainder Process Type"::Cancel);
+            GlobalSalesLineTmp_G.SETRANGE("Prepmt. Line Amount");
+            IF GlobalSalesLineTmp_G.FINDSET THEN
+              REPEAT
+                GetSalesHeader(GlobalSalesLineTmp_G);
+                IF (SalesHeader_G."Document Type" <> LastSalesHeader_L."Document Type") OR
+                  (LastSalesHeader_L."No." <> SalesHeader_G."No.")
+                THEN BEGIN
+                  LastSalesHeader_L.GET(SalesHeader_G."Document Type", SalesHeader_G."No.");
+                  SalesLocalLine_L.RESET;
+                  SalesLocalLine_L.SETRANGE("Document Type", SalesHeader_G."Document Type");
+                  SalesLocalLine_L.SETFILTER("Document No.", SalesHeader_G."No.");
+                  SalesLocalLine_L.SETRANGE("Include in Prepmt Cred. Memo", TRUE); //marqu' pour ligne . annuler
+                  // --> 20171005-WI00-ADV01.01.00-29507-CJY01
+                  {BEFORE
+                  SalesLocalLine_L.DELETEALL;
+                  AFTER}
+                  IF SalesLocalLine_L.FINDSET THEN REPEAT
+                    SalesLocalLine_L.FctSilentPurchOrderTreatLd(TRUE);
+                    SalesLocalLine_L.DELETE(TRUE);
+                  UNTIL SalesLocalLine_L.NEXT = 0;
+                  // <-- 20171005-WI00-ADV01.01.00-29507-CJY01
+                END;
+              UNTIL GlobalSalesLineTmp_G.NEXT = 0;
+
+            // --> 20150325-APP30-CMC02.02.00-2853-FEC04
+            IF TmpSalesHeader_G.FINDSET THEN
+              REPEAT
+                SalesHeader_G.GET(TmpSalesHeader_G."Document Type",TmpSalesHeader_G."No.");
+                DetailedSLMgt_L.InsertDetailedSalesLine(SalesHeader_G,TRUE);
+                ApprovalManagement_L.CancelSalesLineAppReqOnDocRel(SalesHeader_G);
+              UNTIL TmpSalesHeader_G.NEXT = 0;
+            // <-- 20150325-APP30-CMC02.02.00-2853-FEC04
+
+            // --> 20161020-WI00-ADV01.01.00-3109-JCD01
+            {BEFORE
+            GlobalSalesLineTmp_G.RESET;
+            GlobalSalesLineTmp_G.DELETEALL;
+            Win_L.CLOSE;
+            }
+            // <-- 20161020-WI00-ADV01.01.00-3109-JCD01
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      SalesHeader_G@8053002 : Record 36;
+      SalesLine_G@8053001 : Record 37;
+      Currency_G@8053000 : Record 4;
+      GlobalSalesLineTmp_G@8053003 : TEMPORARY Record 37;
+      PurchHeader_G@8053004 : Record 38;
+      TransferHeader_G@8053005 : Record 5740;
+      GlobalTransLineTmp_G@8053006 : TEMPORARY Record 5741;
+      TransferLine_G@8053007 : Record 5741;
+      DocumentDimension_G@1000000000 : Record 357;
+      NewDocumentDimension_G@1000000001 : Record 357;
+      NewDocLineNo_G@8053008 : Integer;
+      CampaignMgt_G@8053009 : Codeunit 8053057;
+      PrevSeasonIDNo_G@8053011 : Integer;
+      PrevCampaignNo_G@8053010 : Code[10];
+      CUPrepaymentMgt_G@8053012 : Codeunit 8053068;
+      TmpSalesHeader_G@8053013 : TEMPORARY Record 36;
+      ItemSub_G@1000000007 : Record 5715;
+      TempItemSub_G@1000000006 : TEMPORARY Record 5715;
+      TempSalesLine_G@1000000005 : TEMPORARY Record 37;
+      Item_G@1000000008 : Record 27;
+      SaveQty_G@1000000004 : Decimal;
+      SaveItemNo_G@1000000003 : Code[20];
+      SaveVariantCode_G@1000000002 : Code[10];
+      OldSalesUOM_G@1000000009 : Code[10];
+      ByItemSubs_G@60000 : Boolean;
+      LeaveOriginalQty_G@60001 : Boolean;
+      TempTransferLine_G@60002 : Record 5741;
+      Text60000@1000000010 : TextConst 'ENU=Transaction cancelled.;FRA=Transaction annul'e.';
+      RecSetup_G@1000000011 : Record 8052982;
+      FromDefalquerSalesLine_G@1000000012 : Boolean;
+      Text60001@60003 : TextConst 'FRA=Impossible d''utiliser la mutation article en cas de constitution kit automatique.';
+
+    PROCEDURE GetSalesHeader@8053012(VAR TempSLine_P@8053000 : TEMPORARY Record 37);
+    BEGIN
+      SalesHeader_G.GET(TempSLine_P."Document Type", TempSLine_P."Document No.");
+      IF SalesHeader_G."Currency Code" = '' THEN
+        Currency_G.InitRoundingPrecision
+      ELSE BEGIN
+        SalesHeader_G.TESTFIELD("Currency Factor");
+        Currency_G.GET(SalesHeader_G."Currency Code");
+        Currency_G.TESTFIELD("Amount Rounding Precision");
+      END;
+    END;
+
+    PROCEDURE GetSalesLine@8053002(VAR TempSLine_P@8053000 : TEMPORARY Record 37);
+    BEGIN
+      SalesLine_G.GET(TempSLine_P."Document Type", TempSLine_P."Document No.", TempSLine_P."Line No.");
+    END;
+
+    PROCEDURE CheckSalesLine@8053005(SalesLine_P@8053000 : Record 37) : Boolean;
+    BEGIN
+      GetSalesLine(SalesLine_P);
+      CASE TRUE OF
+        SalesLine_P."No."<>SalesLine_G."No.",
+        SalesLine_P."Location Code"<>SalesLine_G."Location Code",
+        SalesLine_P."Unit of Measure"<>SalesLine_G."Unit of Measure",
+        SalesLine_P."Quantity (Base)"<>SalesLine_G."Quantity (Base)",
+        SalesLine_P."Outstanding Quantity"<>SalesLine_G."Outstanding Quantity",
+        SalesLine_P."Unit Price"<>SalesLine_G."Unit Price",
+        SalesLine_P."Quantity Invoiced"<>SalesLine_G."Quantity Invoiced":
+          EXIT(FALSE);
+      END;
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE DefalquerSalesLine@8053013(VAR SalesLine_P@8053000 : Record 37;VAR SaleLineBuffer_P@8053001 : TEMPORARY Record 37;CancelLine@8053009 : Boolean;Shipment_P@1000000004 : Boolean);
+    VAR
+      InsertedSalesLine_L@8053003 : Record 37;
+      QtyTotToReallocate_L@8053005 : Decimal;
+      PrepAmntToReallocate_L@8053006 : Decimal;
+      SalesLineBuffTemp_L@8053007 : TEMPORARY Record 37;
+      SalesLineDel_L@8053008 : Record 37;
+      LastLineNo_L@8053010 : Integer;
+      FirstLineNo_L@8053012 : Integer;
+      Salesline_L@8053011 : Record 37;
+      PrixNegToUpdate_L@1000000000 : Boolean;
+      RecItem_L@1000000001 : Record 27;
+      TempQty_L@8053002 : Decimal;
+      CMCSetup_L@8053004 : Record 8052982;
+      CMCSalesDocDiscount_L@8053013 : Record 8053177;
+      CMCInsertedSalesDocDiscount_L@8053014 : Record 8053177;
+      InsertedSalesHeader_L@8053015 : Record 36;
+      SalesCommentLine_L@60001 : Record 44;
+      SalesCommentLine_L2@60000 : Record 44;
+      PreviousLineNo_L@60002 : Integer;
+      "<< 3LI TEXT CONSTANTS >>"@60004 : TextConst;
+      Text600004@60003 : TextConst 'ENU=In Substitution of the item %1;FRA=En substitution de l''article %1';
+      Item_L@60005 : Record 27;
+      NewNetPrice_L@1000000003 : Decimal;
+      NewUnitPrice_L@1000000002 : Decimal;
+      TempFreeSalesLine_L@1000000005 : TEMPORARY Record 37;
+      DecQty_L@1000000006 : Decimal;
+      FreeProductItemCharge_L@1000000007 : Record 37;
+    BEGIN
+      IF NOT SaleLineBuffer_P.FINDFIRST THEN
+        EXIT;
+
+      QtyTotToReallocate_L := 0;
+
+      LastLineNo_L := 0;
+      FirstLineNo_L := SalesLine_P."Line No.";
+
+      // --> 20240719-WI00-ADV01.01.00-3666-IJI01
+      SalesLine_P.SetNoPrepCMtoIssue(TRUE);
+      // <-- 20240719-WI00-ADV01.01.00-3666-IJI01
+
+      Salesline_L.RESET;
+      Salesline_L.SETRANGE("Document Type", SalesLine_P."Document Type");
+      Salesline_L.SETFILTER("Document No.", SalesLine_P."Document No.");
+      Salesline_L.SETFILTER("Line No.",'>%1', SalesLine_P."Line No.");
+      Salesline_L.SETRANGE("RPD Item Attached Line", 0);
+      Salesline_L.SETRANGE("CVO Item Attached Line", 0);
+      Salesline_L.SETRANGE("CVO Corn Item Attached Line", 0);
+      Salesline_L.SETRANGE("Free Item Root Line", 0);
+      // --> 20171213-WI00-ADV01.01.00-3286-FBE01
+      Salesline_L.SETFILTER("Attached to Line No.", '<>%1',SalesLine_P."Line No.");
+      // <-- 20171213-WI00-ADV01.01.00-3286-FBE01
+      IF Salesline_L.FINDFIRST THEN
+        LastLineNo_L := Salesline_L."Line No.";
+      FirstLineNo_L := SalesLine_P."Line No.";
+      CLEAR(SalesLineBuffTemp_L);
+      SalesLineBuffTemp_L.INIT;
+      SalesLineBuffTemp_L.TRANSFERFIELDS(SalesLine_P);
+      SalesLineBuffTemp_L.INSERT;
+      REPEAT
+        // --> 20140717-APP14-TER01.01.00-RMZ01
+        IF (SaleLineBuffer_P."Source Order Line No." = SaleLineBuffer_P."Line No.") AND ByItemSubs_G THEN
+          FirstLineNo_L := SaleLineBuffer_P."Line No."
+        ELSE BEGIN
+        // <-- 20140717-APP14-TER01.01.00-RMZ01
+          IF LastLineNo_L=0 THEN BEGIN
+            Salesline_L.RESET;
+          Salesline_L.SETRANGE("Document Type", SalesLine_P."Document Type");
+          Salesline_L.SETRANGE("Document No.", SalesLine_P."Document No.");
+            Salesline_L.FINDLAST;
+            FirstLineNo_L:=Salesline_L."Line No.";
+            FirstLineNo_L :=FirstLineNo_L +10000;
+          END ELSE BEGIN
+            Salesline_L.RESET;
+          Salesline_L.SETRANGE("Document Type", SalesLine_P."Document Type");
+          Salesline_L.SETRANGE("Document No.", SalesLine_P."Document No.");
+          Salesline_L.SETFILTER("Line No.", '<%1', LastLineNo_L);
+            Salesline_L.FINDLAST;
+            FirstLineNo_L:=Salesline_L."Line No.";
+            FirstLineNo_L := ROUND(( FirstLineNo_L+ LastLineNo_L) / 2, 1);
+            //-->20160518-WI00-ADV01.01.00-3013-VMR01
+            IF Salesline_L.GET(SalesLine_P."Document Type",SalesLine_P."Document No.",FirstLineNo_L) THEN BEGIN
+              Salesline_L.SETRANGE("Line No.");
+              Salesline_L.FINDLAST;
+              FirstLineNo_L:=Salesline_L."Line No."+10000;
+            END;
+            //<--20160518-WI00-ADV01.01.00-3013-VMR01
+          END;
+        END;
+
+        //cr'ation de la nouvelle ligne
+        InsertedSalesLine_L.INIT;
+        InsertedSalesLine_L.SetHideValidationDialog(TRUE);
+        InsertedSalesLine_L.SuspendStatusCheck(TRUE);
+        // --> 20160222-App30-ADV01.01.00-2704-DDS01
+        InsertedSalesLine_L.FromDefalquerSalesLine(FromDefalquerSalesLine_G);
+        // <-- 20160222-App30-ADV01.01.00-2704-DDS01
+
+        // --> 20191209-WI00-ADV01.01.00-3450-MRU01
+        InsertedSalesLine_L.SuspendQuotasMessage(TRUE);
+        // <-- 20191209-WI00-ADV01.01.00-3450-MRU01
+
+        InsertedSalesLine_L."Document Type" := SalesLine_P."Document Type";
+        InsertedSalesLine_L."Document No." := SalesLine_P."Document No.";
+        InsertedSalesLine_L."Line No." := FirstLineNo_L;
+        InsertedSalesLine_L.Type := SalesLine_P.Type;
+        InsertedSalesLine_L."System Created" := TRUE;
+        InsertedSalesLine_L.VALIDATE("No.",SaleLineBuffer_P."No.");
+        InsertedSalesLine_L.VALIDATE("Variant Code",SaleLineBuffer_P."Variant Code");
+        // --> 20140717-TER01.01.00-RMZ01
+        IF ByItemSubs_G THEN
+          InsertedSalesLine_L."Quantity Before Substitution" := SaleLineBuffer_P."Quantity Before Substitution";
+        // <-- 20140717-TER01.01.00-RMZ01
+        IF SaleLineBuffer_P."Remainder Process Type" <> SaleLineBuffer_P."Remainder Process Type"::"Change Item" THEN BEGIN
+          InsertedSalesLine_L.VALIDATE("Location Code", SaleLineBuffer_P."Remainder New Location Code");
+          IF InsertedSalesLine_L."Location Code" = '' THEN
+            InsertedSalesLine_L.VALIDATE("Location Code", SaleLineBuffer_P."Location Code");
+        END;
+        // --> 20170907-LogA07-SCT00.00.00-3288-NED
+        IF SaleLineBuffer_P."Remainder New Location Code" <> '' THEN
+          InsertedSalesLine_L."Splited Line" := TRUE;
+        // <-- 20170907-LogA07-SCT00.00.00-3288-NED
+        TempQty_L := SaleLineBuffer_P."Qty to Reallocate";
+        CheckSalesReallocateQty(SaleLineBuffer_P, SaleLineBuffer_P."Remainder Qty Rounding Method");
+        // --> 20151125-APP28-TER01.01.00-2500-JCD01
+        InsertedSalesLine_L.SkipShowMix(TRUE);
+        // <-- 20151125-APP28-TER01.01.00-2500-JCD01
+        InsertedSalesLine_L.VALIDATE(Quantity, SaleLineBuffer_P."Qty to Reallocate");
+        SaleLineBuffer_P."Qty to Reallocate" := TempQty_L;
+        IF SaleLineBuffer_P."Remainder New Item No."<>'' THEN
+          InsertedSalesLine_L.VALIDATE("Unit of Measure",SalesLine_P."Unit of Measure");
+
+        // --> 20150123-APP14-TER01.01.00-SDE01
+        NewNetPrice_L:=InsertedSalesLine_L."Net Unit Price";
+        NewUnitPrice_L:=InsertedSalesLine_L."Unit Price";
+        // <-- 20150123-APP14-TER01.01.00-SDE01
+
+        IF NOT SaleLineBuffer_P."Remainder Update Price" THEN  BEGIN
+          InsertedSalesLine_L.VALIDATE("Unit Price",SaleLineBuffer_P."Unit Price");
+          InsertedSalesLine_L."Allow Line Disc." := SaleLineBuffer_P."Allow Line Disc.";
+          InsertedSalesLine_L.VALIDATE("Line Discount %",SalesLine_P."Line Discount %");
+          InsertedSalesLine_L."Include in Prepmt Cred. Memo" := CancelLine; // marque la ligne . supprimer
+          InsertedSalesLine_L."Line Amount" := ROUND(SalesLine_P."Line Amount" * (SaleLineBuffer_P."Qty to Reallocate" /
+            SalesLine_P.Quantity), Currency_G."Amount Rounding Precision");
+          InsertedSalesLine_L."Price Anomaly" := SalesLine_P."Price Anomaly";
+          InsertedSalesLine_L."Anomaly Approved" := SalesLine_P."Anomaly Approved";
+        END;
+
+        InsertedSalesLine_L.VALIDATE("Negotiated Price", SaleLineBuffer_P."Negotiated Price");
+        InsertedSalesLine_L.VALIDATE("Mutated Price", SaleLineBuffer_P."Mutated Price");
+
+        // --> 20150123-APP14-TER01.01.00-SDE01
+        IF InsertedSalesLine_L."Negotiated Price" AND  ByItemSubs_G
+        THEN BEGIN
+          IF IsRexDiscount(SalesLineBuffTemp_L)  THEN
+            InsertedSalesLine_L.VALIDATE("Net Unit Price", SaleLineBuffer_P."Net Unit Price")
+          ELSE BEGIN
+            InsertedSalesLine_L.VALIDATE("Unit Price",NewUnitPrice_L);
+            InsertedSalesLine_L.VALIDATE("Net Unit Price", NewNetPrice_L);
+
+          END;
+
+        END ELSE
+        // <-- 20150123-APP14-TER01.01.00-SDE01
+        IF InsertedSalesLine_L."Negotiated Price" THEN
+          InsertedSalesLine_L.VALIDATE("Net Unit Price", SaleLineBuffer_P."Net Unit Price");
+        InsertedSalesLine_L."Expected Prepayment %" := SalesLine_P."Expected Prepayment %";
+        IF SalesLine_P."Shortcut Dimension 1 Code" <> '' THEN
+          InsertedSalesLine_L."Shortcut Dimension 1 Code" := SalesLine_P."Shortcut Dimension 1 Code";
+        CMCSetup_L.GET;
+        IF CMCSetup_L."Activate Season" THEN BEGIN
+          // --> 20160219-App17-ADV01.01.00-2669-JCD01
+          {
+          //BEFORE
+          InsertedSalesLine_L.VALIDATE("Due Pivot Date Gap", SalesLine_P."Due Pivot Date Gap");
+          //AFTER
+          }
+          IF Shipment_P = TRUE THEN BEGIN
+            InsertedSalesLine_L."Due Pivot Date Gap" := SalesLine_P."Due Pivot Date Gap";
+          END ELSE
+          // --> 20160222-App30-ADV01.01.00-2704-DDS01
+          IF NOT FromDefalquerSalesLine_G THEN
+          // <-- 20160222-App30-ADV01.01.00-2704-DDS01
+            InsertedSalesLine_L.VALIDATE("Due Pivot Date Gap", SalesLine_P."Due Pivot Date Gap");
+          // <-- 20160219-App17-ADV01.01.00-2669-JCD01
+          InsertedSalesLine_L."Due Date" := SalesLine_P."Due Date";
+          InsertedSalesLine_L."Season ID No." := SalesLine_P."Season ID No.";
+        END ELSE
+          InsertedSalesLine_L.VALIDATE("Due Date", SalesLine_P."Due Date");
+        InsertedSalesLine_L."Shipment Method Code" := SalesLine_P."Shipment Method Code";
+        InsertedSalesLine_L."CMC Campaign No." := SalesLine_P."CMC Campaign No.";
+        CMCSalesDocDiscount_L.RESET;
+        CMCSalesDocDiscount_L.SETRANGE("Document Type", SalesLine_P."Document Type");
+        CMCSalesDocDiscount_L.SETRANGE("Document No.", SalesLine_P."Document No.");
+        CMCSalesDocDiscount_L.SETRANGE("Document Line No.", SalesLine_P."Line No.");
+        IF CMCSalesDocDiscount_L.FINDSET THEN
+          REPEAT
+            // --> 20140730-TER01.01.00-RMZ01
+            IF (NOT ByItemSubs_G) OR (ByItemSubs_G AND (SalesLine_P."Line No." <>  InsertedSalesLine_L."Line No.")) THEN BEGIN
+            // <-- 20140730-TER01.01.00-RMZ01
+              CMCInsertedSalesDocDiscount_L.INIT;
+              CMCInsertedSalesDocDiscount_L.TRANSFERFIELDS(CMCSalesDocDiscount_L);
+              CMCInsertedSalesDocDiscount_L."Document Type" := InsertedSalesLine_L."Document Type";
+              CMCInsertedSalesDocDiscount_L."Document No." := InsertedSalesLine_L."Document No.";
+              CMCInsertedSalesDocDiscount_L."Document Line No." := InsertedSalesLine_L."Line No.";
+              CMCInsertedSalesDocDiscount_L.INSERT;
+            END;
+          UNTIL CMCSalesDocDiscount_L.NEXT = 0;
+
+        QtyTotToReallocate_L += SaleLineBuffer_P."Qty to Reallocate";
+        IF SaleLineBuffer_P."Linked Order No." <> '' THEN BEGIN
+          InsertedSalesLine_L."Linked Order No.":= SaleLineBuffer_P."Linked Order No.";
+          InsertedSalesLine_L."Linked Order Line No.":= SaleLineBuffer_P."Linked Order Line No.";
+          InsertedSalesLine_L."Linked Quantity":= SaleLineBuffer_P."Linked Quantity";
+          InsertedSalesLine_L."Blanket Order No.":= SaleLineBuffer_P."Blanket Order No.";
+          InsertedSalesLine_L."Blanket Order Line No.":= SaleLineBuffer_P."Blanket Order Line No.";
+        END;
+        IF SalesLine_P."Prepmt. Line Amount" <> 0 THEN BEGIN
+          IF QtyTotToReallocate_L>SalesLine_P.Quantity THEN
+            SaleLineBuffer_P."Qty to Reallocate" := SaleLineBuffer_P."Qty to Reallocate"-(QtyTotToReallocate_L-SalesLine_P.Quantity);
+          InsertedSalesLine_L.VALIDATE("Prepayment %", SalesLine_P."Prepayment %");
+          InsertedSalesLine_L."Prepmt. Line Amount" := ROUND(SalesLine_P."Prepmt. Line Amount" * (SaleLineBuffer_P."Qty to Reallocate" /
+            SalesLine_P.Quantity), Currency_G."Amount Rounding Precision");
+          InsertedSalesLine_L."Prepmt. Amt. Inv." := ROUND(SalesLine_P."Prepmt. Amt. Inv." * (SaleLineBuffer_P."Qty to Reallocate" /
+            SalesLine_P.Quantity), Currency_G."Amount Rounding Precision");
+
+          InsertedSalesLine_L."Prepmt. Amt. Incl. VAT" := ROUND(SalesLine_P."Prepmt. Amt. Incl. VAT" * (
+            SaleLineBuffer_P."Qty to Reallocate"/ SalesLine_P.Quantity),Currency_G."Amount Rounding Precision");
+
+          InsertedSalesLine_L."Prepayment Amount" := ROUND(SalesLine_P."Prepayment Amount" * (SaleLineBuffer_P."Qty to Reallocate" /
+            SalesLine_P.Quantity), Currency_G."Amount Rounding Precision");
+
+          InsertedSalesLine_L."Prepmt. VAT Base Amt." := ROUND(SalesLine_P."Prepmt. VAT Base Amt." * (
+            SaleLineBuffer_P."Qty to Reallocate" / SalesLine_P.Quantity), Currency_G."Amount Rounding Precision");
+
+          InsertedSalesLine_L."Prepayment VAT %" := SalesLine_P."Prepayment VAT %";
+          InsertedSalesLine_L."Prepmt. VAT Calc. Type" := SalesLine_P."Prepmt. VAT Calc. Type";
+          InsertedSalesLine_L."Prepayment VAT Identifier" := SalesLine_P."Prepayment VAT Identifier";
+          InsertedSalesLine_L."Prepayment Tax Area Code" := SalesLine_P."Prepayment Tax Area Code";
+          InsertedSalesLine_L."Prepayment Tax Liable" := SalesLine_P."Prepayment Tax Liable";
+          InsertedSalesLine_L."Prepayment Tax Group Code" := SalesLine_P."Prepayment Tax Group Code";
+          InsertedSalesLine_L."Prepmt Amt to Deduct" := ROUND(SalesLine_P."Prepmt Amt to Deduct" *
+            (SaleLineBuffer_P."Qty to Reallocate" / SalesLine_P.Quantity), Currency_G."Amount Rounding Precision");
+
+          InsertedSalesLine_L."Prepmt Amt Deducted" := ROUND(SalesLine_P."Prepmt Amt Deducted"*
+            (SaleLineBuffer_P."Qty to Reallocate"/SalesLine_P.Quantity), Currency_G."Amount Rounding Precision");
+
+          InsertedSalesLine_L."Prepayment Line" := SalesLine_P."Prepayment Line";
+          InsertedSalesLine_L."Prepmt. Amount Inv. Incl. VAT" := ROUND(SalesLine_P."Prepmt. Amount Inv. Incl. VAT" * (
+            SaleLineBuffer_P."Qty to Reallocate" / SalesLine_P.Quantity), Currency_G."Amount Rounding Precision");
+
+          InsertedSalesLine_L."Prepmt. Amount Inv. (LCY)" := ROUND(SalesLine_P."Prepmt. Amount Inv. (LCY)" * (
+            SaleLineBuffer_P."Qty to Reallocate" / SalesLine_P.Quantity), Currency_G."Amount Rounding Precision");
+
+          InsertedSalesLine_L."Prepayment VAT Difference" := ROUND(SalesLine_P."Prepayment VAT Difference" * (
+            SaleLineBuffer_P."Qty to Reallocate" / SalesLine_P.Quantity), Currency_G."Amount Rounding Precision");
+
+          InsertedSalesLine_L."Prepmt VAT Diff. to Deduct" := ROUND(SalesLine_P."Prepmt VAT Diff. to Deduct" * (
+            SaleLineBuffer_P."Qty to Reallocate" / SalesLine_P.Quantity), Currency_G."Amount Rounding Precision");
+
+          InsertedSalesLine_L."Prepmt VAT Diff. Deducted" := ROUND(SalesLine_P."Prepmt VAT Diff. Deducted"*(
+            SaleLineBuffer_P."Qty to Reallocate" / SalesLine_P.Quantity), Currency_G."Amount Rounding Precision");
+
+          SalesLineBuffTemp_L."Prepmt. Line Amount" -= InsertedSalesLine_L."Prepmt. Line Amount";
+          SalesLineBuffTemp_L."Prepmt. Amt. Inv." -= InsertedSalesLine_L."Prepmt. Amt. Inv.";
+          SalesLineBuffTemp_L."Prepmt. Amt. Incl. VAT" -= InsertedSalesLine_L."Prepmt. Amt. Incl. VAT";
+          SalesLineBuffTemp_L."Prepayment Amount" -= InsertedSalesLine_L."Prepayment Amount";
+          SalesLineBuffTemp_L."Prepmt. VAT Base Amt." -= InsertedSalesLine_L."Prepmt. VAT Base Amt.";
+          SalesLineBuffTemp_L."Prepmt Amt to Deduct" -= InsertedSalesLine_L."Prepmt Amt to Deduct";
+          SalesLineBuffTemp_L."Prepmt Amt Deducted" -= InsertedSalesLine_L."Prepmt Amt Deducted";
+          SalesLineBuffTemp_L."Prepmt. Amount Inv. Incl. VAT" -= InsertedSalesLine_L."Prepmt. Amount Inv. Incl. VAT";
+          SalesLineBuffTemp_L."Prepmt. Amount Inv. (LCY)" -= InsertedSalesLine_L."Prepmt. Amount Inv. (LCY)";
+          SalesLineBuffTemp_L."Prepayment VAT Difference" -= InsertedSalesLine_L."Prepayment VAT Difference";
+          SalesLineBuffTemp_L."Prepmt VAT Diff. to Deduct" -=  InsertedSalesLine_L."Prepmt VAT Diff. to Deduct";
+          SalesLineBuffTemp_L."Prepmt VAT Diff. Deducted" -= InsertedSalesLine_L."Prepmt VAT Diff. Deducted";
+        END;
+
+        InsertedSalesLine_L."Cancel Remaining Qty" := SalesLine_P."Cancel Remaining Qty";
+        InsertedSalesLine_L."Source Order No." := SalesLine_P."Document No.";
+        InsertedSalesLine_L."Source Order Line No." := SalesLine_P."Line No.";
+        //--> 20150107-APP14-TER01.01.00-PDC01
+        InsertedSalesLine_L."ECD Unit Amount" := SalesLine_P."ECD Unit Amount";
+        InsertedSalesLine_L."Budgeted Unit Price":=SalesLine_P."Budgeted Unit Price";
+        InsertedSalesLine_L."Budgeted Unit Price (Sales)":=SalesLine_P."Budgeted Unit Price (Sales)";
+        // --> 20150827-APP14-TER01.01.00-2163-SDE01
+        //InsertedSalesLine_L."ECD Calculation Priority":=InsertedSalesLine_L."ECD Calculation Priority"::"Budgeted Unit Price";
+        InsertedSalesLine_L."ECD Calculation Priority":=SalesLine_P."ECD Calculation Priority";
+        // <-- 20150827-APP14-TER01.01.00-2163-SDE01
+        // --> 20180411-WI00-ADV01.01.00-26359-NED
+        {
+        InsertedSalesLine_L."Customer Price Group":=InsertedSalesLine_L."Customer Price Group";
+        InsertedSalesLine_L."Customer Disc. Group":=InsertedSalesLine_L."Customer Disc. Group";
+        InsertedSalesLine_L."Shipment Method Code":=InsertedSalesLine_L."Shipment Method Code";
+        }
+        InsertedSalesLine_L."Customer Price Group" := SalesLine_P."Customer Price Group";
+        InsertedSalesLine_L."Customer Disc. Group" := SalesLine_P."Customer Disc. Group";
+        InsertedSalesLine_L."Shipment Method Code" := SalesLine_P."Shipment Method Code";
+        InsertedSalesLine_L."Market Price" := SalesLine_P."Market Price";
+        InsertedSalesLine_L."Item Season Code" := SalesLine_P."Item Season Code";
+        // <-- 20180411-WI00-ADV01.01.00-26359-NED
+        //<-- 20150107-APP14-TER01.01.00-PDC01
+
+        // --> 20140717-TER01.01.00-RMZ01
+        IF ByItemSubs_G THEN
+          //--> 20140807-APP14-TER01.01.00-PDC01
+          IF SalesLine_P."Originally Ordered No."<>'' THEN BEGIN
+            InsertedSalesLine_L."Originally Ordered No." := SalesLine_P."Originally Ordered No.";
+            InsertedSalesLine_L."Originally Ordered Var. Code" := SalesLine_P."Originally Ordered Var. Code";
+            InsertedSalesLine_L."Quantity Before Substitution" := SalesLine_P."Quantity Before Substitution";
+          END ELSE BEGIN
+          //<-- 20140807-APP14-TER01.01.00-PDC01
+            InsertedSalesLine_L."Originally Ordered No." := SalesLine_P."No.";
+            InsertedSalesLine_L."Originally Ordered Var. Code" := SalesLine_P."Variant Code";
+            //--> 20140807-APP14-TER01.01.00-PDC01
+            //BEFORE
+            //InsertedSalesLine_L."Quantity Before Substitution" := SalesLineBuffTemp_L.Quantity;
+            //AFTER
+            InsertedSalesLine_L."Quantity Before Substitution" := SalesLine_P.Quantity;
+            //<-- 20140807-APP14-TER01.01.00-PDC01
+          END;
+        // <-- 20140717-TER01.01.00-RMZ01
+        IF (SaleLineBuffer_P."Remainder Process Type" = SaleLineBuffer_P."Remainder Process Type"::"Change Item") AND
+           (SaleLineBuffer_P."Remainder Update Price" = FALSE) THEN BEGIN
+        END ELSE BEGIN
+          InsertedSalesLine_L."Valued From Doc. Type" := InsertedSalesLine_L."Valued From Doc. Type"::Order;
+          InsertedSalesLine_L."Valued From Doc. No." := SalesLine_P."Document No.";
+          InsertedSalesLine_L."Valued From Doc. Line No." := SalesLine_P."Line No.";
+        END;
+
+        InsertedSalesHeader_L.GET(InsertedSalesLine_L."Document Type", InsertedSalesLine_L."Document No.");
+        // --> 20260513-WI00-ADV01.01.00-44552-CJY01
+        //InsertedSalesLine_L.Status := InsertedSalesHeader_L.Status;
+        // <-- 20260513-WI00-ADV01.01.00-44552-CJY01
+        InsertedSalesLine_L."Document Status" := InsertedSalesHeader_L.Status;
+        // --> 20161122-WI00-ADV01.01.00-3109-JCD01
+        {BEFORE
+        SetNewSeasonID(InsertedSalesLine_L,PrevSeasonIDNo_G,PrevCampaignNo_G);
+        AFTER}
+        IF NOT FromDefalquerSalesLine_G THEN
+          SetNewSeasonID(InsertedSalesLine_L,PrevSeasonIDNo_G,PrevCampaignNo_G);
+        // <-- 20161122-WI00-ADV01.01.00-3109-JCD01
+
+
+        // --> 20140717-TER01.01.00-RMZ01
+        IF (SaleLineBuffer_P."Source Order Line No." = SaleLineBuffer_P."Line No.") AND ByItemSubs_G THEN BEGIN
+          InsertedSalesLine_L.MODIFY;
+          SalesLine_P.GET(InsertedSalesLine_L."Document Type",InsertedSalesLine_L."Document No.",InsertedSalesLine_L."Line No.");
+        END
+        ELSE BEGIN
+        // <-- 20140717-TER01.01.00-RMZ01
+          InsertedSalesLine_L.INSERT(TRUE);
+        // --> 20171213-WI00-ADV01.01.00-3286-FBE01
+        IF SaleLineBuffer_P."Remainder New Location Code" <> '' THEN
+          UpdSalesLineKitTrackingSpec(InsertedSalesLine_L,SalesLine_P);
+        // <-- 20171213-WI00-ADV01.01.00-3286-FBE01
+
+        // --> CMC-8052300/125|903405-NED
+        SalesHeader_G.RecreateReservEntry(SalesLine_P,0,TRUE);
+        SalesHeader_G.RecreateReservEntry(SalesLine_P,InsertedSalesLine_L."Line No.",FALSE);
+        // <-- CMC-8052300/125|903405-NED
+
+          // --> 20140717-TER01.01.00-RMZ01
+          // --> 20160517-Wi00-ADV01.01.00-2986-JCD01 Charge ligne gratuite
+          IF (SalesLine_P.Type = SalesLine_P.Type::Item) THEN
+            IF Item_L.GET(SalesLine_P."No.") THEN
+              IF Item_L."Allow Free Product" <> Item_L."Allow Free Product"::No THEN BEGIN
+                Salesline_L.RESET;
+                Salesline_L.SETRANGE("Document Type",SalesLine_P."Document Type");
+                Salesline_L.SETRANGE("Document No.",SalesLine_P."Document No.");
+                Salesline_L.SETRANGE(Type,Salesline_L.Type::"Charge (Item)");
+                Salesline_L.SETRANGE("Free Item Root Line",SalesLine_P."Line No.");
+                IF Salesline_L.FINDSET(FALSE,FALSE) THEN BEGIN
+                  //MAJ ligne gratuit de ligne 'clat'e
+                  DecQty_L := ROUND(Salesline_L."Free Item Qty Per"*SalesLine_P.Quantity,0.00001);
+                  IF ABS(DecQty_L) > ABS(Salesline_L."Quantity Shipped") THEN
+                    Salesline_L.VALIDATE(Quantity,DecQty_L)
+                  ELSE
+                    Salesline_L.VALIDATE(Quantity,Salesline_L."Quantity Shipped");
+                  DecQty_L := ROUND(Salesline_L."Free Item Qty Per"*SalesLine_P."Qty. to Ship",0.00001);
+                  IF ABS(DecQty_L) < ABS(Salesline_L."Outstanding Quantity") THEN
+                    Salesline_L.VALIDATE("Qty. to Ship",DecQty_L)
+                  ELSE
+                    Salesline_L.VALIDATE("Qty. to Ship",0);
+                  Salesline_L.UpdateICAssignment;
+                  Salesline_L.MODIFY;
+                  TempFreeSalesLine_L.COPY(Salesline_L);
+                  //Creation ligne produit gratuit sur la ligne 'clat'e
+                  InsertedSalesLine_L.CreateFreeProductLine;
+                  //MAJ quantit' ligne produit gratuit sur la ligne 'clat'e
+                  Salesline_L.SETRANGE("Free Item Root Line",InsertedSalesLine_L."Line No.");
+                  IF Salesline_L.FINDSET THEN BEGIN
+                    Salesline_L."Free Item Qty Per" := TempFreeSalesLine_L."Free Item Qty Per";
+                    DecQty_L := ROUND(TempFreeSalesLine_L."Free Item Qty Per" * InsertedSalesLine_L.Quantity,0.00001);
+                    Salesline_L.VALIDATE(Quantity,DecQty_L);
+                    DecQty_L := ROUND(TempFreeSalesLine_L."Free Item Qty Per" * InsertedSalesLine_L."Qty. to Ship",0.00001);
+                    Salesline_L.VALIDATE("Qty. to Ship",DecQty_L);
+                    Salesline_L.UpdateICAssignment;
+                    Salesline_L.MODIFY(TRUE);
+                  END;
+                END;
+              END;
+          // <-- 20160517-Wi00-ADV01.01.00-2986-JCD01
+          CLEAR(SalesCommentLine_L);
+          SalesCommentLine_L.SETRANGE("Document Type",SalesLine_P."Document Type");
+          SalesCommentLine_L.SETRANGE("No.",SalesLine_P."Document No.");
+          SalesCommentLine_L.SETRANGE("Document Line No.",SalesLine_P."Line No.");
+          IF SalesCommentLine_L.FINDFIRST THEN
+            REPEAT
+              CLEAR(SalesCommentLine_L2);
+              SalesCommentLine_L2.TRANSFERFIELDS(SalesCommentLine_L);
+              SalesCommentLine_L2."Document Line No." := InsertedSalesLine_L."Line No.";
+              SalesCommentLine_L2.INSERT;
+            UNTIL SalesCommentLine_L.NEXT = 0;
+        END;
+        // <-- 20140717-TER01.01.00-RMZ01
+
+        IF SaleLineBuffer_P."Remainder Process Type" = SaleLineBuffer_P."Remainder Process Type"::"Change Item" THEN
+          SalesLineValorisation(InsertedSalesLine_L);
+
+        DocumentDimension_G.RESET;
+        DocumentDimension_G.SETRANGE("Table ID",37);
+        DocumentDimension_G.SETRANGE("Document Type", SalesLine_P."Document Type");
+        DocumentDimension_G.SETRANGE("Document No.", SalesLine_P."Document No.");
+        DocumentDimension_G.SETRANGE("Line No.", SalesLine_P."Line No.");
+        IF DocumentDimension_G.FINDSET THEN
+          REPEAT
+            NewDocumentDimension_G := DocumentDimension_G;
+            NewDocumentDimension_G."Line No." := InsertedSalesLine_L."Line No.";
+            IF NOT NewDocumentDimension_G.INSERT(TRUE) THEN
+              NewDocumentDimension_G.MODIFY(TRUE);
+          UNTIL DocumentDimension_G.NEXT = 0;
+        // --> 20140730-TER01.01.00-RMZ01
+        // -------------------------------------------------------------------------------------------------------
+        // now inserting the aditional line for the item
+        // -------------------------------------------------------------------------------------------------------
+        IF ByItemSubs_G THEN BEGIN
+          PreviousLineNo_L := InsertedSalesLine_L."Line No.";
+          IF LastLineNo_L=0 THEN BEGIN
+            Salesline_L.RESET;
+            Salesline_L.SETRANGE(Salesline_L."Document Type",SalesLine_P."Document Type");
+            Salesline_L.SETRANGE(Salesline_L."Document No.",SalesLine_P."Document No.");
+            Salesline_L.FINDLAST;
+            FirstLineNo_L:=Salesline_L."Line No.";
+            FirstLineNo_L :=FirstLineNo_L +10000;
+          END ELSE BEGIN
+            Salesline_L.RESET;
+            Salesline_L.SETRANGE(Salesline_L."Document Type",SalesLine_P."Document Type");
+            Salesline_L.SETRANGE(Salesline_L."Document No.",SalesLine_P."Document No.");
+            Salesline_L.SETFILTER(Salesline_L."Line No.",'<%1',LastLineNo_L);
+            Salesline_L.FINDLAST;
+            FirstLineNo_L:=Salesline_L."Line No.";
+            FirstLineNo_L := ROUND(( FirstLineNo_L+ LastLineNo_L) / 2, 1);
+            //-->20160518-WI00-ADV01.01.00-3013-VMR01
+            IF Salesline_L.GET(SalesLine_P."Document Type",SalesLine_P."Document No.",FirstLineNo_L) THEN BEGIN
+              Salesline_L.SETRANGE("Line No.");
+              Salesline_L.FINDLAST;
+              FirstLineNo_L:=Salesline_L."Line No."+10000;
+            END;
+            //<--20160518-WI00-ADV01.01.00-3013-VMR01
+          END;
+          InsertedSalesLine_L.INIT;
+          InsertedSalesLine_L."Document Type" := SalesLine_P."Document Type";
+          InsertedSalesLine_L."Document No." := SalesLine_P."Document No.";
+          InsertedSalesLine_L."Line No." := FirstLineNo_L;
+          InsertedSalesLine_L."Attached to Line No." := PreviousLineNo_L;
+          //--> 20140807-APP14-TER01.01.00-PDC01
+          //BEFORE
+          //InsertedSalesLine_L.Description := COPYSTR(STRSUBSTNO(Text600004,SalesLine_P."No.")
+          //              + ' ' + SalesLine_P.Description,1,50);
+          //AFTER
+          IF NOT Item_L.GET(SalesLine_P."Originally Ordered No.") THEN
+            Item_L.GET(SalesLine_P."No.");
+          InsertedSalesLine_L.Description := COPYSTR(STRSUBSTNO(Text600004,Item_L."No.")
+                        + ' ' + Item_L.Description,1,50);
+          //<-- 20140807-APP14-TER01.01.00-PDC01
+          InsertedSalesLine_L.INSERT;
+        END;
+        // <-- 20140730-TER01.01.00-RMZ01
+        // -------------------------------------------------------------------------------------------------------
+        // end of aditional line
+        // -------------------------------------------------------------------------------------------------------
+
+        IF LastLineNo_L>0 THEN BEGIN
+          Salesline_L.RESET;
+          Salesline_L.SETRANGE("Document Type", SalesLine_P."Document Type");
+          Salesline_L.SETFILTER("Document No.", SalesLine_P."Document No.");
+          Salesline_L.SETFILTER("Line No.", '<%1', LastLineNo_L);
+          IF Salesline_L.FINDLAST THEN
+            FirstLineNo_L := Salesline_L."Line No.";
+        END;
+      UNTIL SaleLineBuffer_P.NEXT = 0;
+
+      SalesLine_P.AllowModWithPrep(TRUE);
+      SalesLine_P.SetHideValidationDialog(TRUE);
+      SalesLine_P.SuspendStatusCheck(TRUE);
+
+      SalesLine_P."Prepmt. Line Amount" := SalesLineBuffTemp_L."Prepmt. Line Amount";
+      SalesLine_P."Prepmt. Amt. Inv." := SalesLineBuffTemp_L."Prepmt. Amt. Inv.";
+      SalesLine_P."Prepmt. Amt. Incl. VAT" := SalesLineBuffTemp_L."Prepmt. Amt. Incl. VAT";
+      SalesLine_P."Prepayment Amount" := SalesLineBuffTemp_L."Prepayment Amount";
+      SalesLine_P."Prepmt. VAT Base Amt." := SalesLineBuffTemp_L."Prepmt. VAT Base Amt.";
+      SalesLine_P."Prepmt Amt to Deduct" := SalesLineBuffTemp_L."Prepmt Amt to Deduct";
+      SalesLine_P."Prepmt Amt Deducted" := SalesLineBuffTemp_L."Prepmt Amt Deducted";
+      SalesLine_P."Prepmt. Amount Inv. Incl. VAT" := SalesLineBuffTemp_L."Prepmt. Amount Inv. Incl. VAT";
+      SalesLine_P."Prepmt. Amount Inv. (LCY)" := SalesLineBuffTemp_L."Prepmt. Amount Inv. (LCY)";
+      SalesLine_P."Prepayment VAT Difference" := SalesLineBuffTemp_L."Prepayment VAT Difference";
+      SalesLine_P."Prepmt VAT Diff. to Deduct" :=  SalesLineBuffTemp_L."Prepmt VAT Diff. to Deduct";
+      SalesLine_P."Prepmt VAT Diff. Deducted" := SalesLineBuffTemp_L."Prepmt VAT Diff. Deducted";
+      SalesLine_P.SystemModLinek(TRUE);
+
+      SalesLine_P.UpdateQtyFromWhse(TRUE);
+
+      // --> 20140717-TER01.01.00-RMZ01
+      IF NOT ByItemSubs_G THEN BEGIN
+      // <-- 20140717-TER01.01.00-RMZ01
+        // --> 20160308-App30-ADV01.01.00-2824-DDS01
+        SalesLine_P.FromDefalquerSalesLine(TRUE);
+        SalesLine_P.SkipShowMix(TRUE);
+        // <-- 20160308-App30-ADV01.01.00-2824-DDS01
+        IF (SalesLine_P.Quantity - QtyTotToReallocate_L) >= 0 THEN BEGIN
+          SalesLine_P.VALIDATE(Quantity, SalesLine_P.Quantity - QtyTotToReallocate_L);
+                // Revalidation du prix unitaire net car perdu dans l'appel de la fonction UpdateUnitPrice
+          SalesLine_P.VALIDATE("Net Unit Price",SalesLineBuffTemp_L."Net Unit Price");
+        END ELSE
+          SalesLine_P.VALIDATE(Quantity, 0);
+        // --> 20160727-Wi00-ADV01.01.00-20878-OAN01
+        // Sold Free Product Item Charge
+        FreeProductItemCharge_L.SETRANGE("Document Type",SalesLine_P."Document Type");
+        FreeProductItemCharge_L.SETRANGE("Document No.",SalesLine_P."Document No.");
+        FreeProductItemCharge_L.SETRANGE("Free Item Root Line",SalesLine_P."Line No.");
+        IF FreeProductItemCharge_L.FINDSET(TRUE,FALSE) THEN REPEAT
+          // Sold Free Product Item Charge
+          FreeProductItemCharge_L.VALIDATE(Quantity,FreeProductItemCharge_L."Quantity Shipped");
+          FreeProductItemCharge_L.MODIFY(TRUE);
+        UNTIL FreeProductItemCharge_L.NEXT = 0;
+        // <-- 20160727-Wi00-ADV01.01.00-20878-OAN01
+      END;
+
+      SalesLine_P.MODIFY(TRUE);
+      IF CancelLine = TRUE THEN BEGIN
+        CancelPurchDSOrderLines(SalesLine_P);
+        InsertedSalesLine_L."Drop Shipment" := FALSE;
+        // --> 20171005-WI00-ADV01.01.00-29507-CJY01
+        InsertedSalesLine_L.FctSilentPurchOrderTreatLd(TRUE);
+        // <-- 20171005-WI00-ADV01.01.00-29507-CJY01
+        IF InsertedSalesLine_L."Prepmt. Line Amount" = 0 THEN
+          InsertedSalesLine_L.DELETE(TRUE);
+      END;
+      SalesLine_P.GET(SalesLine_P."Document Type", SalesLine_P."Document No.", SalesLine_P."Line No.");
+      // --> 20171005-WI00-ADV01.01.00-29507-CJY01
+      SalesLine_P.FctSilentPurchOrderTreatLd(TRUE);
+      // <-- 20171005-WI00-ADV01.01.00-29507-CJY01
+
+      IF SalesLine_P.Quantity <> 0 THEN
+        SalesLine_P.MODIFY(TRUE)
+      ELSE
+        SalesLine_P.DELETE(TRUE);
+
+      NewDocLineNo_G := InsertedSalesLine_L."Line No.";
+    END;
+
+    PROCEDURE GetLineNoInterval@8053006(SalesLine_P@8053000 : Record 37) : Integer;
+    VAR
+      Salesline_L@8053001 : Record 37;
+    BEGIN
+      Salesline_L.RESET;
+      Salesline_L.SETRANGE("Document Type", SalesLine_P."Document Type");
+      Salesline_L.SETFILTER("Document No.", SalesLine_P."Document No.");
+      Salesline_L.SETFILTER("Line No.", '>%1', SalesLine_P."Line No.");
+      IF Salesline_L.FINDFIRST THEN
+       EXIT(Salesline_L."Line No." - SalesLine_P."Line No.")
+      ELSE
+       EXIT(10000);
+    END;
+
+    PROCEDURE SetTempLines@8053001(VAR TempSalesLine_P@8053000 : TEMPORARY Record 37);
+    BEGIN
+      IF TempSalesLine_P.FINDSET THEN
+        REPEAT
+          GlobalSalesLineTmp_G.INIT;
+          GlobalSalesLineTmp_G.TRANSFERFIELDS(TempSalesLine_P);
+          GlobalSalesLineTmp_G.INSERT;
+        UNTIL TempSalesLine_P.NEXT = 0;
+    END;
+
+    PROCEDURE CreateVariantDetail@8053000(WheShipmentHeader_P@8053000 : Record 7320;LineNoToControl_P@1000000000 : Integer);
+    VAR
+      WheShipmentLine_L@8053001 : Record 7321;
+      VariantDetail_L@8053002 : Record 8053091;
+      Text8053000_L@8053003 : TextConst 'ENU=Variant details were found for line %1, would you like to delete them?;FRA=Des lignes d'tails variantes ont 't' trouv'es pour la ligne %1, voulez-vous les 'craser?';
+    BEGIN
+      WheShipmentLine_L.RESET;
+      WheShipmentLine_L.SETFILTER(WheShipmentLine_L."No.", WheShipmentHeader_P."No.");
+      // --> 20140910-APP30-TER01.01.00-FBE01
+      IF LineNoToControl_P <> 0 THEN
+        WheShipmentLine_L.SETRANGE("Line No.",LineNoToControl_P);
+      // <-- 20140910-APP30-TER01.01.00-FBE01
+      WheShipmentLine_L.SETFILTER("Qty. Outstanding (Base)", '>0');
+      IF NOT WheShipmentLine_L.FINDSET THEN
+        EXIT;
+
+      REPEAT
+        VariantDetail_L.RESET;
+        VariantDetail_L.SETRANGE("Document Type", VariantDetail_L."Document Type"::"Warehouse Shipment");
+        VariantDetail_L.SETFILTER("Document No.", WheShipmentLine_L."No.");
+        VariantDetail_L.SETRANGE("Document Line No.", WheShipmentLine_L."Line No.");
+        IF VariantDetail_L.FINDSET THEN BEGIN
+          IF CONFIRM(STRSUBSTNO(Text8053000_L, WheShipmentLine_L."Line No."), FALSE) THEN BEGIN
+            VariantDetail_L.DELETEALL;
+            CreateLineVariantDetail(WheShipmentLine_L);
+          END;
+        END ELSE
+          CreateLineVariantDetail(WheShipmentLine_L);
+      UNTIL WheShipmentLine_L.NEXT=0;
+    END;
+
+    PROCEDURE CreateLineVariantDetail@8053004(WheShipmentLine_P@8053000 : Record 7321);
+    VAR
+      VariantDetail_L@8053002 : Record 8053091;
+      ItemVariant_L@8053003 : Record 5401;
+      Item_L@8053004 : Record 27;
+      VariantFound_L@8053005 : Code[10];
+      VariantInventory_L@8053001 : Decimal;
+      TmpQtyDiv_L@8053006 : Decimal;
+      TmpVariantQty_L@8053007 : Decimal;
+    BEGIN
+      IF WheShipmentLine_P.Quantity = 0 THEN
+       EXIT;
+
+      IF WheShipmentLine_P."Qty. to Ship" <> 0 THEN BEGIN
+        WheShipmentLine_P.Quantity := WheShipmentLine_P."Qty. to Ship";
+        WheShipmentLine_P."Qty. to Ship" := 0;
+      END;
+
+      Item_L.GET(WheShipmentLine_P."Item No.");
+      IF NOT Item_L."Generic Product" THEN
+        EXIT;
+
+      IF WheShipmentLine_P."Variant Code" <> '' THEN
+        EXIT;
+
+      ItemVariant_L.RESET;
+      ItemVariant_L.SETCURRENTKEY("Indiv. Base Qty");
+      ItemVariant_L.SETFILTER("Item No.", Item_L."No.");
+      ItemVariant_L.SETRANGE(Blocked, FALSE);
+      ItemVariant_L.SETFILTER("Indiv. Base Qty", '<=%1', WheShipmentLine_P.Quantity);
+      IF NOT FindBestVariant(ItemVariant_L, WheShipmentLine_P, VariantFound_L, VariantInventory_L) THEN
+        EXIT;
+      ItemVariant_L.GET(WheShipmentLine_P."Item No.", VariantFound_L);
+
+      VariantDetail_L.RESET;
+      VariantDetail_L.SETRANGE("Document Type", VariantDetail_L."Document Type"::"Warehouse Shipment");
+      VariantDetail_L.SETFILTER("Document No.", WheShipmentLine_P."No.");
+      VariantDetail_L.SETRANGE("Document Line No.", WheShipmentLine_P."Line No.");
+      VariantDetail_L.SETFILTER("Item No.", WheShipmentLine_P."Item No.");
+      VariantDetail_L.SETFILTER("Variant Code", ItemVariant_L.Code);
+      IF NOT VariantDetail_L.FINDFIRST THEN BEGIN
+        VariantDetail_L.INIT;
+        VariantDetail_L."Document Type" := VariantDetail_L."Document Type"::"Warehouse Shipment";
+        VariantDetail_L."Document No." := WheShipmentLine_P."No.";
+        VariantDetail_L."Document Line No." := WheShipmentLine_P."Line No.";
+        VariantDetail_L."Item No." := ItemVariant_L."Item No.";
+        VariantDetail_L."Variant Code" := ItemVariant_L.Code;
+        VariantDetail_L.INSERT;
+      END;
+
+      IF ItemVariant_L."Indiv. Base Qty"<>0 THEN BEGIN
+        TmpQtyDiv_L := ItemVariant_L."Indiv. Base Qty";
+      END ELSE
+        TmpQtyDiv_L := 1;
+      IF VariantInventory_L >= WheShipmentLine_P.Quantity THEN
+        TmpVariantQty_L := WheShipmentLine_P.Quantity DIV TmpQtyDiv_L
+      ELSE
+        TmpVariantQty_L := VariantInventory_L DIV TmpQtyDiv_L;
+      VariantDetail_L.Quantity += TmpVariantQty_L * TmpQtyDiv_L;
+      WheShipmentLine_P.Quantity -= TmpVariantQty_L * TmpQtyDiv_L;
+      VariantDetail_L.MODIFY;
+      IF WheShipmentLine_P.Quantity > 0 THEN
+        CreateLineVariantDetail(WheShipmentLine_P);
+    END;
+
+    PROCEDURE FindBestVariant@8053008(VAR ItemVariant_P@8053000 : Record 5401;WheShipmentLine_P@8053002 : Record 7321;VAR VariantFoundCode_P@8053006 : Code[10];VAR VariantInventory_P@8053005 : Decimal) : Boolean;
+    VAR
+      Item_L@8053001 : Record 27;
+      VariantDetail_L@8053003 : Record 8053091;
+      VariantIndivQty_L@8053008 : Decimal;
+      ItemVarIndQty_L@8053007 : Decimal;
+      QuantityOk_L@1000000000 : Boolean;
+      RecCMCSetup_L@1000000001 : Record 8052982;
+    BEGIN
+      VariantFoundCode_P := '';
+      VariantInventory_P := 0;
+      VariantIndivQty_L := 0;
+      Item_L.GET(WheShipmentLine_P."Item No.");
+      IF ItemVariant_P.FINDFIRST THEN
+        REPEAT
+          Item_L.SETFILTER("Location Filter", WheShipmentLine_P."Location Code");
+          Item_L.SETFILTER("Variant Filter",ItemVariant_P.Code);
+          Item_L.CALCFIELDS(Inventory,Item_L."Qty on Warehouse Shipment");
+
+          IF ItemVariant_P."Indiv. Base Qty" = 0 THEN
+            ItemVarIndQty_L := 1
+          ELSE
+            ItemVarIndQty_L := ItemVariant_P."Indiv. Base Qty";
+
+          VariantDetail_L.RESET;
+          VariantDetail_L.SETRANGE("Document Type", VariantDetail_L."Document Type"::"Warehouse Shipment");
+          VariantDetail_L.SETFILTER("Document No.", WheShipmentLine_P."No.");
+          VariantDetail_L.SETFILTER("Item No.", ItemVariant_P."Item No.");
+          VariantDetail_L.SETFILTER("Variant Code", ItemVariant_P.Code);
+          VariantDetail_L.CALCSUMS(Quantity);
+          // --> 20140910-APP30-TER01.01.00-FBE02
+          { BEFORE
+          IF ((Item_L.Inventory - Item_L."Qty on Warehouse Shipment" - VariantDetail_L.Quantity) > 0) AND
+             ((ItemVarIndQty_L > VariantIndivQty_L) OR
+             //--> 20140723-APP30-TER01.01.00-PDC01
+             //BEFORE
+             //((Item_L.Inventory-Item_L."Qty on Warehouse Shipment"-VariantDetail_L.Quantity)<VariantInventory_P)) THEN
+             //AFTER
+             ((Item_L.Inventory-Item_L."Qty on Warehouse Shipment"-VariantDetail_L.Quantity)>VariantInventory_P))
+             //<-- 20140723-APP30-TER01.01.00-PDC01
+          AFTER  }
+          IF RecCMCSetup_L.GET THEN;
+          CASE RecCMCSetup_L."Variant Stock alloc. Priority" OF
+            RecCMCSetup_L."Variant Stock alloc. Priority"::Smaller:
+              QuantityOk_L := (Item_L.Inventory-Item_L."Qty on Warehouse Shipment"-VariantDetail_L.Quantity)<VariantInventory_P;
+            RecCMCSetup_L."Variant Stock alloc. Priority"::Greater:
+              QuantityOk_L := (Item_L.Inventory-Item_L."Qty on Warehouse Shipment"-VariantDetail_L.Quantity)>VariantInventory_P;
+          END;
+          IF ((Item_L.Inventory - Item_L."Qty on Warehouse Shipment" - VariantDetail_L.Quantity) > 0) AND
+             ((ItemVarIndQty_L > VariantIndivQty_L) OR QuantityOk_L )
+          // --> 20140910-APP30-TER01.01.00-FBE02
+          THEN BEGIN
+            VariantInventory_P :=Item_L.Inventory-Item_L."Qty on Warehouse Shipment" - VariantDetail_L.Quantity;
+            VariantFoundCode_P := ItemVariant_P.Code;
+            VariantIndivQty_L := ItemVarIndQty_L;
+          END;
+          IF (VariantInventory_P = 0) AND ((Item_L.Inventory - Item_L."Qty on Warehouse Shipment" - VariantDetail_L.Quantity) > 0 )
+          THEN BEGIN
+            VariantInventory_P :=Item_L.Inventory-Item_L."Qty on Warehouse Shipment"-VariantDetail_L.Quantity;
+            VariantFoundCode_P := ItemVariant_P.Code;
+          END;
+        UNTIL ItemVariant_P.NEXT=0;
+
+      EXIT(VariantFoundCode_P<>'')
+    END;
+
+    PROCEDURE ExplodeWhseShipment@8053003(VAR WhseShpmtHeader_P@8053000 : Record 7320);
+    VAR
+      WhseShpmtLine_L@8053001 : Record 7321;
+      SalesLine_L@8053002 : Record 37;
+      VariantDetail_L@8053003 : Record 8053091;
+      SalesLineBuffTmp_L@8053004 : TEMPORARY Record 37;
+      ReleaseOpen_L@8053006 : Codeunit 414;
+      WhseActivityCreate_L@8053007 : Codeunit 5750;
+      SLine_L@8053008 : Record 37;
+      SalesLine2_L@8053009 : Record 37;
+      FirstLineNo_L@8053010 : Integer;
+      LastLineNo_L@8053005 : Integer;
+      TransferLine_L@8053011 : Record 5741;
+      TransferLine2_L@8053012 : Record 5741;
+      ReleaseOpenTransf_L@8053013 : Codeunit 5708;
+      TransLineBuffTmp_L@8053014 : TEMPORARY Record 5741;
+      TLine_L@8053015 : Record 5741;
+      PrixNegToUpdate_L@8053016 : Boolean;
+      OrderToRelease_L@1000000000 : Boolean;
+      cduWhseSalesRelease_L@1000000002 : Codeunit 5771;
+      cduLogisticsTourMngt_L@1000000001 : Codeunit 8052991;
+    BEGIN
+      WhseShpmtLine_L.RESET;
+      WhseShpmtLine_L.SETFILTER(WhseShpmtLine_L."No.", WhseShpmtHeader_P."No.");
+      IF WhseShpmtLine_L.FINDSET(TRUE, FALSE) THEN
+        REPEAT
+          CheckWhseShipmentDetail(WhseShpmtLine_L);
+          VariantDetail_L.RESET;
+          VariantDetail_L.SETRANGE("Document Type", VariantDetail_L."Document Type"::"Warehouse Shipment");
+          VariantDetail_L.SETRANGE("Document No.", WhseShpmtLine_L."No.");
+          VariantDetail_L.SETRANGE("Document Line No.", WhseShpmtLine_L."Line No.");
+          IF VariantDetail_L.FINDSET THEN BEGIN
+            CASE  WhseShpmtLine_L."Source Type" OF
+              37: BEGIN //commande de vente
+                LastLineNo_L := 0;
+                SalesLine_L.GET(SalesLine_L."Document Type"::Order, WhseShpmtLine_L."Source No.", WhseShpmtLine_L."Source Line No.");
+                GetSalesLine(SalesLine_L);
+
+                SalesLine2_L.RESET;
+                SalesLine2_L.SETRANGE("Document Type", SalesLine_G."Document Type");
+                SalesLine2_L.SETRANGE("Document No.", SalesLine_G."Document No.");
+                SalesLine2_L.SETRANGE("RPD Item Attached Line", 0);
+                SalesLine2_L.SETRANGE("CVO Item Attached Line", 0);
+                SalesLine2_L.SETRANGE("CVO Corn Item Attached Line", 0);
+                SalesLine2_L.SETRANGE("Free Item Root Line", 0);
+                SalesLine2_L.SETFILTER("Line No.", '>%1', SalesLine_G."Line No.");
+                IF SalesLine2_L.FINDFIRST THEN
+                  LastLineNo_L := SalesLine2_L."Line No.";
+                FirstLineNo_L := SalesLine_G."Line No.";
+
+                GetSalesHeader(SalesLine_G);
+                OrderToRelease_L := FALSE;
+                IF SalesHeader_G.Status <> SalesHeader_G.Status::Open THEN
+                  OrderToRelease_L := TRUE;
+                SalesLineBuffTmp_L.DELETEALL;
+                REPEAT
+                  SalesLineBuffTmp_L.INIT;
+                  SalesLineBuffTmp_L.TRANSFERFIELDS(SalesLine_G);
+
+                  IF SalesLine_L."Linked Order No." <> '' THEN BEGIN
+                    SalesLineBuffTmp_L."Linked Order No." := SalesLine_L."Linked Order No.";
+                    SalesLineBuffTmp_L."Linked Order Line No." := SalesLine_L."Linked Order Line No.";
+                    SalesLineBuffTmp_L."Linked Quantity" := SalesLine_L."Linked Quantity";
+                    SalesLineBuffTmp_L."Blanket Order No." := SalesLine_L."Blanket Order No.";
+                    SalesLineBuffTmp_L."Blanket Order Line No." := SalesLine_L."Blanket Order Line No.";
+                  END;
+                  IF LastLineNo_L = 0 THEN
+                    FirstLineNo_L := FirstLineNo_L + 10000
+                  ELSE BEGIN
+                    FirstLineNo_L := ROUND((FirstLineNo_L + LastLineNo_L) / 2, 1)
+                  END;
+
+                  SalesLineBuffTmp_L."Line No." := FirstLineNo_L;
+                  PrixNegToUpdate_L := FALSE;
+                  IF SalesLineBuffTmp_L."Negotiated Price" = FALSE THEN BEGIN
+                    SalesLineBuffTmp_L."Negotiated Price" := TRUE;
+                    PrixNegToUpdate_L := TRUE;
+                  END;
+                  SalesLineBuffTmp_L.SuspendStatusCheck(TRUE);
+                  SalesLineBuffTmp_L.VALIDATE("Variant Code", VariantDetail_L."Variant Code");
+                  IF PrixNegToUpdate_L = TRUE THEN
+                    SalesLineBuffTmp_L."Negotiated Price" := FALSE;
+                  SalesLineBuffTmp_L."Remainder Process Type" := SalesLineBuffTmp_L."Remainder Process Type"::Reallocate;
+                  SalesLineBuffTmp_L."Qty to Reallocate" := VariantDetail_L.Quantity;
+                  SalesLineBuffTmp_L.INSERT;
+                UNTIL VariantDetail_L.NEXT=0;
+                // --> 20160219-App17-ADV01.01.00-2669-JCD01
+                {BEFORE
+                DefalquerSalesLine(SalesLine_G, SalesLineBuffTmp_L, FALSE);
+                AFTER}
+                DefalquerSalesLine(SalesLine_G, SalesLineBuffTmp_L, FALSE,FALSE);
+                // <-- 20160219-App17-ADV01.01.00-2669-JCD01
+                SLine_L.RESET;
+                SLine_L.SETRANGE("Document Type", SalesLine_G."Document Type");
+                SLine_L.SETFILTER("Document No.", SalesLine_G."Document No.");
+                IF LastLineNo_L=0 THEN
+                  SLine_L.SETFILTER("Line No.", '%1..', SalesLine_G."Line No." + 1)
+                ELSE
+                  SLine_L.SETFILTER("Line No.", '%1..%2', SalesLine_G."Line No." + 1, LastLineNo_L - 1);
+                SLine_L.SETRANGE(Type, SalesLine_G.Type::Item);
+                SLine_L.SETFILTER("Outstanding Quantity", '>0');
+                IF SLine_L.FINDSET THEN
+                  REPEAT
+                    WhseActivityCreate_L.FromSalesLine2ShptLine(WhseShpmtHeader_P, SLine_L);
+                  UNTIL SLine_L.NEXT = 0;
+
+                IF OrderToRelease_L=TRUE THEN BEGIN
+                  ReleaseOpen_L.Reopen(SalesHeader_G);
+                  cduWhseSalesRelease_L.Reopen(SalesHeader_G);
+                  cduLogisticsTourMngt_L.Reopen(SalesHeader_G);
+
+                  cduWhseSalesRelease_L.Release(SalesHeader_G);
+                  cduLogisticsTourMngt_L.Release(SalesHeader_G);
+                END;
+              END;
+              5741: BEGIN //Transfert
+                LastLineNo_L := 0;
+                TransferLine_L.GET(WhseShpmtLine_L."Source No.", WhseShpmtLine_L."Source Line No.");
+
+                TransferLine2_L.RESET;
+                TransferLine2_L.SETRANGE("Document No.", TransferLine_L."Document No.");
+                TransferLine2_L.SETFILTER("Line No.", '>%1', TransferLine_L."Line No.");
+                IF TransferLine2_L.FINDFIRST THEN
+                  LastLineNo_L := TransferLine2_L."Line No.";
+                FirstLineNo_L:=TransferLine_L."Line No.";
+
+
+                GetTransfHeader(TransferLine_L);
+                IF TransferHeader_G.Status <> TransferHeader_G.Status::Open THEN
+                  ReleaseOpenTransf_L.Reopen(TransferHeader_G);
+                TransLineBuffTmp_L.DELETEALL;
+                REPEAT
+                  TransLineBuffTmp_L.INIT;
+                  TransLineBuffTmp_L.TRANSFERFIELDS(TransferLine_L);
+
+                  IF LastLineNo_L = 0 THEN
+                     FirstLineNo_L := FirstLineNo_L + 10000
+                  ELSE BEGIN
+                     FirstLineNo_L := ROUND((FirstLineNo_L + LastLineNo_L) / 2, 1)
+                  END;
+
+                  TransLineBuffTmp_L."Line No." := FirstLineNo_L;
+                  TransLineBuffTmp_L.VALIDATE("Variant Code", VariantDetail_L."Variant Code");
+                  TransLineBuffTmp_L.VALIDATE(Quantity, VariantDetail_L.Quantity);
+                  TransLineBuffTmp_L.INSERT;
+                UNTIL VariantDetail_L.NEXT=0;
+                IF LastLineNo_L = 0 THEN
+                  LastLineNo_L := FirstLineNo_L + 1;
+
+                DefalquerTransfLine(TransferLine_L, TransLineBuffTmp_L, FALSE);
+                ReleaseOpenTransf_L.RUN(TransferHeader_G);
+
+                TLine_L.RESET;
+                TLine_L.SETFILTER("Document No.", TransferLine_L."Document No.");
+                TLine_L.SETFILTER("Line No.", '%1..%2', TransferLine_L."Line No." + 1, LastLineNo_L - 1);
+                TLine_L.SETFILTER("Outstanding Quantity", '>0');
+
+                IF TLine_L.FINDSET THEN
+                  REPEAT
+                    WhseActivityCreate_L.FromTransLine2ShptLine(WhseShpmtHeader_P,TLine_L);
+                  UNTIL TLine_L.NEXT=0;
+              END;
+            END;
+            VariantDetail_L.DELETEALL;
+            WhseShpmtLine_L.DELETE(TRUE);
+          END;
+        UNTIL WhseShpmtLine_L.NEXT=0;
+    END;
+
+    PROCEDURE ExplodeWhseReceipt@8053007(VAR WhseReceiptHeader_P@8053000 : Record 7316);
+    VAR
+      WhseReceiptLine_L@8053001 : Record 7317;
+      PurchLine_L@8053002 : Record 39;
+      VariantDetail_L@8053003 : Record 8053091;
+      PurchLineBuff_L@8053004 : TEMPORARY Record 39;
+      I@8053005 : Integer;
+      PurchReleaseOpen_L@8053006 : Codeunit 415;
+      WhseActivityCreate_L@8053007 : Codeunit 5750;
+      PLine_L@8053008 : Record 39;
+      LastNo_L@8053009 : Integer;
+      PurchLine2_L@8053010 : Record 39;
+    BEGIN
+      WhseReceiptLine_L.RESET;
+      WhseReceiptLine_L.SETFILTER(WhseReceiptLine_L."No.", WhseReceiptHeader_P."No.");
+      WhseReceiptLine_L.SETRANGE("Source Type", 39);
+      IF WhseReceiptLine_L.FINDSET THEN
+        REPEAT
+          VariantDetail_L.RESET;
+          VariantDetail_L.SETRANGE("Document Type",VariantDetail_L."Document Type"::"Warehouse Receipt");
+          VariantDetail_L.SETFILTER("Document No.",WhseReceiptLine_L."No.");
+          VariantDetail_L.SETRANGE("Document Line No.",WhseReceiptLine_L."Line No.");
+          IF VariantDetail_L.FINDSET THEN BEGIN
+            I := 0;
+            PurchLine_L.GET(PurchLine_L."Document Type"::Order,
+            WhseReceiptLine_L."Source No.",WhseReceiptLine_L."Source Line No.");
+            PurchLine2_L.RESET;
+            PurchLine2_L.SETRANGE("Document Type", PurchLine_L."Document Type");
+            PurchLine2_L.SETFILTER("Document No.", PurchLine_L."Document No.");
+            PurchLine2_L.SETFILTER("Line No.", '>%1', PurchLine_L."Line No.");
+            IF PurchLine2_L.FINDFIRST THEN
+              LastNo_L := PurchLine2_L."Line No."
+            ELSE
+              LastNo_L := PurchLine_L."Line No." + 10000;
+            WhseReceiptLine_L.DELETE;
+            GetPurchHeader(PurchLine_L);
+            IF PurchHeader_G.Status <> PurchHeader_G.Status::Open THEN
+              PurchReleaseOpen_L.Reopen(PurchHeader_G);
+            PurchLineBuff_L.DELETEALL;
+            REPEAT
+              PurchLineBuff_L.INIT;
+              PurchLineBuff_L.TRANSFERFIELDS(PurchLine_L);
+              I+=1;
+              PurchLineBuff_L."Line No." := PurchLine_L."Line No."+I;
+              PurchLineBuff_L."Variant Code" := VariantDetail_L."Variant Code";
+              PurchLineBuff_L."Remainder Process Type" := PurchLineBuff_L."Remainder Process Type"::"Reallocate ";
+              PurchLineBuff_L."Qty to Reallocate" := VariantDetail_L.Quantity;
+              PurchLineBuff_L.INSERT;
+            UNTIL VariantDetail_L.NEXT = 0;
+            DefalquerPurchLine(PurchLine_L, PurchLineBuff_L);
+            GetPurchHeader(PurchLine_L);
+            PurchReleaseOpen_L.RUN(PurchHeader_G);
+            PLine_L.RESET;
+            PLine_L.SETRANGE("Document Type", PurchLine_L."Document Type");
+            PLine_L.SETFILTER("Document No.", PurchLine_L."Document No.");
+            PLine_L.SETFILTER("Line No.", '%1..%2', PurchLine_L."Line No." + 1, LastNo_L - 1);
+            IF PLine_L.FINDSET THEN
+            REPEAT
+              WhseActivityCreate_L.PurchLine2ReceiptLine(WhseReceiptHeader_P, PLine_L);
+            UNTIL PLine_L.NEXT = 0;
+          VariantDetail_L.DELETEALL;
+          END;
+        UNTIL WhseReceiptLine_L.NEXT = 0;
+    END;
+
+    PROCEDURE GetPurchHeader@8053009(VAR TempPLine_P@8053000 : TEMPORARY Record 39);
+    BEGIN
+      PurchHeader_G.GET(TempPLine_P."Document Type", TempPLine_P."Document No.");
+      IF PurchHeader_G."Currency Code" = '' THEN
+        Currency_G.InitRoundingPrecision
+      ELSE BEGIN
+        PurchHeader_G.TESTFIELD("Currency Factor");
+        Currency_G.GET(PurchHeader_G."Currency Code");
+        Currency_G.TESTFIELD("Amount Rounding Precision");
+      END;
+    END;
+
+    PROCEDURE DefalquerPurchLine@8053010(VAR PurchLine_P@8053000 : Record 39;VAR PurchLineBuffer_P@8053001 : TEMPORARY Record 39);
+    VAR
+      LineNoInterval_L@8053002 : Integer;
+      InsertedPurchLine_L@8053003 : Record 39;
+      I@8053004 : Integer;
+      QtyTotToReallocate_L@8053005 : Decimal;
+      PrepAmntToReallocate_L@8053006 : Decimal;
+      TempPurchLineBuff@8053007 : TEMPORARY Record 39;
+      PurchLineDel_L@8053008 : Record 39;
+    BEGIN
+      IF NOT PurchLineBuffer_P.FINDFIRST THEN
+        EXIT;
+      LineNoInterval_L := ROUND(GetLineNoIntervalPurch(PurchLine_P) / (PurchLineBuffer_P.COUNT + 1), 1);
+      I := 0;
+      QtyTotToReallocate_L := 0;
+      CLEAR(TempPurchLineBuff);
+      TempPurchLineBuff.INIT;
+      TempPurchLineBuff.TRANSFERFIELDS(PurchLine_P);
+      TempPurchLineBuff.INSERT;
+      REPEAT
+        I += 1;
+        InsertedPurchLine_L.INIT;
+        InsertedPurchLine_L."Document Type" := PurchLine_P."Document Type";
+        InsertedPurchLine_L."Document No." := PurchLine_P."Document No.";
+        InsertedPurchLine_L."Line No." := PurchLine_P."Line No." + (I * LineNoInterval_L);
+        InsertedPurchLine_L.Type := PurchLine_P.Type;
+        InsertedPurchLine_L.VALIDATE("No.",PurchLineBuffer_P."No.");
+        InsertedPurchLine_L.VALIDATE("Variant Code",PurchLineBuffer_P."Variant Code");
+        InsertedPurchLine_L.VALIDATE("Location Code",PurchLineBuffer_P."Remainder New Location Code");
+        IF InsertedPurchLine_L."Location Code"='' THEN
+          InsertedPurchLine_L.VALIDATE("Location Code", PurchLineBuffer_P."Location Code");
+        InsertedPurchLine_L.VALIDATE(Quantity, PurchLineBuffer_P."Qty to Reallocate");
+        InsertedPurchLine_L.VALIDATE("Unit of Measure", PurchLine_P."Unit of Measure");
+        InsertedPurchLine_L.VALIDATE("Unit Cost", PurchLineBuffer_P."Unit Cost");
+        InsertedPurchLine_L.VALIDATE("Line Discount %", PurchLine_P."Line Discount %");
+        QtyTotToReallocate_L += PurchLineBuffer_P."Qty to Reallocate";
+
+        InsertedPurchLine_L.INSERT(TRUE);
+      UNTIL PurchLineBuffer_P.NEXT = 0;
+      IF (PurchLine_P.Quantity - QtyTotToReallocate_L) >= 0 THEN
+        PurchLine_P.VALIDATE(Quantity, PurchLine_P.Quantity - QtyTotToReallocate_L)
+      ELSE
+        PurchLine_P.VALIDATE(Quantity, 0);
+
+      PurchLineDel_L.GET(PurchLine_P."Document Type", PurchLine_P."Document No.", PurchLine_P."Line No.");
+      PurchLineDel_L.DELETE;
+      IF PurchLine_P.Quantity <> 0 THEN BEGIN
+        PurchLine_P.INSERT;
+      END;
+    END;
+
+    PROCEDURE GetLineNoIntervalPurch@8053011(PurchLine_P@8053000 : Record 39) : Integer;
+    VAR
+      Purchline_L@8053001 : Record 39;
+    BEGIN
+      Purchline_L.RESET;
+      Purchline_L.SETRANGE("Document Type", PurchLine_P."Document Type");
+      Purchline_L.SETFILTER("Document No.", PurchLine_P."Document No.");
+      Purchline_L.SETFILTER("Line No.", '>%1', PurchLine_P."Line No.");
+      IF Purchline_L.FINDFIRST THEN
+        EXIT(Purchline_L."Line No." - PurchLine_P."Line No.")
+      ELSE
+        EXIT(10000);
+    END;
+
+    PROCEDURE CheckWhseShipmentDetail@8053014(WhseShipmentLine_P@8053000 : Record 7321);
+    VAR
+      VarDetail_L@8053001 : Record 8053091;
+      Text8053000_L@8053002 : TextConst 'ENU=The total of variant quantity is different than quantity to ship.Would you like to continue?;FRA="Le total des quantit's par variantes ne correspond pas . la quantit' . exp'dier,Voulez-vous continuer? "';
+      Text8053001_L@8053003 : TextConst 'ENU=The update has been interrupted to respect the warning.;FRA=La mise . jour a 't' interrompue pour respecter l''alerte.';
+    BEGIN
+      VarDetail_L.RESET;
+      VarDetail_L.SETRANGE("Document Type", VarDetail_L."Document Type"::"Warehouse Shipment");
+      VarDetail_L.SETFILTER("Document No.", WhseShipmentLine_P."No.");
+      VarDetail_L.SETRANGE("Document Line No.", WhseShipmentLine_P."Line No.");
+      IF NOT VarDetail_L.FINDFIRST THEN
+        EXIT;
+      VarDetail_L.CALCSUMS(Quantity);
+      IF WhseShipmentLine_P."Qty. to Ship" <> 0 THEN
+        WhseShipmentLine_P.Quantity := WhseShipmentLine_P."Qty. to Ship";
+      IF VarDetail_L.Quantity <> WhseShipmentLine_P.Quantity THEN
+        IF NOT CONFIRM(Text8053000_L, FALSE) THEN
+          ERROR(Text8053001_L);
+    END;
+
+    PROCEDURE GetTransfHeader@8053017(VAR TempTLine_P@8053000 : TEMPORARY Record 5741);
+    BEGIN
+      TransferHeader_G.GET(TempTLine_P."Document No.");
+    END;
+
+    PROCEDURE DefalquerTransfLine@8053019(VAR TransferLine_P@8053000 : Record 5741;VAR TransfLineBuffer_P@8053001 : TEMPORARY Record 5741;CancelLine@8053009 : Boolean);
+    VAR
+      LineNoInterval_L@8053002 : Integer;
+      InsertedTransfer_L@8053003 : Record 5741;
+      QtyTotToReallocate_L@8053005 : Decimal;
+      PrepAmntToReallocate_L@8053006 : Decimal;
+      TempTransferLineBuff@8053007 : TEMPORARY Record 5741;
+      TransferLineDel_L@8053008 : Record 5741;
+      LastLineNo_L@8053010 : Integer;
+      FirstLineNo_L@8053012 : Integer;
+      Transfer_L@8053011 : Record 5741;
+      InvCommentLine_L@60001 : Record 5748;
+      InvCommentLine_L2@60000 : Record 5748;
+      TempQty_L@60002 : Decimal;
+    BEGIN
+      IF NOT TransfLineBuffer_P.FINDFIRST THEN
+        EXIT;
+      QtyTotToReallocate_L := 0;
+
+      LastLineNo_L := 0;
+      FirstLineNo_L := TransferLine_P."Line No.";
+
+      Transfer_L.RESET;
+      Transfer_L.SETFILTER("Document No.", TransferLine_P."Document No.");
+      Transfer_L.SETFILTER("Line No.", '>%1', TransferLine_P."Line No.");
+      IF Transfer_L.FINDFIRST THEN
+        LastLineNo_L:=Transfer_L."Line No.";
+
+      CLEAR(TempTransferLineBuff);
+      TempTransferLineBuff.INIT;
+      TempTransferLineBuff.TRANSFERFIELDS(TransferLine_P);
+      TempTransferLineBuff.INSERT;
+      REPEAT
+        // --> 20141120-APP14-TER01.01.00-RMZ01
+        IF (TransfLineBuffer_P."Source Order Line No." = TransfLineBuffer_P."Line No.") AND ByItemSubs_G THEN
+          FirstLineNo_L := TransfLineBuffer_P."Line No."
+        ELSE BEGIN
+        // <-- 20141120-APP14-TER01.01.00-RMZ01
+          IF LastLineNo_L=0 THEN
+            FirstLineNo_L := FirstLineNo_L +10000
+          ELSE BEGIN
+            FirstLineNo_L := ROUND((FirstLineNo_L + LastLineNo_L) / 2, 1)
+          END;
+        END;
+
+        InsertedTransfer_L.INIT;
+        InsertedTransfer_L."Document No." := TransferLine_P."Document No.";
+        InsertedTransfer_L."Line No." := FirstLineNo_L;
+        InsertedTransfer_L.VALIDATE("Item No.", TransfLineBuffer_P."Item No.");
+        InsertedTransfer_L.VALIDATE("Variant Code", TransfLineBuffer_P."Variant Code");
+        // --> 20141120-APP14-TER01.01.00-RMZ01
+        IF ByItemSubs_G THEN
+          InsertedTransfer_L."Quantity Before Substitution" := TransfLineBuffer_P."Quantity Before Substitution";
+        // <-- 20141120-APP14-TER01.01.00-RMZ01
+
+        InsertedTransfer_L.VALIDATE("Transfer-from Code", TransfLineBuffer_P."Transfer-from Code");
+        // --> 20141120-APP14-TER01.01.00-RMZ01
+        IF ByItemSubs_G THEN BEGIN
+          TempQty_L := TransfLineBuffer_P."Qty to Reallocate";
+          //CheckSalesReallocateQty(SaleLineBuffer_P, SaleLineBuffer_P."Remainder Qty Rounding Method");
+          InsertedTransfer_L.VALIDATE(Quantity, TransfLineBuffer_P."Qty to Reallocate");
+          TransfLineBuffer_P."Qty to Reallocate" := TempQty_L;
+        END
+        ELSE
+        // <-- 20141120-APP14-TER01.01.00-RMZ01
+          InsertedTransfer_L.VALIDATE(Quantity, TransfLineBuffer_P.Quantity);
+        InsertedTransfer_L.VALIDATE("Unit of Measure", TransfLineBuffer_P."Unit of Measure");
+        QtyTotToReallocate_L += TransfLineBuffer_P.Quantity;
+        // --> 20140717-TER01.01.00-RMZ01
+        IF (TransfLineBuffer_P."Source Order Line No." = TransfLineBuffer_P."Line No.") AND ByItemSubs_G THEN BEGIN
+          InsertedTransfer_L.MODIFY;
+          TransferLine_P.GET(InsertedTransfer_L."Document No.",InsertedTransfer_L."Line No.");
+        END
+        ELSE BEGIN
+        // <-- 20140717-TER01.01.00-RMZ01
+          InsertedTransfer_L.INSERT;
+        // --> 20141120-APP14-TER01.01.00-RMZ01
+          CLEAR(InvCommentLine_L);
+          InvCommentLine_L.SETRANGE("Document Type",InvCommentLine_L."Document Type"::"Transfer Order");
+          InvCommentLine_L.SETRANGE("No.",TransferLine_P."Document No.");
+          InvCommentLine_L.SETRANGE("Document Line No.",TransferLine_P."Line No.");
+          IF InvCommentLine_L.FINDFIRST THEN
+            REPEAT
+              CLEAR(InvCommentLine_L2);
+              InvCommentLine_L2.TRANSFERFIELDS(InvCommentLine_L);
+              InvCommentLine_L2."Document Line No." := InsertedTransfer_L."Line No.";
+              InvCommentLine_L2.INSERT;
+            UNTIL InvCommentLine_L.NEXT = 0;
+        END;
+
+        // <-- 20141120-APP14-TER01.01.00-RMZ01
+        // -------------------------------------------------------------------------------------------------------
+        // end of aditional line
+        // -------------------------------------------------------------------------------------------------------
+
+        IF LastLineNo_L > 0 THEN BEGIN
+          Transfer_L.RESET;
+          Transfer_L.SETFILTER("Document No.", TransferLine_P."Document No.");
+          Transfer_L.SETFILTER("Line No.", '<%1', LastLineNo_L);
+          IF Transfer_L.FINDLAST THEN
+            FirstLineNo_L := Transfer_L."Line No.";
+        END;
+      UNTIL TransfLineBuffer_P.NEXT = 0;
+
+      // --> 20141120-APP14-TER01.01.00-RMZ01
+      IF ByItemSubs_G THEN
+        EXIT;
+      // <-- 20141120-APP14-TER01.01.00-RMZ01
+
+      TransferLine_P.SystemModLinek(TRUE);
+      IF (TransferLine_P.Quantity - QtyTotToReallocate_L) >= 0 THEN
+        TransferLine_P.VALIDATE(Quantity, TransferLine_P.Quantity - QtyTotToReallocate_L)
+      ELSE
+        TransferLine_P.VALIDATE(Quantity, 0);
+      TransferLineDel_L.GET(TransferLine_P."Document No.", TransferLine_P."Line No.");
+      TransferLineDel_L.DELETE;
+      IF TransferLine_P.Quantity <> 0 THEN
+        TransferLine_P.INSERT;
+    END;
+
+    PROCEDURE SetTempTransfLines@8053015(VAR TempTransfLine_P@8053000 : TEMPORARY Record 5741);
+    BEGIN
+      GlobalTransLineTmp_G.RESET;
+      GlobalTransLineTmp_G.DELETEALL;
+
+      IF TempTransfLine_P.FINDSET THEN
+        REPEAT
+          GlobalTransLineTmp_G.INIT;
+          GlobalTransLineTmp_G.TRANSFERFIELDS(TempTransfLine_P);
+          GlobalTransLineTmp_G.INSERT;
+        UNTIL TempTransfLine_P.NEXT = 0;
+    END;
+
+    PROCEDURE DeletReliquatTranf@8053024() : Boolean;
+    VAR
+      Text8053000_L@8053003 : TextConst 'FRA=Il n''y a rien . traiter.;ENI=There is nothing to treat.';
+      Text8053001_L@8053002 : TextConst 'ENU=Line %1 %2 %3 has modified since its extraction, ples reload your data.;FRA=La ligne %1 %2 %3 a 't' modifi'e depuis son extraction, veuillez recharger vos donn'es.';
+      Text8053002_L@8053001 : TextConst 'ENU=Lines Treatment...;FRA=Traitement des lignes...';
+      Text8053003_L@8053000 : TextConst 'FRA=Voulez-vous valider ces actions?;ENI=Would you like to post lines?';
+      TempToInsertTransLine_L@8053008 : TEMPORARY Record 5741;
+      Win_L@8053007 : Dialog;
+      SalesPostPrep_L@8053006 : Codeunit 442;
+      LastSalesHeader_L@8053005 : Record 36;
+      SalesLocalLine_L@8053004 : Record 37;
+      ReleaseOpenTransf_L@8053010 : Codeunit 5708;
+      TmpTransferHeader_L@8053009 : TEMPORARY Record 5740;
+      WhseTransferRelease_L@8053011 : Codeunit 5773;
+      TransferHeader_L@8053012 : Record 5740;
+    BEGIN
+      TmpTransferHeader_L.RESET;
+      TmpTransferHeader_L.DELETEALL;
+
+      GlobalTransLineTmp_G.SETRANGE("Cancel Remaining Qty", TRUE);
+
+      IF NOT GlobalTransLineTmp_G.FINDSET THEN
+        ERROR(Text8053000_L);
+
+      IF NOT CONFIRM(Text8053003_L, FALSE) THEN
+        EXIT(FALSE);
+
+      Win_L.OPEN(Text8053002_L);
+
+      REPEAT
+        TransferLine_G.GET(GlobalTransLineTmp_G."Document No.", GlobalTransLineTmp_G."Line No.");
+        TransferLine_G.CancelRemQty;
+        TransferLine_G.MODIFY;
+
+        TmpTransferHeader_L.INIT;
+        TmpTransferHeader_L."No." := GlobalTransLineTmp_G."Document No.";
+        IF TmpTransferHeader_L.INSERT THEN;
+      UNTIL GlobalTransLineTmp_G.NEXT = 0;
+
+      IF TmpTransferHeader_L.FINDSET THEN
+        REPEAT
+          TransferHeader_L.GET(TmpTransferHeader_L."No.");
+          WhseTransferRelease_L.Reopen(TransferHeader_L);
+          WhseTransferRelease_L.Release(TransferHeader_L);
+        UNTIL TmpTransferHeader_L.NEXT = 0;
+
+      GlobalTransLineTmp_G.RESET;
+      GlobalTransLineTmp_G.DELETEALL;
+
+      Win_L.CLOSE;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE CheckSalesReallocateQty@8060984(VAR SalesLine_P@8060982 : Record 37;Rounding_P@8053000 : 'Round Up,Round Down');
+    VAR
+      CalcMethod_L@8060985 : 'Upward,Downward';
+      UpwardCalcQty_L@8060986 : Decimal;
+      DownwardCalcQty_L@8060987 : Decimal;
+      Item_L@8053001 : Record 27;
+      IndivQty_L@8053002 : Decimal;
+    BEGIN
+      WITH SalesLine_P DO BEGIN
+        IF (Type = Type::Item) AND ("Qty to Reallocate" <> 0) AND (Item_L.GET("Remainder New Item No.")) THEN BEGIN
+          IndivQty_L := GetIndivQty("Remainder New Item No.", "Remainder New Variant Code");
+          IF IndivQty_L <> 0 THEN
+            IF ("Qty to Reallocate" MOD  IndivQty_L) <> 0 THEN BEGIN
+              UpwardCalcQty_L := ROUND("Qty to Reallocate" /  IndivQty_L, 1, '>') * IndivQty_L;
+              DownwardCalcQty_L := ROUND("Qty to Reallocate" /  IndivQty_L, 1, '<') * IndivQty_L;
+              IF DownwardCalcQty_L = 0 THEN
+                DownwardCalcQty_L := IndivQty_L;
+
+              CASE Rounding_P OF
+                Rounding_P::"Round Up":
+                  "Qty to Reallocate" := UpwardCalcQty_L;
+                Rounding_P::"Round Down":
+                  "Qty to Reallocate" := DownwardCalcQty_L;
+              END;
+            END;
+        END;
+      END;
+    END;
+
+    PROCEDURE SalesLineValorisation@8053023(VAR SalesLine_P@8053000 : Record 37);
+    VAR
+      CMCSetup_L@8053001 : Record 8052982;
+      PrevUnitPrice_L@8053002 : Decimal;
+      PrevNetUnitPrice_L@8053003 : Decimal;
+      PriceCalcMgt_L@8053004 : Codeunit 7000;
+      SalesHeader_L@8053005 : Record 36;
+      CMCSalesPriceDiscMgt_L@8053006 : Codeunit 8053017;
+    BEGIN
+      CMCSetup_L.GET;
+      SalesHeader_L.GET(SalesLine_P."Document Type", SalesLine_P."Document No.");
+      IF (SalesLine_P.Type = SalesLine_P.Type::Item) AND
+         (NOT (SalesLine_P."Negotiated Price" AND (NOT CMCSetup_L."Activate Exceptional Discount")))
+      THEN BEGIN
+        PrevUnitPrice_L := SalesLine_P."Unit Price";
+        IF SalesLine_P."Negotiated Price" THEN
+          PrevNetUnitPrice_L := SalesLine_P."Net Unit Price";
+
+        IF NOT SalesLine_P.SetUnitPriceFromContract(SalesLine_P) THEN
+          PriceCalcMgt_L.FindSalesLinePrice(SalesHeader_L, SalesLine_P, SalesLine_P.FIELDNO("Unit Price"));
+
+        // --> 20171030-WI00-ADV01.01.00-24077-CJY01
+        {BEFORE
+        IF (SalesLine_P."Unit Price" = 0) AND SalesLine_P."Negotiated Price" THEN
+        AFTER}
+        IF (SalesLine_P."Unit Price" = 0) AND SalesLine_P."Negotiated Price" AND (SalesLine_P."Mutated Price" = FALSE) THEN
+        // <-- 20171030-WI00-ADV01.01.00-24077-CJY01
+          SalesLine_P.VALIDATE("Unit Price", PrevUnitPrice_L)
+        ELSE
+          SalesLine_P.VALIDATE("Unit Price");
+        IF SalesLine_P."Negotiated Price" THEN
+          SalesLine_P."Net Unit Price" := PrevNetUnitPrice_L;
+        CMCSalesPriceDiscMgt_L.SetSuspendStatusCheck(TRUE);
+        CMCSalesPriceDiscMgt_L.SetHideValidationDialog(TRUE);
+        CMCSalesPriceDiscMgt_L.RUN(SalesLine_P);
+        SalesLine_P.MODIFY;
+      END;
+    END;
+
+    PROCEDURE GetIndivQty@8053016(ItemNo_P@8053000 : Code[20];VariantCode_P@8053003 : Code[10]) : Decimal;
+    VAR
+      Text8053000_L@8053002 : TextConst 'ENU=You can not put a quantity of %1, because item %2 %3 has an indivible quantity of %4.;FRA=Vous ne pouvez pas saisir une quantit' de %1 , car l''article %2 %3 dispose d''une quantit' indivisible de %4.';
+      Item_L@8053004 : Record 27;
+      ItemVariant_L@8053005 : Record 5401;
+      IndivQty_L@8053006 : Decimal;
+    BEGIN
+      IndivQty_L := 0;
+      IF (VariantCode_P <> '') AND (ItemVariant_L.GET(ItemNo_P,VariantCode_P)) THEN
+       IndivQty_L := ItemVariant_L."Indiv. Base Qty";
+      IF (IndivQty_L=0) AND (Item_L.GET(ItemNo_P)) THEN
+       IndivQty_L := Item_L."Indiv. Base Qty";
+      EXIT(IndivQty_L);
+    END;
+
+    PROCEDURE CheckItemChange@8053018(SalesLine_P@8053000 : Record 37;VAR Value_P@8053013 : Record 823) : Boolean;
+    VAR
+      TC8053002@8053002 : TextConst 'FRA=La ligne est en livraison directe.';
+      TC8053001@8053001 : TextConst 'FRA=La ligne est en acompte.';
+      SalesHeader_L@8053003 : Record 36;
+      TC8053004@8053004 : TextConst 'FRA=Le document est fig'.';
+      WhseShipLine_L@8053005 : Record 7321;
+      TC8053006@8053006 : TextConst 'FRA=Il existe une exp'dition entrep"t en cours.';
+      TC8053007@8053007 : TextConst 'FRA=La ligne est li'e . une commande ouverte.';
+      Item_L@8053008 : Record 27;
+      TC8053009@8053009 : TextConst 'FRA=Le nouvel article est en statut livraison directe . toujours.';
+      TC8053010@8053010 : TextConst 'FRA=Le nouvel article dispose d''une unit' de vente diff'rente.';
+      SalesPrice_L@8053011 : Record 7002;
+      TC8053012@8053012 : TextConst 'FRA=Le prix rouge du nouvel article est en dessous du prix de vente actuel.';
+      TC8053014@8053014 : TextConst 'FRA=Le nouvel article et l''ancien ne sont pas sur la m^me activit' ou famille.';
+      Season_L@8053015 : Record 8053154;
+      TC8053016@8053016 : TextConst 'FRA=Aucune saison n''a 't' d'tect'e pour le nouvel article.';
+      TC8053017@8053017 : TextConst 'FRA=La ligne de commande est li'e . un contrat sp'cifique.';
+      TC8053018@8053018 : TextConst 'FRA=Le nouvel article est li' . une saison disposant d''un contrat sp'cifique.';
+      TC8053019@8053019 : TextConst 'FRA=La quantit' indivisible du nouvel article est sup'rieure . la quantit' restante sur la ligne de commande.';
+      TmpSalesLine_L@8053020 : TEMPORARY Record 37;
+      TC8053021@8053021 : TextConst 'FRA=Aucune saison n''est 'ligible pour le nouvel article.';
+    BEGIN
+      WITH SalesLine_P DO BEGIN
+        SalesHeader_L.GET(SalesLine_P."Document Type", SalesLine_P."Document No.");
+
+        IF "Prepayment Amount" <> 0 THEN
+          InsertChangeLogValue(Value_P, 1, TC8053001);
+
+        IF "Drop Shipment" AND ("Remainder Process Type" <> SalesLine_P."Remainder Process Type"::Cancel) THEN
+          InsertChangeLogValue(Value_P, 2, TC8053002);
+
+        IF "Blanket Order No." <> '' THEN
+          InsertChangeLogValue(Value_P, 3, TC8053007);
+
+        // --> 20171215-WI00-ADV01.01.00-3286-CJY01
+        IF "Remainder Process Type" = SalesLine_P."Remainder Process Type"::"Change Item" THEN
+          IF SalesLine_P."Build Kit" THEN
+            InsertChangeLogValue(Value_P, 10, Text60001);
+
+        // <-- 20171215-WI00-ADV01.01.00-3286-CJY01
+
+
+        IF "Remainder New Item No." <> '' THEN BEGIN
+          Item_L.GET("Remainder New Item No.");
+          IF Item_L."Sales Unit of Measure" <> SalesLine_P."Unit of Measure Code" THEN
+            InsertChangeLogValue(Value_P, 4, TC8053010);
+          IF (Item_L."Activity Code" <> SalesLine_P."Activity Code") OR (Item_L."Family Code" <> SalesLine_P."Family Code") THEN
+            InsertChangeLogValue(Value_P, 12, TC8053014);
+          IF (Item_L."Indiv. Base Qty" > SalesLine_P."Outstanding Qty. (Base)") AND
+             (SalesLine_P."Remainder Qty Rounding Method" <> SalesLine_P."Remainder Qty Rounding Method"::"Round Up")
+          THEN
+            InsertChangeLogValue(Value_P, 13, TC8053019);
+
+          IF Item_L."Drop Shipment Status" = Item_L."Drop Shipment Status"::Always THEN
+            InsertChangeLogValue(Value_P, 5, TC8053009);
+
+          IF NOT CheckActualSpecBlanketOrder(SalesLine_P."Purch. Blanket Order No.") THEN
+            InsertChangeLogValue(Value_P, 9, TC8053017);
+          //IF NOT FindNewSpecBlanketOrder(SalesLine_P,Item_L."No.",Season_L) THEN
+          //  InsertChangeLogValue(Value_P, 10, TC8053016);
+          IF NOT CheckActualSpecBlanketOrder(Season_L."Purch. Blanket Order No.") THEN
+            InsertChangeLogValue(Value_P, 11, TC8053018);
+
+          IF (NOT "Remainder Update Price") THEN BEGIN
+            SalesPrice_L.RESET;
+            SalesPrice_L.SETRANGE("Item No.", "Remainder New Item No.");
+            SalesPrice_L.SETFILTER("Variant Code", '%1|%2', SalesLine_P."Remainder New Variant Code", '');
+            SalesPrice_L.SETRANGE("Starting Date", 0D, SalesHeader_L."Order Date");
+            SalesPrice_L.SETFILTER("Ending Date", '%1|>=%2', 0D, SalesHeader_L."Order Date");
+            SalesPrice_L.SETRANGE("Campaign No.", "CMC Campaign No.");
+            SalesPrice_L.SETRANGE("Red Price", TRUE);
+            IF SalesPrice_L.FINDFIRST THEN
+              IF SalesPrice_L."Unit Price" > SalesLine_P."Net Unit Price" THEN
+                InsertChangeLogValue(Value_P, 6, TC8053012);
+          END;
+
+          TmpSalesLine_L.RESET;
+          TmpSalesLine_L.DELETEALL;
+
+          TmpSalesLine_L.INIT;
+          TmpSalesLine_L."Document Type" := SalesLine_P."Document Type";
+          TmpSalesLine_L."Document No." := SalesLine_P."Document No.";
+          TmpSalesLine_L.Type := TmpSalesLine_L.Type::Item;
+          TmpSalesLine_L."No." := "Remainder New Item No.";
+          TmpSalesLine_L."Order Date" := "Order Date";
+          TmpSalesLine_L."Requested Delivery Date" := "Requested Delivery Date";
+          TmpSalesLine_L.INSERT;
+          IF GetNewSeasonID(TmpSalesLine_L,SalesLine_P."Season ID No.",SalesLine_P."CMC Campaign No.") = 0 THEN
+            InsertChangeLogValue(Value_P, 9, TC8053021);
+
+        END;
+
+        WhseShipLine_L.RESET;
+        WhseShipLine_L.SETRANGE("Source Type", DATABASE::"Sales Line");
+        WhseShipLine_L.SETRANGE("Source Subtype", SalesLine_P."Document Type");
+        WhseShipLine_L.SETRANGE("Source No.", SalesLine_P."Document No.");
+        WhseShipLine_L.SETRANGE("Source Line No.", SalesLine_P."Line No.");
+        IF WhseShipLine_L.FINDSET THEN
+          InsertChangeLogValue(Value_P, 7, TC8053006);
+
+        IF SalesHeader_L."Freezed Document" THEN
+          InsertChangeLogValue(Value_P, 8, TC8053004);
+
+        EXIT(NOT Value_P.ISEMPTY)
+      END;
+    END;
+
+    PROCEDURE InsertChangeLogValue@8053020(VAR Value_P@8053000 : Record 823;ID_P@8053001 : Integer;Text_P@8053002 : Text[250]);
+    BEGIN
+      Value_P.INIT;
+      Value_P.ID := ID_P;
+      Value_P.Name := Text_P;
+      Value_P.INSERT;
+    END;
+
+    PROCEDURE CreateChangeLog@8053021(SalesLine_P@8053002 : Record 37);
+    VAR
+      RemQtyChangeLog_L@8053000 : Record 8053246;
+      NextEntryNo_L@8053001 : Integer;
+    BEGIN
+      WITH RemQtyChangeLog_L DO BEGIN
+        RESET;
+        IF FINDLAST THEN
+          NextEntryNo_L := "Entry No." + 1
+        ELSE
+          NextEntryNo_L := 1;
+
+        INIT;
+        "Entry No." := NextEntryNo_L;
+        "Document Type" := SalesLine_P."Document Type";
+        "Sell-to Customer No." := SalesLine_P."Sell-to Customer No.";
+        "Document No." := SalesLine_P."Document No.";
+        "Line No." := SalesLine_P."Line No.";
+        Type := SalesLine_P.Type;
+        "No." := SalesLine_P."No.";
+        "Location Code" := SalesLine_P."Location Code";
+        "Unit of Measure" := SalesLine_P."Unit of Measure";
+        Quantity := SalesLine_P.Quantity;
+        "Remainder New Location Code" := SalesLine_P."Remainder New Location Code";
+        "Remainder Process Type" := SalesLine_P."Remainder Process Type";
+        "Remainder New Item No." := SalesLine_P."Remainder New Item No.";
+        "Remainder New Variant Code" := SalesLine_P."Remainder New Variant Code";
+        "Remainder Update Price" := SalesLine_P."Remainder Update Price";
+        "Remainder Qty Rounding Method" := SalesLine_P."Remainder Qty Rounding Method";
+        "User ID" := USERID;
+        "Date-Time Created" := CURRENTDATETIME;
+        INSERT;
+
+      END;
+    END;
+
+    PROCEDURE CancelPurchDSOrderLines@8053022(SalesLine_P@8053004 : Record 37);
+    VAR
+      PurchaseLine_L@8053000 : Record 39;
+      DirectUnitCost_L@8053001 : Decimal;
+      LineDiscount_L@8053002 : Decimal;
+      DlgWindow_L@8053003 : Dialog;
+    BEGIN
+      WITH PurchaseLine_L DO BEGIN
+        IF GET("Document Type"::Order, SalesLine_P."Purchase Order No.", SalesLine_P."Purch. Order Line No.") THEN BEGIN
+          SuspendStatusCheck(TRUE);
+          SetAllowChangeDeletion(TRUE);
+          Setcallfromsales(TRUE);
+          DirectUnitCost_L := "Direct Unit Cost";
+          LineDiscount_L := "Line Discount %";
+          "Quantity Before Cancelation" := Quantity;
+          "Date Cancelation" := WORKDATE;
+          VALIDATE(Quantity, "Quantity Received");
+          VALIDATE("Direct Unit Cost", DirectUnitCost_L);
+          VALIDATE("Line Discount %", LineDiscount_L);
+          MODIFY(TRUE);
+        END;
+      END;
+    END;
+
+    PROCEDURE GetNewInsertedLineNo@8053026() : Integer;
+    BEGIN
+      EXIT(NewDocLineNo_G);
+    END;
+
+    PROCEDURE CheckActualSpecBlanketOrder@8053025(BlanketOrderNo_P@8053000 : Code[20]) : Boolean;
+    VAR
+      PurchHeader_L@8053001 : Record 38;
+      IsActualLineOK_L@8053002 : Boolean;
+      IsNewLineOK_L@8053003 : Boolean;
+    BEGIN
+      IF BlanketOrderNo_P <> '' THEN
+        IF PurchHeader_L.GET(PurchHeader_L."Document Type"::"Blanket Order", BlanketOrderNo_P) THEN
+          IF PurchHeader_L."Specific Blanket Order" THEN
+            EXIT(FALSE);
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE FindNewSpecBlanketOrder@8053027(SalesLine_P@8053000 : Record 37;NewItemNo_P@8053003 : Code[20];VAR Season_P@8053006 : Record 8053154) : Boolean;
+    VAR
+      SalesHeader_L@8053002 : Record 36;
+      Item_L@8053004 : Record 27;
+      Found_L@8053005 : Boolean;
+    BEGIN
+      SalesHeader_L.GET(SalesLine_P."Document Type", SalesLine_P."Document No.");
+      Item_L.GET(NewItemNo_P);
+
+      Season_P.RESET;
+      Season_P.SETCURRENTKEY(Type,"No.", "Variant Code", "Order Starting Date");
+      Season_P.SETFILTER("Order Starting Date", '<=%1', SalesHeader_L."Order Date");
+      Season_P.SETFILTER("Order Ending Date", '>=%1', SalesHeader_L."Order Date");
+      Season_P.SETRANGE("Campaign No.", SalesLine_P."CMC Campaign No.");
+      Season_P.SETRANGE(Unactive, FALSE);
+
+      Season_P.SETRANGE(Type, Season_P.Type::Item);
+      Season_P.SETRANGE("No.", Item_L."No.");
+      Season_P.SETRANGE("Variant Code");
+      Found_L := Season_P.FINDSET;
+
+      IF NOT Found_L THEN BEGIN
+        Season_P.SETRANGE(Type, Season_P.Type::Species);
+        Season_P.SETRANGE("No.", Item_L."Species Code");
+        Found_L := Season_P.FINDSET;
+      END;
+
+      IF NOT Found_L THEN BEGIN
+        Season_P.SETRANGE(Type, Season_P.Type::Subfamily);
+        Season_P.SETRANGE("No.", Item_L."Sub-Family Code");
+        Found_L := Season_P.FINDSET;
+      END;
+
+      IF NOT Found_L THEN BEGIN
+        Season_P.SETRANGE(Type, Season_P.Type::Family);
+        Season_P.SETRANGE("No.", Item_L."Family Code");
+        Found_L := Season_P.FINDSET;
+      END;
+
+      IF NOT Found_L THEN BEGIN
+        Season_P.SETRANGE(Type, Season_P.Type::Activity);
+        Season_P.SETRANGE("No.", Item_L."Activity Code");
+        Found_L := Season_P.FINDSET;
+      END;
+
+      IF Found_L THEN BEGIN
+        IF Season_P.COUNT > 1 THEN
+          EXIT(FALSE)
+        ELSE
+          EXIT(TRUE);
+      END ELSE
+        EXIT(FALSE);
+    END;
+
+    PROCEDURE SetNewSeasonID@8053030(VAR SalesLine_P@8053000 : Record 37;PrevSeasonIDNo_P@8053002 : Integer;PrevCampaignNo_P@8053001 : Code[10]);
+    VAR
+      TmpSeason_L@8053003 : TEMPORARY Record 8053154;
+      NewSeasonIDNo_L@8053004 : Integer;
+    BEGIN
+      IF SalesLine_G."Season ID No." = 0 THEN BEGIN
+        NewSeasonIDNo_L := GetNewSeasonID(SalesLine_P,PrevSeasonIDNo_P,PrevCampaignNo_P);
+        IF NewSeasonIDNo_L <> 0 THEN
+          SalesLine_G.VALIDATE("Season ID No.",NewSeasonIDNo_L);
+      END;
+    END;
+
+    PROCEDURE GetNewSeasonID@8053029(VAR SalesLine_P@8053000 : Record 37;PrevSeasonIDNo_P@8053002 : Integer;PrevCampaignNo_P@8053001 : Code[10]) : Integer;
+    VAR
+      TmpSeason_L@8053003 : TEMPORARY Record 8053154;
+    BEGIN
+      TmpSeason_L.RESET;
+      TmpSeason_L.DELETEALL;
+      CampaignMgt_G.GetAvailableSeason(TmpSeason_L,SalesLine_P);
+      IF (PrevSeasonIDNo_P <> 0) AND TmpSeason_L.GET(PrevSeasonIDNo_P) THEN
+        EXIT(TmpSeason_L."ID No.")
+      ELSE
+        IF PrevCampaignNo_P <> '' THEN BEGIN
+          TmpSeason_L.SETRANGE("Campaign No.",PrevCampaignNo_P);
+          IF TmpSeason_L.FINDFIRST THEN
+            EXIT(TmpSeason_L."ID No.");
+        END;
+      EXIT(0);
+    END;
+
+    PROCEDURE ItemSubstGet@3(VAR CMCOutsLineBuff_P@1000 : Record 8053052;TourNo_P@60002 : Code[20]);
+    VAR
+      "<< 3LI TEXT CONSTANTS >>"@1000000000 : TextConst;
+      "<-- 3LI LOCALS -->"@1000000004 : Integer;
+      SalesLine_L@1000000013 : Record 37;
+      OldCMCOutsLineBuff_P@60003 : Record 8053052;
+      OriginalSalesLine_L@1000000012 : Record 37;
+      WhseShpmtHeader_L@60001 : Record 7320;
+      WhseShpmLine_L@60012 : Record 7321;
+      ToSalesLine_L@1000000005 : Record 37;
+      SalesCommentLine_L@1000000009 : Record 44;
+      SalesCommentLine_L2@1000000010 : Record 44;
+      CMCOutOrderLine_L@1000000024 : Record 8053044;
+      SLine_L@60006 : Record 37;
+      SalesLine2_L@60005 : Record 37;
+      SalesLineBuffTmp_L@60007 : TEMPORARY Record 37;
+      ReleaseOpen_L@60009 : Codeunit 414;
+      cduLogisticsTourMngt_L@60008 : Codeunit 8052991;
+      WhseActivityCreate_L@60000 : Codeunit 5750;
+      cduWhseSalesRelease_L@60010 : Codeunit 5771;
+      FirstLine_L@1000000003 : Boolean;
+      LineSpacing_L@1000000006 : Integer;
+      NextLineNo_L@1000000007 : Integer;
+      Text600004@1000000011 : TextConst 'ENU=In Substitution of the item %1;FRA=En substitution de l''article %1';
+      LastLineNo_L@1000000014 : Integer;
+      FirstLineNo_L@1000000017 : Integer;
+      OrderToRelease_L@1000000019 : Boolean;
+      PrixNegToUpdate_L@1000000021 : Boolean;
+      QuantOriginal_L@60004 : Decimal;
+      PreviousLineNo_L@60011 : Integer;
+      SalesHd_L@60014 : Record 36;
+      ArchiveManagement_L@60013 : Codeunit 5063;
+    BEGIN
+      //20140716-APP14-TER01.01.00-TEAP012-RMZ01
+      // --------------------------------------------------------------------------------------------------------------------------
+      // To Insert/Modify the sales Line regarding a substitution
+      // --------------------------------------------------------------------------------------------------------------------------
+      // Inputs
+      //    - CMCOutsLineBuff_P - line selected on the lignes proposition tourn'es
+      //    - TourNo_P - No. of warehouse shipment header
+      // Outputs
+      //
+
+      SalesLine_L.GET(SalesLine_L."Document Type"::Order,CMCOutsLineBuff_P."Source Document No.",
+          CMCOutsLineBuff_P."Source Document Line No.");
+
+
+      LastLineNo_L := 0;
+      GetSalesLine(SalesLine_L);
+
+      SalesLine2_L.RESET;
+      SalesLine2_L.SETRANGE("Document Type", SalesLine_G."Document Type");
+      SalesLine2_L.SETRANGE("Document No.", SalesLine_G."Document No.");
+      SalesLine2_L.SETRANGE("RPD Item Attached Line",0);
+      SalesLine2_L.SETRANGE("CVO Item Attached Line",0);
+      SalesLine2_L.SETRANGE("CVO Corn Item Attached Line",0);
+      SalesLine2_L.SETRANGE("Free Item Root Line",0);
+      SalesLine2_L.SETFILTER("Line No.", '>%1', SalesLine_G."Line No.");
+      IF SalesLine2_L.FINDFIRST THEN
+        LastLineNo_L := SalesLine2_L."Line No.";
+      FirstLineNo_L:=SalesLine_G."Line No.";
+
+      GetSalesHeader(SalesLine_G);
+      OrderToRelease_L:=FALSE;
+      IF SalesHeader_G.Status<>SalesHeader_G.Status::Open THEN
+        OrderToRelease_L:=TRUE;
+
+      TempSalesLine_G := SalesLine_L;
+      IF (TempSalesLine_G.Type <> TempSalesLine_G.Type::Item) OR
+         (TempSalesLine_G."Document Type" IN
+          [TempSalesLine_G."Document Type"::"Return Order",TempSalesLine_G."Document Type"::"Credit Memo"])
+      THEN
+        EXIT;
+
+      SaveItemNo_G := TempSalesLine_G."No.";
+      SaveVariantCode_G := TempSalesLine_G."Variant Code";
+      QuantOriginal_L := TempSalesLine_G.Quantity;
+
+      Item_G.GET(TempSalesLine_G."No.");
+      Item_G.SETFILTER("Location Filter",TempSalesLine_G."Location Code");
+      Item_G.SETFILTER("Variant Filter",TempSalesLine_G."Variant Code");
+      Item_G.SETRANGE("Date Filter",0D,TempSalesLine_G."Shipment Date");
+      Item_G.CALCFIELDS(Inventory);
+      Item_G.CALCFIELDS("Qty. on Sales Order");
+      Item_G.CALCFIELDS("Qty. on Service Order");
+      OldSalesUOM_G := Item_G."Sales Unit of Measure";
+
+      ItemSub_G.RESET;
+      ItemSub_G.SETRANGE(Type,ItemSub_G.Type::Item);
+      ItemSub_G.SETRANGE("No.",TempSalesLine_G."No.");
+      ItemSub_G.SETRANGE("Variant Code",TempSalesLine_G."Variant Code");
+      ItemSub_G.SETRANGE("Location Filter",TempSalesLine_G."Location Code");
+      IF ItemSub_G.FIND('-') THEN BEGIN
+        CalcCustPrice(TempSalesLine_G);
+        TempItemSub_G.RESET;
+        TempItemSub_G.SETRANGE("No.",TempSalesLine_G."No.");
+        TempItemSub_G.SETRANGE("Variant Code",TempSalesLine_G."Variant Code");
+        TempItemSub_G.SETRANGE("Location Filter",TempSalesLine_G."Location Code");
+        IF PAGE.RUNMODAL(PAGE::"CMC Item Substitution Entries",TempItemSub_G) =
+          ACTION::LookupOK
+        THEN BEGIN
+
+          //--> 20140807-APP14-TER01.01.00-PDC01
+          IF SalesHd_L.GET(SalesLine_L."Document Type",SalesLine_L."Document No.") THEN
+            // --> 20140829-APP14-TER01.01.00-FBE01
+            //ArchiveManagement_L.ArchiveSalesDocument(SalesHd_L);
+            ArchiveManagement_L.StoreSalesDocument(SalesHd_L,FALSE);
+            // <-- 20140829-APP14-TER01.01.00-FBE01
+          //<-- 20140807-APP14-TER01.01.00-PDC01
+
+          //------------------------------------------------------------------------------------------------------------
+          // --> 20140711-TER01.01.00-RMZ01 Begin
+          //------------------------------------------------------------------------------------------------------------
+          TempItemSub_G.RESET;
+          TempItemSub_G.SETFILTER("Quantity to Replace",'<>%1',0);
+          IF NOT TempItemSub_G.FINDFIRST THEN BEGIN
+            EXIT;
+          END;
+          TempItemSub_G.CALCSUMS("Quantity to Replace");
+          FirstLine_L := TRUE;
+          LeaveOriginalQty_G := FALSE;
+          // Test if it is necessary to balance the remaining quantity
+          IF (TempItemSub_G."Quantity to Replace" < TempItemSub_G."Order Quantity") AND
+              (NOT TempItemSub_G."Balance the remaining") THEN BEGIN
+            IF OrderToRelease_L = TRUE THEN
+              ReleaseOpen_L.Reopen(SalesHeader_G);
+            SalesLine_L.GET(SalesLine_L."Document Type"::Order,CMCOutsLineBuff_P."Source Document No.",
+                CMCOutsLineBuff_P."Source Document Line No.");
+            SalesLine_L.VALIDATE(Quantity,TempItemSub_G."Order Quantity" - TempItemSub_G."Quantity to Replace");
+            SalesLine_L.MODIFY;
+            TempSalesLine_G := SalesLine_L;
+            GetSalesLine(SalesLine_L);
+            FirstLine_L := FALSE;
+            TempItemSub_G.RESET;
+            TempItemSub_G.SETFILTER("Quantity to Replace",'<>%1',0);
+            TempItemSub_G.FINDFIRST;
+            LeaveOriginalQty_G := TRUE;
+          END
+          ELSE BEGIN
+            TempItemSub_G.RESET;
+            TempItemSub_G.SETFILTER("Quantity to Replace",'<>%1',0);
+            TempItemSub_G.FINDFIRST;
+          END;
+
+
+          SalesLineBuffTmp_L.DELETEALL;
+          WhseShpmtHeader_L.GET(TourNo_P);
+          ByItemSubs_G := TRUE;
+          REPEAT
+            //------------------------------------------------------------------------------------------------------------------
+            SalesLineBuffTmp_L.INIT;
+            SalesLineBuffTmp_L.TRANSFERFIELDS(SalesLine_G);
+            SalesLineBuffTmp_L."No." := TempItemSub_G."Substitute No.";
+            //SalesLineBuffTmp_L.Description := STRSUBSTNO(Text00004,SalesLine_G."No.");
+            //SalesLineBuffTmp_L."Description 2" := '';
+
+            IF SalesLine_L."Linked Order No." <> '' THEN
+            BEGIN
+              SalesLineBuffTmp_L."Linked Order No.":= SalesLine_L."Linked Order No.";
+              SalesLineBuffTmp_L."Linked Order Line No.":= SalesLine_L."Linked Order Line No.";
+              SalesLineBuffTmp_L."Linked Quantity":= SalesLine_L."Linked Quantity";
+              SalesLineBuffTmp_L."Blanket Order No.":= SalesLine_L."Blanket Order No.";
+              SalesLineBuffTmp_L."Blanket Order Line No.":= SalesLine_L."Blanket Order Line No.";
+            END;
+
+            IF NOT FirstLine_L THEN BEGIN
+              IF LastLineNo_L=0 THEN
+                 FirstLineNo_L :=FirstLineNo_L +10000
+              ELSE BEGIN
+                 FirstLineNo_L := ROUND(( FirstLineNo_L+ LastLineNo_L) / 2, 1)
+              END;
+            END
+            ELSE
+              FirstLineNo_L := SalesLine_G."Line No.";
+
+            SalesLineBuffTmp_L."Line No." := FirstLineNo_L;
+            PrixNegToUpdate_L:=FALSE;
+            IF SalesLineBuffTmp_L."Negotiated Price"=FALSE THEN BEGIN
+              SalesLineBuffTmp_L."Negotiated Price":=TRUE;
+              PrixNegToUpdate_L:=TRUE;
+            END;
+            SalesLineBuffTmp_L.SuspendStatusCheck(TRUE);
+            SalesLineBuffTmp_L."Variant Code" := SalesLine_L."Variant Code";
+            IF PrixNegToUpdate_L=TRUE THEN
+              SalesLineBuffTmp_L."Negotiated Price":=FALSE;
+
+            //--> 20140806-APP14-TER01.01.00-PDC01
+            SalesLineBuffTmp_L."Unit Price" := SalesLine_G."Unit Price";
+            SalesLineBuffTmp_L."Allow Line Disc." := SalesLine_G."Allow Line Disc.";
+            //<-- 20140806-APP14-TER01.01.00-PDC01
+
+            SalesLineBuffTmp_L."Remainder Process Type" := SalesLineBuffTmp_L."Remainder Process Type"::Reallocate;
+            SalesLineBuffTmp_L."Qty to Reallocate" := TempItemSub_G."Quantity to Replace";
+            SalesLineBuffTmp_L."Originally Ordered No." := SaveItemNo_G;
+            SalesLineBuffTmp_L."Originally Ordered Var. Code" := SaveVariantCode_G;
+            SalesLineBuffTmp_L."Source Order Line No." := SalesLine_G."Line No.";
+            SalesLineBuffTmp_L."Quantity Before Substitution" := QuantOriginal_L;
+            SalesLineBuffTmp_L.INSERT;//(TRUE);
+
+            FirstLine_L := FALSE;
+
+            // -------------------------------------------------------------------------------------------------------
+            // now inserting the aditional line for the item
+            // -------------------------------------------------------------------------------------------------------
+            {
+            PreviousLineNo_L := FirstLineNo_L;
+            IF LastLineNo_L=0 THEN
+               FirstLineNo_L :=FirstLineNo_L +10000
+            ELSE BEGIN
+               FirstLineNo_L := ROUND(( FirstLineNo_L+ LastLineNo_L) / 2, 1)
+            END;
+            SalesLineBuffTmp_L.INIT;
+            SalesLineBuffTmp_L."Document Type" := SalesLine_G."Document Type";
+            SalesLineBuffTmp_L."Document No." := SalesLine_G."Document No.";
+            SalesLineBuffTmp_L."Line No." := FirstLineNo_L;
+            SalesLineBuffTmp_L."Attached to Line No." := PreviousLineNo_L;
+            SalesLineBuffTmp_L.Description := STRSUBSTNO(Text600004,SalesLine_G."No.");
+            SalesLineBuffTmp_L.INSERT;
+            }
+            // -------------------------------------------------------------------------------------------------------
+            // end of aditional line
+            // -------------------------------------------------------------------------------------------------------
+
+          UNTIL TempItemSub_G.NEXT = 0;
+
+          // --> 20160219-App17-ADV01.01.00-2669-JCD01
+          {BEFORE
+          DefalquerSalesLine(SalesLine_G,SalesLineBuffTmp_L,FALSE);
+          AFTER}
+          DefalquerSalesLine(SalesLine_G,SalesLineBuffTmp_L,FALSE,FALSE);
+          // <-- 20160219-App17-ADV01.01.00-2669-JCD01
+          ReleaseOpen_L.RUN(SalesHeader_G);
+          SLine_L.RESET;
+          SLine_L.SETRANGE(SLine_L."Document Type",SalesLine_G."Document Type");
+          SLine_L.SETFILTER(SLine_L."Document No.",SalesLine_G."Document No.");
+          IF LastLineNo_L=0 THEN
+            SLine_L.SETFILTER(SLine_L."Line No.",'%1..',SalesLine_G."Line No."+1)
+          ELSE
+            SLine_L.SETFILTER(SLine_L."Line No.",'%1..%2',SalesLine_G."Line No."+1,LastLineNo_L-1);
+          SLine_L.SETRANGE(Type,SalesLine_G.Type::Item);
+          SLine_L.SETFILTER("Outstanding Quantity",'>0');
+          IF SLine_L.FINDSET THEN
+            REPEAT
+              IF ((TempItemSub_G."Balance the remaining") AND (SLine_L."Line No." = SalesLine_G."Line No."))
+                  OR (SalesLine_G."Line No." <> SLine_L."Line No.") THEN BEGIN
+                WhseActivityCreate_L.FromSalesLine2ShptLine(WhseShpmtHeader_L,SLine_L);
+              END;
+            UNTIL SLine_L.NEXT=0;
+
+          IF OrderToRelease_L=TRUE THEN BEGIN
+            ReleaseOpen_L.Reopen(SalesHeader_G);
+            ReleaseOpen_L.RUN(SalesHeader_G);
+            cduWhseSalesRelease_L.Reopen(SalesHeader_G);
+            cduLogisticsTourMngt_L.Reopen(SalesHeader_G);
+
+            cduWhseSalesRelease_L.Release(SalesHeader_G);
+            cduLogisticsTourMngt_L.Release(SalesHeader_G);
+            // --> 20110601-Wi00-CMC01.04
+
+          END;
+          OldCMCOutsLineBuff_P := CMCOutsLineBuff_P;
+          //------------------------------------------------------------------------------------------------------------------
+        END
+        // --> 20141125-APP14-TER01.01.00-FBE01
+        ELSE
+          ERROR(Text60000);
+        // <-- 20141125-APP14-TER01.01.00-FBE01
+      END;
+
+      SalesLine_L.GET(SalesLine_L."Document Type"::Order,CMCOutsLineBuff_P."Source Document No.",
+          CMCOutsLineBuff_P."Source Document Line No.");
+      CMCOutsLineBuff_P."Item No." := SalesLine_L."No.";
+      CMCOutsLineBuff_P."Item Description" := SalesLine_L.Description;
+      CMCOutsLineBuff_P."Order Quantity" := SalesLine_L.Quantity;
+      CMCOutsLineBuff_P."Outstanding Quantity" := SalesLine_L."Outstanding Quantity";
+      CMCOutsLineBuff_P."Qty. to Assign" := SalesLine_L."Outstanding Quantity";
+      CMCOutsLineBuff_P.MODIFY;
+    END;
+
+    PROCEDURE CalcCustPrice@1(SalesLine_P@1000 : Record 37);
+    VAR
+      "<-- 3LI LOCALS -->"@1000000000 : Integer;
+      CompanyInfo_L@1000000009 : Record 79;
+      CMCSetup_L@1000000001 : Record 8052982;
+      "<-- 3LI TEXT CONSTANTS -->"@1000000002 : TextConst;
+      Text600001@1000000003 : TextConst 'ENU=The unit of measure of the order line %1 its not equal with the unit of measure %2 of the subsititution item %3;FRA=L''unit' de base des articles de substitution n''est pas identique . celle de l''article substitu' pour au moins l''un d''eux, veuillez ajuster votre param'trage';
+      CMCOutsLineBuff_L@1000000005 : Record 8053052;
+      WhsShipLine_L@1000000006 : Record 7321;
+      AvailToPromise_L@1000000004 : Codeunit 5790;
+      GrossReq_L@1000000008 : Decimal;
+      SchedRcpt_L@1000000007 : Decimal;
+    BEGIN
+      //20140710-APP14-TER01.01.00-TEAP012-RMZ01
+      // --------------------------------------------------------------------------------------------------------------------------
+      // To fill the Item Substitution
+      // --------------------------------------------------------------------------------------------------------------------------
+      // Inputs
+      //    - SalesLine_P - quantity of order line
+      // Outputs
+      TempItemSub_G.RESET;
+      TempItemSub_G.DELETEALL;
+      //SalesHeader.GET(TempSalesLine_G."Document Type",TempSalesLine_G."Document No.");
+      CMCSetup_L.GET;
+      CompanyInfo_L.GET;
+      IF ItemSub_G.FIND('-') THEN BEGIN
+        REPEAT
+          TempItemSub_G."No." := ItemSub_G."No.";
+          TempItemSub_G."Variant Code" := ItemSub_G."Variant Code";
+          TempItemSub_G."Substitute No." := ItemSub_G."Substitute No.";
+          TempItemSub_G."Substitute Variant Code" := ItemSub_G."Substitute Variant Code";
+          TempItemSub_G.Description := ItemSub_G.Description;
+          TempItemSub_G.Interchangeable := ItemSub_G.Interchangeable;
+          TempItemSub_G."Location Filter" := ItemSub_G."Location Filter";
+          TempItemSub_G.Condition:= ItemSub_G.Condition;
+          TempItemSub_G."Shipment Date" := TempSalesLine_G."Shipment Date";
+          IF ItemSub_G."Substitute Type" = ItemSub_G."Substitute Type"::Item THEN BEGIN
+            Item_G.GET(ItemSub_G."Substitute No.");
+
+            //IF NOT SetupDataIsPresent THEN
+              //GetSetupData;
+            AvailToPromise_L.QtyAvailabletoPromise(
+              Item_G,GrossReq_L,SchedRcpt_L,
+              Item_G.GETRANGEMAX("Date Filter"),CompanyInfo_L."Check-Avail. Time Bucket",
+              CompanyInfo_L."Check-Avail. Period Calc.");
+            Item_G.CALCFIELDS(Inventory,"Reserved Qty. on Inventory");
+            TempItemSub_G."Quantity Avail. on Shpt. Date" :=
+              Item_G.Inventory-Item_G."Reserved Qty. on Inventory" - GrossReq_L + SchedRcpt_L;
+            TempItemSub_G.Inventory := Item_G.Inventory;
+          END ELSE BEGIN
+            TempItemSub_G."Substitute Type" := TempItemSub_G."Substitute Type"::"Nonstock Item";
+            TempItemSub_G."Quantity Avail. on Shpt. Date" :=0;
+            TempItemSub_G.Inventory := 0;
+          END;
+          // --> 20140710-TER01.01.00-RMZ01 Begin
+          TempItemSub_G."Order Quantity" := SalesLine_P.Quantity;
+          //WhsShipLine_L."Item No." := TempItemSub_G."Substitute No."; //salesLine_P."No.";
+          //WhsShipLine_L."Location Code" := SalesLine_P."location code";
+          //WhsShipLine_L."Variant Code" := SalesLine_P."Variant Code";
+          // --> 20140828-APP14-TER01.01.00-FBE01
+          // Before
+          //TempItemSub_G."Physically Available" := CMCOutsLineBuff_L.GetPhysicallyAvailable(
+          //    TempItemSub_G."Substitute No.",SalesLine_P."Location Code",SalesLine_P."Variant Code",
+          //    SalesLine_P.Quantity);
+          //AFTER
+          TempItemSub_G."Physically Available" := CMCOutsLineBuff_L.GetPhysicallyAvailable(
+              TempItemSub_G."Substitute No.",SalesLine_P."Location Code",ItemSub_G."Substitute Variant Code",
+              SalesLine_P.Quantity);
+          // <-- 20140828-APP14-TER01.01.00-FBE01
+          //<-- 20140807-APP14-TER01.01.00-PDC01
+          TempItemSub_G."Quantity to Replace" := 0;
+          TempItemSub_G."Order No." := ItemSub_G."Order No.";
+          TempItemSub_G."Base Unit Of Measure" := ItemSub_G."Base Unit Of Measure";
+          TempItemSub_G.VALIDATE("Substitute Variant Code");
+          IF ItemSub_G."Base Unit Of Measure" <> SalesLine_P."Unit of Measure Code" THEN
+            ERROR(STRSUBSTNO(Text600001,SalesLine_P."Unit of Measure Code",ItemSub_G."Base Unit Of Measure",
+                          ItemSub_G."Substitute No."));
+
+          TempItemSub_G."Indiv. Quantity" := ItemSub_G."Indiv. Quantity";
+
+          CASE CMCSetup_L."Replacement Interval" OF
+            CMCSetup_L."Replacement Interval"::Excess:
+              TempItemSub_G."Theoretical amount of subst." := ReturnNumber(SalesLine_P.Quantity,TempItemSub_G."Indiv. Quantity",0);
+            CMCSetup_L."Replacement Interval"::Default:
+              TempItemSub_G."Theoretical amount of subst." := ReturnNumber(SalesLine_P.Quantity,TempItemSub_G."Indiv. Quantity",1);
+          END;
+          // <-- 20140710-TER01.01.00-RMZ01 End
+
+          TempItemSub_G.INSERT;
+        UNTIL ItemSub_G.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE ReturnNumber@1000000001(Quantity_P@1000000000 : Decimal;DivQty_P@1000000001 : Decimal;Direction_P@1000000002 : 'More,Less') Result_L : Decimal;
+    VAR
+      MaxIteraction_L@1000000003 : Integer;
+    BEGIN
+      //20140710-APP14-TER01.01.00-RMZ01
+      // --------------------------------------------------------------------------------------------------------------------------
+      // To return the next divisible number
+      // --------------------------------------------------------------------------------------------------------------------------
+      // Inputs
+      //    - Quantity_P - quantity of order line
+      //    - DivQty_P - quantity divisable
+      // Outputs
+      //    - Result_L - quantity of the next divisible number
+      IF (Quantity_P = 0) OR (DivQty_P = 0) THEN
+        Result_L := Quantity_P
+      ELSE BEGIN
+        IF Quantity_P MOD DivQty_P = 0 THEN
+          Result_L := Quantity_P
+        ELSE BEGIN
+          MaxIteraction_L := 0;
+          Result_L := Quantity_P;
+          WHILE (Result_L MOD DivQty_P <> 0) OR (MaxIteraction_L >= 100) DO BEGIN
+            IF Direction_P = Direction_P::More THEN
+              Result_L := Result_L + 1
+            ELSE
+              Result_L := Result_L - 1;
+            MaxIteraction_L := MaxIteraction_L + 1;
+          END;
+        END;
+      END;
+
+      EXIT(Result_L);
+    END;
+
+    PROCEDURE ReturnLeaveOriginalQty@60000() : Boolean;
+    BEGIN
+      //20140730-APP14-TER01.01.00-RMZ01
+      // --------------------------------------------------------------------------------------------------------------------------
+      // To return a boolean for the table 8053052 to put or not the original line in the table 7321
+      // --------------------------------------------------------------------------------------------------------------------------
+      // Inputs
+      // Outputs
+      //    - LeaveOriginalQty_G
+      EXIT(LeaveOriginalQty_G)
+    END;
+
+    PROCEDURE ItemSubstGetTransfer@60001(VAR CMCOutsLineBuff_P@1000 : Record 8053052;TourNo_P@60002 : Code[20]);
+    VAR
+      "<< 3LI TEXT CONSTANTS >>"@1000000000 : TextConst;
+      "<-- 3LI LOCALS -->"@1000000004 : Integer;
+      TransferLine_L@1000000013 : Record 5741;
+      OldCMCOutsLineBuff_P@60003 : Record 8053052;
+      OriginalTransferLine_L@1000000012 : Record 5741;
+      WhseShpmtHeader_L@60001 : Record 7320;
+      WhseShpmLine_L@60012 : Record 7321;
+      ToTransferLine_L@1000000005 : Record 5741;
+      CMCOutOrderLine_L@1000000024 : Record 8053044;
+      TLine_L@60006 : Record 5741;
+      TransferLine2_L@60005 : Record 5741;
+      TransferLineBuffTmp_L@60007 : TEMPORARY Record 5741;
+      ReleaseOpen_L@60009 : Codeunit 5708;
+      cduLogisticsTourMngt_L@60008 : Codeunit 8052995;
+      WhseActivityCreate_L@60000 : Codeunit 5750;
+      cduWhseTransferRelease_L@60010 : Codeunit 5773;
+      FirstLine_L@1000000003 : Boolean;
+      LineSpacing_L@1000000006 : Integer;
+      NextLineNo_L@1000000007 : Integer;
+      Text600004@1000000011 : TextConst 'ENU=In Substitution of the item %1;FRA=En substitution de l''article %1';
+      LastLineNo_L@1000000014 : Integer;
+      FirstLineNo_L@1000000017 : Integer;
+      OrderToRelease_L@1000000019 : Boolean;
+      PrixNegToUpdate_L@1000000021 : Boolean;
+      QuantOriginal_L@60004 : Decimal;
+      PreviousLineNo_L@60011 : Integer;
+    BEGIN
+      //20141120-APP14-TER01.01.00-TEAP012-RMZ01
+      // --------------------------------------------------------------------------------------------------------------------------
+      // To Insert/Modify the sales Line regarding a substitution
+      // --------------------------------------------------------------------------------------------------------------------------
+      // Inputs
+      //    - CMCOutsLineBuff_P - line selected on the lignes proposition tourn'es
+      //    - TourNo_P - No. of warehouse shipment header
+      // Outputs
+      //
+
+      TransferLine_L.GET(CMCOutsLineBuff_P."Source Document No.",CMCOutsLineBuff_P."Source Document Line No.");
+
+      LastLineNo_L := 0;
+      GetTransferLine(TransferLine_L);
+
+      TransferLine2_L.RESET;
+      TransferLine2_L.SETRANGE("Document No.", TransferLine_G."Document No.");
+      TransferLine2_L.SETFILTER("Line No.", '>%1', TransferLine_G."Line No.");
+      IF TransferLine2_L.FINDFIRST THEN
+        LastLineNo_L := TransferLine2_L."Line No.";
+      FirstLineNo_L:=TransferLine_G."Line No.";
+
+      GetTransfHeader(TransferLine_G);
+      OrderToRelease_L:=FALSE;
+      IF TransferHeader_G.Status<>TransferHeader_G.Status::Open THEN
+        OrderToRelease_L:=TRUE;
+
+      TempTransferLine_G := TransferLine_L;
+
+      SaveItemNo_G := TempTransferLine_G."Item No.";
+      SaveVariantCode_G := TempTransferLine_G."Variant Code";
+      QuantOriginal_L := TempTransferLine_G.Quantity;
+
+      Item_G.GET(TempTransferLine_G."Item No.");
+      Item_G.SETFILTER("Location Filter",TempTransferLine_G."Transfer-from Code");
+      Item_G.SETFILTER("Variant Filter",TempTransferLine_G."Variant Code");
+      Item_G.SETRANGE("Date Filter",0D,TempTransferLine_G."Shipment Date");
+      Item_G.CALCFIELDS(Inventory);
+      Item_G.CALCFIELDS("Qty. on Sales Order");
+      Item_G.CALCFIELDS("Qty. on Service Order");
+      OldSalesUOM_G := Item_G."Sales Unit of Measure";
+
+      ItemSub_G.RESET;
+      ItemSub_G.SETRANGE(Type,ItemSub_G.Type::Item);
+      ItemSub_G.SETRANGE("No.",TempTransferLine_G."Item No.");
+      ItemSub_G.SETRANGE("Variant Code",TempTransferLine_G."Variant Code");
+      ItemSub_G.SETRANGE("Location Filter",TempTransferLine_G."Transfer-from Code");
+      IF ItemSub_G.FIND('-') THEN BEGIN
+        FillTransferItemSub(TempTransferLine_G);
+        TempItemSub_G.RESET;
+        TempItemSub_G.SETRANGE("No.",TempTransferLine_G."Item No.");
+        TempItemSub_G.SETRANGE("Variant Code",TempTransferLine_G."Variant Code");
+        TempItemSub_G.SETRANGE("Location Filter",TempTransferLine_G."Transfer-from Code");
+        IF PAGE.RUNMODAL(PAGE::"CMC Item Substitution Entries",TempItemSub_G) = ACTION::LookupOK
+        THEN BEGIN
+
+          //------------------------------------------------------------------------------------------------------------
+          // --> 20140711-TER01.01.00-RMZ01 Begin
+          //------------------------------------------------------------------------------------------------------------
+          TempItemSub_G.RESET;
+          TempItemSub_G.SETFILTER("Quantity to Replace",'<>%1',0);
+          IF NOT TempItemSub_G.FINDFIRST THEN BEGIN
+            EXIT;
+          END;
+          TempItemSub_G.CALCSUMS("Quantity to Replace");
+          FirstLine_L := TRUE;
+          LeaveOriginalQty_G := FALSE;
+          // Test if it is necessary to balance the remaining quantity
+          IF (TempItemSub_G."Quantity to Replace" < TempItemSub_G."Order Quantity") AND
+              (NOT TempItemSub_G."Balance the remaining") THEN BEGIN
+            IF OrderToRelease_L = TRUE THEN
+              ReleaseOpen_L.Reopen(TransferHeader_G);
+            TransferLine_L.GET(CMCOutsLineBuff_P."Source Document No.",
+                CMCOutsLineBuff_P."Source Document Line No.");
+            TransferLine_L.VALIDATE(Quantity,TempItemSub_G."Order Quantity" - TempItemSub_G."Quantity to Replace");
+            TransferLine_L.MODIFY;
+            TempTransferLine_G := TransferLine_L;
+            GetTransferLine(TransferLine_L);
+            FirstLine_L := FALSE;
+            TempItemSub_G.RESET;
+            TempItemSub_G.SETFILTER("Quantity to Replace",'<>%1',0);
+            TempItemSub_G.FINDFIRST;
+            LeaveOriginalQty_G := TRUE;
+          END
+          ELSE BEGIN
+            TempItemSub_G.RESET;
+            TempItemSub_G.SETFILTER("Quantity to Replace",'<>%1',0);
+            TempItemSub_G.FINDFIRST;
+          END;
+
+
+          TransferLineBuffTmp_L.DELETEALL;
+          WhseShpmtHeader_L.GET(TourNo_P);
+          ByItemSubs_G := TRUE;
+          REPEAT
+            //------------------------------------------------------------------------------------------------------------------
+            TransferLineBuffTmp_L.INIT;
+            TransferLineBuffTmp_L.TRANSFERFIELDS(TransferLine_G);
+            TransferLineBuffTmp_L."Item No." := TempItemSub_G."Substitute No.";
+            //SalesLineBuffTmp_L.Description := STRSUBSTNO(Text00004,SalesLine_G."No.");
+            //SalesLineBuffTmp_L."Description 2" := '';
+
+            IF NOT FirstLine_L THEN BEGIN
+              IF LastLineNo_L=0 THEN
+                 FirstLineNo_L :=FirstLineNo_L +10000
+              ELSE BEGIN
+                 FirstLineNo_L := ROUND(( FirstLineNo_L+ LastLineNo_L) / 2, 1)
+              END;
+            END
+            ELSE
+              FirstLineNo_L := TransferLine_G."Line No.";
+
+            TransferLineBuffTmp_L."Line No." := FirstLineNo_L;
+            TransferLineBuffTmp_L."Variant Code" := TransferLine_L."Variant Code";
+            //TransferLineBuffTmp_L."Remainder Process Type" := SalesLineBuffTmp_L."Remainder Process Type"::Reallocate;
+            TransferLineBuffTmp_L."Qty to Reallocate" := TempItemSub_G."Quantity to Replace";
+            TransferLineBuffTmp_L."Source Order Line No." := TransferLine_G."Line No.";
+            TransferLineBuffTmp_L."Quantity Before Substitution" := QuantOriginal_L;
+            TransferLineBuffTmp_L.INSERT;//(TRUE);
+
+            FirstLine_L := FALSE;
+
+
+          UNTIL TempItemSub_G.NEXT = 0;
+
+          DefalquerTransfLine(TransferLine_G,TransferLineBuffTmp_L,FALSE);
+          ReleaseOpen_L.RUN(TransferHeader_G);
+          TLine_L.RESET;
+          TLine_L.SETFILTER(TLine_L."Document No.",TransferLine_G."Document No.");
+          IF LastLineNo_L=0 THEN
+            TLine_L.SETFILTER(TLine_L."Line No.",'%1..',TransferLine_G."Line No."+1)
+          ELSE
+            TLine_L.SETFILTER(TLine_L."Line No.",'%1..%2',TransferLine_G."Line No."+1,LastLineNo_L-1);
+          TLine_L.SETFILTER("Outstanding Quantity",'>0');
+          IF TLine_L.FINDSET THEN
+            REPEAT
+              IF ((TempItemSub_G."Balance the remaining") AND (TLine_L."Line No." = TransferLine_G."Line No."))
+                  OR (TransferLine_G."Line No." <> TLine_L."Line No.") THEN BEGIN
+                WhseActivityCreate_L.FromTransLine2ShptLine(WhseShpmtHeader_L,TLine_L);
+              END;
+            UNTIL TLine_L.NEXT=0;
+
+          IF OrderToRelease_L=TRUE THEN BEGIN
+            ReleaseOpen_L.Reopen(TransferHeader_G);
+
+            ReleaseOpen_L.RUN(TransferHeader_G);
+            cduWhseTransferRelease_L.Reopen(TransferHeader_G);
+            cduLogisticsTourMngt_L.Reopen(TransferHeader_G);
+
+            cduWhseTransferRelease_L.Release(TransferHeader_G);
+            cduLogisticsTourMngt_L.Release(TransferHeader_G);
+            // --> 20110601-Wi00-CMC01.04
+
+          END;
+          OldCMCOutsLineBuff_P := CMCOutsLineBuff_P;
+        END
+        // --> 20141125-APP14-TER01.01.00-FBE01
+        ELSE
+          ERROR(Text60000);
+        // <-- 20141125-APP14-TER01.01.00-FBE01
+      END;
+
+      TransferLine_L.GET(CMCOutsLineBuff_P."Source Document No.",
+          CMCOutsLineBuff_P."Source Document Line No.");
+      CMCOutsLineBuff_P."Item No." := TransferLine_L."Item No.";
+      CMCOutsLineBuff_P."Item Description" := TransferLine_L.Description;
+      CMCOutsLineBuff_P."Order Quantity" := TransferLine_L.Quantity;
+      CMCOutsLineBuff_P."Outstanding Quantity" := TransferLine_L."Outstanding Quantity";
+      CMCOutsLineBuff_P."Qty. to Assign" := TransferLine_L."Outstanding Quantity";
+      CMCOutsLineBuff_P.MODIFY;
+    END;
+
+    PROCEDURE GetTransferLine@60002(VAR TempTLine_P@8053000 : TEMPORARY Record 5741);
+    BEGIN
+      //20141120-APP14-TER01.01.00-TEAP012-RMZ01
+      // --------------------------------------------------------------------------------------------------------------------------
+      // To Insert/Modify the sales Line regarding a substitution
+      // --------------------------------------------------------------------------------------------------------------------------
+      // Inputs
+      //    - TempTLine_P
+      // Outputs
+      TransferLine_G.GET(TempTLine_P."Document No.", TempTLine_P."Line No.");
+    END;
+
+    PROCEDURE FillTransferItemSub@60004(TransferLine_P@1000 : Record 5741);
+    VAR
+      "<-- 3LI LOCALS -->"@1000000000 : Integer;
+      CompanyInfo_L@1000000009 : Record 79;
+      CMCSetup_L@1000000001 : Record 8052982;
+      "<-- 3LI TEXT CONSTANTS -->"@1000000002 : TextConst;
+      Text600001@1000000003 : TextConst 'ENU=The unit of measure of the order line %1 its not equal with the unit of measure %2 of the subsititution item %3;FRA=L''unit' de base des articles de substitution n''est pas identique . celle de l''article substitu' pour au moins l''un d''eux, veuillez ajuster votre param'trage';
+      CMCOutsLineBuff_L@1000000005 : Record 8053052;
+      WhsShipLine_L@1000000006 : Record 7321;
+      AvailToPromise_L@1000000004 : Codeunit 5790;
+      GrossReq_L@1000000008 : Decimal;
+      SchedRcpt_L@1000000007 : Decimal;
+    BEGIN
+      //20141120-APP14-TER01.01.00-TEAP012-RMZ01
+      // --------------------------------------------------------------------------------------------------------------------------
+      // To fill the Item Substitution
+      // --------------------------------------------------------------------------------------------------------------------------
+      // Inputs
+      //    - TransferLine_P - quantity of transfer line
+      // Outputs
+      TempItemSub_G.RESET;
+      TempItemSub_G.DELETEALL;
+      //SalesHeader.GET(TempSalesLine_G."Document Type",TempSalesLine_G."Document No.");
+      CMCSetup_L.GET;
+      CompanyInfo_L.GET;
+      IF ItemSub_G.FIND('-') THEN BEGIN
+        REPEAT
+          TempItemSub_G."No." := ItemSub_G."No.";
+          TempItemSub_G."Variant Code" := ItemSub_G."Variant Code";
+          TempItemSub_G."Substitute No." := ItemSub_G."Substitute No.";
+          TempItemSub_G."Substitute Variant Code" := ItemSub_G."Substitute Variant Code";
+          TempItemSub_G.Description := ItemSub_G.Description;
+          TempItemSub_G.Interchangeable := ItemSub_G.Interchangeable;
+          TempItemSub_G."Location Filter" := ItemSub_G."Location Filter";
+          TempItemSub_G.Condition:= ItemSub_G.Condition;
+          TempItemSub_G."Shipment Date" := TempSalesLine_G."Shipment Date";
+          IF ItemSub_G."Substitute Type" = ItemSub_G."Substitute Type"::Item THEN BEGIN
+            Item_G.GET(ItemSub_G."Substitute No.");
+
+            AvailToPromise_L.QtyAvailabletoPromise(
+              Item_G,GrossReq_L,SchedRcpt_L,
+              Item_G.GETRANGEMAX("Date Filter"),CompanyInfo_L."Check-Avail. Time Bucket",
+              CompanyInfo_L."Check-Avail. Period Calc.");
+            Item_G.CALCFIELDS(Inventory,"Reserved Qty. on Inventory");
+            TempItemSub_G."Quantity Avail. on Shpt. Date" :=
+              Item_G.Inventory-Item_G."Reserved Qty. on Inventory" - GrossReq_L + SchedRcpt_L;
+            TempItemSub_G.Inventory := Item_G.Inventory;
+          END ELSE BEGIN
+            TempItemSub_G."Substitute Type" := TempItemSub_G."Substitute Type"::"Nonstock Item";
+            TempItemSub_G."Quantity Avail. on Shpt. Date" :=0;
+            TempItemSub_G.Inventory := 0;
+          END;
+          TempItemSub_G."Order Quantity" := TransferLine_P.Quantity;
+          TempItemSub_G."Physically Available" := CMCOutsLineBuff_L.GetPhysicallyAvailable(
+              TempItemSub_G."Substitute No.",TransferLine_P."Transfer-from Code",ItemSub_G."Substitute Variant Code",
+              TransferLine_P.Quantity);
+          TempItemSub_G."Quantity to Replace" := 0;
+          TempItemSub_G."Order No." := ItemSub_G."Order No.";
+          TempItemSub_G."Base Unit Of Measure" := ItemSub_G."Base Unit Of Measure";
+          TempItemSub_G.VALIDATE("Substitute Variant Code");
+          IF ItemSub_G."Base Unit Of Measure" <> TransferLine_P."Unit of Measure Code" THEN
+            ERROR(STRSUBSTNO(Text600001,TransferLine_P."Unit of Measure Code",ItemSub_G."Base Unit Of Measure",
+                          ItemSub_G."Substitute No."));
+
+          TempItemSub_G."Indiv. Quantity" := ItemSub_G."Indiv. Quantity";
+
+          CASE CMCSetup_L."Replacement Interval" OF
+            CMCSetup_L."Replacement Interval"::Excess:
+              TempItemSub_G."Theoretical amount of subst." := ReturnNumber(TransferLine_P.Quantity,TempItemSub_G."Indiv. Quantity",0);
+            CMCSetup_L."Replacement Interval"::Default:
+              TempItemSub_G."Theoretical amount of subst." := ReturnNumber(TransferLine_P.Quantity,TempItemSub_G."Indiv. Quantity",1);
+          END;
+
+          TempItemSub_G.INSERT;
+        UNTIL ItemSub_G.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE IsRexDiscount@1000000000(RecSalesLine_P@8053000 : Record 37) Res_RexDis : Boolean;
+    VAR
+      RecSalesDocDiscount_L@8053001 : Record 8053177;
+    BEGIN
+      Res_RexDis:=FALSE;
+      RecSetup_G.GET;
+
+      IF RecSetup_G."Activate Exceptional Discount" THEN
+        RecSetup_G.TESTFIELD("Exceptional Discount Code")
+      ELSE Res_RexDis:=TRUE;
+
+      RecSalesDocDiscount_L.RESET;
+      RecSalesDocDiscount_L.SETRANGE("Document Type",RecSalesLine_P."Document Type");
+      RecSalesDocDiscount_L.SETRANGE("Document No.",RecSalesLine_P."Document No.");
+      RecSalesDocDiscount_L.SETRANGE("Document Line No.",RecSalesLine_P."Line No.");
+      RecSalesDocDiscount_L.SETRANGE("Discount Code",RecSetup_G."Exceptional Discount Code");
+      IF RecSalesDocDiscount_L.FINDFIRST THEN  Res_RexDis:=TRUE;
+
+
+      EXIT ( Res_RexDis);
+    END;
+
+    LOCAL PROCEDURE UpdSalesLineKitTrackingSpec@60005(VAR RecNewSalesLine_P@60000 : Record 37;RecOldSalesLine_P@60001 : Record 37);
+    VAR
+      RecReservationEntry_L@60002 : Record 337;
+      RecKitSalesLine_L@60003 : Record 25000;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Mise . jour des liens sur tables Kit Sales Line et Reservation Entry de la ligne d'origine vers la ligne
+      // nouvellement cr''e
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //    -  RecNewSalesLine_P : La ligne vente cr''e
+      //    -  RecOldSalesLine_P : La ligne vente d'origine
+      // Sorties:
+      //    -
+      //----------------------------------------------------------------------------------------------------------
+      // --> 20171213-WI00-ADV01.01.00-3286-FBE01
+      IF NOT RecOldSalesLine_P."Kit Item" OR NOT RecOldSalesLine_P."Build Kit" THEN
+        EXIT;
+      IF RecNewSalesLine_P."Line No." = RecOldSalesLine_P."Line No." THEN
+        EXIT;
+      RecKitSalesLine_L.SETRANGE("Document Type" ,RecOldSalesLine_P."Document Type" );
+      RecKitSalesLine_L.SETRANGE("Document No.", RecOldSalesLine_P."Document No." );
+      RecKitSalesLine_L.SETRANGE("Document Line No." ,RecOldSalesLine_P."Line No.");
+      IF RecKitSalesLine_L.FINDSET(TRUE,FALSE) THEN REPEAT
+        RecReservationEntry_L.SETRANGE("Source Type", 25000);
+        RecReservationEntry_L.SETRANGE("Source Subtype",1);
+        RecReservationEntry_L.SETRANGE("Source ID",RecOldSalesLine_P."Document No.");
+        RecReservationEntry_L.SETRANGE("Source Prod. Order Line",RecOldSalesLine_P."Line No.");
+        IF RecReservationEntry_L.FINDSET(TRUE,FALSE) THEN REPEAT
+          RecReservationEntry_L."Source Prod. Order Line" := RecNewSalesLine_P."Line No.";
+          RecReservationEntry_L."Location Code" := RecNewSalesLine_P."Location Code";
+          RecReservationEntry_L.MODIFY;
+        UNTIL RecReservationEntry_L.NEXT = 0;
+      UNTIL RecKitSalesLine_L.NEXT = 0
+      // <-- 20171213-WI00-ADV01.01.00-3286-FBE01
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+
+      20111130-APP10-CMC02.01.00-BRA01 : CREATEOBJECT
+      20111208-APP01-CMC02.01.00-BRA01 : ADDCODE/ADDFUNCTION
+      20111209-APP01-CMC02.01.00-BRA01 : ADDFUNCTION
+      20111215-APP10-CMC02.01.00-BRA01 : ADDCODE (SHAREPOINT
+      20120102-APP01-CMC02.01.00-BRA01 : ADDCODE (Ajout message de confirmation)
+      20120104-APP01-CMC02.01.00-BRA01 : ADDCODE (Ajout de fonction pour d'falquer ligne achat pdts g'n'riques)
+      20110111-Log03-CMC02.01.00-BRA01 : ADDCODE
+      20120116-Log03-CMC02.01.00-BRA01 : BUGFIXED
+      20120119-Log03-CMC02.01.00-BRA01 : ADDCODE (descativation du test sur les extractions sur enlSvement)
+      20120119-Log03-CMC02.01.00-BRA02 : ADDCODE (Test sur les quantit's)
+      20120208-APP01-CMC02.01.00-BRA01 : ADDCODE (R'cup'ration des lignes cr'es)
+      20120507-APP01-CMC02.01.00-FEC01 : ADDCODE (Initialisation suppl'mentaire).
+      20120507-APP01-CMC02.01.00-FEC02 : ADDCODE (Gestion de la quantit' indivisible . zero).
+      20120507-APP01-CMC02.01.00-FEC03 : ADDCODE (Gestion de la quantit' indivisible . zero).
+      20120507-APP01-CMC02.01.00-FEC04 : ADDCODE (Affectation suppl'mentaire d'une variable).
+      20120507-APP01-CMC02.01.00-FEC05 : ADDCODE (Changement de rSgle de gestion).
+      20130128-App10-CMC02.01.00-TLM15731-SD01 : ADDCODE  (Correction  + am'lioration code)
+      20130128-App06-CMC02.01.00-DRN01 : ADDCODE (Fonction DefalquerSalesLine -> Report anomalie de prix dans la quantit' . r'affecter)
+      20130221-App12-CMC02.01.00-FDA : ADDCODE (Free product sale)
+      20130731-APP30-CMC02.02.00-BRA01 : ADDCODE (Traitement cas de modification article)
+      20130801-APP30-CMC02.02.00-BRA01 : MODCODE (Skip des lignes avec acomptes)
+      20130806-APP30-CMC02.02.00-AKH01 : ADDCODE (reouvrir cmd vente)
+      20130807-APP30-CMC02.02.00-0692-AKH01 : ADDCODE (Fixe Bug 0691)
+      20130807-APP30-CMC02.02.00-0697-AKH02 : ADDCODE (FIXE Bug  0697)
+      20130904-APP30-CMC02.02.00-0701-KEM01 : ADDCODE (remise . zero du champs de contrat)
+      20131009-Log03-CMC02.01.00-0922-DAD : ADDCODE (Test commande li'e et commande ouverte
+                                                    MAJ des lignes dans le Buffer de proposition de la tourn'e),"Negociated Price",
+                                                    Date document avoir reliquat = workdate, Correction facturation appro et acompte
+                                                    et Correction date comptabilisation avoir + calcul date d''ch'ance
+      20131128-App10-CMC02.01.00-1181-OAR01 : ADDCODE (Check If Document Dimension Exists)
+      20131216-APP30-CMC02.02.00-0854-FEC01 : ADDFUNC (CheckItemChange).
+      20131216-APP30-CMC02.02.00-0854-FEC02 : ADDCODE.
+      20131216-APP30-CMC02.02.00-1253-FEC03 : ADDFUNC (InsertChangeLogValue).
+      20131216-APP30-CMC02.02.00-1253-FEC04 : ADDFUNC (CreateChangeLog).
+      20131216-APP30-CMC02.02.00-1253-FEC05 : ADDCODE.
+      20140116-8060990/104-CMB6.00.10.09-1427-FDA01 : ADDFUNC (CancelPurchDSOrderLines)
+                                                      MODFUNC (CheckItemChange - modify the code that forbid the cancelation of a
+                                                                sales line that is Drop Shipment)
+                                                      MODCODE (Cancel related drop shipment purchase line)
+      20140124-APP01-CMC02.02.00-1474-BRA01 : ADDCODE (Ajuster 'cart dans le calcul des N› de ligne pour eclatement ep magasin
+                                                      et fct d'falquer);
+      20140203-APP01-CMC02.02.00-1474-AKH01 : ADDCODE (r'cup'rer prix n'goci' )
+      20140204-APP01-CMC02.02.00-1474-AKH01 : MODCODE (fonction d'falquer)
+      20140212-8060990/104-CMB6.00.10.09-1427-PPE01 : ADDCODE(bug correction)
+      20140226-App10-CMC02.02.00-1769-FEC01 : MODFUNCT (SetTempTransfLines, divers changements, la fonction n''tait pas finalis'e).
+      20140226-App10-CMC02.02.00-1769-FEC02 : MODFUNCT (DefalquerTransfLine, Divers changements, la fonction n''tait pas finalis'e).
+      20140303-Wi00-CMC02.02.00-1788-FEC01 : ADDFUNCT(GetNewInsertedLineNo).
+      20140303-Wi00-CMC02.02.00-1788-FEC02 : ADDCODE.
+      20140310-App10-CMC02.02.00-1769-FEC01 : ADDCODE.
+      20140310-App10-CMC02.02.00-1769-FEC02 : ADDCODE.
+      20140310-App10-CMC02.02.00-1769-FEC03 : ADDCODE.
+      20140327-Wi00-CMC02.02.00-1910-WSA01 : ADDCODE (recopie des lignes de la sous table remise et d'autres champs fct defalquer)
+      20140328-Wi00-CMC02.02.00-ID6338-DAD : ADDCODE (Modification du Statut de la commande en lanc')
+      20140410-APP30-CMC02.02.00-1971-FEC01 : ADDCODE.
+      20140410-APP30-CMC02.02.00-1971-FEC02 : ADDCODE.
+      20140410-APP30-CMC02.02.00-1971-FEC03 : ADDCODE.
+      20140410-APP30-CMC02.02.00-1971-FEC04 : ADDCODE.
+      20140410-APP30-CMC02.02.00-1971-FEC05 : ADDCODE.
+      20140410-APP30-CMC02.02.00-1971-FEC06 : ADDCODE.
+      20140410-APP30-CMC02.02.00-1971-FEC07 : ADDCODE.
+      20140410-APP30-CMC02.02.00-1971-FEC08 : ADDCODE.
+      20140410-APP30-CMC02.02.00-1971-FEC09 : ADDCODE.
+      20140423-APP30-CMC02.02.00-2019-FEC01 : MODCODE (Diverses modif dans la fonction FindNewSpecBlanketOrder).
+      20140425-APP30-CMC02.02.00-1971-FEC01 : ADDCODE.
+      20140425-APP30-CMC02.02.00-1971-FEC02 : ADDCODE.
+      20140429-Wi00-CMC02.02.00-2065-FEC01 : ADDCODE.
+      20140429-APP30-CMC02.02.00-1971-FEC01 : MODCODE.
+      20140514-8060990/104-CMB6.00.10.09-1427-FBE01 : Modifie la gestion "solder" lors de livraison directe
+      20140516-Wi00-CMC02.02.00-2117-FEC01 : ADDCODE.
+      20140522-WI00-CMC02.02.00-2121-FEC01 : ADDCODE (Permet de ne pas bloquer la suppression selon les rSgles en vigueur).
+      20140612-APP30-CMC02.02.00-2235-FEC01 : ADDCODE.
+      20140710-APP14-TER01.01.00-RMZ01: ADDCODE (DefalquerSalesLine,ItemSubstGet,CalcCustPrice,ReturnNumber,ReturnLeaveOriginalQty)
+      20140723-APP30-TER01.01.00-PDC01: ADDCODE(FindBestVariant)
+      20140806-APP14-TER01.01.00-PDC01: ADDCODE(Fix bugs)
+      20140807-APP14-TER01.01.00-PDC01: ADDCODE(Fix bugs)
+      20140812-APP01-CMC02.02.00-FHS01 : Refactoring
+      20140828-APP14-TER01.01.00-FBE01 : MODCODE Modify "Physically Available" calcul for Item Variant
+      20140829-APP14-TER01.01.00-FBE01 : MODCODE pour ne pas avoir de message . l'archivage de la commande
+      20140910-APP30-TER01.01.00-FBE01 : Gestion de l'affectation de la ligne variante . la ligne expedition
+      20140910-APP30-TER01.01.00-FBE02 : Gestion parametre pour affection variante
+      20140913-APP33-CMC02.02.00-FDA01 : Corrected Negociated -> Negotiated
+      20141007-APP10-CMC02.02.00-2528-FHS01 : ADDCODE (Sauvegarde le status de la ligne pour le restaurer)
+      20141008-APP19-CMC02.02.00-DRN01 : Correction perte remise prix unitaire dans la fonction DefalquerSalesLine
+      20141120-APP14-TER01.01.00-RMZ01 : ADDCODE (ItemSubstGetTransfer,GetTransferLine,FillTransferItemSub,DefalquerTransfLine)
+      20141120-APP30-CMC02.02.00-2606-DRN01 : Correction perte code magasin en cas de mutation
+      20141125-APP14-TER01.01.00-FBE01 : Pas d'affectation d'article si retour page Substitution <> LookupOK
+      20141219-APP40-CMC02.02.00-BSI01 : ADDCODE (Appel de la fonction "FillInPrepCMtoIssue")
+      20150107-APP14-TER01.01.00-PDC01 : ADDCODE (fill "Budgeted Unit Price")
+      20141219-APP40/001-CMC02.02.00-BSI01 : ADDCODE (Appel de la fonction "FillInPrepCMtoIssue")
+      20150123-APP14-TER01.01.00-SDE01 : ADDCODE (SP88 TERNOVEO)
+      20150325-APP30-CMC02.02.00-2853-FEC01 : ADDCODE (Suppression des enregistrements temporaires).
+      20150325-APP30-CMC02.02.00-2853-FEC02 : ADDCODE (Alimentation des en-t^tes temporaire pour post-traitement).
+      20150325-APP30-CMC02.02.00-2853-FEC03 : DELCODE (Plus de lancement de la commande).
+      20150325-APP30-CMC02.02.00-2853-FEC04 : ADDCODE (Traitement des en-t^te trait' par le traitement).
+      20150806-WI00-ADV01.01.00-2071-PSI01 : MODCODE (Pb d'ordonnancement du code : d'placement validate quantit')
+      20150811-Wi00-ADV01.01.00-2071-FHS01 : MODCODE (Corrige le changement de variante)
+      20150820-Wi00-ADV01.01.00-2151-FHS01 : MODCODE (.)
+      20150827-APP14-TER01.01.00-2163-SDE01 : MODCODE (corrige beug sur valdation liv)
+      20151125-APP28-TER01.01.00-2500-JCD01 : ADDCODE (Appelle fonction "SkipShowMix" pour annuler COMMIT table 37)
+      20151211-APP28-TER01.01.00-2500-CJY01 : ADDCODE (compl'ment au SP 2500 ci-dessus)
+      20160219-App17-ADV01.01.00-2669-JCD01 : ADDCODE (Pas de controle de validation sur la campagne en exp'dition)
+                                              MODFUNC (Ajout paramStre . la fonction DefalquerSalesLine)
+      20160222-App30-ADV01.01.00-2704-DDS01 : ADDCODE (Suppression des blocages dans la gestion des reliquats dans le run du Codeunit dans
+                                              du Prix unitaire net, de la Date distribution dans la Table Article et de la Date 'ch'ance)
+
+      20160308-App30-ADV01.01.00-2824-DDS01 : ADDCODE (Gestion des reliquats pour les Bulks)
+      20160517-Wi00-ADV01.01.00-2986-JCD01 : ADDCODE (Gestion reliquat de gratuit)
+      20160518-WI00-ADV01.01.00-3013-VMR01 : MODFUNC ( Fonction Defalquer Salesline)
+      20160727-Wi00-ADV01.01.00-20878-OAN01 : ADDCODE (Sold Free Product Item Charge When Sold Order Line)
+      CMC-8052300/125|903405-NED : ADDCODE (transfert des 'critures de r'servation dans split de lignes)
+      20161020-WI00-ADV01.01.00-3109-JCD01 : MODCODE (Modif code pour g'rer le journal traitement de la gestion des reliquats de cde)
+      20161122-WI00-ADV01.01.00-3109-JCD01 : MODCODE (Chargement saison seulement si la ligne n'est pas supprim'e)
+      20170907-LogA07-SCT00.00.00-3288-NED : MODFUNCT (DefalquerSalesLine : Cocher ligne splitt'e)
+      20171005-WI00-ADV01.01.00-29507-CJY01 : MODCODE (modification pour eviter messages genant dans solde reliquat)
+      20171030-WI00-ADV01.01.00-24077-CJY01 : MODCODE (correction mutation article avec maintient de prix)
+      20171213-WI00-ADV01.01.00-3286-FBE01 : ADDFUNCT(UpdSalesLineKitTrackingSpec)
+      20171213-WI00-ADV01.01.00-3286-FBE01 : MODFUNCT(DefalquerSalesLine, appel de UpdSalesLineKitTrackingSpec)
+      20171213-WI00-ADV01.01.00-3286-FBE01 : MODFUNCT(DefalquerSalesLine)
+      20171215-WI00-ADV01.01.00-3286-CJY01 : MODFUNCT(Adaptation gestion reliquat aux lignes de kits)
+      20180411-WI00-ADV01.01.00-26359-NED : MODFUNCT (DefalquerSalesLine)
+      20191209-WI00-ADV01.01.00-3450-MRU01 : MODCODE (Suppression messages Quotas via gestion reliquat commande)
+      20200212-WI00-ADV01.01.00-48375-MRU01 : ADDCODE (G'n'ration des lignes de kit vente si modification article => article kit)
+      20240719-WI00-ADV01.01.00-3666-IJI01 : ADDCODE (ne pas g'nere un avoir acompte . emettre lors d'un split)
+      20260513-WI00-ADV01.01.00-44552-CJY01 : MODFIELD (d'sactivation champs LS "status" remplac' par "Header status" )
+
+
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,612 @@
+OBJECT Report 85114 Gen RFC Avoir Achat ver 2
+{
+  OBJECT-PROPERTIES
+  {
+    Date=04/11/16;
+    Heure=09:52:29;
+    Modifi'=Oui;
+    Liste versions=SP 2615;
+  }
+  PROPERTIES
+  {
+    ProcessingOnly=Oui;
+    OnPreReport=BEGIN
+                  ValuationType_G := ValuationType_G::"Apply Purch. Discount";
+                END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table8053088;
+        DataItemTableView=SORTING(Item Ledger Entry No.,Entry Type,Document Type)
+                          WHERE(Document Type=CONST(Purchase Return Shipment),
+                                Item Charge No.=FILTER(''));
+        OnAfterGetRecord=VAR
+                           TempPurchCrMemoLine@1000000000 : TEMPORARY Record 125;
+                         BEGIN
+                           //On commence par v'rifier qu'un avoir existe sur ce retour enregistr'
+                           {IF RecPurchReturnLine_G.GET("CMC Purch. ECD Ledger Entry"."Document No.",
+                                                      "CMC Purch. ECD Ledger Entry"."Document Line No.") THEN BEGIN
+
+                               GetPurchCrMemoLines(TempPurchCrMemoLine,RecPurchReturnLine_G);
+
+                               IF TempPurchCrMemoLine.FINDSET THEN REPEAT
+                                  //On recherche les 'critures valeurs de la lignes avoir
+                                  RecGValueEntry_G.RESET;
+                                  RecGValueEntry_G.SETRANGE(Adjustment,FALSE);
+
+                               UNTIL TempPurchCrMemoLine.NEXT = 0;
+                           END;
+                           }
+                         END;
+
+        ReqFilterFields=Entry No.,Document No.,Document Line No.;
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=1;
+        DataItemTable=Table5802;
+        DataItemTableView=SORTING(Entry No.)
+                          WHERE(Adjustment=CONST(Non),
+                                Item Ledger Entry Type=CONST(Purchase));
+        OnPreDataItem=BEGIN
+                        "Value Entry".SETRANGE("Document No.","CMC Purch. ECD Ledger Entry"."Document No.");
+                        "Value Entry".SETRANGE("Document Line No.","CMC Purch. ECD Ledger Entry"."Document Line No.");
+                        "Value Entry".SETRANGE("Document Type","Value Entry"."Document Type"::"Purchase Return Shipment");
+                      END;
+
+        DataItemLink=Entry No.=FIELD(Value Entry No.);
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=2;
+        DataItemTable=Table8053252;
+        DataItemTableView=SORTING(Value Entry No.,Rank)
+                          WHERE(Discount Code=FILTER(<>''));
+        OnAfterGetRecord=VAR
+                           TempPurchCrMemoLine@1000000000 : TEMPORARY Record 125;
+                           ValueEntry@1000000001 : Record 5802;
+                           PurchCrMemoLine@1000000002 : Record 125;
+                           CmcValueEntryDiscount@1000000003 : Record 8053252;
+                           EcdManagement@1000000004 : Codeunit 8053038;
+                           PrevFinalPrice_L@1000000005 : Decimal;
+                           NextFinalPrice_L@1000000006 : Decimal;
+                         BEGIN
+                           //A partir d'ici on essaie de cr'er la ligne correspondante pour chaque ligne valeur de la ligne avoir
+                           //On va chercher la ou les lignes avoirs correspondant . notre ligne de reception
+                           BooToGenerate := FALSE;
+
+                           IF RecPurchReturnLine_G.GET("CMC Purch. ECD Ledger Entry"."Document No.",
+                                                      "CMC Purch. ECD Ledger Entry"."Document Line No.") THEN BEGIN
+
+                                    GetPurchCrMemoLines(TempPurchCrMemoLine,RecPurchReturnLine_G);
+                                    IF TempPurchCrMemoLine.FINDSET THEN REPEAT
+                                       //On recherche les 'critures valeurs associ'es
+                                       ValueEntry.RESET;
+                                       ValueEntry.SETCURRENTKEY("Item Ledger Entry No.","Entry Type");
+                                       ValueEntry.SETRANGE("Entry Type",ValueEntry."Entry Type"::"Direct Cost");
+                                       ValueEntry.SETFILTER("Invoiced Quantity",'<>0');
+                                       ValueEntry.SETRANGE("Item Ledger Entry No.","CMC Purch. ECD Ledger Entry"."Item Ledger Entry No.");
+                                       //MESSAGE('%1',ValueEntry.COUNT);
+                                       IF ValueEntry.FINDSET THEN
+                                         REPEAT
+                                           IF PurchCrMemoLine.GET(ValueEntry."Document No.",ValueEntry."Document Line No.") THEN BEGIN
+                                               //On cr'e la ligne correspondante dans "CMC Value Entry Discount"
+                                               IF NOT CmcValueEntryDiscount.GET(ValueEntry."Entry No.","CMC Value Entry Discount"."Discount Code") THEN BEGIN
+                                                   CmcValueEntryDiscount.INIT;
+                                                   CmcValueEntryDiscount.TRANSFERFIELDS("CMC Value Entry Discount");
+                                                   VendorNo_G := "CMC Value Entry Discount"."ECD Vendor No.";
+                                                   CmcValueEntryDiscount."Value Entry No." := ValueEntry."Entry No.";
+                                                   PurchDiscount_G.GET(CmcValueEntryDiscount."Discount Code");
+                                                   //CmcValueEntryDiscount."Base Value" := ValueEntry."Cost per Unit";
+                                                   //CmcValueEntryDiscount."Base Value" := GetDiscountBaseValue(CmcValueEntryDiscount);
+                                                   //IF "CMC Value Entry Discount"."Discount %" <> 0 THEN BEGIN
+                                                   IF  "CMC Value Entry Discount"."Discount Amount" > 0 THEN BEGIN
+
+                                                     //IF CmcValueEntryDiscount."Base Value" - "CMC Value Entry Discount"."Discount Amount" > 0 THEN BEGIN
+                                                        CmcValueEntryDiscount."Base Value" := GetDiscountBaseValue(CmcValueEntryDiscount,0);
+                                                        PrevFinalPrice_L := GetDiscountPreviousPrice(CmcValueEntryDiscount);
+                                                        //NextFinalPrice_L := UpdateDiscount(CmcValueEntryDiscount,0,0,PrevFinalPrice_L);
+                                                        NextFinalPrice_L :=  InsertNewDiscount(PrevFinalPrice_L,CmcValueEntryDiscount,
+                                                                                               "CMC Value Entry Discount");
+                                                        //CmcValueEntryDiscount."Base Value" := ValueEntry."Cost per Unit";
+                                                        //CmcValueEntryDiscount."Discount Amount" := "CMC Value Entry Discount"."Discount Amount";
+                                                        CmcValueEntryDiscount."Discount Amount" := ROUND(CmcValueEntryDiscount."Base Value" *
+                                                                                                 CmcValueEntryDiscount."Discount %" / 100, 0.01, '=');
+                                                        CmcValueEntryDiscount."Final Price" := CmcValueEntryDiscount."Base Value" -
+                                                                                               "CMC Value Entry Discount"."Discount Amount";
+
+
+                                                        //ROUND(CMCPurchDocDiscTemp_L."Base Value" * CMCPurchDocDiscTemp_L."Discount %" /100, 0.01, '='));
+                                                        //IF CmcValueEntryDiscount.INSERT THEN BEGIN
+                                                           BooToGenerate := TRUE;
+                                                           ValueEntry."Budgeted Unit Cost" := CmcValueEntryDiscount."Final Price";
+                                                           ValueEntry.MODIFY;
+                                                           EcdManagement.InsertPurchECDLedgerEntry(ValueEntry,FALSE,
+                                                                                                    "CMC Value Entry Discount"."Discount Code");
+                                                           //Cr'ation de la ligne doc enregistr'
+                                                           FctInsertPostedPurchDocRFC(ValueEntry);
+
+                                                        //END;
+                                                     //END;
+                                                   END;
+                                                   {ELSE BEGIN
+                                                     IF  "CMC Value Entry Discount"."Discount Amount" > 0 THEN BEGIN
+                                                        //IF CmcValueEntryDiscount."Base Value" - "CMC Value Entry Discount"."Discount Amount" > 0 THEN BEGIN
+                                                           CmcValueEntryDiscount."Base Value" := ValueEntry."Cost per Unit";
+                                                           CmcValueEntryDiscount."Final Price" := CmcValueEntryDiscount."Base Value" -
+                                                                                                  "CMC Value Entry Discount"."Discount Amount";
+                                                           CmcValueEntryDiscount."Discount Amount" := "CMC Value Entry Discount"."Discount Amount";
+                                                           IF CmcValueEntryDiscount.INSERT THEN BEGIN
+                                                              BooToGenerate := TRUE;
+                                                              ValueEntry."Budgeted Unit Cost" := CmcValueEntryDiscount."Final Price";
+                                                              ValueEntry.MODIFY;
+                                                              EcdManagement.InsertPurchECDLedgerEntry(ValueEntry,FALSE,
+                                                                                                       "CMC Value Entry Discount"."Discount Code");
+                                                              //Cr'ation de la ligne doc enregistr'
+                                                              FctInsertPostedPurchDocRFC(ValueEntry);
+
+                                                           END;
+                                                        //END;
+
+                                                     END;
+                                                   END;
+                                                   }
+                                               END;
+                                           END;
+                                       UNTIL ValueEntry.NEXT = 0;
+                                    UNTIL TempPurchCrMemoLine.NEXT = 0;
+                           END;
+                         END;
+
+        DataItemLink=Value Entry No.=FIELD(Entry No.);
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=9020;
+      Height=3410;
+    }
+    CONTROLS
+    {
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+    }
+  }
+  CODE
+  {
+    VAR
+      RecPurchReturnLine_G@1000000000 : Record 6651;
+      RecGValueEntry_G@1000000001 : Record 5802;
+      BooToGenerate@1000000002 : Boolean;
+      CMCSetup_G@1000000003 : Record 8052982;
+      Text60000@1000000004 : TextConst 'ENU=Discount is greater than Base Value for Value Entry No. %1!;FRA=La remise est sup'rieure . la valeur de base pour l''ecriture valeur n› %1 (Type document : %2, N› document : %3, ligne document : %4)!';
+      PurchECDLedgEntryTmp_G@1000000005 : TEMPORARY Record 8053088;
+      PurchDiscount_G@1000000006 : Record 8053247;
+      Text8053019@1000000007 : TextConst 'ENU="%1 not found for %2 = %3 ";FRA="%1 pas trouv' de %2 = %3"';
+      Text8053018@1000000008 : TextConst 'ENU=Final Price is greater than Base Value for Value Entry No. %1!;FRA=Le prix final est sup'rieure . la valeur de base pour l''ecriture valeur n› %1!';
+      ValuationType_G@1000000009 : 'New ECD Amount,New ECD Percentage,Change ECD amount,Apply Purch. Discount';
+      Text030@1000000010 : TextConst 'ENU=It is not possible to add an ECD amount when the ECD is created for the first time.;FRA=Il n''est pas possible d''ajouter un montant de RFC quand la RFC est cr'e pour la premiSre fois.';
+      VendorNo_G@1000000011 : Code[20];
+
+    PROCEDURE FilterPstdDocLnItemLedgEntries@6(VAR ItemLedgEntry@1000 : Record 32;RecPurchReturnLine_P@1000000000 : Record 6651);
+    BEGIN
+      ItemLedgEntry.RESET;
+      ItemLedgEntry.SETCURRENTKEY("Document No.");
+      ItemLedgEntry.SETRANGE("Document No.",RecPurchReturnLine_P."Document No.");
+      ItemLedgEntry.SETRANGE("Document Type",ItemLedgEntry."Document Type"::"Purchase Return Shipment");
+      ItemLedgEntry.SETRANGE("Document Line No.",RecPurchReturnLine_P."Line No.");
+      //MESSAGE('%1',ItemLedgEntry.COUNT);
+    END;
+
+    PROCEDURE GetPurchCrMemoLines@4(VAR TempPurchCrMemoLine@1000 : TEMPORARY Record 125;RecPurchReturnLine_P@1000000000 : Record 6651);
+    VAR
+      PurchCrMemoLine@1003 : Record 125;
+      ItemLedgEntry@1002 : Record 32;
+      ValueEntry@1001 : Record 5802;
+    BEGIN
+      TempPurchCrMemoLine.RESET;
+      TempPurchCrMemoLine.DELETEALL;
+
+      IF RecPurchReturnLine_P.Type <> RecPurchReturnLine_P.Type::Item THEN
+        EXIT;
+
+      FilterPstdDocLnItemLedgEntries(ItemLedgEntry,RecPurchReturnLine_P);
+      ItemLedgEntry.SETFILTER("Invoiced Quantity",'<>0');
+      IF ItemLedgEntry.FINDSET THEN BEGIN
+        ValueEntry.SETCURRENTKEY("Item Ledger Entry No.","Entry Type");
+        ValueEntry.SETRANGE("Entry Type",ValueEntry."Entry Type"::"Direct Cost");
+        ValueEntry.SETFILTER("Invoiced Quantity",'<>0');
+        ValueEntry.SETRANGE(Adjustment,FALSE);
+        //MESSAGE('%1',ValueEntry.COUNT);
+        REPEAT
+          ValueEntry.SETRANGE("Item Ledger Entry No.",ItemLedgEntry."Entry No.");
+
+          IF ValueEntry.FINDSET THEN
+            REPEAT
+              IF ValueEntry."Document Type" = ValueEntry."Document Type"::"Purchase Credit Memo" THEN
+                IF PurchCrMemoLine.GET(ValueEntry."Document No.",ValueEntry."Document Line No.") THEN BEGIN
+                  TempPurchCrMemoLine.INIT;
+                  TempPurchCrMemoLine := PurchCrMemoLine;
+                  IF TempPurchCrMemoLine.INSERT THEN;
+                END;
+            UNTIL ValueEntry.NEXT = 0;
+        UNTIL ItemLedgEntry.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE GetDiscountBaseValue@8053012(VAR ValueEntryDiscount_P@8053000 : Record 8053252;PrevFinalPrice_P@8053004 : Decimal) : Decimal;
+    VAR
+      ValueEntryDisc_L@8053001 : Record 8053252;
+      PurchDisc_L@8053002 : Record 8053247;
+      ValueEntry_L@8053003 : Record 5802;
+    BEGIN
+      PurchDisc_L.GET(ValueEntryDiscount_P."Discount Code");
+
+      CASE PurchDisc_L."Disc. Calculation Type" OF
+        PurchDisc_L."Disc. Calculation Type"::"Chain Discount" : BEGIN
+          IF PrevFinalPrice_P <> 0 THEN
+            EXIT(PrevFinalPrice_P)
+          ELSE BEGIN
+            ValueEntryDisc_L.RESET;
+            ValueEntryDisc_L.SETCURRENTKEY("Value Entry No.",Rank);
+            ValueEntryDisc_L.SETRANGE("Value Entry No.",ValueEntryDiscount_P."Value Entry No.");
+            ValueEntryDisc_L.SETFILTER(Rank,'<=%1',ValueEntryDiscount_P.Rank);
+            IF ValueEntryDisc_L.FINDLAST THEN
+              EXIT(ValueEntryDisc_L."Final Price")
+            ELSE BEGIN
+              ValueEntry_L.GET(ValueEntryDiscount_P."Value Entry No.");
+              EXIT(ValueEntry_L."Cost per Unit");
+            END;
+          END;
+        END;
+        PurchDisc_L."Disc. Calculation Type"::"Sum Discount" : BEGIN
+          ValueEntry_L.GET(ValueEntryDiscount_P."Value Entry No.");
+          EXIT(ValueEntry_L."Cost per Unit");
+        END;
+      END;
+
+      EXIT(0);
+    END;
+
+    PROCEDURE FctInsertPostedPurchDocRFC@1000000001(VAR ValueEntry_P@1000000001 : Record 5802);
+    VAR
+      CMCPostedPurchDocDisc_L@1000000000 : Record 8053250;
+    BEGIN
+      CMCPostedPurchDocDisc_L.RESET;
+      CMCPostedPurchDocDisc_L.INIT;
+      CMCPostedPurchDocDisc_L."Document Type" := CMCPostedPurchDocDisc_L."Document Type"::"Credit Memo";
+      CMCPostedPurchDocDisc_L."Document No." := ValueEntry_P."Document No.";
+      CMCPostedPurchDocDisc_L."Document Line No." := ValueEntry_P."Document Line No.";
+      CMCPostedPurchDocDisc_L."Discount Code" := "CMC Value Entry Discount"."Discount Code";
+      CMCPostedPurchDocDisc_L.Rank := "CMC Value Entry Discount".Rank;
+      CMCPostedPurchDocDisc_L."Base Value" := "CMC Value Entry Discount"."Base Value";
+      CMCPostedPurchDocDisc_L."Discount %" := "CMC Value Entry Discount"."Discount %";
+      CMCPostedPurchDocDisc_L."Discount Amount" := "CMC Value Entry Discount"."Discount Amount";
+      CMCPostedPurchDocDisc_L."Final Price" := "CMC Value Entry Discount"."Final Price";
+      CMCPostedPurchDocDisc_L."ECD Vendor No." := "CMC Value Entry Discount"."ECD Vendor No.";
+      CMCPostedPurchDocDisc_L.INSERT;
+    END;
+
+    PROCEDURE UpdateDiscount@8053004(VAR ValueEntryDisc_P@8053000 : Record 8053252;ValuationType_P@8053001 : 'New ECD Amount,New ECD Percentage,Change ECD amount,Apply Purch. Discount';ModificationValue_P@8053002 : Decimal;PrevFinalPrice_P@8053003 : Decimal) : Decimal;
+    VAR
+      CMCPurchDiscValue_L@8053004 : Record 8053248;
+    BEGIN
+      CASE ValuationType_P OF
+        ValuationType_P::"New ECD Amount" : BEGIN
+          IF ValueEntryDisc_P."Discount Code" <> CMCSetup_G."Except. Purch. ECD Disc. Code" THEN BEGIN
+            ValueEntryDisc_P."Discount Amount" := ModificationValue_P;
+            ValueEntryDisc_P."Discount %" := 0;
+            SetFinalPrice(ValueEntryDisc_P,PrevFinalPrice_P);
+          END ELSE BEGIN
+            //IF UpdateType_G <> UpdateType_G::"Unapply Budgeted Unit Cost" THEN BEGIN
+              IF ValueEntryDisc_P."Discount Amount" <> 0 THEN BEGIN
+                IF ValueEntryDisc_P."Base Value" > ValueEntryDisc_P."Final Price" THEN
+                  ValueEntryDisc_P."Discount Amount" := ValueEntryDisc_P."Base Value" - ValueEntryDisc_P."Final Price"
+                ELSE
+                  IF ValueEntryDisc_P."Base Value" < ValueEntryDisc_P."Final Price" THEN
+                    ERROR(Text8053018,"Value Entry"."Entry No.")
+                  ELSE BEGIN
+                    ValueEntryDisc_P."Discount %" := 0;
+                    ValueEntryDisc_P."Discount Amount" := 0;
+                  END;
+              END ELSE BEGIN
+                ValueEntryDisc_P."Discount Amount" := ModificationValue_P;
+                SetFinalPrice(ValueEntryDisc_P,PrevFinalPrice_P);
+              END;
+            //END ELSE BEGIN
+              ValueEntryDisc_P."Discount %" := 0;
+              ValueEntryDisc_P."Discount Amount" := 0;
+              ValueEntryDisc_P."Final Price" := ValueEntryDisc_P."Base Value";
+            //END;
+          END;
+        END;
+        ValuationType_P::"New ECD Percentage" : BEGIN
+          ValueEntryDisc_P."Discount Amount" :=
+                                   ROUND(ValueEntryDisc_P."Base Value" * ModificationValue_P / 100, 0.01, '=');
+          ValueEntryDisc_P."Discount %" := ModificationValue_P;
+          SetFinalPrice(ValueEntryDisc_P,PrevFinalPrice_P);
+        END;
+
+      END;
+      ValueEntryDisc_P.MODIFY(TRUE);
+
+      EXIT(ValueEntryDisc_P."Final Price");
+    END;
+
+    PROCEDURE SetFinalPrice@8053013(VAR ValueEntryDiscount_P@8053000 : Record 8053252;PrevFinalPrice_P@8053001 : Decimal);
+    VAR
+      RecValueEntry_L@1000000000 : Record 5802;
+    BEGIN
+      // --> 20160111-APP33-ADV01.01.00-2630-CJY01
+      RecValueEntry_L.GET(ValueEntryDiscount_P."Value Entry No.");
+      // <-- 20160111-APP33-ADV01.01.00-2630-CJY01
+      ValueEntryDiscount_P."Final Price" := PrevFinalPrice_P - ValueEntryDiscount_P."Discount Amount";
+      IF ValueEntryDiscount_P."Final Price" < 0 THEN
+        // --> 20160111-APP33-ADV01.01.00-2630-CJY01
+        {BEFORE
+        ERROR(Text004, ValueEntryDiscount_P."Value Entry No.");
+        AFTER}
+        ERROR(Text60000, ValueEntryDiscount_P."Value Entry No.",STRSUBSTNO('%1',RecValueEntry_L."Document Type"),
+          RecValueEntry_L."Document No.",RecValueEntry_L."Document Line No.");
+        // <-- 20160111-APP33-ADV01.01.00-2630-CJY01
+    END;
+
+    PROCEDURE GetPurchDiscount@1000000000(VAR CMCPurchDiscValue_P@8053003 : Record 8053248) Result_L : Boolean;
+    VAR
+      j_L@1000000001 : Integer;
+      i_L@8053001 : Integer;
+      ItemLedgerEntry_L@8053000 : Record 32;
+      Item_L@8053002 : Record 27;
+    BEGIN
+      {ItemLedgerEntry_L.GET("Value Entry"."Item Ledger Entry No.");
+      Item_L.GET("Value Entry"."Item No.");
+
+      CMCPurchDiscValue_P.RESET;
+
+      FOR j_L := 0 TO 1 DO BEGIN
+
+        CMCPurchDiscValue_P.RESET;
+        CMCPurchDiscValue_P.SETRANGE("Purch. Discount Code", DiscountCode_G);
+        CMCPurchDiscValue_P.SETFILTER("Campaign No.",'%1|%2',"Value Entry"."Campaign No.",'');
+        CMCPurchDiscValue_P.SETRANGE("Vendor Type",j_L);
+        CASE j_L OF
+          0 : CMCPurchDiscValue_P.SETRANGE("Vendor No.", "Value Entry"."Buy-from Vendor No.");
+          1 : CMCPurchDiscValue_P.SETRANGE("Vendor No.", "Value Entry"."Source No.");
+          2 : CMCPurchDiscValue_P.SETRANGE("Vendor No.", "Value Entry"."Origin Vendor No.");
+        END;
+        CMCPurchDiscValue_P.SETFILTER("Starting Date",'<=%1', ItemLedgerEntry_L."Order Date");
+        CMCPurchDiscValue_P.SETFILTER("Ending Date", '>=%1', ItemLedgerEntry_L."Order Date");
+        CMCPurchDiscValue_P.SETFILTER("Blanket Order No.",'%1|%2',ItemLedgerEntry_L."Purch. Blanket Order No.",'');
+        CMCPurchDiscValue_P.SETFILTER("Minimum Quantity",'<=%1|0',ItemLedgerEntry_L.Quantity);
+        CMCPurchDiscValue_P.SETFILTER("Unit of Measure Code",'%1|%2',ItemLedgerEntry_L."Unit of Measure Code",'');
+
+        IF CMCPurchDiscValue_P.FINDFIRST THEN BEGIN
+          FOR i_L := 0 TO 5 DO BEGIN
+            CMCPurchDiscValue_P.SETRANGE(Type, i_L);
+            CASE i_L OF
+              0 : BEGIN
+                CMCPurchDiscValue_P.SETRANGE(Code,"Value Entry"."Item No.");
+                CMCPurchDiscValue_P.SETFILTER("Variant Code",'%1|%2',"Value Entry"."Variant Code",'');
+              END;
+              1 : CMCPurchDiscValue_P.SETRANGE(Code, Item_L."Item Disc. Group");
+              2 : CMCPurchDiscValue_P.SETRANGE(Code, Item_L."Species Code");
+              3 : CMCPurchDiscValue_P.SETRANGE(Code, Item_L."Sub-Family Code");
+              4 : CMCPurchDiscValue_P.SETRANGE(Code, Item_L."Family Code");
+              5 : CMCPurchDiscValue_P.SETRANGE(Code, Item_L."Activity Code");
+            END;
+
+            IF CMCPurchDiscValue_P.FINDLAST THEN BEGIN
+              i_L := 5;
+              // --> 20150728-APP33-ADV01.01.00-2026-FEC01
+              j_L := 1;
+              // <-- 20150728-APP33-ADV01.01.00-2026-FEC01
+              Result_L := TRUE;
+            END;
+
+          END;
+
+          IF NOT CMCPurchDiscValue_P.FINDLAST THEN
+            CMCPurchDiscValue_P.INIT;
+
+        END;
+      END;
+      }
+    END;
+
+    PROCEDURE GetDiscountPreviousPrice@1000000003(VAR ValueEntryDiscount_P@8053000 : Record 8053252) : Decimal;
+    VAR
+      ValueEntryDisc_L@8053001 : Record 8053252;
+      PurchDisc_L@8053002 : Record 8053247;
+      ValueEntry_L@8053003 : Record 5802;
+    BEGIN
+      ValueEntry_L.GET(ValueEntryDiscount_P."Value Entry No.");
+      ValueEntryDisc_L.RESET;
+      ValueEntryDisc_L.SETCURRENTKEY("Value Entry No.",Rank);
+      ValueEntryDisc_L.SETRANGE("Value Entry No.",ValueEntryDiscount_P."Value Entry No.");
+      ValueEntryDisc_L.SETFILTER(Rank,'<=%1',ValueEntryDiscount_P.Rank);
+      IF ValueEntryDisc_L.FINDLAST THEN
+        EXIT(ValueEntryDisc_L."Final Price")
+      ELSE
+        EXIT(ValueEntry_L."Cost per Unit");
+    END;
+
+    PROCEDURE UpdateRemainingValueEntryDisc@8053007(ValueEntryDisc_P@8053001 : Record 8053252;ValueEntry_P@8053004 : Record 5802;PrevFinalPrice_P@8053005 : Decimal) : Decimal;
+    VAR
+      ValueEntryDisc_L@8053000 : Record 8053252;
+      Found_L@8053002 : Boolean;
+      PreviousFinalPrice_L@8053003 : Decimal;
+    BEGIN
+      PurchECDLedgEntryTmp_G.RESET;
+      PurchECDLedgEntryTmp_G.DELETEALL;
+
+      Found_L := FALSE;
+      PreviousFinalPrice_L := 0;
+
+      ValueEntryDisc_L.RESET;
+      ValueEntryDisc_L.SETCURRENTKEY("Value Entry No.",Rank);
+      ValueEntryDisc_L.SETRANGE("Value Entry No.","Value Entry"."Entry No.");
+
+      IF ValueEntryDisc_L.FINDSET THEN
+        REPEAT
+          IF ValueEntryDisc_L."Discount Code" = ValueEntryDisc_P."Discount Code" THEN BEGIN
+            Found_L := TRUE;
+            PreviousFinalPrice_L := PrevFinalPrice_P;
+            //StoreBeforeECDLedgerEntry(PurchECDLedgEntryTmp_G,ValueEntryDisc_L,ValueEntry_P);
+            //UpdatePurchDocDiscount(ValueEntryDisc_L);
+          END ELSE BEGIN
+            IF Found_L THEN BEGIN
+              ValueEntryDisc_L."Base Value" := GetDiscountBaseValue(ValueEntryDisc_L,PreviousFinalPrice_L);
+              PurchDiscount_G.GET(ValueEntryDisc_L."Discount Code");
+              // --> 20160114-APP33-ADV01.01.00-2630-CJY02
+              {BEFORE
+              IF ValueEntryDisc_L."Discount %" <> 0 THEN
+                UpdateDiscount(ValueEntryDisc_L,1,ValueEntryDisc_L."Discount %",ValueEntryDisc_L."Base Value")
+              ELSE
+                UpdateDiscount(ValueEntryDisc_L,0,ValueEntryDisc_L."Discount Amount",ValueEntryDisc_L."Base Value");
+               AFTER}
+
+              IF ValueEntryDisc_L."Discount %" <> 0 THEN
+                IF PurchDiscount_G."Disc. Calculation Type" = PurchDiscount_G."Disc. Calculation Type"::"Chain Discount" THEN
+                  UpdateDiscount(ValueEntryDisc_L,1,ValueEntryDisc_L."Discount %",ValueEntryDisc_L."Base Value")
+                ELSE
+                  UpdateDiscount(ValueEntryDisc_L,1,ValueEntryDisc_L."Discount %",PreviousFinalPrice_L)
+              ELSE
+                IF PurchDiscount_G."Disc. Calculation Type" = PurchDiscount_G."Disc. Calculation Type"::"Chain Discount" THEN
+                  UpdateDiscount(ValueEntryDisc_L,0,ValueEntryDisc_L."Discount Amount",ValueEntryDisc_L."Base Value")
+                ELSE
+                  UpdateDiscount(ValueEntryDisc_L,0,ValueEntryDisc_L."Discount Amount",PreviousFinalPrice_L);
+              // <-- 20160114-APP33-ADV01.01.00-2630-CJY02
+
+              PreviousFinalPrice_L := ValueEntryDisc_L."Final Price";
+              //StoreBeforeECDLedgerEntry(PurchECDLedgEntryTmp_G,ValueEntryDisc_L,ValueEntry_P);
+              //UpdatePurchDocDiscount(ValueEntryDisc_L);
+            END;
+          END;
+        UNTIL ValueEntryDisc_L.NEXT = 0
+      ELSE
+        ERROR(Text8053019,ValueEntryDisc_L.TABLECAPTION,
+                          ValueEntryDisc_L.FIELDCAPTION("Value Entry No."),
+                          FORMAT("Value Entry"."Entry No."));
+
+      EXIT(PreviousFinalPrice_L);
+    END;
+
+    PROCEDURE InsertNewDiscount@8053009(PrevFinalPrice_P@8053001 : Decimal;VAR CmcValueEntryDiscount_P@1000000000 : Record 8053252;CmcValueEntryDiscountFrom_P@1000000001 : Record 8053252) : Decimal;
+    VAR
+      CMCPurchDiscValue_L@8053000 : Record 8053248;
+    BEGIN
+      CASE ValuationType_G OF
+        ValuationType_G::"New ECD Amount": BEGIN
+          CmcValueEntryDiscount_P.VALIDATE("Discount Amount",0);
+        END;
+        ValuationType_G::"New ECD Percentage": BEGIN
+          CmcValueEntryDiscount_P.VALIDATE("Discount %",0);
+          CmcValueEntryDiscount_P.VALIDATE("Discount Amount",
+                        ROUND(CmcValueEntryDiscount_P."Base Value" * 0/100, 0.01, '='));
+        END;
+        ValuationType_G::"Change ECD amount": BEGIN
+          ERROR(Text030);
+        END;
+        ValuationType_G::"Apply Purch. Discount": BEGIN
+          //IF GetPurchDiscount(CMCPurchDiscValue_L) THEN BEGIN
+            CASE PurchDiscount_G."Valuation Type" OF
+              PurchDiscount_G."Valuation Type"::Percentage: BEGIN
+                CmcValueEntryDiscount_P.VALIDATE("Discount %",CmcValueEntryDiscountFrom_P."Discount %");
+                CmcValueEntryDiscount_P.VALIDATE("Discount Amount",
+                              ROUND(CmcValueEntryDiscount_P."Base Value" * CmcValueEntryDiscountFrom_P."Discount %"/100, 0.01, '='));
+              END;
+              PurchDiscount_G."Valuation Type"::"Unit Amount": BEGIN
+                CmcValueEntryDiscount_P.VALIDATE("Discount Amount",CmcValueEntryDiscountFrom_P."Discount Amount");
+              END;
+            END;
+          //END ELSE
+            //CurrReport.SKIP;
+        END;
+      END;
+
+      CmcValueEntryDiscount_P.VALIDATE("Final Price",
+                  PrevFinalPrice_P - CmcValueEntryDiscount_P."Discount Amount");
+
+
+      // --> 20151110-APP33-ADV01.01.00-2025-CJY01
+      //On d'sactive le controle d'erreur suivant
+      //que l'on remplace, en dessous, par une non-'criture quand on se retrouve dans ce cas
+      {BEFORE
+      IF CmcValueEntryDiscount_P."Final Price" < 0 THEN
+        ERROR(Text004,CmcValueEntryDiscount_P."Value Entry No.");
+      AFTER}
+      // <-- 20151110-APP33-ADV01.01.00-2025-CJY01
+      CmcValueEntryDiscount_P."ECD Vendor No." := VendorNo_G;
+      // --> 20151110-APP33-ADV01.01.00-2025-CJY01
+      IF CmcValueEntryDiscount_P."Final Price" > 0 THEN BEGIN
+      // <-- 20151110-APP33-ADV01.01.00-2025-CJY01
+        CmcValueEntryDiscount_P.INSERT(TRUE);
+
+      // --> 20151110-APP33-ADV01.01.00-2025-CJY01
+      END;
+      // <-- 20151110-APP33-ADV01.01.00-2025-CJY01
+      EXIT(CmcValueEntryDiscount_P."Final Price");
+    END;
+
+    BEGIN
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

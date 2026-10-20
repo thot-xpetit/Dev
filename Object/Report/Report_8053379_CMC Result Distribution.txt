@@ -1,0 +1,508 @@
+OBJECT Report 8053379 CMC Result Distribution
+{
+  OBJECT-PROPERTIES
+  {
+    Date=13/11/23;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Result Distribution;
+               FRA=Distribution du r'sultat];
+    ProcessingOnly=Oui;
+    OnInitReport=VAR
+                   Campaign_L@8053001 : Record 8052991;
+                   Campaign2_L@8053000 : Record 8052991;
+                 BEGIN
+                   Campaign_L.RESET;
+                   Campaign_L.SETFILTER(Campaign_L."Ending Date",'>%1',WORKDATE);
+                   Campaign_L.SETFILTER(Campaign_L."Starting Date",'<%1',WORKDATE);
+
+                   IF Campaign_L.FINDFIRST THEN BEGIN
+                     Campaign2_L.GET(Campaign_L."No.");
+                     IF Campaign2_L.NEXT(-1) <> 0 THEN
+                       CampaignNo_G := Campaign2_L."No.";
+                   END;
+                   ClosingDate_G := Campaign2_L."Ending Date";
+                   PostingDate_G := WORKDATE;
+                 END;
+
+    OnPreReport=VAR
+                  Text8053000_L@8053000 : TextConst 'ENU=You must give a campaign;FRA=Vous devez renseigner une campagne';
+                  Text8053001_L@8053001 : TextConst 'ENU=You must give posting date;FRA=Vous devez rensigner une date comptabilisation';
+                BEGIN
+                  IF CampaignNo_G='' THEN
+                    ERROR(Text8053000_L);
+
+                  IF PostingDate_G=0D THEN
+                    ERROR(Text8053001_L);
+
+                  GLSetup_G.GET;
+                  CapitalSetup_G.GET;
+                END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table5050;
+        DataItemTableView=SORTING(No.)
+                          WHERE(Contact Type=FILTER(Farm),
+                                Partner Type=FILTER(Cooperator|Not Cooperator),
+                                Dead=CONST(Non),
+                                Lost=CONST(Non));
+        DataItemVarName=Agriculteur;
+        OnPreDataItem=BEGIN
+                        // --> 20160916-Wi00-ADV01.01.00-3140-JCD01
+                        IF NOT HideDialog_G THEN
+                          IF ShowDialog() THEN BEGIN
+                            Window_G.OPEN(Text60002 + Text60003);
+                            Window_G.UPDATE(1, Bach_G);
+                          END;
+                        // <-- 20160916-Wi00-ADV01.01.00-3140-JCD01
+                        // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+                        DistributionJnl_G.RESET;
+                        DistributionJnl_G.SETRANGE("Capital Batch Name",Bach_G);
+                        DistributionJnl_G.SETRANGE("Capital Journal Template",Template_G);
+                        DistributionJnl_G.SETFILTER("Account No.",'%1','');
+                        IF NOT DistributionJnl_G.ISEMPTY THEN BEGIN
+                          DistributionJnl_G.DELETEALL;
+                          // --> 20160930-Wi00-ADV01.01.00-3140-JCD01
+                          COMMIT;
+                          // <-- 20160930-Wi00-ADV01.01.00-3140-JCD01
+                        END;
+                        DistributionJnl_G.SETRANGE("Account No.");
+                        IntLine_G := 0;
+
+                        // Recherche de la derniSre ligne
+                        IF DistributionJnl_G.FINDLAST THEN
+                          LastLineNo_G := DistributionJnl_G."Line No." + 10000
+                        ELSE
+                          LastLineNo_G := 10000;
+                        // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+                      END;
+
+        OnAfterGetRecord=VAR
+                           DistributionTemplate_L@8053000 : Record 8053354;
+                           HistoDistrib_L@1000000000 : Record 60071;
+                           DistribOK_L@1000000001 : Boolean;
+                           PartType_L@1000000002 : Record 8053351;
+                           ContractHeaderJA_L@1000000003 : Record 8053239;
+                           BooInsert_L@1000000004 : Boolean;
+                         BEGIN
+                           // --> 20160916-Wi00-ADV01.01.00-3140-JCD01
+                           IF NOT HideDialog_G THEN BEGIN
+                             IF ShowDialog() AND ((IntLine_G MOD 20) = 0) THEN BEGIN
+                               Window_G.UPDATE(2, Agriculteur."No.");
+                             END;
+                             IntLine_G += 1;
+                           END;
+                           // <-- 20160916-Wi00-ADV01.01.00-3140-JCD01
+                           // --> 20161010-Wi00-ADV01.01.00-3140-JCD01
+                           IF Dead OR Lost THEN
+                             CurrReport.SKIP;
+                           // <-- 20161010-Wi00-ADV01.01.00-3140-JCD01
+
+                           DistributionTemplate_L.RESET;
+                           DistributionTemplate_L.SETRANGE(Type,DistributionTemplate_L.Type::Distribution);
+                           IF DistributionTemplate_L.FINDSET THEN
+                             REPEAT
+                               // --> 20160916-Wi00-ADV01.01.00-3140-JCD01
+                               {BEFORE
+                               DistributionJnl_G.RESET;
+                               DistributionJnl_G.SETRANGE("Capital Journal Template",DistributionTemplate_L.Name);
+                               DistributionJnl_G.SETRANGE("Account No.",Agriculteur."No.");
+                               IF DistributionJnl_G.FINDFIRST THEN
+                               AFTER}
+                               CLEAR(DistributionJnl_G);
+                               DistributionJnl_G.SETCURRENTKEY("Capital Journal Template","Account No.");
+                               DistributionJnl_G.SETRANGE("Capital Journal Template",DistributionTemplate_L.Name);
+                               DistributionJnl_G.SETRANGE("Account No.",Agriculteur."No.");
+                               IF NOT DistributionJnl_G.ISEMPTY THEN
+                                 CurrReport.SKIP;
+                               // <-- 20160916-Wi00-ADV01.01.00-3140-JCD01
+                             UNTIL (DistributionTemplate_L.NEXT=0);
+
+                           // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+                           {BEFORE
+                           // exclure contact avec distribution d'j. valid'
+                           // --> 20130703-FINA15-CMC02.02.00-WSA02
+                               CapitalEntry_G.RESET;
+                               CapitalEntry_G.SETRANGE("Member No.",Agriculteur."No.");
+                               CapitalEntry_G.SETRANGE("Campaign No.",CampaignNo_G);
+                               CapitalEntry_G.SETRANGE("Distribution Entry",TRUE);
+                               IF CapitalEntry_G.FINDFIRST THEN
+                                 CurrReport.SKIP;
+                           // <-- 20130703-FINA15-CMC02.02.00-WSA02
+                           AFTER}
+                           // --> 20161103-Wi00-ADV01.01.00-3140-JCD01
+                           // V'rification existance de la distribution si non Exceptionnelle
+                           {BEFORE
+                           IF HistoDistrib_L.GET(Agriculteur."No.",CampaignNo_G) THEN
+                             CurrReport.SKIP;
+                           AFTER}
+                           // --> 20161108-Wi00-ADV01.01.00-3140-JCD01
+                           {BEFORE
+                           IF NOT BooExceptional_G THEN
+                             IF HistoDistrib_L.GET(Agriculteur."No.",CampaignNo_G) THEN
+                           AFTER}
+                           IF HistoDistrib_L.GET(Agriculteur."No.",CampaignNo_G,BooExceptional_G) THEN
+                             CurrReport.SKIP;
+                           // <-- 20161108-Wi00-ADV01.01.00-3140-JCD01
+                           // <-- 20161103-Wi00-ADV01.01.00-3140-JCD01
+                           // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+
+                           // --> 20160916-Wi00-ADV01.01.00-3140-JCD01
+                           {BEFORE
+                           CLEAR(Dividend_G);
+                           CLEAR(Interset_G);
+                           CLEAR(PltSocial_G);
+                           CLEAR(SouscRet_G);
+                           CLEAR(StatCap_G);
+                           CLEAR(RealCap_G);
+                           FarmStatCap(Agriculteur."No.",CampaignNo_G,StatCap_G,RealCap_G);
+                           IF RealCap_G=0 THEN
+                             CurrReport.SKIP;
+                           DistributionJnl_G.RESET;
+                           DistributionJnl_G.INIT;
+                           DistributionJnl_G."Capital Journal Template" := Template_G;
+                           DistributionJnl_G."Capital Batch Name" := Bach_G;
+                           DistributionJnl_G."Line No." := LineNo_G;
+                           SetUpNewLineLoc(DistributionJnl_G,TRUE);
+                           LineNo_G += 10000;
+                           DistributionJnl_G."Account Type" := DistributionJnl_G."Account Type"::Adh'rent;
+                           DistributionJnl_G."Account No." := Agriculteur."No.";
+                           DistributionJnl_G.Description := Agriculteur.Name;
+                           DistributionJnl_G."Statutory Capital" := StatCap_G;//,GLSetup_G."Amount Rounding Precision");
+                           DistributionJnl_G."Closing Date" := ClosingDate_G;
+                           DistributionJnl_G."Real Capital" := RealCap_G;
+                           DistributionJnl_G."Campaign No." := CampaignNo_G;
+                           DistributionJnl_G.INSERT;
+                           AFTER}
+
+                           CLEAR(CduDistributionMgt_G);
+                           CLEAR(DistributionJnl_G);
+                           DistributionJnl_G.RESET;
+                           DistributionJnl_G.INIT;
+                           DistributionJnl_G."Capital Journal Template" := Template_G;
+                           DistributionJnl_G."Capital Batch Name" := Bach_G;
+                           SetUpNewLineLoc(DistributionJnl_G,TRUE);
+                           DistributionJnl_G."Account Type" := DistributionJnl_G."Account Type"::Adh'rent;
+                           DistributionJnl_G."Account No." := Agriculteur."No.";
+                           DistributionJnl_G.Description := Agriculteur.Name;
+                           DistributionJnl_G."Closing Date" := ClosingDate_G;
+                           DistributionJnl_G."Campaign No." := CampaignNo_G;
+                           DistributionJnl_G."Posting Date" := PostingDate_G;
+                           // --> 20161103-Wi00-ADV01.01.00-3140-JCD01
+                           DistributionJnl_G."Exceptional Discount" := BooExceptional_G;
+                           // <-- 20161103-Wi00-ADV01.01.00-3140-JCD01
+                           // --> 20231113-WI00-ADV01.01.00-3633-IJI01
+                           DistributionJnl_G."Blocked Account" := BlockedAccount_G;
+                           // <-- 20231113-WI00-ADV01.01.00-3633-IJI01
+                           CLEAR(CduDistributionMgt_G);
+                           CduDistributionMgt_G.RUN(DistributionJnl_G);
+                           // --> 20161104-Wi00-ADV01.01.00-3140-JCD01
+                           {BEFORE
+                           IF (DistributionJnl_G."Real Capital" <> 0) OR (DistributionJnl_G.Discount<>0) THEN BEGIN
+                           AFTER}
+                           BooInsert_L := FALSE;
+                           IF BooExceptional_G THEN BEGIN
+                             IF DistributionJnl_G.Discount <> 0 THEN
+                               BooInsert_L := TRUE;
+                           END ELSE BEGIN
+                             IF (DistributionJnl_G."Real Capital" <> 0) OR (DistributionJnl_G.Discount <> 0) THEN
+                               BooInsert_L := TRUE;
+                           END;
+
+                           IF BooInsert_L THEN BEGIN
+                           // <-- 20161104-Wi00-ADV01.01.00-3140-JCD01
+                             DistributionJnl_G."Line No." := LastLineNo_G;
+                             DistributionJnl_G.INSERT;
+                             LastLineNo_G += 10000;
+                           END;
+                           // <-- 20160916-Wi00-ADV01.01.00-3140-JCD01
+                         END;
+
+        OnPostDataItem=BEGIN
+                         // --> 20160916-Wi00-ADV01.01.00-3140-JCD01
+                         IF NOT HideDialog_G THEN
+                           IF ShowDialog() THEN BEGIN
+                             Window_G.CLOSE;
+                           END;
+                         DistributionJnl_G.RESET;
+                         DistributionJnl_G.SETRANGE("Capital Journal Template",Template_G);
+                         DistributionJnl_G.SETRANGE("Capital Batch Name",Bach_G);
+                         DistributionJnl_G.SETFILTER("Account No.",'=%1','');
+                         IF NOT DistributionJnl_G.ISEMPTY THEN
+                           DistributionJnl_G.DELETEALL;
+                         // <-- 20160916-Wi00-ADV01.01.00-3140-JCD01
+                       END;
+
+        ReqFilterFields=No.,Dead,Lost;
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=6600;
+      Height=2750;
+    }
+    CONTROLS
+    {
+      { 8053000;TextBox   ;4070 ;770  ;1700 ;440  ;Name=Date arrested;
+                                                   InPage=-1;
+                                                   CaptionML=[ENU=Date arrested;
+                                                              FRA=Date d'arr^t'];
+                                                   SourceExpr=ClosingDate_G }
+      { 8053001;Label     ;660  ;770  ;3300 ;440  ;ParentControl=8053000 }
+      { 8053002;TextBox   ;4070 ;110  ;1700 ;440  ;Name=Campaign;
+                                                   InPage=-1;
+                                                   CaptionML=[ENU=Campaign;
+                                                              FRA=Campagne];
+                                                   SourceExpr=CampaignNo_G;
+                                                   TableRelation="CMC Campaign" }
+      { 8053003;Label     ;660  ;110  ;3300 ;440  ;ParentControl=8053002 }
+      { 1000000000;TextBox;4070 ;1320 ;1700 ;440  ;Name=Date arrested;
+                                                   CaptionML=[ENU=Date arrested;
+                                                              FRA=Date d'arr^t'];
+                                                   SourceExpr=PostingDate_G }
+      { 1000000001;Label  ;660  ;1320 ;3300 ;440  ;CaptionML=FRA=Date compta }
+      { 1000000002;Label  ;660  ;1870 ;3300 ;440  ;CaptionML=FRA=Remise Exceptionnelle }
+      { 1000000003;CheckBox;4070;1870 ;440  ;440  ;ShowCaption=Non;
+                                                   SourceExpr=BooExceptional_G }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      OnInit=VAR
+               GenJnlBatch_L@1000000000 : Record 232;
+               CapitalJnlBatch_L@1000000001 : Record 8053355;
+             BEGIN
+               // --> 20160926-Wi00-ADV01.01.00-3140-JCD01
+               CapitalSetup_G.GET;
+               GenJnlBatch_L.GET(CapitalSetup_G."Distr. Gen. Journal Template",CapitalSetup_G."Distr. Gen. Journal Batch");
+               IF (GenJnlBatch_L."No. Series" <> '') OR (GenJnlBatch_L."Posting No. Series" = '') THEN
+                 ERROR(STRSUBSTNO(Text60005,CapitalSetup_G."Distr. Gen. Journal Template",CapitalSetup_G."Distr. Gen. Journal Batch"));
+               CapitalJnlBatch_L.GET(CapitalSetup_G."Distr. Mbr. Journal Template",CapitalSetup_G."Distr. Mbr. Journal Batch");
+               IF (CapitalJnlBatch_L."No. Series" <> '') OR (CapitalJnlBatch_L."Posting No. Series" <> '') OR
+                 (CapitalJnlBatch_L."G/L Posting No. Series" = '') THEN
+                 ERROR(STRSUBSTNO(Text60006,CapitalSetup_G."Distr. Gen. Journal Template",CapitalSetup_G."Distr. Gen. Journal Batch"));
+               // <-- 20160926-Wi00-ADV01.01.00-3140-JCD01
+             END;
+
+      OnOpenPage=BEGIN
+                   // --> 20161103-Wi00-ADV01.01.00-3140-JCD01
+                   BooExceptional_G := FALSE;
+                   // <-- 20161103-Wi00-ADV01.01.00-3140-JCD01
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 8053000; ;Container ;
+                  ContainerType=ContentArea }
+
+      { 8053001;1;Group     ;
+                  GroupType=Group }
+
+      { 8053004;2;Field     ;
+                  CaptionML=[ENU=Posting Date;
+                             FRA=Date comptabilisation];
+                  SourceExpr=PostingDate_G }
+
+      { 8053002;2;Field     ;
+                  CaptionML=[ENU=Campaign;
+                             FRA=Campagne];
+                  SourceExpr=CampaignNo_G;
+                  TableRelation="CMC Campaign";
+                  OnValidate=VAR
+                               Campaign_L@8053000 : Record 8052991;
+                             BEGIN
+                               Campaign_L.GET(CampaignNo_G);
+                               ClosingDate_G := Campaign_L."Ending Date";
+                             END;
+                              }
+
+      { 8053003;2;Field     ;
+                  CaptionML=[ENU=Closing date;
+                             FRA=date d'arr^t'];
+                  SourceExpr=ClosingDate_G }
+
+      { 8053005;2;Field     ;
+                  CaptionML=[ENU=Document No.;
+                             FRA=N› document];
+                  SourceExpr=DocumentNo_G }
+
+      { 1000000000;2;Field  ;
+                  CaptionML=FRA=Remise Exceptionnel;
+                  SourceExpr=BooExceptional_G;
+                  OnValidate=BEGIN
+                               // --> 20161103-Wi00-ADV01.01.00-3140-JCD01
+                               IF BooExceptional_G = TRUE THEN
+                                 IF NOT CONFIRM(Text60007,FALSE) THEN
+                                   ERROR('');
+                               // <-- 20161103-Wi00-ADV01.01.00-3140-JCD01
+                             END;
+                              }
+
+      { 1000000001;2;Field  ;
+                  CaptionML=FRA=Compte bloqu';
+                  SourceExpr=BlockedAccount_G }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      ClosingDate_G@8053000 : Date;
+      CampaignNo_G@8053002 : Code[20];
+      Template_G@8053008 : Code[10];
+      Bach_G@8053007 : Code[10];
+      BatchRec_G@8053006 : Record 8053355;
+      DistributionJnl_G@8053009 : Record 8053356;
+      HideDialog_G@8053012 : Boolean;
+      PostingDate_G@8053003 : Date;
+      GLSetup_G@8053018 : Record 98;
+      CapitalSetup_G@8053019 : Record 8053350;
+      DocumentNo_G@8053022 : Code[20];
+      CapitalEntry_G@8053023 : Record 8053357;
+      CduDistributionMgt_G@1000000001 : Codeunit 60051;
+      Text60000@1000000000 : TextConst 'FRA=La feuille de distribution %1 modSle %2 ne doit pas avoir de souche de num'ro.';
+      Text60001@1000000002 : TextConst 'FRA=Vous devez saisir un n› de document.';
+      Text60002@1000000004 : TextConst 'ENU=Journal Batch Name    #1##########\\;FRA=Nom feuille                     #1##########\\';
+      Text60003@1000000003 : TextConst 'ENU=Checking lines        #2######\;FRA=Calcul agriculteur         #2####################';
+      Window_G@1000000005 : Dialog;
+      IntLine_G@1000000006 : Integer;
+      LastLineNo_G@1000000007 : Integer;
+      Text60004@1000000008 : TextConst 'FRA=Dist%1-00001';
+      Text60005@1000000009 : TextConst 'FRA=La feuille comptable %1 %2 doit pas avoir un n› de souche mais un n› souche de validation est obligatoire.';
+      Text60006@1000000010 : TextConst 'FRA=La feuille capital %1 %2 doit pas avoir un n› de souche ni de souche de validation mais une n› souche de validation comptable est obligatoire.';
+      BooExceptional_G@1000000011 : Boolean;
+      Text60007@1000000012 : TextConst 'FRA="Avant de g'n'rer les remises exceptionnelles vous devez avoir g'n'r' la distribution. Est-ce bien le cas ? "';
+      BlockedAccount_G@1000000013 : Boolean;
+
+    PROCEDURE SetTemplateAndBach@8061300(Template_P@8061300 : Code[10];Bach_P@8061301 : Code[10]);
+    VAR
+      NoSeriesMgt_L@8061302 : Codeunit 396;
+    BEGIN
+      Template_G := Template_P;
+      Bach_G := Bach_P;
+
+      BatchRec_G.GET(Template_G,Bach_G)
+    END;
+
+    PROCEDURE SetHideDialog@8053000(P_Hide@8053000 : Boolean);
+    BEGIN
+      HideDialog_G := P_Hide;
+    END;
+
+    PROCEDURE SetUpNewLineLoc@9(LastCapJnlLine_P@1000 : Record 8053356;BottomLine@8053001 : Boolean);
+    VAR
+      NoSeriesMgt_L@8053000 : Codeunit 396;
+      CapJnlTemplate_L@8061300 : Record 8053354;
+      CapJnlBatch_L@8061301 : Record 8053355;
+      CapJnlLine_L@8061302 : Record 8053356;
+    BEGIN
+      //CapJnlTemplate_L.GET(LastCapJnlLine_P."Capital Journal Template");
+      CapJnlBatch_L.GET(LastCapJnlLine_P."Capital Journal Template",LastCapJnlLine_P."Capital Batch Name");
+      {
+      IF (CapJnlBatch_L."No. Series" <> '') THEN
+        ERROR(Text60000,CapJnlBatch_L."Capital Journal Template",CapJnlBatch_L.Name);
+      }
+      CapJnlLine_L.SETRANGE("Capital Journal Template",LastCapJnlLine_P."Capital Journal Template");
+      CapJnlLine_L.SETRANGE("Capital Batch Name",LastCapJnlLine_P."Capital Batch Name");
+
+      // --> 20160916-Wi00-ADV01.01.00-3140-JCD01
+      {BEFORE
+      IF CapJnlLine_L.FINDLAST THEN
+       BEGIN
+        DistributionJnl_G."Posting Date" := CapJnlLine_L."Posting Date";
+        IF DocumentNo_G<>'' THEN
+         DistributionJnl_G."Document No." := DocumentNo_G
+        ELSE
+         DistributionJnl_G."Document No." := CapJnlLine_L."Document No.";
+        DistributionJnl_G."Account Type" := CapJnlLine_L."Account Type";
+        IF BottomLine AND (DocumentNo_G='') THEN
+         DistributionJnl_G."Document No." := INCSTR(CapJnlLine_L."Document No.");
+       END ELSE
+        BEGIN
+         DistributionJnl_G."Posting Date" := WORKDATE;
+         IF DocumentNo_G<>'' THEN
+          DistributionJnl_G."Document No." := DocumentNo_G
+         ELSE
+          DistributionJnl_G."Document No." := NoSeriesMgt_L.TryGetNextNo(CapJnlBatch_L."No. Series",WORKDATE);
+        END;
+      //DistributionJnl."Source Code" := CapJnlTemplate_L."Source Code";
+      //DistributionJnl."Posting No. Series" := CapJnlBatch_L."Posting No. Series";
+      AFTER}
+      IF CapJnlLine_L.FINDLAST THEN BEGIN
+        IF CapJnlLine_L."Document No." <> '' THEN BEGIN
+          DistributionJnl_G."Document No." := INCSTR(CapJnlLine_L."Document No.");
+          IF DistributionJnl_G."Document No." = '' THEN
+            DistributionJnl_G."Document No." := CapJnlLine_L."Document No.";
+        END;
+      END ELSE BEGIN
+        IF DocumentNo_G <> '' THEN
+          DistributionJnl_G."Document No." := DocumentNo_G
+        ELSE
+          DistributionJnl_G."Document No." := NoSeriesMgt_L.TryGetNextNo(CapJnlBatch_L."No. Series",WORKDATE);
+      END;
+      // <-- 20160916-Wi00-ADV01.01.00-3140-JCD01
+    END;
+
+    PROCEDURE ShowDialog@1200070000() : Boolean;
+    BEGIN
+      IF NOT GUIALLOWED THEN
+        EXIT(FALSE)
+      ELSE
+        EXIT(TRUE);
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+
+      20130620-FINA15-CMC02.02.00-WSA01 : CREATEOBJ
+      20130703-FINA15-CMC02.02.00-WSA01 : ADDCODE (correction Calcul capital statutaire )
+      20130703-FINA15-CMC02.02.00-WSA02 : ADDCODE (exclure contact avec distribution d'j. valid')
+      20130708-FINA15-CMC02.02.00-WSA01 : ADDCODE (Ajout de ristourne dans le calcul de parts . retenir)
+      20130719-FINA15-CMC02.02.00-WSA01 : BUGFIXED (plafonnement retenue souscription (Pbm 591))
+      20131108-FINA15-CMC02.02.00-0808-BRA01 : ADDCODE (La retenu est plafonn'e au nbre de oart . retenir)
+      20160916-Wi00-ADV01.01.00-3140-JCD01 : MODCODE (Ajout pr'lSvement lib'ratoire et transformation TOTAL du report
+                            pour appeler les m^mes fonctions dans la cr'ation et la mise . jour de la distribution.
+                            ADDFUNCT ShowDialog
+      20160926-Wi00-ADV01.01.00-3140-JCD01 : ADDCODE (correction filtre + recherche histo pas faire la distrib 2fois + optimisation)
+      20160930-Wi00-ADV01.01.00-3140-JCD01 : ADDCODE (Ajout d'un commit OnPreDataItem - sinon plantage)
+      20161010-Wi00-ADV01.01.00-3140-JCD01 : ADDCODE (Gestion des morts et disparus + type associ' 'coop' OU 'non coop': ajout filtre)
+      20161103-Wi00-ADV01.01.00-3140-JCD01 : ADDCODE (Ajout g'n'ration remise exceptionnelle)
+      20161108-Wi00-ADV01.01.00-3140-JCD01 : MODCODE (Modification cl' suite remise eceptionnel)
+      20231113-WI00-ADV01.01.00-3633-IJI01 : ADDCODE (ajout option compte bloqu')
+
+      // <-- 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

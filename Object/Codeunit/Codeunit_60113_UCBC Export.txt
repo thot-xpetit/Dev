@@ -1,0 +1,365 @@
+OBJECT Codeunit 60113 UCBC Export
+{
+  OBJECT-PROPERTIES
+  {
+    Date=24/04/23;
+    Heure=00:00:00;
+    Liste versions=SP3602;
+  }
+  PROPERTIES
+  {
+    TableNo=8061230;
+    OnRun=BEGIN
+            CodeUnit_G := Processing;
+            ConnectorName_G := "Connector Name";
+            ImpExpFolder_G := "Folder Import/export";
+            LogFolder_G := "Folder Log Error";
+            PrefixFile_G := "File Prefix";
+            ExtensionFile_G := "File extension";
+
+            //IF "Manual Process" THEN BEGIN
+            //  ExportUCBC("File in use");
+            //END ELSE BEGIN
+              ExportUCBC('');
+            //END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      MoteurInterface_G@1000000013 : Codeunit 8061230;
+      ConnectorName_G@1000000011 : Code[20];
+      ImpExpFolder_G@1000000010 : Text[256];
+      LogFolder_G@1000000009 : Text[256];
+      ExtensionFile_G@1000000008 : Text[20];
+      PrefixFile_G@1000000007 : Text[20];
+      CodeUnit_G@1000000000 : Integer;
+      Text0001@1000000025 : TextConst 'ENU=Error Table "%1" doesn''t exist \Company : %2;FRA=Erreur Table "%1" inexistante\Societe : %2';
+      Text0002@1000000024 : TextConst 'ENU=Error updating table "%1"\Key : "%2" "%3" \Company : "%4";FRA=Erreur modification table "%1"\Cle : "%2" "%3" \Societe : "%4"';
+      Text0003@1000000023 : TextConst 'ENU=Error Insert table "%1"\Key : "%2" "%3" \Company : "%4";FRA=Erreur insertion table "%1"\Cle : "%2" "%3'' "\Societe : "%4"';
+      Text0004@1000000022 : TextConst 'ENU=Error Creating File %1 \%2.;FRA=Erreur cr'ation fichier %1 \%2.';
+      Text0014@1000000006 : TextConst 'ENU=SQL Database Name doesn''t exist;FRA=Nom de la base de donn'es Sql non param'tr'e.';
+      Text0015@1000000005 : TextConst 'ENU=Error updating table %1 \Company : %2;FRA=Erreur modification table "%1" \Societe : %2';
+      Text0016@1000000004 : TextConst 'ENU=Error backup copy.;FRA=Erreur copie de sauvegarde.';
+      Text0017@1000000003 : TextConst 'ENU=See the log please;FRA=Veuillez consulter le log';
+      UCBCExportSetup_G@1000000001 : Record 60162;
+      Text60000@1000000002 : TextConst 'FRA=Erreur :  Aucune espSce Biologique\Societe : %1';
+      FileOutstream_G@1000000014 : OutStream;
+      FileNameOuvert_G@1000000030 : Boolean;
+      cduToolsFile_G@1000000033 : Codeunit 8053405;
+      TxtEcrit_G@1000000032 : Text[1024];
+      LineNo_G@1000000031 : Integer;
+      NbCarEcrit_G@1000000026 : Integer;
+      FileName_G@1000000021 : Text[256];
+      FilePath_G@1000000020 : Text[256];
+      FileN_G@1000000019 : Text[256];
+      FileTemp_G@1000000018 : Text[256];
+      FileExport_G@1000000017 : File;
+      ExportLine_G@1000000012 : Boolean;
+      cduFormatFieldsManage_G@1000000015 : Codeunit 8060985;
+      Text60001@1000000016 : TextConst 'ENU=%1: Sales Contract %2 Do not exist : Company : %3;FRA=%1 : Contrat vente %2 n''existe pas\Societe : %3';
+      Text60002@1000000027 : TextConst 'ENU=%1: Shipping Agent %2 do not exist : Company : %3;FRA=%1 : Transporteur %2 n''existe pas\Societe : %3';
+      Text60003@1000000028 : TextConst 'ENU=%1: Location Code %2 do not exist : Company : %3;FRA=%1 : Magasin %2 n''existe pas\Societe : %3';
+      MemDateTime_G@1000000029 : DateTime;
+
+    PROCEDURE ExportUCBC@1000000001(FileName_P@1000000001 : Text[256]) Result_L : Text[256];
+    VAR
+      "<-- 3LI LOCALS -->"@1000000002 : Integer;
+      FileLogName_L@1000000000 : Text[256];
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //
+      //
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      // - Filename_P : Nom du Fichier des exp'ditions . g'n'rer
+      // Sorties:
+      // - Result_L : Erreur Retourn'e , Vide Si Ok
+      //----------------------------------------------------------------------------------------------------------------------------------
+      cduToolsFile_G.LogInit(LogFolder_G, ConnectorName_G);
+      cduToolsFile_G.LogInitCodeUnit(CodeUnit_G);
+
+      IF NOT UCBCExportSetup_G.GET THEN BEGIN
+        cduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0001, UCBCExportSetup_G.TABLECAPTION , COMPANYNAME),
+            1, MAXSTRLEN(Result_L)));
+      END ELSE BEGIN
+        ExportData;
+      END;
+
+      CLEAR(Result_L);
+      FileLogName_L := cduToolsFile_G.LogName;
+      cduToolsFile_G.LogClose();
+      IF cduToolsFile_G.LogErreurType() = 'E' THEN BEGIN
+        Result_L := 'ERREUR ' + FileLogName_L;
+        ERROR(Result_L);
+      END ELSE BEGIN
+        IF cduToolsFile_G.LogErreurType() = 'I' THEN BEGIN
+          Result_L := Text0017;
+          MoteurInterface_G.InsertLog(CodeUnit_G, FileLogName_L);
+        END ELSE BEGIN
+          MoteurInterface_G.InsertOk(CodeUnit_G);
+        END;
+      END;
+    END;
+
+    PROCEDURE ExportData@1000000009() Result_L : Text[256];
+    VAR
+      CMCPostedDelivery_L@1000000000 : Record 8053014;
+      CMCSalesContract_L@1000000001 : Record 8053012;
+      ShippingAgent_L@1000000002 : Record 291;
+      Location_L@1000000003 : Record 14;
+      SpeciesTmp_L@1000000005 : TEMPORARY Record 8052988;
+      SpeciesSetup_L@1000000004 : Record 8053323;
+      Text_L@1000000006 : Text[256];
+    BEGIN
+      FileNameOuvert_G := FALSE;
+      NbCarEcrit_G := 0;
+
+      IF UCBCExportSetup_G."Last Export DateTime" < CREATEDATETIME(010100D,0T) THEN
+        UCBCExportSetup_G."Last Export DateTime" := CREATEDATETIME(010100D,0T);
+      CMCPostedDelivery_L.SETCURRENTKEY("Creation Date","Customer No.");
+      CMCPostedDelivery_L.SETRANGE("Creation Date",UCBCExportSetup_G."Last Export DateTime" + 1,CREATEDATETIME(31129999D,235959T));
+      CMCPostedDelivery_L.SETRANGE("Customer No." ,UCBCExportSetup_G."UCBC Customer Code");
+      CMCPostedDelivery_L.SETRANGE(Canceled,FALSE) ; //20230424-WI00-ADV01.01.00-CC58142-JLT01
+      MemDateTime_G := CURRENTDATETIME;
+      IF CMCPostedDelivery_L.FINDSET THEN BEGIN
+        SpeciesSetup_L.SETRANGE("Biologic Species", TRUE);
+        IF SpeciesSetup_L.FINDFIRST THEN BEGIN
+          REPEAT
+            SpeciesTmp_L.Code := SpeciesSetup_L."Species Code";
+            SpeciesTmp_L.INSERT;
+          UNTIL SpeciesSetup_L.NEXT = 0;
+        END;
+        IF SpeciesTmp_L.ISEMPTY THEN BEGIN
+          cduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text60000 , COMPANYNAME), 1, MAXSTRLEN(Result_L)));
+        END ELSE BEGIN
+          REPEAT
+            IF SpeciesTmp_L.GET(CMCPostedDelivery_L."Species Code") THEN BEGIN
+              IF FileTemp_G ='' THEN BEGIN
+                LineNo_G := 1;
+                BeginFile;
+              END;
+              AddConvertedTextAndComma(UCBCExportSetup_G."UNEAL Code at UCBC");//1
+              AddConvertedTextAndComma(CMCPostedDelivery_L."Campaign No.");  //2
+              IF NOT CMCSalesContract_L.GET(CMCPostedDelivery_L."Contract No.") THEN BEGIN
+                cduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text60001,CMCPostedDelivery_L."No.",
+                         CMCPostedDelivery_L."Contract No.",COMPANYNAME),1, MAXSTRLEN(Result_L)));
+                AddConvertedTextAndComma('');
+                AddConvertedTextAndComma('');
+                // --> 20230202-WI00-ADV01.01.00-3617-IJI01
+                {BEFORE
+                AddConvertedTextAndComma('');
+                AFTER}
+                AddConvertedTextAndComma(GetTVA(CMCPostedDelivery_L));  //5
+                // <-- 20230202-WI00-ADV01.01.00-3617-IJI01
+                AddConvertedTextAndComma('');
+                AddConvertedTextAndComma('');
+              END ELSE BEGIN
+                AddConvertedTextAndComma(CMCSalesContract_L."Subcontract No.");   //3
+                AddConvertedTextAndComma(CMCSalesContract_L."Ship-to Code"); //4
+                // --> 20230202-WI00-ADV01.01.00-3617-IJI01
+                {BEFORE
+                AddConvertedTextAndComma('');  //5
+                AFTER}
+                AddConvertedTextAndComma(GetTVA(CMCPostedDelivery_L));  //5
+                // <-- 20230202-WI00-ADV01.01.00-3617-IJI01
+                AddConvertedTextAndComma(CMCSalesContract_L."Customer Reference"); //6
+                AddConvertedTextAndComma(CMCSalesContract_L."Ship-to Code"); //7
+              END;
+              // --> 20230202-WI00-ADV01.01.00-3617-IJI01
+              {BEFORE
+              AddConvertedTextAndComma('');  //8
+              AFTER}
+              AddConvertedTextAndComma(GetTVA(CMCPostedDelivery_L));  //8
+              // <-- 20230202-WI00-ADV01.01.00-3617-IJI01
+              AddConvertedTextAndComma(CMCPostedDelivery_L."Shipping Order No."); //9
+              IF CMCPostedDelivery_L."Shipping Type" = CMCPostedDelivery_L."Shipping Type"::Company THEN
+                AddConvertedTextAndComma('F')
+              ELSE
+                AddConvertedTextAndComma('D') ; //10
+              Text_L := ConvText(CMCPostedDelivery_L."Trailers Registration No.");
+              AddConvertedTextAndComma(Text_L); //11
+              Text_L := '';
+              IF CMCPostedDelivery_L."Shipping Type" = CMCPostedDelivery_L."Shipping Type"::Customer THEN //=D'part
+                Text_L := 'Transport divers'
+              ELSE BEGIN // =Rendu
+                IF NOT ShippingAgent_L.GET(CMCPostedDelivery_L."Shipping Agent Code") THEN BEGIN
+                  cduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text60002,CMCPostedDelivery_L."No.",
+                       CMCPostedDelivery_L."Shipping Agent Code", COMPANYNAME),1,MAXSTRLEN(Result_L)));
+                END ELSE IF ShippingAgent_L.Name <>'' THEN BEGIN
+                  IF STRPOS(UPPERCASE(ShippingAgent_L.Name),'PROSTOCK') <> 0 THEN BEGIN
+                    Text_L := 'PROSTOCK';
+                  END;
+                END;
+              END;
+              AddConvertedTextAndComma(Text_L); //12
+              AddConvertedTextAndComma(''); //13
+              AddConvertedTextAndComma(''); //14
+              IF Text_L <> '' THEN BEGIN
+                AddConvertedTextAndComma('62054'); //15
+                AddConvertedTextAndComma('ST LAURENT BLANGY'); //16
+                AddConvertedTextAndComma('FR'); //17
+              END ELSE BEGIN
+                AddConvertedTextAndComma('');
+                AddConvertedTextAndComma('');
+                AddConvertedTextAndComma('');
+              END;
+              AddConvertedTextAndComma(CMCPostedDelivery_L.Application); //18
+              AddConvertedTextAndComma(CMCPostedDelivery_L."No."); //19
+              AddConvertedTextAndComma(ConvDec2Text(CMCPostedDelivery_L."Net Weight")); //20
+              AddConvertedTextAndComma(ConvDec2Text(CMCPostedDelivery_L."Standard Weight"));//21
+              AddConvertedTextAndComma(ConvDate2Text(CMCPostedDelivery_L."Sales Date")); //22
+              IF NOT Location_L.GET(CMCPostedDelivery_L."Location Code") THEN BEGIN
+                cduToolsFile_G.LogWriteInfo(COPYSTR(STRSUBSTNO(Text60003,CMCPostedDelivery_L."No.",
+                        CMCPostedDelivery_L."Location Code", COMPANYNAME),1, MAXSTRLEN(Result_L)));
+                AddConvertedTextAndComma('');
+              END ELSE
+                AddConvertedTextAndComma(Location_L.Name); //23
+              InsertLine;
+            END;
+          UNTIL CMCPostedDelivery_L.NEXT =0;
+        END;
+      END;
+      EndFile;
+    END;
+
+    PROCEDURE BeginFile@1000000000() Result_L : Text[256];
+    BEGIN
+      // Cr'ation du fichier F_UNE_PFE_TRA_JJ_MM_SSAA_HH_MN_SS.csv
+      FileName_G := ImpExpFolder_G + '\' + DELCHR(PrefixFile_G, '<>', ' ') + '_' + FORMAT(CURRENTDATETIME, 0,
+        '<Year4><Month,2><Day,2><Hours24,2><Minutes,2><Seconds,2>') + '.' + DELCHR(ExtensionFile_G, '<>', ' ');
+      cduToolsFile_G.LogInitFileExecute(FileName_G);
+      cduToolsFile_G.SplitFilename(FileName_G, FilePath_G, FileN_G);
+      FileTemp_G := FilePath_G + 'Temp_' + FileN_G;
+      IF NOT FileExport_G.CREATE(FileTemp_G) THEN BEGIN
+        cduToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text0004, FileTemp_G, GETLASTERRORTEXT), 1, MAXSTRLEN(Result_L)));
+        CLEARLASTERROR;
+      END ELSE BEGIN
+        FileExport_G.CREATEOUTSTREAM(FileOutstream_G);
+        FileNameOuvert_G := TRUE;
+      END;
+      // --> 20230202-WI00-ADV01.01.00-3617-IJI01
+      {BEFORE
+      //ent^te
+      TxtEcrit_G := 'PVLCOP;PVLREC;PVLPRO;PVLTIL;PVLTVL;PVLNCC;PVLTIC;PVLTVC;PVLNOE;PVLCDL;PVLMLR;PVLNTP;'
+                  + 'PVLAD1;PVLAD2;PVLCDP;PVLVIL;PVLPAY;PVLRCD;PVLRRE;PVLPNE;PVLPNO;PVLDMV;PVLDEP;';
+      InsertLine;
+      AFTER}
+      // <-- 20230202-WI00-ADV01.01.00-3617-IJI01
+    END;
+
+    PROCEDURE EndFile@1000000002();
+    BEGIN
+      IF FileNameOuvert_G THEN BEGIN
+        NbCarEcrit_G := FileExport_G.LEN;
+        FileExport_G.CLOSE;
+      END;
+      IF (NbCarEcrit_G > 0) THEN BEGIN
+        IF cduToolsFile_G.LogErreurType() = 'E' THEN BEGIN
+          IF FileNameOuvert_G THEN BEGIN
+            FILE.ERASE(FileTemp_G);
+          END;
+        END ELSE BEGIN
+          IF RENAME(FileTemp_G, FileName_G) THEN BEGIN
+          END;
+          UCBCExportSetup_G.GET();
+          UCBCExportSetup_G."Last Export DateTime" := MemDateTime_G;
+          UCBCExportSetup_G."Last Export File Name" := FileN_G;
+          UCBCExportSetup_G."Last Export Folder Name" := FilePath_G;
+          UCBCExportSetup_G.MODIFY;
+        END;
+      END ELSE BEGIN
+        IF FileNameOuvert_G THEN BEGIN
+          FILE.ERASE(FileTemp_G);
+        END;
+      END;
+    END;
+
+    PROCEDURE CreateLine@1000000005();
+    BEGIN
+    END;
+
+    PROCEDURE InsertLine@60003();
+    BEGIN
+      //Suppression du dernier point virgule des lignes
+      TxtEcrit_G := COPYSTR(TxtEcrit_G, 1, STRLEN(TxtEcrit_G) - 1);
+      FileOutstream_G.WRITETEXT(TxtEcrit_G );
+      FileOutstream_G.WRITETEXT();
+      LineNo_G += 1;
+      TxtEcrit_G := '';
+    END;
+
+    PROCEDURE AddConvertedTextAndComma@60011(Text_P@60000 : Text[500]);
+    BEGIN
+      TxtEcrit_G += CONVERTSTR(cduFormatFieldsManage_G.Ascii2Ansi(Text_P), ';', ',') + ';';
+    END;
+
+    PROCEDURE ConvText@1000000003(Text_P@1000000000 : Text[1024]) Text_L : Text[1024];
+    VAR
+      Char_L@1000000001 : Char;
+      Len_L@1000000002 : Integer;
+      Pos_L@1000000003 : Integer;
+    BEGIN
+      Len_L := STRLEN(Text_P);
+      WHILE Pos_L < Len_L DO BEGIN
+        EVALUATE(Char_L,COPYSTR(Text_P,Pos_L+1,1));
+        IF ((Char_L >= 48) AND (Char_L <= 57)) OR
+           ((Char_L >= 65) AND (Char_L <= 90)) OR
+           ((Char_L >= 97) AND (Char_L <= 122)) THEN
+          Text_L := Text_L + FORMAT(Char_L);
+
+        Pos_L +=1;
+      END;
+    END;
+
+    PROCEDURE ConvDec2Text@1000000006(Value_P@1000000000 : Decimal) Text_L : Text[1024];
+    VAR
+      Value_L@1000000001 : Decimal;
+      Text2_L@1000000002 : Text[30];
+    BEGIN
+      Value_L := ABS(ROUND(Value_P * 1000 ,1) MOD 1000);
+      Text2_L := FORMAT(Value_L,0,'<Integer>') ;
+      IF Value_L < 10 THEN
+        Text2_L := '00' + Text2_L
+      ELSE IF Value_L < 100 THEN
+        Text2_L := '0' + Text2_L;
+
+      Text_L := FORMAT(Value_P,0,'<Integer>,') + Text2_L;
+      Text_L := Text_L + FORMAT(Value_P,0,'<Sign>') ;
+    END;
+
+    PROCEDURE ConvDate2Text@1000000013(Value_P@1000000000 : Date) Text_L : Text[30];
+    BEGIN
+      //AAAAMMJJ
+      Text_L := FORMAT(Value_P,0,'<Year4><Month,2><Day,2>') ;
+    END;
+
+    PROCEDURE GetTVA@1000000004(PostedDelivery_P@1000000000 : Record 8053014) Result : Text[14];
+    VAR
+      ShipToAddress_L@1000000001 : Record 222;
+    BEGIN
+      // --> 20230202-WI00-ADV01.01.00-3617-IJI01
+      Result := '';
+      IF PostedDelivery_P."Ship-to Code"<>'' THEN
+      BEGIN
+       ShipToAddress_L.SETRANGE(ShipToAddress_L."Customer No.",PostedDelivery_P."Customer No.");
+       ShipToAddress_L.SETRANGE(ShipToAddress_L.Code,PostedDelivery_P."Ship-to Code");
+       IF ShipToAddress_L.FINDFIRST THEN
+         Result := COPYSTR(ShipToAddress_L.Comment,1,14);
+      END;
+      // <-- 20230202-WI00-ADV01.01.00-3617-IJI01
+    END;
+
+    BEGIN
+    {
+      20220901-WI00-ADV01.01.00-3602-CDX01 : ADDOBJECT
+      modele C60088
+      20230202-WI00-ADV01.01.00-3617-IJI01 : MODCODE ('volution par rapport . la demande initiale)
+      20230420-WI00-ADV01.01.00-3617-JLT01 : MODCODE (Prefix 10 -> 20 Car )
+      20230424-WI00-ADV01.01.00-CC58142-JLT01 : MODCODE Ne pas traiter les annul' )
+    }
+    END.
+  }
+}
+

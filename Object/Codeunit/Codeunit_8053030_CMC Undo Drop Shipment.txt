@@ -1,0 +1,764 @@
+OBJECT Codeunit 8053030 CMC Undo Drop Shipment
+{
+  OBJECT-PROPERTIES
+  {
+    Date=04/06/20;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    TableNo=111;
+    Permissions=TableData 37=imd,
+                TableData 111=imd,
+                TableData 121=rim,
+                TableData 339=rmd,
+                TableData 359=imd,
+                TableData 6507=ri;
+    OnRun=VAR
+            UpdateItemAnalysisView_L@1000 : Codeunit 7150;
+          BEGIN
+            SETRANGE(Type,Type::Item);
+
+            IF Quantity = 0 THEN
+              IF Quantity = "Qty. Shipped Not Invoiced" THEN
+                SETFILTER(Quantity,'<>0');
+
+            IF FINDFIRST THEN BEGIN
+              IF NOT HideDialog_G THEN
+                IF NOT CONFIRM(Text000) THEN
+                  EXIT;
+
+              SalesShptLine_G.COPY(Rec);
+              Code;
+              UpdateItemAnalysisView_L.UpdateAll(0,TRUE);
+              Rec := SalesShptLine_G;
+            END ELSE BEGIN
+              SETRANGE(Type,Type::"G/L Account");
+              IF NOT FINDFIRST THEN
+                ERROR(Text006);
+
+              IF FINDFIRST THEN BEGIN
+                IF NOT HideDialog_G THEN
+                  IF NOT CONFIRM(Text000) THEN
+                    EXIT;
+                SalesShptLine_G.COPY(Rec);
+                CodeForGLAcc;
+                Rec := SalesShptLine_G;
+              END;
+            END;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      SalesShptLine_G@1001 : Record 111;
+      TempGlobalItemLedgEntry_G@1026 : TEMPORARY Record 32;
+      InvtSetup_G@1007 : Record 313;
+      UndoPostingMgt_G@1024 : Codeunit 5817;
+      ItemJnlPostLine_G@1000 : Codeunit 22;
+      Text000@1003 : TextConst 'ENU=Do you really want to undo the selected Shipment lines?;FRA=Souhaitez-vous vraiment supprimer les lignes exp'dition s'lectionn'es ?';
+      Text001@1009 : TextConst 'ENU=Undo quantity posting...;FRA=Annulation de la validation de la quantit'...';
+      Text002@1002 : TextConst 'ENU=There is not enough space to insert correction lines.;FRA=Il n''y a pas suffisamment d''espace pour ins'rer les lignes correction.';
+      InvtAdjmt_G@1008 : Codeunit 5895;
+      HideDialog_G@1005 : Boolean;
+      Text003@1006 : TextConst 'ENU=Checking lines...;FRA=V'rification des lignes...';
+      Text004@1016 : TextConst 'ENU=Some shipment lines may have unused service items. Do you want to delete them?;FRA=Cette r'ception a d'j. 't' factur'e. Vous ne pouvez appliquer l''option Annuler livraison directe qu''aux r'ceptions enregistr'es mais non factur'es.';
+      Text005@1010 : TextConst 'ENU=This shipment has already been invoiced. Undo Shipment can be applied only to posted, but not invoiced shipments.;FRA=Cette exp'dition a d'j. 't' factur'e. Vous ne pouvez appliquer l''option Annuler exp'dition qu''aux exp'ditions enregistr'es mais non factur'es.';
+      Text006@1011 : TextConst 'ENU=Undo Shipment can be performed only for lines of type Item. Please select a line of the Item type and repeat the procedure.;FRA=Vous ne pouvez appliquer l''option Annuler exp'dition qu''aux lignes de type Article. S'lectionnez une ligne de ce type et r'p'tez la proc'dure.';
+      CerealIncorpMngt_G@8053000 : Codeunit 8053026;
+      TempSLineCerealContract_G@8053001 : TEMPORARY Record 8053232;
+      Apply_G@1000000000 : Codeunit 22;
+
+    PROCEDURE SetHideDialog@8(NewHideDialog_P@1000 : Boolean);
+    BEGIN
+      HideDialog_G := NewHideDialog_P;
+    END;
+
+    LOCAL PROCEDURE Code@2();
+    VAR
+      ServItem_L@1003 : Record 5940;
+      Window_L@1001 : Dialog;
+      ItemShptEntryNo_L@1002 : Integer;
+      DocLineNo_L@1004 : Integer;
+      DeleteServItems_L@1000 : Boolean;
+      SalesShipLine_L@8053001 : Record 111;
+      PurchRcptLine_L@8053002 : Record 121;
+      ItemRcptEntryNo_L@8053004 : Integer;
+      ItemLedgerEntrySales_L@1000000002 : Record 32;
+      ItemLedgerEntryPurch_L@1000000003 : Record 32;
+      ItemApplicationEntry@1000000004 : Record 339;
+    BEGIN
+      WITH SalesShptLine_G DO BEGIN
+        CLEAR(ItemJnlPostLine_G);
+        SETCURRENTKEY("Item Shpt. Entry No.");
+        SETRANGE(Correction,FALSE);
+
+        REPEAT
+          IF NOT HideDialog_G THEN
+            Window_L.OPEN(Text003);
+          CheckSalesShptLine(SalesShptLine_G);
+        UNTIL NEXT = 0;
+
+        ServItem_L.SETCURRENTKEY("Sales/Serv. Shpt. Document No.");
+        ServItem_L.SETRANGE("Sales/Serv. Shpt. Document No.","Document No.");
+        IF ServItem_L.FIND('-') THEN
+          IF NOT HideDialog_G THEN
+            DeleteServItems_L := CONFIRM(Text004,TRUE)
+          ELSE
+            DeleteServItems_L := TRUE;
+
+        FIND('-');
+        REPEAT
+          TempGlobalItemLedgEntry_G.RESET;
+          IF NOT TempGlobalItemLedgEntry_G.ISEMPTY THEN
+            TempGlobalItemLedgEntry_G.DELETEALL;
+
+          IF NOT HideDialog_G THEN
+            Window_L.OPEN(Text001);
+          // --> 20160330-WI00-ADV01.01.00-2887-CJY01
+          //D'l'trage
+          ItemLedgerEntrySales_L.GET(SalesShptLine_G."Item Shpt. Entry No.");
+          //on va chercher l''criture achat lettr' avec notre 'criture vente
+          ItemApplicationEntry.RESET;
+          ItemApplicationEntry.SETRANGE("Outbound Item Entry No.",ItemLedgerEntrySales_L."Entry No.");
+          IF ItemApplicationEntry.FINDSET THEN
+            ItemLedgerEntryPurch_L.GET(ItemApplicationEntry."Inbound Item Entry No.");
+
+          IF ItemLedgerEntrySales_L.Positive THEN
+            RemoveApplications(ItemLedgerEntrySales_L."Entry No.",ItemLedgerEntryPurch_L."Entry No.")
+          ELSE
+            RemoveApplications(ItemLedgerEntryPurch_L."Entry No.",ItemLedgerEntrySales_L."Entry No.");
+          // <-- 20160330-WI00-ADV01.01.00-2887-CJY01
+          ItemShptEntryNo_L := PostSaleItemJnlLine(SalesShptLine_G,DocLineNo_L);
+          InsertNewShipmentLine(SalesShptLine_G,ItemShptEntryNo_L,DocLineNo_L);
+          UpdateSalesOrderLine(SalesShptLine_G);
+
+          SalesShipLine_L.RESET;
+          SalesShipLine_L.SETCURRENTKEY("Document No.");
+          SalesShipLine_L.SETRANGE("Document No.",SalesShptLine_G."Document No.");
+          SalesShipLine_L.SETRANGE("CVO Item Attached Line",SalesShptLine_G."Line No.");
+          IF SalesShipLine_L.FINDFIRST THEN
+            InsertNewShipmentLineForGLAcc(SalesShipLine_L);
+
+          SalesShipLine_L.RESET;
+          SalesShipLine_L.SETCURRENTKEY("Document No.");
+          SalesShipLine_L.SETRANGE("Document No.",SalesShptLine_G."Document No.");
+          SalesShipLine_L.SETRANGE("CVO Corn Item Attached Line",SalesShptLine_G."Line No.");
+          IF SalesShipLine_L.FINDFIRST THEN
+            InsertNewShipmentLineForGLAcc(SalesShipLine_L);
+
+          SalesShipLine_L.RESET;
+          SalesShipLine_L.SETCURRENTKEY("Document No.");
+          SalesShipLine_L.SETRANGE("Document No.",SalesShptLine_G."Document No.");
+          SalesShipLine_L.SETRANGE("RPD Item Attached Line",SalesShptLine_G."Line No.");
+          IF SalesShipLine_L.FINDFIRST THEN
+            InsertNewShipmentLineForGLAcc(SalesShipLine_L);
+
+          IF ("Blanket Order No." <> '') AND ("Blanket Order Line No." <> 0) THEN
+            UpdateSalesBlanketOrder(SalesShptLine_G);
+
+          IF DeleteServItems_L THEN
+            DeleteSalesShptLineServItems(SalesShptLine_G);
+
+          "Quantity Invoiced" := Quantity;
+          "Qty. Invoiced (Base)" := "Quantity (Base)";
+          "Qty. Shipped Not Invoiced" := 0;
+          Correction := TRUE;
+          MODIFY;
+
+          // Traitement de la ligne d'achat
+          // --> 20160330-WI00-ADV01.01.00-2887-CJY01
+          {BEFORE
+          GetPurchReceiptLine(SalesShptLine_G,PurchRcptLine_L);
+          AFTER}
+          //on r'cupSre la ligne d'achat
+          PurchRcptLine_L.GET(ItemLedgerEntryPurch_L."Document No.",
+                              ItemLedgerEntryPurch_L."Document Line No.");
+          // <-- 20160330-WI00-ADV01.01.00-2887-CJY01
+
+          CheckPurchRcptLine(PurchRcptLine_L);
+          // --> 20160330-WI00-ADV01.01.00-2887-CJY01
+          {BEFORE
+          ItemRcptEntryNo_L := PostPurchItemJnlLine(PurchRcptLine_L,DocLineNo_L,ItemShptEntryNo_L);
+          AFTER}
+          ItemRcptEntryNo_L := PostPurchItemJnlLine(PurchRcptLine_L,DocLineNo_L,PurchRcptLine_L."Item Rcpt. Entry No.");
+          // <-- 20160330-WI00-ADV01.01.00-2887-CJY01
+          InsertNewReceiptLine(PurchRcptLine_L,ItemRcptEntryNo_L,DocLineNo_L);
+          UpdatePurchOrderLine(PurchRcptLine_L);
+
+          IF (PurchRcptLine_L."Blanket Order No." <> '') AND (PurchRcptLine_L."Blanket Order Line No." <> 0) THEN
+            UpdatePurchBlanketOrder(PurchRcptLine_L);
+
+          PurchRcptLine_L."Quantity Invoiced" := Quantity;
+          PurchRcptLine_L."Qty. Invoiced (Base)" := "Quantity (Base)";
+          PurchRcptLine_L."Qty. Rcd. Not Invoiced" := 0;
+          PurchRcptLine_L.Correction := TRUE;
+          PurchRcptLine_L.MODIFY;
+
+          // --> 20200604-WI00-ADV01.01.00-ID50146-MRU01
+          //Annulation de la ligne de CRIV si elle existe (Import EXELIENCE - SP3375)
+          PurchRcptLine_L.RESET;
+          PurchRcptLine_L.SETCURRENTKEY("Document No.");
+          PurchRcptLine_L.SETRANGE("Document No.",ItemLedgerEntryPurch_L."Document No.");
+          PurchRcptLine_L.SETRANGE("CVO Item Attached Line",ItemLedgerEntryPurch_L."Document Line No.");
+          IF PurchRcptLine_L.FINDFIRST THEN
+            InsertNewRcptLineForGLAcc(PurchRcptLine_L);
+          // <-- 20200604-WI00-ADV01.01.00-ID50146-MRU01
+        UNTIL NEXT = 0;
+
+        InvtSetup_G.GET;
+        IF InvtSetup_G."Automatic Cost Adjustment" <> InvtSetup_G."Automatic Cost Adjustment"::Never THEN BEGIN
+          InvtAdjmt_G.SetProperties(TRUE,InvtSetup_G."Automatic Cost Posting");
+          InvtAdjmt_G.MakeMultiLevelAdjmt;
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE CodeForGLAcc@8053007();
+    VAR
+      ServItem@1003 : Record 5940;
+      Window@1001 : Dialog;
+      ItemShptEntryNo@1002 : Integer;
+      DocLineNo@1004 : Integer;
+      DeleteServItems@1000 : Boolean;
+      "<< 3LI LOCALS >>"@8053000 : Integer;
+      SalesShipLine_L@8053001 : Record 111;
+    BEGIN
+      WITH SalesShptLine_G DO BEGIN
+        SETRANGE(Correction,FALSE);
+        REPEAT
+          IF NOT HideDialog_G THEN
+            Window.OPEN(Text003);
+          IF "Qty. Shipped Not Invoiced" <> Quantity THEN
+            ERROR(Text005);
+        UNTIL NEXT = 0;
+
+        FIND('-');
+        REPEAT
+          IF NOT HideDialog_G THEN
+            Window.OPEN(Text001);
+          InsertNewShipmentLineForGLAcc(SalesShptLine_G);
+        UNTIL NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckSalesShptLine@3(SalesShptLine_P@1001 : Record 111);
+    VAR
+      TempItemLedgEntry_L@1015 : TEMPORARY Record 32;
+    BEGIN
+      WITH SalesShptLine_P DO BEGIN
+        TESTFIELD(Type,Type::Item);
+        IF "Qty. Shipped Not Invoiced" <> Quantity THEN
+          ERROR(Text005);
+        TESTFIELD("Drop Shipment",TRUE);
+      END;
+    END;
+
+    LOCAL PROCEDURE CheckPurchRcptLine@8053000(PurchRcptLine_P@1000 : Record 121);
+    VAR
+      TempItemLedgEntry_L@1003 : TEMPORARY Record 32;
+    BEGIN
+      WITH PurchRcptLine_P DO BEGIN
+        TESTFIELD(Type,Type::Item);
+        IF("Qty. Rcd. Not Invoiced" <> Quantity) THEN
+          ERROR(Text004);
+        TESTFIELD("Prod. Order No.",'');
+        TESTFIELD("Sales Order No.");
+        TESTFIELD("Sales Order Line No.");
+        TESTFIELD("Job No.",'');
+      END;
+    END;
+
+    LOCAL PROCEDURE PostSaleItemJnlLine@5(SalesShptLine_P@1000 : Record 111;VAR DocLineNo_P@1003 : Integer) : Integer;
+    VAR
+      ItemJnlLine_L@1001 : Record 83;
+      SalesShptHeader_L@1004 : Record 110;
+      SalesShptLine2_L@1007 : Record 111;
+      SourceCodeSetup_L@1002 : Record 242;
+      LineSpacing_L@1008 : Integer;
+    BEGIN
+      WITH SalesShptLine_P DO BEGIN
+        SalesShptLine2_L.SETRANGE("Document No.","Document No.");
+        SalesShptLine2_L."Document No." := "Document No.";
+        SalesShptLine2_L."Line No." := "Line No.";
+        SalesShptLine2_L.FIND('=');
+
+        IF SalesShptLine2_L.FIND('>') THEN BEGIN
+          LineSpacing_L := (SalesShptLine2_L."Line No." - "Line No.") DIV 2;
+          IF LineSpacing_L = 0 THEN
+            ERROR(Text002);
+        END ELSE
+          LineSpacing_L := 10000;
+        DocLineNo_P := "Line No." + LineSpacing_L;
+
+        SourceCodeSetup_L.GET;
+        SalesShptHeader_L.GET("Document No.");
+        ItemJnlLine_L.INIT;
+        ItemJnlLine_L."Entry Type" := ItemJnlLine_L."Entry Type"::Sale;
+        ItemJnlLine_L."Item No." := "No.";
+        ItemJnlLine_L."Posting Date" := SalesShptHeader_L."Posting Date";
+        ItemJnlLine_L."Document No." := "Document No.";
+        ItemJnlLine_L."Document Line No." := DocLineNo_P;
+        ItemJnlLine_L."Gen. Bus. Posting Group" := "Gen. Bus. Posting Group";
+        ItemJnlLine_L."Gen. Prod. Posting Group" := "Gen. Prod. Posting Group";
+        ItemJnlLine_L."Location Code" := "Location Code";
+        ItemJnlLine_L."Source Code" := SourceCodeSetup_L.Sales;
+        ItemJnlLine_L."Variant Code" := "Variant Code";
+        ItemJnlLine_L."Bin Code" := "Bin Code";
+        ItemJnlLine_L.Quantity := -"Quantity (Base)";
+        ItemJnlLine_L."Quantity (Base)" := -"Quantity (Base)";
+        ItemJnlLine_L."Document Date" := SalesShptHeader_L."Document Date";
+        ItemJnlLine_L."Drop Shipment" := TRUE;
+        ItemJnlLine_L."Unit of Measure Code" := "Unit of Measure Code";
+        // --> 20160330-WI00-ADV01.01.00-2887-CJY01
+        ItemJnlLine_L.Correction := TRUE;
+        ItemJnlLine_L."Applies-to Entry" := SalesShptLine_P."Item Shpt. Entry No.";
+        // <-- 20160330-WI00-ADV01.01.00-2887-CJY01
+        ItemJnlPostLine_G.RUN(ItemJnlLine_L);
+        EXIT(ItemJnlLine_L."Item Shpt. Entry No.");
+      END;
+    END;
+
+    LOCAL PROCEDURE PostPurchItemJnlLine@13(PurchRcptLine@1000 : Record 121;VAR DocLineNo@1005 : Integer;AppliesToEntryNo_P@8053000 : Integer) : Integer;
+    VAR
+      ItemJnlLine@1002 : Record 83;
+      PurchLine@1004 : Record 39;
+      PurchRcptHeader@1003 : Record 120;
+      PurchRcptLine2@1007 : Record 121;
+      SourceCodeSetup@1001 : Record 242;
+      TempApplyToEntryList@1008 : TEMPORARY Record 32;
+      LineSpacing@1006 : Integer;
+    BEGIN
+      WITH PurchRcptLine DO BEGIN
+        PurchRcptLine2.SETRANGE("Document No.","Document No.");
+        PurchRcptLine2."Document No." := "Document No.";
+        PurchRcptLine2."Line No." := "Line No.";
+        PurchRcptLine2.FIND('=');
+
+        IF PurchRcptLine2.FIND('>') THEN BEGIN
+          LineSpacing := (PurchRcptLine2."Line No." - "Line No.") DIV 2;
+          IF LineSpacing = 0 THEN
+            ERROR(Text002);
+        END ELSE
+          LineSpacing := 10000;
+        DocLineNo := "Line No." + LineSpacing;
+
+        SourceCodeSetup.GET;
+        PurchRcptHeader.GET("Document No.");
+        ItemJnlLine.INIT;
+        ItemJnlLine."Entry Type" := ItemJnlLine."Entry Type"::Purchase;
+        ItemJnlLine."Item No." := "No.";
+        ItemJnlLine."Posting Date" := PurchRcptHeader."Posting Date";
+        ItemJnlLine."Document No." := "Document No.";
+        ItemJnlLine."Document Line No." := DocLineNo;
+        ItemJnlLine."Gen. Bus. Posting Group" := "Gen. Bus. Posting Group";
+        ItemJnlLine."Gen. Prod. Posting Group" := "Gen. Prod. Posting Group";
+        ItemJnlLine."Location Code" := "Location Code";
+        ItemJnlLine."Source Code" := SourceCodeSetup.Purchases;
+        ItemJnlLine."Variant Code" := "Variant Code";
+        ItemJnlLine."Bin Code" := "Bin Code";
+        ItemJnlLine."Unit of Measure Code" := "Unit of Measure Code";
+        ItemJnlLine."Qty. per Unit of Measure" := "Qty. per Unit of Measure";
+        ItemJnlLine."Document Date" := PurchRcptHeader."Document Date";
+        ItemJnlLine."Applies-to Entry" := AppliesToEntryNo_P;
+        ItemJnlLine.Quantity := -Quantity;
+        ItemJnlLine."Quantity (Base)" := -"Quantity (Base)";
+        ItemJnlLine."Drop Shipment" := TRUE;
+        // --> 20160330-WI00-ADV01.01.00-2887-CJY01
+        ItemJnlLine.Correction := TRUE;
+        // <-- 20160330-WI00-ADV01.01.00-2887-CJY01
+        ItemJnlPostLine_G.RUN(ItemJnlLine);
+        EXIT(ItemJnlLine."Item Shpt. Entry No.");
+      END;
+    END;
+
+    LOCAL PROCEDURE InsertNewShipmentLine@1(OldSalesShptLine_P@1000 : Record 111;ItemShptEntryNo_P@1001 : Integer;DocLineNo_P@1004 : Integer);
+    VAR
+      NewSalesShptLine_L@1002 : Record 111;
+    BEGIN
+      WITH OldSalesShptLine_P DO BEGIN
+        NewSalesShptLine_L.INIT;
+        NewSalesShptLine_L.COPY(OldSalesShptLine_P);
+        NewSalesShptLine_L."Line No." := DocLineNo_P;
+        NewSalesShptLine_L."Appl.-from Item Entry" := "Item Shpt. Entry No.";
+        NewSalesShptLine_L."Item Shpt. Entry No." := ItemShptEntryNo_P;
+        NewSalesShptLine_L.Quantity := -Quantity;
+        NewSalesShptLine_L."Qty. Shipped Not Invoiced" := 0;
+        NewSalesShptLine_L."Quantity (Base)" := -"Quantity (Base)";
+        NewSalesShptLine_L."Quantity Invoiced" := NewSalesShptLine_L.Quantity;
+        NewSalesShptLine_L."Qty. Invoiced (Base)" := NewSalesShptLine_L."Quantity (Base)";
+        NewSalesShptLine_L.Correction := TRUE;
+        NewSalesShptLine_L.INSERT;
+
+        CerealIncorpMngt_G.PostUndoShipSLCerealContract(NewSalesShptLine_L,OldSalesShptLine_P);
+        CopyShipmentLineDimensions(OldSalesShptLine_P,NewSalesShptLine_L);
+      END;
+    END;
+
+    PROCEDURE InsertNewShipmentLineForGLAcc@8053002(VAR OldSalesShptLine_P@1000 : Record 111);
+    VAR
+      NewSalesShptLine_L@1002 : Record 111;
+      SalesShptLine2_L@8053000 : Record 111;
+      LineSpacing_L@8053001 : Integer;
+      DocLineNo_L@8053002 : Integer;
+    BEGIN
+      WITH OldSalesShptLine_P DO BEGIN
+        IF "Qty. Shipped Not Invoiced" <> Quantity THEN
+          ERROR(Text005);
+
+        SalesShptLine2_L.SETRANGE("Document No.","Document No.");
+        SalesShptLine2_L."Document No." := "Document No.";
+        SalesShptLine2_L."Line No." := "Line No.";
+        SalesShptLine2_L.FIND('=');
+
+        IF SalesShptLine2_L.FIND('>') THEN BEGIN
+          LineSpacing_L := (SalesShptLine2_L."Line No." - "Line No.") DIV 2;
+          IF LineSpacing_L = 0 THEN
+            ERROR(Text002);
+        END ELSE
+          LineSpacing_L := 10000;
+        DocLineNo_L := "Line No." + LineSpacing_L;
+
+        NewSalesShptLine_L.INIT;
+        NewSalesShptLine_L.COPY(OldSalesShptLine_P);
+        NewSalesShptLine_L."Line No." := DocLineNo_L;
+        NewSalesShptLine_L.Quantity := -Quantity;
+        NewSalesShptLine_L."Qty. Shipped Not Invoiced" := 0;
+        NewSalesShptLine_L."Quantity (Base)" := -"Quantity (Base)";
+        NewSalesShptLine_L."Quantity Invoiced" := NewSalesShptLine_L.Quantity;
+        NewSalesShptLine_L."Qty. Invoiced (Base)" := NewSalesShptLine_L."Quantity (Base)";
+        NewSalesShptLine_L.Correction := TRUE;
+        NewSalesShptLine_L.INSERT;
+
+        CerealIncorpMngt_G.PostUndoShipSLCerealContract(NewSalesShptLine_L,OldSalesShptLine_P);
+
+        CopyShipmentLineDimensions(OldSalesShptLine_P,NewSalesShptLine_L);
+
+        "Quantity Invoiced" := Quantity;
+        "Qty. Invoiced (Base)" := "Quantity (Base)";
+        "Qty. Shipped Not Invoiced" := 0;
+        Correction := TRUE;
+        MODIFY;
+        UpdateSalesOrderLine(OldSalesShptLine_P);
+      END;
+    END;
+
+    LOCAL PROCEDURE InsertNewReceiptLine@8053004(OldPurchRcptLine_P@1000 : Record 121;ItemRcptEntryNo_P@1002 : Integer;DocLineNo_P@1004 : Integer);
+    VAR
+      NewPurchRcptLine_L@1001 : Record 121;
+    BEGIN
+      WITH OldPurchRcptLine_P DO BEGIN
+        NewPurchRcptLine_L.INIT;
+        NewPurchRcptLine_L.COPY(OldPurchRcptLine_P);
+        NewPurchRcptLine_L."Line No." := DocLineNo_P;
+        NewPurchRcptLine_L."Appl.-to Item Entry" := "Item Rcpt. Entry No.";
+        NewPurchRcptLine_L."Item Rcpt. Entry No." := ItemRcptEntryNo_P;
+        NewPurchRcptLine_L.Quantity := -Quantity;
+        NewPurchRcptLine_L."Quantity (Base)" := -"Quantity (Base)";
+        NewPurchRcptLine_L."Quantity Invoiced" := NewPurchRcptLine_L.Quantity;
+        NewPurchRcptLine_L."Qty. Invoiced (Base)" := NewPurchRcptLine_L."Quantity (Base)";
+        NewPurchRcptLine_L."Qty. Rcd. Not Invoiced" := 0;
+        NewPurchRcptLine_L.Correction := TRUE;
+        NewPurchRcptLine_L.INSERT;
+
+        CopyReceiptLineDimensions(OldPurchRcptLine_P,NewPurchRcptLine_L);
+      END;
+    END;
+
+    LOCAL PROCEDURE UpdateSalesOrderLine@4(SalesShptLine_P@1000 : Record 111);
+    VAR
+      SalesLine_L@1001 : Record 37;
+    BEGIN
+      WITH SalesShptLine_P DO BEGIN
+        SalesLine_L.GET(SalesLine_L."Document Type"::Order,"Order No.","Order Line No.");
+        UndoPostingMgt_G.UpdateSalesLine(SalesLine_L,Quantity,"Quantity (Base)",TempGlobalItemLedgEntry_G);
+
+        CerealIncorpMngt_G.RefreshTempSLineCerealContract(SalesLine_L,TempSLineCerealContract_G);
+        CerealIncorpMngt_G.ModifySalesLineCerealContract(TempSLineCerealContract_G,FALSE);
+        UpdateOrderLineLinked(SalesLine_L);
+      END;
+    END;
+
+    LOCAL PROCEDURE UpdatePurchOrderLine@8053003(PurchRcptLine_P@1000 : Record 121);
+    VAR
+      PurchLine_L@1002 : Record 39;
+    BEGIN
+      WITH PurchRcptLine_P DO BEGIN
+        PurchLine_L.GET(PurchLine_L."Document Type"::Order,"Order No.","Order Line No.");
+        UndoPostingMgt_G.UpdatePurchLine(PurchLine_L,Quantity,"Quantity (Base)",TempGlobalItemLedgEntry_G);
+      END;
+    END;
+
+    LOCAL PROCEDURE CopyShipmentLineDimensions@6(FromSalesShptLine_P@1000 : Record 111;ToSalesShptLine_P@1001 : Record 111);
+    VAR
+      ToPostedDocDim_L@1002 : Record 359;
+      FromPostedDocDim_L@1003 : Record 359;
+    BEGIN
+      FromPostedDocDim_L.SETRANGE("Table ID",DATABASE::"Sales Shipment Line");
+      FromPostedDocDim_L.SETRANGE("Document No.",FromSalesShptLine_P."Document No.");
+      FromPostedDocDim_L.SETRANGE("Line No.",FromSalesShptLine_P."Line No.");
+
+      IF FromPostedDocDim_L.FIND('-') THEN
+        REPEAT
+          ToPostedDocDim_L.COPY(FromPostedDocDim_L);
+          ToPostedDocDim_L."Document No." := ToSalesShptLine_P."Document No.";
+          ToPostedDocDim_L."Line No." := ToSalesShptLine_P."Line No.";
+          ToPostedDocDim_L.INSERT;
+        UNTIL FromPostedDocDim_L.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE CopyReceiptLineDimensions@8053005(FromReceiptLine_P@1000 : Record 121;ToReceiptLine_P@1001 : Record 121);
+    VAR
+      FromPostedDocDim_L@1002 : Record 359;
+      ToPostedDocDim_L@1003 : Record 359;
+    BEGIN
+      FromPostedDocDim_L.SETRANGE("Table ID",DATABASE::"Purch. Rcpt. Line");
+      FromPostedDocDim_L.SETRANGE("Document No.",FromReceiptLine_P."Document No.");
+      FromPostedDocDim_L.SETRANGE("Line No.", FromReceiptLine_P."Line No.");
+
+      IF FromPostedDocDim_L.FIND('-') THEN
+        REPEAT
+          ToPostedDocDim_L.COPY(FromPostedDocDim_L);
+          ToPostedDocDim_L."Document No." := ToReceiptLine_P."Document No.";
+          ToPostedDocDim_L."Line No." := ToReceiptLine_P."Line No.";
+          ToPostedDocDim_L.INSERT;
+        UNTIL FromPostedDocDim_L.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE UpdateSalesBlanketOrder@7(SalesShptLine_P@1000 : Record 111);
+    VAR
+      BlanketOrderLine_L@1001 : Record 37;
+    BEGIN
+      WITH SalesShptLine_P DO BEGIN
+        IF BlanketOrderLine_L.GET(BlanketOrderLine_L."Document Type"::"Blanket Order","Blanket Order No.","Blanket Order Line No.")
+        THEN BEGIN
+          BlanketOrderLine_L.TESTFIELD(Type,Type);
+          BlanketOrderLine_L.TESTFIELD("No.","No.");
+          BlanketOrderLine_L.TESTFIELD("Sell-to Customer No.","Sell-to Customer No.");
+
+          IF BlanketOrderLine_L."Qty. per Unit of Measure" = "Qty. per Unit of Measure" THEN
+            BlanketOrderLine_L."Quantity Shipped" := BlanketOrderLine_L."Quantity Shipped" - Quantity
+          ELSE
+            BlanketOrderLine_L."Quantity Shipped" := BlanketOrderLine_L."Quantity Shipped" - ROUND("Qty. per Unit of Measure" /
+              BlanketOrderLine_L."Qty. per Unit of Measure" * Quantity,0.00001);
+
+          BlanketOrderLine_L."Qty. Shipped (Base)" := BlanketOrderLine_L."Qty. Shipped (Base)" - "Quantity (Base)";
+          BlanketOrderLine_L.InitOutstanding;
+          BlanketOrderLine_L.MODIFY;
+        END;
+      END;
+    END;
+
+    LOCAL PROCEDURE UpdatePurchBlanketOrder@8053001(PurchRcptLine_P@1000 : Record 121);
+    VAR
+      BlanketOrderLine_L@1001 : Record 39;
+    BEGIN
+      WITH PurchRcptLine_P DO BEGIN
+        IF BlanketOrderLine_L.GET(BlanketOrderLine_L."Document Type"::"Blanket Order","Blanket Order No.","Blanket Order Line No.")
+        THEN BEGIN
+          BlanketOrderLine_L.TESTFIELD(Type,Type);
+          BlanketOrderLine_L.TESTFIELD("No.","No.");
+          BlanketOrderLine_L.TESTFIELD("Buy-from Vendor No.","Buy-from Vendor No.");
+
+          IF BlanketOrderLine_L."Qty. per Unit of Measure" = "Qty. per Unit of Measure" THEN
+            BlanketOrderLine_L."Quantity Received" := BlanketOrderLine_L."Quantity Received" - Quantity
+          ELSE
+            BlanketOrderLine_L."Quantity Received" := BlanketOrderLine_L."Quantity Received" - ROUND("Qty. per Unit of Measure" /
+               BlanketOrderLine_L."Qty. per Unit of Measure" * Quantity,0.00001);
+
+          BlanketOrderLine_L."Qty. Received (Base)" := BlanketOrderLine_L."Qty. Received (Base)" - "Quantity (Base)";
+          BlanketOrderLine_L.InitOutstanding;
+          BlanketOrderLine_L.MODIFY;
+        END;
+      END;
+    END;
+
+    PROCEDURE DeleteSalesShptLineServItems@10(SalesShptLine_P@1000 : Record 111);
+    VAR
+      ServItem_L@1003 : Record 5940;
+    BEGIN
+      ServItem_L.SETCURRENTKEY("Sales/Serv. Shpt. Document No.","Sales/Serv. Shpt. Line No.");
+      ServItem_L.SETRANGE("Sales/Serv. Shpt. Document No.",SalesShptLine_P."Document No.");
+      ServItem_L.SETRANGE("Sales/Serv. Shpt. Line No.",SalesShptLine_P."Line No.");
+      ServItem_L.SETRANGE("Shipment Type",ServItem_L."Shipment Type"::Sales);
+      IF ServItem_L.FIND('-') THEN
+        REPEAT
+          IF ServItem_L.CheckIfCanBeDeleted = '' THEN
+            IF ServItem_L.DELETE(TRUE) THEN;
+        UNTIL ServItem_L.NEXT = 0;
+    END;
+
+    PROCEDURE UpdateOrderLineLinked@8053010(SalesLine_P@1000000000 : Record 37);
+    VAR
+      SalesLine_L@8053001 : Record 37;
+      SalesLineLinked_L@8053002 : Record 37;
+    BEGIN
+      IF SalesLineLinked_L.GET(SalesLine_P."Document Type"::Order,SalesLine_P."Linked Order No.",SalesLine_P."Linked Order Line No.")
+      THEN BEGIN
+        SalesLine_L.RESET;
+        SalesLine_L.SETRANGE("Document Type",SalesLine_P."Document Type"::Order);
+        SalesLine_L.SETRANGE("Document No.",SalesLine_P."Document No.");
+        SalesLine_L.SETRANGE("Line No.",SalesLine_P."Line No.");
+        IF SalesLine_L.FINDSET AND (SalesLineLinked_L."Prepayment %" > 0) THEN BEGIN
+          SalesLineLinked_L."Prepmt. Line Amount" += SalesLine_L."Prepmt. Line Amount";
+          SalesLineLinked_L."Prepmt. Amt. Inv." += SalesLine_L."Prepmt. Amt. Inv.";
+          SalesLineLinked_L."Prepmt. Amt. Incl. VAT" += SalesLine_L."Prepmt. Amt. Incl. VAT";
+          SalesLineLinked_L."Prepayment Amount" += SalesLine_L."Prepayment Amount";
+          SalesLineLinked_L."Prepmt. VAT Base Amt." += SalesLine_L."Prepmt. VAT Base Amt.";
+          SalesLineLinked_L."Prepayment VAT %" := SalesLine_L."Prepayment VAT %";
+          SalesLineLinked_L."Prepmt. VAT Calc. Type" := SalesLine_L."Prepmt. VAT Calc. Type";
+          SalesLineLinked_L."Prepayment VAT Identifier" := SalesLine_L."Prepayment VAT Identifier";
+          SalesLineLinked_L."Prepayment Tax Area Code" := SalesLine_L."Prepayment Tax Area Code";
+          SalesLineLinked_L."Prepayment Tax Liable" := SalesLine_L."Prepayment Tax Liable";
+          SalesLineLinked_L."Prepayment Tax Group Code" := SalesLine_L."Prepayment Tax Group Code";
+          SalesLineLinked_L."Prepmt Amt to Deduct" += SalesLine_L."Prepmt Amt to Deduct";
+          SalesLineLinked_L."Prepmt Amt Deducted" += SalesLine_L."Prepmt Amt Deducted";
+          SalesLineLinked_L."Prepayment Line" := SalesLine_L."Prepayment Line";
+          SalesLineLinked_L."Prepmt. Amount Inv. Incl. VAT" += SalesLine_L."Prepmt. Amount Inv. Incl. VAT";
+          SalesLineLinked_L."Prepmt. Amount Inv. (LCY)" += SalesLine_L."Prepmt. Amount Inv. (LCY)";
+          SalesLineLinked_L."Prepayment VAT Difference" += SalesLine_L."Prepayment VAT Difference";
+          SalesLineLinked_L."Prepmt VAT Diff. to Deduct" += SalesLine_L."Prepmt VAT Diff. to Deduct";
+          SalesLineLinked_L."Prepmt VAT Diff. Deducted" += SalesLine_L."Prepmt VAT Diff. Deducted";
+          SalesLineLinked_L.Amount += SalesLineLinked_L.Amount;
+          SalesLineLinked_L."Line Amount" += SalesLine_L."Line Amount";
+          SalesLineLinked_L."Quantity (Base)" += SalesLine_L."Quantity (Base)";
+          SalesLineLinked_L."Outstanding Qty. (Base)" += SalesLine_L."Outstanding Qty. (Base)";
+          SalesLineLinked_L."VAT Base Amount"+= SalesLine_P."VAT Base Amount";
+        END;
+        SalesLine_L."Prepayment %" := 0;
+        SalesLine_L."Prepmt. Line Amount" := 0;
+        SalesLine_L."Prepmt. Amt. Inv." := 0;
+        SalesLine_L."Prepmt. Amt. Incl. VAT" := 0;
+        SalesLine_L."Prepayment Amount"  := 0;
+        SalesLine_L."Prepmt. VAT Base Amt." := 0;
+        SalesLine_L."Prepayment VAT %" := 0;
+        SalesLine_L."Prepmt. VAT Calc. Type" := SalesLine_L."Prepmt. VAT Calc. Type"::"Normal VAT";
+        SalesLine_L."Prepayment VAT Identifier" := '';
+        SalesLine_L."Prepayment Tax Area Code" := '';
+        SalesLine_L."Prepayment Tax Liable" := FALSE;
+        SalesLine_L."Prepayment Tax Group Code" := '';
+        SalesLine_L."Prepmt Amt to Deduct" := 0;
+        SalesLine_L."Prepmt Amt Deducted" := 0;
+        SalesLine_L."Prepayment Line" := FALSE;
+        SalesLine_L."Prepmt. Amount Inv. Incl. VAT" := 0;
+        SalesLine_L."Prepmt. Amount Inv. (LCY)" := 0;
+        SalesLine_L."Prepayment VAT Difference"  := 0;
+        SalesLine_L."Prepmt VAT Diff. to Deduct" := 0;
+        SalesLine_L."Prepmt VAT Diff. Deducted" := 0;
+        SalesLine_L.MODIFY;
+        UndoPostingMgt_G.UpdateSalesLineLinked(SalesLineLinked_L,SalesShptLine_G.Quantity,
+          SalesShptLine_G."Quantity (Base)",TempGlobalItemLedgEntry_G);
+      END
+    END;
+
+    PROCEDURE GetPurchReceiptLine@1000000007(SalesShptLine_P@1000000000 : Record 111;VAR PurchRcptLine_P@1000000001 : Record 121);
+    VAR
+      TempItemLedgEntry_L@1000000003 : TEMPORARY Record 32;
+      ShptItemLedgEntry_L@1000000004 : Record 32;
+      RcptItemLedgEntry_L@8053000 : Record 32;
+      ItemShptEntryNo_L@1000000005 : Integer;
+    BEGIN
+      IF SalesShptLine_P."Item Shpt. Entry No." <> 0 THEN
+        ItemShptEntryNo_L := SalesShptLine_P."Item Shpt. Entry No."
+      ELSE BEGIN
+        TempItemLedgEntry_L.RESET;
+        TempItemLedgEntry_L.DELETEALL;
+        UndoPostingMgt_G.CollectItemLedgEntries(TempItemLedgEntry_L,DATABASE::"Sales Shipment Line",SalesShptLine_P."Document No.",
+          SalesShptLine_P."Line No.",SalesShptLine_P."Quantity (Base)",SalesShptLine_P."Item Shpt. Entry No.");
+        TempItemLedgEntry_L.FINDSET;
+        ItemShptEntryNo_L := TempItemLedgEntry_L."Entry No.";
+      END;
+
+      ShptItemLedgEntry_L.GET(ItemShptEntryNo_L);
+      RcptItemLedgEntry_L.GET(ShptItemLedgEntry_L."Applies-to Entry");
+      IF NOT ((RcptItemLedgEntry_L."Document Type" = RcptItemLedgEntry_L."Document Type"::"Purchase Receipt") AND
+        PurchRcptLine_P.GET(RcptItemLedgEntry_L."Document No.",RcptItemLedgEntry_L."Document Line No."))
+      THEN
+        PurchRcptLine_P.INIT;
+    END;
+
+    LOCAL PROCEDURE RemoveApplications@1000000000(Inbound@1000 : Integer;OutBound@1001 : Integer);
+    VAR
+      Application@1003 : Record 339;
+    BEGIN
+      // This function is a copy of RemoveApplication from
+      // Input
+      //
+      // Output
+      // --> 20160330-WI00-ADV01.01.00-2887-CJY01
+      Application.SETCURRENTKEY("Inbound Item Entry No.",Application."Outbound Item Entry No.");
+      Application.SETRANGE("Inbound Item Entry No.",Inbound);
+      Application.SETRANGE("Outbound Item Entry No.",OutBound);
+      Apply_G.SetNoDropShipmentControl(TRUE);
+      IF Application.FIND('-') THEN REPEAT
+        Apply_G.UnApply(Application);
+      UNTIL Application.NEXT = 0;
+      // <-- 20160330-WI00-ADV01.01.00-2887-CJY01
+    END;
+
+    PROCEDURE InsertNewRcptLineForGLAcc@100000001(VAR OldPurchRcptLine_P@1000 : Record 121);
+    VAR
+      NewPurchRcptLine_L@1002 : Record 121;
+      PurchRcptLine2_L@8053000 : Record 121;
+      LineSpacing_L@8053001 : Integer;
+      DocLineNo_L@8053002 : Integer;
+    BEGIN
+      // --> 20200604-WI00-ADV01.01.00-ID50146-MRU01
+      WITH OldPurchRcptLine_P DO BEGIN
+        IF "Qty. Rcd. Not Invoiced" <> Quantity THEN
+          ERROR(Text004);
+
+        PurchRcptLine2_L.SETRANGE("Document No.","Document No.");
+        PurchRcptLine2_L."Document No." := "Document No.";
+        PurchRcptLine2_L."Line No." := "Line No.";
+        PurchRcptLine2_L.FIND('=');
+
+        IF PurchRcptLine2_L.FIND('>') THEN BEGIN
+          LineSpacing_L := (PurchRcptLine2_L."Line No." - "Line No.") DIV 2;
+          IF LineSpacing_L = 0 THEN
+            ERROR(Text002);
+        END ELSE
+          LineSpacing_L := 10000;
+        DocLineNo_L := "Line No." + LineSpacing_L;
+
+        NewPurchRcptLine_L.INIT;
+        NewPurchRcptLine_L.COPY(OldPurchRcptLine_P);
+        NewPurchRcptLine_L."Line No." := DocLineNo_L;
+        NewPurchRcptLine_L.Quantity := -Quantity;
+        NewPurchRcptLine_L."Qty. Rcd. Not Invoiced" := 0;
+        NewPurchRcptLine_L."Quantity (Base)" := -"Quantity (Base)";
+        NewPurchRcptLine_L."Quantity Invoiced" := NewPurchRcptLine_L.Quantity;
+        NewPurchRcptLine_L."Qty. Invoiced (Base)" := NewPurchRcptLine_L."Quantity (Base)";
+        NewPurchRcptLine_L.Correction := TRUE;
+        NewPurchRcptLine_L.INSERT;
+
+        CopyReceiptLineDimensions(OldPurchRcptLine_P,NewPurchRcptLine_L);
+
+        "Quantity Invoiced" := Quantity;
+        "Qty. Invoiced (Base)" := "Quantity (Base)";
+        "Qty. Rcd. Not Invoiced" := 0;
+        Correction := TRUE;
+        MODIFY;
+        UpdatePurchOrderLine(OldPurchRcptLine_P);
+      END;
+      // <-- 20200604-WI00-ADV01.01.00-ID50146-MRU01
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+
+      20131113-Log14/001-CMC02.02.00-1091-FEC01 : ADDOBJ (Nouvel objet).
+      20140205-Log14/001-CMC02.02.00-1662-FEC01 : ADDCODE.
+      LOG14/001-CMC02.02.0020140206-1672-FHS01 : ADDPERMISSION (121)
+      20140214-Log14/001-CMC02.02.00-1728-FEC01 : MODTC (Text004).
+      20160330-WI00-ADV01.01.00-2887-CJY01 : MODCODE (Valorisation annulation livraison directe)
+      20200604-WI00-ADV01.01.00-ID50146-MRU01 : MODCODE (Annulation LD : prise en compte ligne CRIV achat - EXELIENCE)
+      // --> 3LI END
+    }
+    END.
+  }
+}
+

@@ -1,0 +1,179 @@
+OBJECT Codeunit 5706 TransferOrder-Post (Yes/No)
+{
+  OBJECT-PROPERTIES
+  {
+    Date=05/02/16;
+    Heure=00:00:00;
+    Liste versions=NAVW13.00,LSW16.1,CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    TableNo=5740;
+    OnRun=BEGIN
+            TransHeader.COPY(Rec);
+            Code;
+            Rec := TransHeader;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=&Ship,&Receive;FRA=&Exp'dier,&R'ceptionner';
+      TransHeader@1001 : Record 5740;
+      LSText001@1200070000 : TextConst 'ENU=&Ship;FRA=&Livrer';
+      LSText002@1200070001 : TextConst 'ENU=&Receive;FRA=R'ceptionner';
+      MenuText@1200070002 : Text[50];
+      MenuOffset@1200070003 : Integer;
+      BOUtils@1100409000 : Codeunit 99001452;
+      InStoreFunc@1100409002 : Codeunit 10001310;
+      TransLine_G@8053000 : Record 5741;
+      TransLine2_G@8053001 : Record 5741;
+      TEMPTransLine_G@8053002 : TEMPORARY Record 5741;
+
+    LOCAL PROCEDURE Code@1();
+    VAR
+      TransLine@1000 : Record 5741;
+      DefaultNumber@1001 : ' ,Shipment,Receipt';
+      TransferPostShipment@1002 : Codeunit 5704;
+      TransferPostReceipt@1003 : Codeunit 5705;
+      Selection@1004 : ' ,Shipment,Receipt';
+      InStoreMgmtInUse@1100409000 : Boolean;
+    BEGIN
+      WITH TransHeader DO BEGIN
+        //LS -
+        InStoreMgmtInUse := IsInStoreMgmtInUse;
+        IF InStoreMgmtInUse THEN BEGIN
+          IF (TransHeader."Retail Status" = TransHeader."Retail Status"::"To receive") THEN BEGIN
+            MenuOffset := 1;
+            MenuText := LSText002;
+          END ELSE BEGIN
+            MenuOffset := 0;
+            MenuText := LSText001;
+          END;
+        END ELSE BEGIN
+          MenuOffset := 0;
+          MenuText := Text000;
+        //LS +
+          TransLine.SETRANGE("Document No.","No.");
+          IF TransLine.FIND('-') THEN BEGIN
+            REPEAT
+              IF (TransLine."Quantity Shipped" < TransLine.Quantity) AND
+                 (DefaultNumber = DefaultNumber::" ") THEN
+                DefaultNumber := DefaultNumber::Shipment;
+              IF (TransLine."Quantity Received" < TransLine.Quantity) AND
+                 (DefaultNumber = DefaultNumber::" ") THEN
+                DefaultNumber := DefaultNumber::Receipt;
+            UNTIL (TransLine.NEXT = 0) OR (DefaultNumber > 0);
+          END;
+        END;  //LS
+        IF DefaultNumber = 0 THEN
+          DefaultNumber := 1;
+        //LS -
+        //Selection := STRMENU(Text000,DefaultNumber);
+        Selection := STRMENU(MenuText,DefaultNumber);
+        IF Selection <> 0 THEN
+          Selection := Selection + MenuOffset;
+        //LS +
+        CASE Selection OF
+          0:
+            EXIT;
+          1:
+            //LS -
+            BEGIN
+              IF TransHeader."Transfer-from Depart. Code" <> '' THEN
+                TransHeader.SetStoreDocDim(1,TransHeader."Transfer-from Depart. Code");
+            //LS +
+            // --> 20130516-Log08-CMC02.02.00-WSA01
+               IF "Auto. Receipt" THEN BEGIN
+                TEMPTransLine_G.DELETEALL;
+                TransLine_G.RESET;
+                TransLine_G.SETRANGE("Document No.","No.");
+                TransLine_G.SETFILTER("Qty. to Ship",'<>0');
+                IF TransLine_G.FINDSET THEN
+                 REPEAT
+                  TEMPTransLine_G.INIT;
+                  TEMPTransLine_G.TRANSFERFIELDS(TransLine_G);
+                  TEMPTransLine_G.INSERT;
+                UNTIL TransLine_G.NEXT=0;
+               END;
+            // <-- 20130516-Log08-CMC02.02.00-WSA01
+               TransferPostShipment.RUN(TransHeader);
+            // --> 20130516-Log08-CMC02.02.00-WSA01
+
+                IF "Auto. Receipt" THEN BEGIN
+                  // --> 20160502-Log08-CMC02.02.00-2680-JCD01
+                  {BEFORE
+                  IF TEMPTransLine_G.FINDSET THEN
+                   REPEAT
+                    TransLine2_G.RESET;
+                    TransLine2_G.SETRANGE("Document No.","No.");
+                    TransLine2_G.SETRANGE("Derived From Line No.",TEMPTransLine_G."Line No.");
+                    IF TransLine2_G.FINDLAST THEN BEGIN
+                     TransLine_G.GET("No.",TEMPTransLine_G."Line No.");
+                     TransLine_G.VALIDATE("Qty. to Receive", TransLine2_G."Qty. to Receive");
+                     TransLine_G.MODIFY;
+                    END;
+                   UNTIL TEMPTransLine_G.NEXT=0;
+                   AFTER}
+                   IF TEMPTransLine_G.FINDFIRST THEN
+                      REPEAT
+                        IF TransLine_G.GET(TEMPTransLine_G."Document No.",TEMPTransLine_G."Line No.") THEN BEGIN
+                          TransLine_G.VALIDATE("Qty. to Receive", TEMPTransLine_G."Qty. to Ship");
+                          TransLine_G.MODIFY;
+                        END;
+                      UNTIL TEMPTransLine_G.NEXT=0;
+                   TEMPTransLine_G.DELETEALL;
+                   CLEAR(TransferPostReceipt);
+                   // <-- 20160502-Log08-CMC02.02.00-2680-JCD01
+                   TransferPostReceipt.RUN(TransHeader);
+               END;
+            // <-- 20130516-Log08-CMC02.02.00-WSA01
+
+            END;  //LS
+          2:
+            //LS -
+            BEGIN
+              IF TransHeader."Transfer-to Depart. Code" <> '' THEN
+                TransHeader.SetStoreDocDim(1,TransHeader."Transfer-to Depart. Code");
+                //LS +
+              TransferPostReceipt.RUN(TransHeader);
+            END;  //LS
+        END;
+      END;
+    END;
+
+    PROCEDURE IsInStoreMgmtInUse@1100409001() : Boolean;
+    VAR
+      InStoreMgmtInUse@1100409000 : Boolean;
+      "<< 3LI GLOBALS >>"@8053001 : Integer;
+      cduLSRetailPermission_L@8053000 : Codeunit 8053005;
+    BEGIN
+      //ISInStoreMgmtInUse
+      //LS
+      InStoreMgmtInUse := FALSE;
+
+      IF cduLSRetailPermission_L.isLSRetail THEN // 20110830-CMC01.05.01
+        IF BOUtils.IsInStorePermitted THEN
+          IF InStoreFunc.TransDocExists(TransHeader,TRUE) THEN
+            InStoreMgmtInUse := TRUE;
+
+      EXIT(InStoreMgmtInUse);
+    END;
+
+    BEGIN
+    {
+      LS = Changes made by LS Retail
+
+      // <-- 3LI BEGIN
+
+      20110830-CMC01.05.01-DRN : MODCODE (Gestion des permissions Retail)
+      20130516-Log08-CMC02.02.00-WSA01 : ADDCODE (Gestion r'ception automatique)
+      20160502-Log08-CMC02.02.00-2680-JCD01 : MODCOD (Lors d'une r'ception auto, une seule ligne 'tait r'ceptionn'e)
+
+      // --> 3LI END
+    }
+    END.
+  }
+}
+

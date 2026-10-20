@@ -1,0 +1,1652 @@
+OBJECT Report 8061108 CMB Order
+{
+  OBJECT-PROPERTIES
+  {
+    Date=18/11/11;
+    Heure=00:00:00;
+    Liste versions=CMB6.00.10.04;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Order;
+               FRA=Commande];
+    TopMargin=1000;
+    BottomMargin=700;
+    LeftMargin=1000;
+    OnInitReport=BEGIN
+                   GLSetup.GET;
+                   PurchSetup.GET;
+                 END;
+
+    HorzGrid=210;
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table38;
+        DataItemTableView=SORTING(Document Type,No.)
+                          WHERE(Document Type=CONST(Order));
+        NewPagePerRecord=Oui;
+        ReqFilterHeadingML=[ENU=Purchase Order;
+                            FRA=Commande achat];
+        OnAfterGetRecord=BEGIN
+                           CurrReport.LANGUAGE := Language.GetLanguageID("Language Code");
+
+                           CompanyInfo.GET;
+
+                           IF RespCenter.GET("Responsibility Center") THEN BEGIN
+                             FormatAddr.RespCenter(CompanyAddr,RespCenter);
+                             CompanyInfo."Phone No." := RespCenter."Phone No.";
+                             CompanyInfo."Fax No." := RespCenter."Fax No.";
+                           END ELSE
+                             FormatAddr.Company(CompanyAddr,CompanyInfo);
+
+                           DocDim1.SETRANGE("Table ID",DATABASE::"Purchase Header");
+                           DocDim1.SETRANGE("Document Type","Purchase Header"."Document Type");
+                           DocDim1.SETRANGE("Document No.","Purchase Header"."No.");
+
+                           IF "Purchaser Code" = '' THEN BEGIN
+                             SalesPurchPerson.INIT;
+                             PurchaserText := '';
+                           END ELSE BEGIN
+                             SalesPurchPerson.GET("Purchaser Code");
+                             PurchaserText := Text000
+                           END;
+                           IF "Your Reference" = '' THEN
+                             ReferenceText := ''
+                           ELSE
+                             ReferenceText := FIELDCAPTION("Your Reference");
+                           IF "VAT Registration No." = '' THEN
+                             VATNoText := ''
+                           ELSE
+                             VATNoText := FIELDCAPTION("VAT Registration No.");
+                           IF "Currency Code" = '' THEN BEGIN
+                             GLSetup.TESTFIELD("LCY Code");
+                             TotalText := STRSUBSTNO(Text001,GLSetup."LCY Code");
+                             TotalInclVATText := STRSUBSTNO(Text002,GLSetup."LCY Code");
+                             TotalExclVATText := STRSUBSTNO(Text006,GLSetup."LCY Code");
+                           END ELSE BEGIN
+                             TotalText := STRSUBSTNO(Text001,"Currency Code");
+                             TotalInclVATText := STRSUBSTNO(Text002,"Currency Code");
+                             TotalExclVATText := STRSUBSTNO(Text006,"Currency Code");
+                           END;
+
+                           FormatAddr.PurchHeaderBuyFrom(BuyFromAddr,"Purchase Header");
+                           IF ("Purchase Header"."Buy-from Vendor No." <> "Purchase Header"."Pay-to Vendor No.") THEN
+                             FormatAddr.PurchHeaderPayTo(VendAddr,"Purchase Header");
+                           IF "Payment Terms Code" = '' THEN
+                             PaymentTerms.INIT
+                           ELSE BEGIN
+                             PaymentTerms.GET("Payment Terms Code");
+                             PaymentTerms.TranslateDescription(PaymentTerms,"Language Code");
+                           END;
+                           IF "Prepmt. Payment Terms Code" = '' THEN
+                             PrepmtPaymentTerms.INIT
+                           ELSE BEGIN
+                             PrepmtPaymentTerms.GET("Prepmt. Payment Terms Code");
+                             PrepmtPaymentTerms.TranslateDescription(PrepmtPaymentTerms,"Language Code");
+                           END;
+                           IF "Shipment Method Code" = '' THEN
+                             ShipmentMethod.INIT
+                           ELSE BEGIN
+                             ShipmentMethod.GET("Shipment Method Code");
+                             ShipmentMethod.TranslateDescription(ShipmentMethod,"Language Code");
+                           END;
+
+
+                           FormatAddr.PurchHeaderShipTo(ShipToAddr,"Purchase Header");
+
+                           IF NOT CurrReport.PREVIEW THEN BEGIN
+                             IF ArchiveDocument THEN
+                               ArchiveManagement.StorePurchDocument("Purchase Header",LogInteraction);
+
+                             IF LogInteraction THEN BEGIN
+                               CALCFIELDS("No. of Archived Versions");
+                               SegManagement.LogDocument(
+                                 13,"No.","Doc. No. Occurrence","No. of Archived Versions",DATABASE::Vendor,"Buy-from Vendor No.",
+                                 "Purchaser Code",'',"Posting Description",'');
+                             END;
+                           END;
+
+                           IF ISSERVICETIER THEN
+                             PricesInclVATtxt := FORMAT("Purchase Header"."Prices Including VAT");
+                         END;
+
+        ReqFilterFields=No.,Buy-from Vendor No.,No. Printed;
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=1;
+        DataItemTable=Table2000000026;
+        DataItemTableView=SORTING(Num'ro);
+        NewPagePerRecord=Oui;
+        DataItemVarName=CopyLoop;
+        OnPreDataItem=BEGIN
+                        NoOfLoops := ABS(NoOfCopies) + 1;
+                        CopyText := '';
+                        SETRANGE(Num'ro,1,NoOfLoops);
+
+                        IF ISSERVICETIER THEN
+                          OutputNo := 0;
+                      END;
+
+        OnAfterGetRecord=VAR
+                           PrepmtPurchLine@1000 : TEMPORARY Record 39;
+                           DocDim@1001 : Record 357;
+                           TempPurchLine@1002 : TEMPORARY Record 39;
+                         BEGIN
+                           CLEAR(PurchLine);
+                           CLEAR(PurchPost);
+                           PurchLine.DELETEALL;
+                           VATAmountLine.DELETEALL;
+                           PurchPost.GetPurchLines("Purchase Header",PurchLine,0);
+                           PurchLine.CalcVATAmountLines(0,"Purchase Header",PurchLine,VATAmountLine);
+                           PurchLine.UpdateVATOnLines(0,"Purchase Header",PurchLine,VATAmountLine);
+                           VATAmount := VATAmountLine.GetTotalVATAmount;
+                           VATBaseAmount := VATAmountLine.GetTotalVATBase;
+                           VATDiscountAmount :=
+                             VATAmountLine.GetTotalVATDiscount("Purchase Header"."Currency Code","Purchase Header"."Prices Including VAT");
+                           TotalAmountInclVAT := VATAmountLine.GetTotalAmountInclVAT;
+
+                           PrepmtInvBuf.DELETEALL;
+                           PurchPostPrepmt.GetPurchLines("Purchase Header",0,PrepmtPurchLine);
+                           IF (NOT PrepmtPurchLine.ISEMPTY) THEN BEGIN
+                             PurchPostPrepmt.GetPurchLinesToDeduct("Purchase Header",TempPurchLine);
+                             IF NOT TempPurchLine.ISEMPTY THEN
+                               PurchPostPrepmt.CalcVATAmountLines("Purchase Header",TempPurchLine,PrePmtVATAmountLineDeduct,1);
+                           END;
+                           PurchPostPrepmt.CalcVATAmountLines("Purchase Header",PrepmtPurchLine,PrepmtVATAmountLine,0);
+                           IF PrepmtVATAmountLine.FINDSET THEN
+                             REPEAT
+                               PrePmtVATAmountLineDeduct := PrepmtVATAmountLine;
+                               IF PrePmtVATAmountLineDeduct.FIND THEN BEGIN
+                                 PrepmtVATAmountLine."VAT Base" := PrepmtVATAmountLine."VAT Base" - PrePmtVATAmountLineDeduct."VAT Base";
+                                 PrepmtVATAmountLine."VAT Amount" := PrepmtVATAmountLine."VAT Amount" - PrePmtVATAmountLineDeduct."VAT Amount";
+                                 PrepmtVATAmountLine."Amount Including VAT" := PrepmtVATAmountLine."Amount Including VAT" -
+                                   PrePmtVATAmountLineDeduct."Amount Including VAT";
+                                 PrepmtVATAmountLine."Line Amount" := PrepmtVATAmountLine."Line Amount" - PrePmtVATAmountLineDeduct."Line Amount";
+                                 PrepmtVATAmountLine."Inv. Disc. Base Amount" := PrepmtVATAmountLine."Inv. Disc. Base Amount" -
+                                   PrePmtVATAmountLineDeduct."Inv. Disc. Base Amount";
+                                 PrepmtVATAmountLine."Invoice Discount Amount" := PrepmtVATAmountLine."Invoice Discount Amount" -
+                                   PrePmtVATAmountLineDeduct."Invoice Discount Amount";
+                                 PrepmtVATAmountLine."Calculated VAT Amount" := PrepmtVATAmountLine."Calculated VAT Amount" -
+                                   PrePmtVATAmountLineDeduct."Calculated VAT Amount";
+                                 PrepmtVATAmountLine.MODIFY;
+                               END;
+                             UNTIL PrepmtVATAmountLine.NEXT = 0;
+                           PurchPostPrepmt.UpdateVATOnLines("Purchase Header",PrepmtPurchLine,PrepmtVATAmountLine,0);
+                           PurchPostPrepmt.BuildInvLineBuffer2("Purchase Header",PrepmtPurchLine,0,PrepmtInvBuf,DocDim);
+                           PrepmtVATAmount := PrepmtVATAmountLine.GetTotalVATAmount;
+                           PrepmtVATBaseAmount := PrepmtVATAmountLine.GetTotalVATBase;
+                           PrepmtTotalAmountInclVAT := PrepmtVATAmountLine.GetTotalAmountInclVAT;
+
+                           IF Num'ro > 1 THEN
+                             CopyText := Text003;
+                           CurrReport.PAGENO := 1;
+
+                           IF ISSERVICETIER THEN
+                             OutputNo := OutputNo + 1;
+                         END;
+
+        OnPostDataItem=BEGIN
+                         IF NOT CurrReport.PREVIEW THEN
+                           PurchCountPrinted.RUN("Purchase Header");
+                       END;
+
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=2;
+        DataItemTable=Table2000000026;
+        DataItemTableView=SORTING(Num'ro)
+                          WHERE(Num'ro=CONST(1));
+        DataItemVarName=PageLoop;
+        OnAfterGetRecord=BEGIN
+                           InitVatArray;
+                         END;
+
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Header;
+            PrintOnEveryPage=Oui;
+            SectionWidth=19320;
+            SectionHeight=10998;
+            OnPreSection=BEGIN
+                           CompanyInfo.GET;
+                           SalesSetup.GET;
+
+                           CASE SalesSetup."Logo Position on Documents" OF
+                             SalesSetup."Logo Position on Documents"::"No Logo":;
+                             SalesSetup."Logo Position on Documents"::Left:
+                               BEGIN
+                                 CompanyInfo.CALCFIELDS(Picture);
+                               END;
+                             SalesSetup."Logo Position on Documents"::Center:
+                               BEGIN
+                                 CompanyInfo1.CALCFIELDS(Picture);
+                               END;
+                             SalesSetup."Logo Position on Documents"::Right:
+                               BEGIN
+                                 CompanyInfo2.CALCFIELDS(Picture);
+                               END;
+                           END;
+                         END;
+
+          }
+          CONTROLS
+          {
+            { 1000000000;Shape  ;210  ;4230 ;18900;4653 ;ShapeStyle=VertLine }
+            { 1000000001;Shape  ;210  ;4230 ;18900;4653 ;ShapeStyle=Rectangle }
+            { 1000000002;TextBox;420  ;9306 ;8190 ;846  ;FontSize=12;
+                                                         FontBold=Oui;
+                                                         SourceExpr=STRSUBSTNO('%1 %2',CopyText,DocumentCaption);
+                                                         DataSetFieldName=STRSUBSTNO_DocumentCaption_CopyText_ }
+            { 1000000003;TextBox;17010;0    ;1680 ;423  ;FontSize=9;
+                                                         SourceExpr=STRSUBSTNO(Text005,FORMAT(CurrReport.PAGENO));
+                                                         DataSetFieldName=STRSUBSTNO_Text005_FORMAT_CurrReport_PAGENO__ }
+            { 1000000004;TextBox;9870 ;10152;2730 ;423  ;FontSize=9;
+                                                         SourceExpr=ReferenceText;
+                                                         DataSetFieldName=ReferenceText }
+            { 1000000005;TextBox;12600;10152;6090 ;423  ;FontSize=9;
+                                                         SourceExpr="Purchase Header"."Your Reference";
+                                                         DataSetFieldName=Sales_Invoice_Header___Your_Reference_ }
+            { 1000000006;TextBox;12600;9306 ;6090 ;423  ;FontSize=9;
+                                                         SourceExpr=FORMAT("Purchase Header"."Document Date",0,4);
+                                                         DataSetFieldName=FORMAT__Sales_Invoice_Header___Document_Date__0_4_ }
+            { 1000000007;TextBox;18900;0    ;210  ;423  ;Name=OutputNo;
+                                                         Visible=Non;
+                                                         ForeColor=65535;
+                                                         SourceExpr=OutputNo;
+                                                         DataSetFieldName=OutputNo }
+            { 1000000008;TextBox;18690;0    ;210  ;423  ;Name=PageCaption;
+                                                         Visible=Non;
+                                                         ForeColor=65535;
+                                                         SourceExpr=STRSUBSTNO(Text003,'');
+                                                         DataSetFieldName=PageCaption }
+            { 1000000009;TextBox;4410 ;8460 ;2940 ;423  ;HorzAlign=Left;
+                                                         FontSize=9;
+                                                         SourceExpr="Purchase Header"."Pay-to Vendor No.";
+                                                         DataSetFieldName=Sales_Invoice_Header___Sell_to_Customer_No__ }
+            { 1000000010;Label  ;1050 ;8460 ;3360 ;423  ;ParentControl=1000000009;
+                                                         FontSize=9;
+                                                         DataSetFieldName=Sales_Invoice_Header___Sell_to_Customer_No__Caption }
+            { 1000000011;Label  ;630  ;4230 ;6300 ;423  ;FontSize=9;
+                                                         FontBold=Non;
+                                                         FontUnderline=Oui;
+                                                         CaptionML=[ENU=Ship-to Address;
+                                                                    FRA=Fournisseur];
+                                                         DataSetFieldName=Ship_to_AddressCaption }
+            { 1000000012;Label  ;10080;4230 ;6300 ;423  ;FontSize=9;
+                                                         FontBold=Non;
+                                                         FontUnderline=Oui;
+                                                         CaptionML=[ENU=Bill-to Address;
+                                                                    FRA=Adresse facturation];
+                                                         DataSetFieldName=Bill_to_AddressCaption }
+            { 1000000013;Label  ;9870 ;9306 ;2730 ;423  ;FontSize=9;
+                                                         CaptionML=[ENU=Date;
+                                                                    FRA=Date];
+                                                         DataSetFieldName=DateCaption }
+            { 1000000022;TextBox;10500;4653 ;6300 ;423  ;FontSize=9;
+                                                         FontBold=Oui;
+                                                         SourceExpr=CompanyAddr[1];
+                                                         DataSetFieldName=CompanyAddr_1_ }
+            { 1000000023;TextBox;10500;5076 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=CompanyAddr[2];
+                                                         DataSetFieldName=CompanyAddr_2_ }
+            { 1000000024;TextBox;10500;5499 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=CompanyAddr[3];
+                                                         DataSetFieldName=CompanyAddr_3_ }
+            { 1000000025;TextBox;10500;5922 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=CompanyAddr[4];
+                                                         DataSetFieldName=CompanyAddr_4_ }
+            { 1000000026;TextBox;10500;6345 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=CompanyAddr[5];
+                                                         DataSetFieldName=CompanyAddr_5_ }
+            { 1000000027;TextBox;10500;6768 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=CompanyAddr[6];
+                                                         DataSetFieldName=CompanyAddr_6_ }
+            { 1000000028;TextBox;13650;7614 ;4200 ;423  ;FontSize=9;
+                                                         CaptionML=[ENU=Phone No.;
+                                                                    FRA=N› t'l'phone];
+                                                         SourceExpr=CompanyInfo."Phone No.";
+                                                         DataSetFieldName=CompanyInfo__Phone_No__ }
+            { 1000000029;Label  ;10500;7614 ;2100 ;423  ;ParentControl=1000000028;
+                                                         FontSize=9;
+                                                         DataSetFieldName=CompanyInfo__Phone_No__Caption }
+            { 1000000030;TextBox;13650;8037 ;4200 ;423  ;FontSize=9;
+                                                         CaptionML=[ENU=Fax No.;
+                                                                    FRA=N› t'l'copie];
+                                                         SourceExpr=CompanyInfo."Fax No.";
+                                                         DataSetFieldName=CompanyInfo__Fax_No__ }
+            { 1000000031;Label  ;10500;8037 ;2100 ;423  ;ParentControl=1000000030;
+                                                         FontSize=9;
+                                                         DataSetFieldName=CompanyInfo__Fax_No__Caption }
+            { 1000000032;TextBox;13650;8460 ;4200 ;423  ;FontSize=9;
+                                                         CaptionML=[ENU=VAT Reg. No.;
+                                                                    FRA=N› id. intracomm.];
+                                                         SourceExpr=CompanyInfo."VAT Registration No.";
+                                                         DataSetFieldName=CompanyInfo__VAT_Registration_No__ }
+            { 1000000033;Label  ;10500;8460 ;3150 ;423  ;ParentControl=1000000032;
+                                                         FontSize=9;
+                                                         DataSetFieldName=CompanyInfo__VAT_Registration_No__Caption }
+            { 1000000034;TextBox;12600;9729 ;6090 ;423  ;FontSize=9;
+                                                         SourceExpr=SalesPurchPerson.Name;
+                                                         DataSetFieldName=SalesPurchPerson_Name }
+            { 1000000035;TextBox;9870 ;9729 ;2730 ;423  ;FontSize=9;
+                                                         SourceExpr=PurchaserText;
+                                                         DataSetFieldName=PurchaserText }
+            { 1000000036;TextBox;4410 ;8037 ;4200 ;423  ;FontSize=9;
+                                                         SourceExpr="Purchase Header"."VAT Registration No.";
+                                                         DataSetFieldName=Purchase_Header___VAT_Registration_No__ }
+            { 1000000037;TextBox;1050 ;8037 ;3360 ;423  ;FontSize=9;
+                                                         SourceExpr=VATNoText;
+                                                         DataSetFieldName=VATNoText }
+            { 90  ;TextBox      ;1050 ;4653 ;6300 ;423  ;FontSize=9;
+                                                         FontBold=Oui;
+                                                         SourceExpr=BuyFromAddr[1];
+                                                         DataSetFieldName=BuyFromAddr_1_ }
+            { 91  ;TextBox      ;1050 ;5076 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=BuyFromAddr[2];
+                                                         DataSetFieldName=BuyFromAddr_2_ }
+            { 92  ;TextBox      ;1050 ;5499 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=BuyFromAddr[3];
+                                                         DataSetFieldName=BuyFromAddr_3_ }
+            { 93  ;TextBox      ;1050 ;5922 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=BuyFromAddr[4];
+                                                         DataSetFieldName=BuyFromAddr_4_ }
+            { 125 ;TextBox      ;1050 ;6345 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=BuyFromAddr[5];
+                                                         DataSetFieldName=BuyFromAddr_5_ }
+            { 126 ;TextBox      ;1050 ;6768 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=BuyFromAddr[6];
+                                                         DataSetFieldName=BuyFromAddr_6_ }
+            { 127 ;TextBox      ;1050 ;7191 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=BuyFromAddr[7];
+                                                         DataSetFieldName=BuyFromAddr_7_ }
+            { 128 ;TextBox      ;1050 ;7614 ;6300 ;423  ;FontSize=9;
+                                                         SourceExpr=BuyFromAddr[8];
+                                                         DataSetFieldName=BuyFromAddr_8_ }
+            { 1000000129;PictureBox;0 ;0    ;6160 ;3807 ;SourceExpr=CompanyInfo.Picture;
+                                                         DataSetFieldName=CompanyInfo_Picture }
+            { 1000000130;PictureBox;5460;0  ;6160 ;3807 ;SourceExpr=CompanyInfo1.Picture;
+                                                         DataSetFieldName=CompanyInfo_Picture1 }
+            { 1000000131;PictureBox;11550;0 ;6160 ;3807 ;SourceExpr=CompanyInfo2.Picture;
+                                                         DataSetFieldName=CompanyInfo_Picture2 }
+          }
+           }
+        { PROPERTIES
+          {
+            SectionType=Header;
+            PrintOnEveryPage=Oui;
+            SectionWidth=19320;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+            { 1000000014;Shape  ;210  ;0    ;18925;846  ;ShapeStyle=Rectangle }
+            { 1000000015;Label  ;420  ;0    ;2100 ;846  ;VertAlign=Bottom;
+                                                         FontSize=9;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui;
+                                                         CaptionML=[ENU=No.;
+                                                                    FRA=N›];
+                                                         DataSetFieldName=Sales_Invoice_Line__No__Caption }
+            { 1000000016;Label  ;2940 ;0    ;5880 ;846  ;VertAlign=Bottom;
+                                                         FontSize=9;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui;
+                                                         CaptionML=[ENU=Description;
+                                                                    FRA=D'signation];
+                                                         DataSetFieldName=Sales_Invoice_Line_Description_Control65Caption }
+            { 1000000017;Label  ;10500;0    ;1470 ;846  ;HorzAlign=Right;
+                                                         VertAlign=Bottom;
+                                                         FontSize=9;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui;
+                                                         CaptionML=[ENU=Quantity;
+                                                                    FRA=Quantit'];
+                                                         DataSetFieldName=Sales_Invoice_Line_QuantityCaption }
+            { 1000000018;Label  ;12180;0    ;1050 ;846  ;HorzAlign=Right;
+                                                         VertAlign=Bottom;
+                                                         FontSize=9;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui;
+                                                         CaptionML=[ENU=Unit;
+                                                                    FRA=Unit'];
+                                                         DataSetFieldName=Sales_Invoice_Line__Unit_of_Measure_Caption }
+            { 1000000019;Label  ;13440;0    ;1890 ;846  ;HorzAlign=Right;
+                                                         VertAlign=Bottom;
+                                                         FontSize=9;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui;
+                                                         CaptionML=[ENU=Direct Unit Cost;
+                                                                    FRA=Co-t unitaire direct];
+                                                         DataSetFieldName=Unit_PriceCaption }
+            { 1000000020;Label  ;15540;0    ;840  ;846  ;HorzAlign=Right;
+                                                         VertAlign=Bottom;
+                                                         FontSize=9;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui;
+                                                         CaptionML=[ENU=Disc. %;
+                                                                    FRA=% Rem.];
+                                                         DataSetFieldName=Sales_Invoice_Line__Line_Discount___Caption }
+            { 1000000021;Shape  ;2520 ;0    ;420  ;846  ;ShapeStyle=VertLine }
+            { 1000000038;Shape  ;10080;0    ;420  ;846  ;ShapeStyle=VertLine }
+            { 1000000039;Shape  ;11970;0    ;420  ;846  ;ShapeStyle=VertLine }
+            { 1000000040;Shape  ;13230;0    ;420  ;846  ;ShapeStyle=VertLine }
+            { 1000000041;Shape  ;15330;0    ;420  ;846  ;ShapeStyle=VertLine }
+            { 1000000042;Shape  ;16380;0    ;420  ;846  ;ShapeStyle=VertLine }
+            { 1000000043;Label  ;16800;0    ;2100 ;846  ;HorzAlign=Right;
+                                                         VertAlign=Bottom;
+                                                         FontSize=9;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui;
+                                                         CaptionML=[ENU=Amount;
+                                                                    FRA=Montant];
+                                                         DataSetFieldName=AmountCaption }
+          }
+           }
+        { PROPERTIES
+          {
+            SectionType=Footer;
+            PrintOnEveryPage=Oui;
+            PlaceInBottom=Oui;
+            SectionWidth=19320;
+            SectionHeight=1269;
+          }
+          CONTROLS
+          {
+            { 1000000126;TextBox;210  ;0    ;18900;423  ;HorzAlign=Center;
+                                                         FontSize=7;
+                                                         FontBold=Oui;
+                                                         SourceExpr=STRSUBSTNO('%1 %2 %3 %4 %5 %6', CompanyAddr[1], CompanyAddr[2], CompanyAddr[3], CompanyAddr[4], CompanyAddr[5], CompanyAddr[6]) }
+            { 1000000127;TextBox;210  ;846  ;18900;423  ;HorzAlign=Center;
+                                                         FontSize=7;
+                                                         FontBold=Oui;
+                                                         CaptionML=[ENU=VAT Reg. No.;
+                                                                    FRA=N› id. intracomm.];
+                                                         SourceExpr=STRSUBSTNO('%1 %2',CompanyInfo.FIELDCAPTION("VAT Registration No."),CompanyInfo."VAT Registration No.") }
+            { 1000000128;TextBox;210  ;423  ;18900;423  ;HorzAlign=Center;
+                                                         FontSize=7;
+                                                         FontBold=Oui;
+                                                         SourceExpr=STRSUBSTNO('%1 : %2   %3 : %4', CompanyInfo.FIELDCAPTION("Phone No."), CompanyInfo."Phone No.",CompanyInfo.FIELDCAPTION("Fax No."),CompanyInfo."Fax No.");
+                                                         DataSetFieldName=STRSUBSTNO___1____2____3____4___CompanyInfo_FIELDCAPTION__Phone_No_____CompanyInfo__Phone_No___CompanyInfo_FIELDCAPTION__Fax_No____CompanyInfo__Fax_No___ }
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=3;
+        DataItemTable=Table2000000026;
+        DataItemTableView=SORTING(Num'ro)
+                          WHERE(Num'ro=FILTER(1..));
+        DataItemVarName=DimensionLoop1;
+        OnPreDataItem=BEGIN
+                        IF NOT ShowInternalInfo THEN
+                          CurrReport.BREAK;
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           IF Num'ro = 1 THEN BEGIN
+                             IF NOT DocDim1.FIND('-') THEN
+                               CurrReport.BREAK;
+                           END ELSE
+                             IF NOT Continue THEN
+                               CurrReport.BREAK;
+
+                           CLEAR(DimText);
+                           Continue := FALSE;
+                           REPEAT
+                             OldDimText := DimText;
+                             IF DimText = '' THEN
+                               DimText := STRSUBSTNO(
+                                 '%1 %2',DocDim1."Dimension Code",DocDim1."Dimension Value Code")
+                             ELSE
+                               DimText :=
+                                 STRSUBSTNO(
+                                   '%1, %2 %3',DimText,
+                                   DocDim1."Dimension Code",DocDim1."Dimension Value Code");
+                             IF STRLEN(DimText) > MAXSTRLEN(OldDimText) THEN BEGIN
+                               DimText := OldDimText;
+                               Continue := TRUE;
+                               EXIT;
+                             END;
+                           UNTIL (DocDim1.NEXT = 0);
+                         END;
+
+        DataItemLinkReference=Purchase Header;
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=3;
+        DataItemTable=Table39;
+        DataItemTableView=SORTING(Document Type,Document No.,Line No.);
+        OnPreDataItem=BEGIN
+                        //CurrReport.BREAK;
+                        CurrReport.CREATETOTALS("Line Amount",Amount,"Amount Including VAT","Inv. Discount Amount");
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           IF ("Purchase Line".Type = "Purchase Line".Type::"G/L Account") AND (NOT ShowInternalInfo) THEN
+                             "Purchase Line"."No." := '';
+                         END;
+
+        DataItemLinkReference=Purchase Header;
+        DataItemLink=Document Type=FIELD(Document Type),
+                     Document No.=FIELD(No.);
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=TransHeader;
+            SectionWidth=19320;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+            { 1000000044;Label  ;13650;0    ;3150 ;423  ;ParentControl=1000000045;
+                                                         FontSize=9;
+                                                         LeaderDots=Oui;
+                                                         CaptionML=[ENU=Continued;
+                                                                    FRA=Report];
+                                                         DataSetFieldName=ContinuedCaption }
+            { 1000000045;TextBox;16800;0    ;2100 ;423  ;FontSize=9;
+                                                         CaptionML=[ENU=Continued;
+                                                                    FRA=Report];
+                                                         SourceExpr="Line Amount";
+                                                         AutoFormatType=1;
+                                                         AutoFormatExpr="Currency Code";
+                                                         DataSetFieldName=Sales_Invoice_Line__Line_Amount_ }
+            { 1000000046;Shape  ;0    ;0    ;420  ;846  ;ShapeStyle=VertLine }
+            { 1000000047;Shape  ;18900;0    ;420  ;846  ;ShapeStyle=VertLine }
+            { 1000000048;Shape  ;2520 ;0    ;420  ;846  ;ShapeStyle=VertLine }
+            { 1000000049;Shape  ;10080;0    ;420  ;846  ;ShapeStyle=VertLine }
+            { 1000000050;Shape  ;11970;0    ;420  ;846  ;ShapeStyle=VertLine }
+            { 1000000051;Shape  ;13230;0    ;420  ;846  ;ShapeStyle=VertLine }
+          }
+           }
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=19320;
+            SectionHeight=423;
+            OnPreSection=BEGIN
+                            CurrReport.SHOWOUTPUT("Purchase Line".Type = 0);
+                         END;
+
+          }
+          CONTROLS
+          {
+            { 1000000052;Shape  ;0    ;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000053;Shape  ;2520 ;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000054;Shape  ;15330;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000055;Shape  ;16380;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000056;Shape  ;18900;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000057;Shape  ;10080;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000058;TextBox;2940 ;0    ;7140 ;423  ;FontSize=9;
+                                                         SourceExpr=Description;
+                                                         DataSetFieldName=Sales_Invoice_Line_Description }
+            { 1000000059;Shape  ;13230;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000060;Shape  ;11970;0    ;420  ;423  ;ShapeStyle=VertLine }
+          }
+           }
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=19320;
+            SectionHeight=423;
+            OnPreSection=BEGIN
+                           CurrReport.SHOWOUTPUT("Purchase Line".Type > 0);
+                         END;
+
+          }
+          CONTROLS
+          {
+            { 1000000061;TextBox;420  ;0    ;2100 ;423  ;HorzAlign=Left;
+                                                         FontSize=9;
+                                                         SourceExpr="No.";
+                                                         DataSetFieldName=Sales_Invoice_Line__No__ }
+            { 1000000062;TextBox;2940 ;0    ;7140 ;423  ;FontSize=9;
+                                                         SourceExpr=Description;
+                                                         DataSetFieldName=Sales_Invoice_Line_Description_Control65 }
+            { 1000000063;TextBox;10290;0    ;1680 ;423  ;FontSize=9;
+                                                         BlankZero=Oui;
+                                                         SourceExpr=Quantity;
+                                                         DataSetFieldName=Sales_Invoice_Line_Quantity }
+            { 1000000064;TextBox;12180;0    ;1050 ;423  ;HorzAlign=Right;
+                                                         FontSize=9;
+                                                         SourceExpr="Unit of Measure";
+                                                         DataSetFieldName=Sales_Invoice_Line__Unit_of_Measure_ }
+            { 1000000065;TextBox;13440;0    ;1890 ;423  ;FontSize=9;
+                                                         BlankZero=Oui;
+                                                         SourceExpr="Purchase Line"."Direct Unit Cost";
+                                                         AutoFormatType=2;
+                                                         AutoFormatExpr="Currency Code";
+                                                         DataSetFieldName=Sales_Invoice_Line__Unit_Price_ }
+            { 1000000066;TextBox;15540;0    ;840  ;423  ;FontSize=9;
+                                                         CaptionML=[ENU=Disc. %;
+                                                                    FRA=% remise];
+                                                         BlankZero=Oui;
+                                                         SourceExpr="Line Discount %";
+                                                         DataSetFieldName=Sales_Invoice_Line__Line_Discount___ }
+            { 1000000067;TextBox;16800;0    ;2100 ;423  ;FontSize=9;
+                                                         CaptionML=[ENU=Amount;
+                                                                    FRA=Montant];
+                                                         BlankZero=Oui;
+                                                         SourceExpr="Line Amount";
+                                                         AutoFormatType=1;
+                                                         AutoFormatExpr="Currency Code";
+                                                         DataSetFieldName=Sales_Invoice_Line__Line_Amount__Control70 }
+            { 1000000069;Shape  ;0    ;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000070;Shape  ;16380;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000071;Shape  ;15330;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000072;Shape  ;13230;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000073;Shape  ;11970;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000074;Shape  ;10080;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000075;Shape  ;2520 ;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000076;Shape  ;18900;0    ;420  ;423  ;ShapeStyle=VertLine }
+          }
+           }
+        { PROPERTIES
+          {
+            SectionType=TransFooter;
+            SectionWidth=19320;
+            SectionHeight=613;
+          }
+          CONTROLS
+          {
+            { 1000000132;Shape  ;0    ;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000133;Shape  ;18900;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000134;Shape  ;210  ;190  ;18925;423  ;ShapeStyle=HorzLine }
+            { 1000000135;Shape  ;16380;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000136;Shape  ;15330;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000137;Shape  ;13230;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000138;Shape  ;11970;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000139;Shape  ;10080;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000140;Shape  ;2520 ;0    ;420  ;423  ;ShapeStyle=VertLine }
+          }
+           }
+        { PROPERTIES
+          {
+            SectionType=Footer;
+            SectionWidth=19320;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+            { 1000000080;Shape  ;0    ;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000081;Shape  ;18900;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000082;Shape  ;210  ;190  ;18925;423  ;ShapeStyle=HorzLine }
+            { 1000000083;Shape  ;16380;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000084;Shape  ;15330;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000085;Shape  ;13230;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000086;Shape  ;11970;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000087;Shape  ;10080;0    ;420  ;423  ;ShapeStyle=VertLine }
+            { 1000000088;Shape  ;2520 ;0    ;420  ;423  ;ShapeStyle=VertLine }
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=4;
+        DataItemTable=Table2000000026;
+        DataItemTableView=SORTING(Num'ro)
+                          WHERE(Num'ro=FILTER(1..));
+        DataItemVarName=DimensionLoop2;
+        OnPreDataItem=BEGIN
+                        IF NOT ShowInternalInfo THEN
+                          CurrReport.BREAK;
+
+                        DocDim2.SETRANGE("Table ID",DATABASE::"Purchase Line");
+                        DocDim2.SETRANGE("Document Type","Purchase Line"."Document Type");
+                        DocDim2.SETRANGE("Document No.","Purchase Line"."Document No.");
+                        DocDim2.SETRANGE("Line No.","Purchase Line"."Line No.");
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           IF Num'ro = 1 THEN BEGIN
+                             IF NOT DocDim2.FIND('-') THEN
+                               CurrReport.BREAK;
+                           END ELSE
+                             IF NOT Continue THEN
+                               CurrReport.BREAK;
+
+                           CLEAR(DimText);
+                           Continue := FALSE;
+                           REPEAT
+                             OldDimText := DimText;
+                             IF DimText = '' THEN
+                               DimText := STRSUBSTNO(
+                                 '%1 %2',DocDim2."Dimension Code",DocDim2."Dimension Value Code")
+                             ELSE
+                               DimText :=
+                                 STRSUBSTNO(
+                                   '%1, %2 %3',DimText,
+                                   DocDim2."Dimension Code",DocDim2."Dimension Value Code");
+                             IF STRLEN(DimText) > MAXSTRLEN(OldDimText) THEN BEGIN
+                               DimText := OldDimText;
+                               Continue := TRUE;
+                               EXIT;
+                             END;
+                           UNTIL (DocDim2.NEXT = 0);
+                         END;
+
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=3;
+        DataItemTable=Table2000000026;
+        DataItemTableView=SORTING(Num'ro);
+        DataItemVarName=VATCounter;
+        OnPreDataItem=BEGIN
+                        IF VATAmount = 0 THEN
+                          CurrReport.BREAK;
+                        SETRANGE(Num'ro,1,VATAmountLine.COUNT);
+                        CurrReport.CREATETOTALS(
+                          VATAmountLine."Line Amount",VATAmountLine."Inv. Disc. Base Amount",
+                          VATAmountLine."Invoice Discount Amount",VATAmountLine."VAT Base",VATAmountLine."VAT Amount");
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           VATAmountLine.GetLine(Num'ro);
+                           VatPositionLine_G := FindVatPosition(VATAmountLine."VAT Identifier");
+                           BaseTva_G[VatPositionLine_G] := VATAmountLine."VAT Base";
+                           TxTVA_G[VatPositionLine_G] := VATAmountLine."VAT %";
+                           MtTVA_G[VatPositionLine_G] := VATAmountLine."VAT Amount";
+                           VATIdentifier_G[VatPositionLine_G] := VATAmountLine."VAT Identifier";
+                         END;
+
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=3;
+        DataItemTable=Table2000000026;
+        DataItemTableView=SORTING(Num'ro);
+        DataItemVarName=VATCounterLCY;
+        OnPreDataItem=BEGIN
+                        IF (NOT GLSetup."Print VAT specification in LCY") OR
+                           ("Purchase Header"."Currency Code"  = '') OR
+                           (VATAmountLine.GetTotalVATAmount = 0) THEN
+                          CurrReport.BREAK;
+
+                        SETRANGE(Num'ro,1,VATAmountLine.COUNT);
+                        CurrReport.CREATETOTALS(VALVATBaseLCY,VALVATAmountLCY);
+
+                        IF GLSetup."LCY Code" = '' THEN
+                          VALSpecLCYHeader := Text007 + Text008
+                        ELSE
+                          VALSpecLCYHeader := Text007 + FORMAT(GLSetup."LCY Code");
+
+                        CurrExchRate.FindCurrency("Purchase Header"."Posting Date","Purchase Header"."Currency Code",1);
+                        VALExchRate := STRSUBSTNO(Text009,CurrExchRate."Relational Exch. Rate Amount",CurrExchRate."Exchange Rate Amount");
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           VATAmountLine.GetLine(Num'ro);
+
+                           VALVATBaseLCY := ROUND(CurrExchRate.ExchangeAmtFCYToLCY(
+                                              "Purchase Header"."Posting Date","Purchase Header"."Currency Code",
+                                              VATAmountLine."VAT Base","Purchase Header"."Currency Factor"));
+                           VALVATAmountLCY := ROUND(CurrExchRate.ExchangeAmtFCYToLCY(
+                                                "Purchase Header"."Posting Date","Purchase Header"."Currency Code",
+                                                VATAmountLine."VAT Amount","Purchase Header"."Currency Factor"));
+                           VatPositionLine_G := FindVatPosition(VATAmountLine."VAT Identifier");
+                           BaseTvaLCY_G[VatPositionLine_G] := VALVATBaseLCY;
+                           MtTVALCY_G[VatPositionLine_G] := VALVATAmountLCY;
+                         END;
+
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=3;
+        DataItemTable=Table2000000026;
+        DataItemTableView=SORTING(Num'ro)
+                          WHERE(Num'ro=CONST(1));
+        DataItemVarName=Total;
+        OnPreDataItem=BEGIN
+                        CalcTotalVAT;
+                        ManageTotal;
+                      END;
+
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Footer;
+            PlaceInBottom=Oui;
+            SectionWidth=19320;
+            SectionHeight=3600;
+          }
+          CONTROLS
+          {
+            { 1000000068;Shape  ;210  ;0    ;18925;3600 ;ShapeStyle=Rectangle }
+            { 1000000077;TextBox;420  ;2115 ;2000 ;300  ;FontSize=8;
+                                                         CaptionML=[ENU=VAT Identifier;
+                                                                    FRA=Identifiant TVA];
+                                                         SourceExpr=VATIdentifier_G[1];
+                                                         DataSetFieldName=VATIdentifier_G_1_ }
+            { 1000000078;TextBox;2940 ;2115 ;2730 ;300  ;HorzAlign=Right;
+                                                         FontSize=8;
+                                                         CaptionML=[ENU=Continued;
+                                                                    FRA=Report];
+                                                         BlankZero=Oui;
+                                                         SourceExpr=BaseTvaAsText_G[1];
+                                                         AutoFormatType=1;
+                                                         AutoFormatExpr="Purchase Line"."Currency Code";
+                                                         DataSetFieldName=BaseTvaAsText_G_1_ }
+            { 1000000079;TextBox;8190 ;2115 ;2630 ;300  ;HorzAlign=Right;
+                                                         FontSize=8;
+                                                         CaptionML=[ENU=Continued;
+                                                                    FRA=Report];
+                                                         BlankZero=Oui;
+                                                         SourceExpr=MtTVAAsText_G[1];
+                                                         AutoFormatType=1;
+                                                         AutoFormatExpr="Purchase Line"."Currency Code";
+                                                         DataSetFieldName=MtTVAAsText_G_1_ }
+            { 1000000089;TextBox;5880 ;2115 ;2000 ;300  ;FontSize=8;
+                                                         CaptionML=[ENU=VAT %;
+                                                                    FRA=% TVA];
+                                                         DecimalPlaces=0:5;
+                                                         BlankZero=Oui;
+                                                         SourceExpr=TxTVA_G[1];
+                                                         DataSetFieldName=TxTVA_G_1_ }
+            { 1000000090;TextBox;420  ;2415 ;2000 ;300  ;FontSize=8;
+                                                         CaptionML=[ENU=VAT Identifier;
+                                                                    FRA=Identifiant TVA];
+                                                         SourceExpr=VATIdentifier_G[2];
+                                                         DataSetFieldName=VATIdentifier_G_2_ }
+            { 1000000091;TextBox;2940 ;2415 ;2730 ;300  ;HorzAlign=Right;
+                                                         FontSize=8;
+                                                         CaptionML=[ENU=Continued;
+                                                                    FRA=Report];
+                                                         BlankZero=Oui;
+                                                         SourceExpr=BaseTvaAsText_G[2];
+                                                         AutoFormatType=1;
+                                                         AutoFormatExpr="Purchase Line"."Currency Code";
+                                                         DataSetFieldName=BaseTvaAsText_G_2_ }
+            { 1000000092;TextBox;8190 ;2415 ;2630 ;300  ;HorzAlign=Right;
+                                                         FontSize=8;
+                                                         CaptionML=[ENU=Continued;
+                                                                    FRA=Report];
+                                                         BlankZero=Oui;
+                                                         SourceExpr=MtTVAAsText_G[2];
+                                                         AutoFormatType=1;
+                                                         AutoFormatExpr="Purchase Line"."Currency Code";
+                                                         DataSetFieldName=MtTVAAsText_G_2_ }
+            { 1000000093;TextBox;5880 ;2415 ;2000 ;300  ;FontSize=8;
+                                                         CaptionML=[ENU=VAT %;
+                                                                    FRA=% TVA];
+                                                         DecimalPlaces=0:5;
+                                                         BlankZero=Oui;
+                                                         SourceExpr=TxTVA_G[2];
+                                                         DataSetFieldName=TxTVA_G_2_ }
+            { 1000000094;TextBox;420  ;2715 ;2000 ;300  ;FontSize=8;
+                                                         CaptionML=[ENU=VAT Identifier;
+                                                                    FRA=Identifiant TVA];
+                                                         SourceExpr=VATIdentifier_G[3];
+                                                         DataSetFieldName=VATIdentifier_G_3_ }
+            { 1000000095;TextBox;2940 ;2715 ;2730 ;300  ;HorzAlign=Right;
+                                                         FontSize=8;
+                                                         CaptionML=[ENU=Continued;
+                                                                    FRA=Report];
+                                                         BlankZero=Oui;
+                                                         SourceExpr=BaseTvaAsText_G[3];
+                                                         AutoFormatType=1;
+                                                         AutoFormatExpr="Purchase Line"."Currency Code";
+                                                         DataSetFieldName=BaseTvaAsText_G_3_ }
+            { 1000000096;TextBox;8190 ;2715 ;2630 ;300  ;HorzAlign=Right;
+                                                         FontSize=8;
+                                                         CaptionML=[ENU=Continued;
+                                                                    FRA=Report];
+                                                         BlankZero=Oui;
+                                                         SourceExpr=MtTVAAsText_G[3];
+                                                         AutoFormatType=1;
+                                                         AutoFormatExpr="Purchase Line"."Currency Code";
+                                                         DataSetFieldName=MtTVAAsText_G_3_ }
+            { 1000000097;TextBox;5880 ;2715 ;2000 ;300  ;FontSize=8;
+                                                         CaptionML=[ENU=VAT %;
+                                                                    FRA=% TVA];
+                                                         DecimalPlaces=0:5;
+                                                         BlankZero=Oui;
+                                                         SourceExpr=TxTVA_G[3];
+                                                         DataSetFieldName=TxTVA_G_3_ }
+            { 1000000098;TextBox;420  ;3015 ;2000 ;300  ;FontSize=8;
+                                                         CaptionML=[ENU=VAT Identifier;
+                                                                    FRA=Identifiant TVA];
+                                                         SourceExpr=VATIdentifier_G[4];
+                                                         DataSetFieldName=VATIdentifier_G_4_ }
+            { 1000000099;TextBox;2940 ;3015 ;2730 ;300  ;HorzAlign=Right;
+                                                         FontSize=8;
+                                                         CaptionML=[ENU=Continued;
+                                                                    FRA=Report];
+                                                         BlankZero=Oui;
+                                                         SourceExpr=BaseTvaAsText_G[4];
+                                                         AutoFormatType=1;
+                                                         AutoFormatExpr="Purchase Line"."Currency Code";
+                                                         DataSetFieldName=BaseTvaAsText_G_4_ }
+            { 1000000100;TextBox;8190 ;3015 ;2630 ;300  ;HorzAlign=Right;
+                                                         FontSize=8;
+                                                         CaptionML=[ENU=Continued;
+                                                                    FRA=Report];
+                                                         BlankZero=Oui;
+                                                         SourceExpr=MtTVAAsText_G[4];
+                                                         AutoFormatType=1;
+                                                         AutoFormatExpr="Purchase Line"."Currency Code";
+                                                         DataSetFieldName=MtTVAAsText_G_4_ }
+            { 1000000101;TextBox;5880 ;3015 ;2000 ;300  ;FontSize=8;
+                                                         CaptionML=[ENU=VAT %;
+                                                                    FRA=% TVA];
+                                                         DecimalPlaces=0:5;
+                                                         BlankZero=Oui;
+                                                         SourceExpr=TxTVA_G[4];
+                                                         DataSetFieldName=TxTVA_G_4_ }
+            { 1000000102;Label  ;420  ;100  ;3570 ;423  ;ParentControl=1000000103;
+                                                         FontSize=8;
+                                                         FontBold=Oui;
+                                                         DataSetFieldName=PaymentTerms_DescriptionCaption }
+            { 1000000103;TextBox;4200 ;100  ;6720 ;423  ;FontSize=8;
+                                                         CaptionML=[ENU=Payment Terms;
+                                                                    FRA=Conditions de paiement];
+                                                         SourceExpr=PaymentTerms.Description;
+                                                         DataSetFieldName=PaymentTerms_Description }
+            { 1000000104;Label  ;11130;100  ;3360 ;423  ;ParentControl=1000000105;
+                                                         FontSize=8;
+                                                         FontBold=Oui;
+                                                         DataSetFieldName=ShipmentMethod_DescriptionCaption }
+            { 1000000105;TextBox;14700;100  ;4200 ;423  ;FontSize=8;
+                                                         CaptionML=[ENU=Shipment Method;
+                                                                    FRA=Conditions de livraison];
+                                                         SourceExpr=ShipmentMethod.Description;
+                                                         DataSetFieldName=ShipmentMethod_Description }
+            { 1000000106;Label  ;420  ;582  ;2940 ;423  ;ParentControl=1000000107;
+                                                         FontSize=8;
+                                                         FontBold=Oui;
+                                                         DataSetFieldName=Sales_Invoice_Header___Due_Date_Caption }
+            { 1000000107;TextBox;4200 ;582  ;2730 ;423  ;HorzAlign=Left;
+                                                         FontSize=8;
+                                                         CaptionML=[ENU=Due Date;
+                                                                    FRA=Date d''ch'ance];
+                                                         SourceExpr=FORMAT("Purchase Header"."Due Date");
+                                                         DataSetFieldName=Sales_Invoice_Header___Due_Date_ }
+            { 1000000108;TextBox;15960;1269 ;2940 ;423  ;HorzAlign=Right;
+                                                         FontSize=9;
+                                                         FontBold=Oui;
+                                                         CaptionML=[ENU=Subtotal;
+                                                                    FRA=Sous-total];
+                                                         BlankZero=Oui;
+                                                         SourceExpr=SubTotal_G;
+                                                         AutoFormatType=1;
+                                                         AutoFormatExpr="Purchase Line"."Currency Code";
+                                                         DataSetFieldName=SubTotal_G }
+            { 1000000109;TextBox;15960;1692 ;2940 ;423  ;FontSize=9;
+                                                         CaptionML=[ENU=Inv. Discount Amount;
+                                                                    FRA=Montant remise facture];
+                                                         BlankZero=Oui;
+                                                         SourceExpr=-"Purchase Line"."Inv. Discount Amount";
+                                                         AutoFormatType=1;
+                                                         AutoFormatExpr="Purchase Line"."Currency Code";
+                                                         DataSetFieldName=Sales_Invoice_Line___Inv__Discount_Amount_ }
+            { 1000000110;TextBox;11340;1692 ;4410 ;423  ;FontSize=9;
+                                                         FontBold=Non;
+                                                         SourceExpr=InvDiscAmountTxt_G;
+                                                         DataSetFieldName=InvDiscAmountTxt_G }
+            { 1000000111;TextBox;11340;1269 ;4410 ;423  ;FontSize=9;
+                                                         FontBold=Oui;
+                                                         SourceExpr=TotalText;
+                                                         DataSetFieldName=TotalText }
+            { 1000000112;TextBox;15960;2115 ;2940 ;423  ;FontSize=9;
+                                                         FontBold=Oui;
+                                                         SourceExpr=FirstTotalAmt_G;
+                                                         AutoFormatType=1;
+                                                         AutoFormatExpr="Purchase Line"."Currency Code";
+                                                         DataSetFieldName=FirstTotalAmt_G }
+            { 1000000113;TextBox;15960;2538 ;2940 ;423  ;FontSize=9;
+                                                         BlankZero=Oui;
+                                                         SourceExpr=SecondTotalAmt_G;
+                                                         AutoFormatType=1;
+                                                         AutoFormatExpr="Purchase Line"."Currency Code";
+                                                         DataSetFieldName=SecondTotalAmt_G }
+            { 1000000114;TextBox;11340;2538 ;4410 ;423  ;FontSize=9;
+                                                         SourceExpr=SecondTotalTxt_G;
+                                                         DataSetFieldName=SecondTotalTxt_G }
+            { 1000000115;TextBox;11340;2115 ;4410 ;423  ;FontSize=9;
+                                                         FontBold=Oui;
+                                                         SourceExpr=FirstTotalTxt_G;
+                                                         DataSetFieldName=FirstTotalTxt_G }
+            { 1000000116;TextBox;15960;2961 ;2940 ;423  ;FontSize=9;
+                                                         FontBold=Oui;
+                                                         BlankZero=Oui;
+                                                         SourceExpr=ThirdTotalAmt_G;
+                                                         AutoFormatType=1;
+                                                         AutoFormatExpr="Purchase Line"."Currency Code";
+                                                         DataSetFieldName=ThirdTotalAmt_G }
+            { 1000000117;TextBox;11340;2961 ;4410 ;423  ;FontSize=9;
+                                                         FontBold=Oui;
+                                                         SourceExpr=ThirdTotalTxt_G;
+                                                         DataSetFieldName=ThirdTotalTxt_G }
+            { 1000000118;Shape  ;10710;0    ;630  ;3600 ;ShapeStyle=VertLine }
+            { 1000000119;Shape  ;210  ;846  ;18900;423  ;ShapeStyle=HorzLine }
+            { 1000000120;TextBox;14700;582  ;2310 ;423  ;HorzAlign=Left;
+                                                         FontSize=8;
+                                                         SourceExpr=FORMAT("Purchase Header"."Prices Including VAT");
+                                                         DataSetFieldName=Sales_Invoice_Header___Prices_Including_VAT_ }
+            { 1000000121;Label  ;11130;582  ;3360 ;423  ;ParentControl=1000000120;
+                                                         FontSize=8;
+                                                         FontBold=Oui;
+                                                         CaptionML=[ENU=Prices Including VAT;
+                                                                    FRA=Prix TTC];
+                                                         DataSetFieldName=Sales_Invoice_Header___Prices_Including_VAT_Caption }
+            { 1000000122;TextBox;420  ;1269 ;2310 ;846  ;HorzAlign=Left;
+                                                         FontSize=8;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui;
+                                                         SourceExpr=DescEntTVA_G[1];
+                                                         DataSetFieldName=DescEntTVA_G_1_ }
+            { 1000000123;TextBox;2940 ;1269 ;2730 ;846  ;HorzAlign=Right;
+                                                         FontSize=8;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui;
+                                                         SourceExpr=DescEntTVA_G[2];
+                                                         DataSetFieldName=DescEntTVA_G_2_ }
+            { 1000000124;TextBox;5880 ;1269 ;2000 ;846  ;HorzAlign=Right;
+                                                         FontSize=8;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui;
+                                                         SourceExpr=DescEntTVA_G[3];
+                                                         DataSetFieldName=DescEntTVA_G_3_ }
+            { 1000000125;TextBox;8190 ;1269 ;2630 ;846  ;HorzAlign=Right;
+                                                         FontSize=8;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui;
+                                                         SourceExpr=DescEntTVA_G[4];
+                                                         DataSetFieldName=DescEntTVA_G_4_ }
+          }
+           }
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=3;
+        DataItemTable=Table2000000026;
+        DataItemTableView=SORTING(Num'ro)
+                          WHERE(Num'ro=CONST(1));
+        DataItemVarName=Total2;
+        OnPreDataItem=BEGIN
+                        IF "Purchase Header"."Buy-from Vendor No." = "Purchase Header"."Pay-to Vendor No." THEN
+                          CurrReport.BREAK;
+                      END;
+
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=3;
+        DataItemTable=Table2000000026;
+        DataItemTableView=SORTING(Num'ro)
+                          WHERE(Num'ro=CONST(1));
+        DataItemVarName=Total3;
+        OnPreDataItem=BEGIN
+                        IF ("Purchase Header"."Sell-to Customer No." = '') AND (ShipToAddr[1] = '') THEN
+                          CurrReport.BREAK;
+                      END;
+
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=3;
+        DataItemTable=Table2000000026;
+        DataItemTableView=SORTING(Num'ro)
+                          WHERE(Num'ro=FILTER(1..));
+        DataItemVarName=PrepmtLoop;
+        OnPreDataItem=BEGIN
+                        CurrReport.CREATETOTALS(
+                          PrepmtInvBuf.Amount,PrepmtInvBuf."Amount Incl. VAT",
+                          PrepmtVATAmountLine."Line Amount",PrepmtVATAmountLine."VAT Base",
+                          PrepmtVATAmountLine."VAT Amount",
+                          PrepmtLineAmount);
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           IF Num'ro = 1 THEN BEGIN
+                             IF NOT PrepmtInvBuf.FIND('-') THEN
+                               CurrReport.BREAK;
+                           END ELSE
+                             IF PrepmtInvBuf.NEXT = 0 THEN
+                               CurrReport.BREAK;
+
+                           IF ShowInternalInfo THEN
+                             PurchPostPrepmt.GetDimBuf(PrepmtInvBuf."Dimension Entry No.",PrepmtDocDim);
+
+                           IF "Purchase Header"."Prices Including VAT" THEN
+                             PrepmtLineAmount := PrepmtInvBuf."Amount Incl. VAT"
+                           ELSE
+                             PrepmtLineAmount := PrepmtInvBuf.Amount;
+                         END;
+
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=4;
+        DataItemTable=Table2000000026;
+        DataItemTableView=SORTING(Num'ro)
+                          WHERE(Num'ro=FILTER(1..));
+        DataItemVarName=PrepmtDimLoop;
+        OnAfterGetRecord=BEGIN
+                           IF Num'ro = 1 THEN BEGIN
+                             IF NOT PrepmtDocDim.FIND('-') THEN
+                               CurrReport.BREAK;
+                           END ELSE
+                             IF NOT Continue THEN
+                               CurrReport.BREAK;
+
+                           CLEAR(DimText);
+                           Continue := FALSE;
+                           REPEAT
+                             OldDimText := DimText;
+                             IF DimText = '' THEN
+                               DimText := STRSUBSTNO(
+                                 '%1 %2',PrepmtDocDim."Dimension Code",PrepmtDocDim."Dimension Value Code")
+                             ELSE
+                               DimText :=
+                                 STRSUBSTNO(
+                                   '%1, %2 %3',DimText,
+                                   PrepmtDocDim."Dimension Code",PrepmtDocDim."Dimension Value Code");
+                             IF STRLEN(DimText) > MAXSTRLEN(OldDimText) THEN BEGIN
+                               DimText := OldDimText;
+                               Continue := TRUE;
+                               EXIT;
+                             END;
+                           UNTIL PrepmtDocDim.NEXT = 0;
+                         END;
+
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=3;
+        DataItemTable=Table2000000026;
+        DataItemTableView=SORTING(Num'ro);
+        DataItemVarName=PrepmtVATCounter;
+        OnPreDataItem=BEGIN
+                        SETRANGE(Num'ro,1,PrepmtVATAmountLine.COUNT);
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           PrepmtVATAmountLine.GetLine(Num'ro);
+                         END;
+
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemIndent=3;
+        DataItemTable=Table2000000026;
+        DataItemTableView=SORTING(Num'ro)
+                          WHERE(Num'ro=CONST(1));
+        DataItemVarName=PrepmtTotal;
+        OnPreDataItem=BEGIN
+                        IF NOT PrepmtInvBuf.FIND('-') THEN
+                          CurrReport.BREAK;
+                      END;
+
+      }
+      SECTIONS
+      {
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=5060;
+      Height=2090;
+      SaveValues=Oui;
+      OnOpenForm=BEGIN
+                   ArchiveDocument := PurchSetup."Archive Quotes and Orders";
+                   LogInteraction := SegManagement.FindInteractTmplCode(13) <> '';
+
+                   RequestOptionsForm.LogInteraction.ENABLED(LogInteraction);
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1   ;TextBox      ;3410 ;0    ;1650 ;440  ;CaptionML=[ENU=No. of Copies;
+                                                              FRA=Nombre de copies];
+                                                   SourceExpr=NoOfCopies }
+      { 21  ;Label        ;0    ;0    ;3300 ;440  ;ParentControl=1 }
+      { 2   ;CheckBox     ;3410 ;550  ;440  ;440  ;ShowCaption=Non;
+                                                   CaptionML=[ENU=Show Internal Information;
+                                                              FRA=Afficher info. internes];
+                                                   SourceExpr=ShowInternalInfo }
+      { 3   ;Label        ;0    ;550  ;3300 ;440  ;ParentControl=2 }
+      { 4   ;CheckBox     ;3410 ;1650 ;440  ;440  ;Name=LogInteraction;
+                                                   ShowCaption=Non;
+                                                   CaptionML=[ENU=Log Interaction;
+                                                              FRA=Journal interaction];
+                                                   SourceExpr=LogInteraction;
+                                                   OnValidate=BEGIN
+                                                                IF LogInteraction THEN
+                                                                  ArchiveDocument := RequestOptionsForm.ArchiveDocument.ENABLED;
+                                                              END;
+                                                               }
+      { 5   ;Label        ;0    ;1650 ;3300 ;440  ;ParentControl=4 }
+      { 6   ;Label        ;0    ;1100 ;3300 ;440  ;ParentControl=7 }
+      { 7   ;CheckBox     ;3410 ;1100 ;440  ;440  ;Name=ArchiveDocument;
+                                                   ShowCaption=Non;
+                                                   CaptionML=[ENU=Archive Document;
+                                                              FRA=Archiver document];
+                                                   SourceExpr=ArchiveDocument;
+                                                   OnValidate=BEGIN
+                                                                IF NOT ArchiveDocument THEN
+                                                                  LogInteraction := FALSE;
+                                                              END;
+                                                               }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Oui;
+      OnInit=BEGIN
+               LogInteractionEnable := TRUE;
+             END;
+
+      OnOpenPage=BEGIN
+                   ArchiveDocument := PurchSetup."Archive Quotes and Orders";
+                   LogInteraction := SegManagement.FindInteractTmplCode(13) <> '';
+
+                   LogInteractionEnable := LogInteraction;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             FRA=Options] }
+
+      { 1   ;2   ;Field     ;
+                  CaptionML=[ENU=No. of Copies;
+                             FRA=Nombre de copies];
+                  SourceExpr=NoOfCopies }
+
+      { 2   ;2   ;Field     ;
+                  CaptionML=[ENU=Show Internal Information;
+                             FRA=Afficher info. internes];
+                  SourceExpr=ShowInternalInfo }
+
+      { 7   ;2   ;Field     ;
+                  Name=ArchiveDocument;
+                  CaptionML=[ENU=Archive Document;
+                             FRA=Archiver document];
+                  SourceExpr=ArchiveDocument;
+                  OnValidate=BEGIN
+                               IF NOT ArchiveDocument THEN
+                                 LogInteraction := FALSE;
+                             END;
+                              }
+
+      { 4   ;2   ;Field     ;
+                  Name=LogInteraction;
+                  CaptionML=[ENU=Log Interaction;
+                             FRA=Journal interaction];
+                  SourceExpr=LogInteraction;
+                  Enabled=LogInteractionEnable;
+                  OnValidate=BEGIN
+                               IF LogInteraction THEN
+                                 ArchiveDocument := ArchiveDocumentEnable;
+                             END;
+                              }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=Purchaser;FRA=Acheteur';
+      Text001@1001 : TextConst 'ENU=Total %1;FRA=Total %1';
+      Text002@1002 : TextConst 'ENU=Total %1 Incl. VAT;FRA=Total %1 TTC';
+      Text003@1003 : TextConst 'ENU=COPY;FRA=COPIE';
+      Text004@1004 : TextConst 'ENU=Order %1;FRA=Commande %1';
+      Text005@1005 : TextConst 'ENU=Page %1;FRA=Page %1';
+      Text006@1006 : TextConst 'ENU=Total %1 Excl. VAT;FRA=Total %1 HT';
+      GLSetup@1007 : Record 98;
+      CompanyInfo@1008 : Record 79;
+      CompanyInfo1@1000000037 : Record 79;
+      CompanyInfo2@1000000036 : Record 79;
+      SalesSetup@1000000035 : Record 311;
+      ShipmentMethod@1009 : Record 10;
+      PaymentTerms@1010 : Record 3;
+      PrepmtPaymentTerms@1064 : Record 3;
+      SalesPurchPerson@1011 : Record 13;
+      VATAmountLine@1012 : TEMPORARY Record 290;
+      PrepmtVATAmountLine@1055 : TEMPORARY Record 290;
+      PrePmtVATAmountLineDeduct@1069 : TEMPORARY Record 290;
+      PurchLine@1013 : TEMPORARY Record 39;
+      DocDim1@1014 : Record 357;
+      DocDim2@1015 : Record 357;
+      PrepmtDocDim@1057 : TEMPORARY Record 357;
+      PrepmtInvBuf@1056 : TEMPORARY Record 461;
+      RespCenter@1016 : Record 5714;
+      Language@1017 : Record 8;
+      CurrExchRate@1054 : Record 330;
+      PurchSetup@1066 : Record 312;
+      PurchCountPrinted@1018 : Codeunit 317;
+      FormatAddr@1019 : Codeunit 365;
+      PurchPost@1020 : Codeunit 90;
+      ArchiveManagement@1045 : Codeunit 5063;
+      SegManagement@1046 : Codeunit 5051;
+      PurchPostPrepmt@1058 : Codeunit 444;
+      VendAddr@1021 : ARRAY [8] OF Text[50];
+      ShipToAddr@1022 : ARRAY [8] OF Text[50];
+      CompanyAddr@1023 : ARRAY [8] OF Text[50];
+      BuyFromAddr@1024 : ARRAY [8] OF Text[50];
+      PurchaserText@1025 : Text[30];
+      VATNoText@1026 : Text[80];
+      ReferenceText@1027 : Text[80];
+      TotalText@1028 : Text[50];
+      TotalInclVATText@1029 : Text[50];
+      TotalExclVATText@1030 : Text[50];
+      MoreLines@1031 : Boolean;
+      NoOfCopies@1032 : Integer;
+      NoOfLoops@1033 : Integer;
+      CopyText@1034 : Text[30];
+      OutputNo@1065 : Integer;
+      DimText@1035 : Text[120];
+      OldDimText@1036 : Text[75];
+      ShowInternalInfo@1037 : Boolean;
+      Continue@1038 : Boolean;
+      ArchiveDocument@1044 : Boolean;
+      LogInteraction@1043 : Boolean;
+      VATAmount@1039 : Decimal;
+      VATBaseAmount@1042 : Decimal;
+      VATDiscountAmount@1041 : Decimal;
+      TotalAmountInclVAT@1040 : Decimal;
+      VALVATBaseLCY@1050 : Decimal;
+      VALVATAmountLCY@1049 : Decimal;
+      VALSpecLCYHeader@1048 : Text[80];
+      VALExchRate@1047 : Text[50];
+      Text007@1053 : TextConst 'ENU="VAT Amount Specification in ";FRA="D'tail TVA dans "';
+      Text008@1052 : TextConst 'ENU=Local Currency;FRA=Devise soci't'';
+      Text009@1051 : TextConst 'ENU=Exchange rate: %1/%2;FRA=Taux de change : %1/%2';
+      PrepmtVATAmount@1063 : Decimal;
+      PrepmtVATBaseAmount@1062 : Decimal;
+      PrepmtAmountInclVAT@1061 : Decimal;
+      PrepmtTotalAmountInclVAT@1060 : Decimal;
+      PrepmtLineAmount@1059 : Decimal;
+      PricesInclVATtxt@1068 : Text[30];
+      AllowInvDisctxt@1067 : Text[30];
+      ArchiveDocumentEnable@19005281 : Boolean INDATASET;
+      LogInteractionEnable@19003940 : Boolean INDATASET;
+      "<-- 3LI TC GLOB 8060990 -->"@1000000001 : TextConst;
+      Text8060990@1000000000 : TextConst 'ENU=Order No. : %1;FRA=Commande N› : %1';
+      "<-- 3LI GLOBALS 8060990 -->"@1000000029 : Integer;
+      TotalSubTotal@1000000028 : Decimal;
+      GetTotalAmountIncVAT@1000000027 : Decimal;
+      GetTotalAmount@1000000026 : Decimal;
+      BaseTva_G@1000000025 : ARRAY [4] OF Decimal;
+      TxTVA_G@1000000024 : ARRAY [4] OF Decimal;
+      MtTVA_G@1000000023 : ARRAY [4] OF Decimal;
+      VATIdentifier_G@1000000022 : ARRAY [4] OF Text[30];
+      VatPositionLine_G@1000000021 : Integer;
+      BaseTvaLCY_G@1000000020 : ARRAY [4] OF Decimal;
+      MtTVALCY_G@1000000019 : ARRAY [4] OF Decimal;
+      BaseTvaAsText_G@1000000018 : ARRAY [4] OF Text[30];
+      MtTVAAsText_G@1000000017 : ARRAY [4] OF Text[30];
+      DescEntTVA_G@1000000016 : ARRAY [4] OF Text[30];
+      SubTotal_G@1000000015 : Decimal;
+      InvDiscAmountTxt_G@1000000014 : Text[30];
+      InvDiscAmountAmt_G@1000000013 : Decimal;
+      FirstTotalTxt_G@1000000012 : Text[30];
+      FirstTotalAmt_G@1000000011 : Decimal;
+      SecondTotalTxt_G@1000000010 : Text[30];
+      SecondTotalAmt_G@1000000009 : Decimal;
+      ThirdTotalTxt_G@1000000008 : Text[30];
+      ThirdTotalAmt_G@1000000007 : Decimal;
+      TotalInvoiceDiscountAmount@1000000006 : Decimal;
+      TotalAmount@1000000005 : Decimal;
+      TotalAmountVAT@1000000004 : Decimal;
+      TotalPaymentDiscountOnVAT@1000000003 : Decimal;
+      DocPosition_G@1000000002 : Integer;
+      Text8060992@1000000034 : TextConst 'ENU=The order report can only support %2 differents VAT identifier. Problem on order %1.;FRA=L'''dition Commande ne supporte que %2 identifiants TVA diff'rents. ProblSme sur la commande %1.';
+      Text8060993@1000000033 : TextConst 'ENU=VAT Total;FRA=Total TVA';
+      Text8060994@1000000032 : TextConst 'ENU=Subtotal %1;FRA=Sous-Total %1';
+      Text8060995@1000000031 : TextConst 'ENU=TOTAL TO PAY %1;FRA=TOTAL A PAYER %1';
+      Text8060996@1000000030 : TextConst 'ENU=(In LCY);FRA=(En DS)';
+
+    PROCEDURE "<-- 3LI FUNCTIONS 8060990 -->"@8061021();
+    BEGIN
+    END;
+
+    LOCAL PROCEDURE DocumentCaption@4() : Text[250];
+    BEGIN
+      EXIT(STRSUBSTNO(Text8060990,"Purchase Header"."No."))
+    END;
+
+    PROCEDURE FindVatPosition@8061022(VatIdentifier_P@8060982 : Code[10]) : Integer;
+    VAR
+      LastPositionKnown_L@8060983 : Integer;
+      VatPositionLine_L@8060984 : Integer;
+    BEGIN
+      // Fonction permettant de connaOtre la position de ligne de TVA dans le tableau r'cap TVA bas de page
+
+      // --> 3LI-20110318-8060990/XXX-CMB6.00.01.01-JDL01
+      LastPositionKnown_L := 0;
+
+      FOR VatPositionLine_L := 1 TO ARRAYLEN(BaseTva_G) - 1 DO BEGIN
+        IF VATIdentifier_G[VatPositionLine_L] = VatIdentifier_P THEN
+          EXIT(VatPositionLine_L);
+        IF VATIdentifier_G[VatPositionLine_L] <> '' THEN
+          LastPositionKnown_L := VatPositionLine_L;
+      END;
+
+      //Si on arrive ici c'est que l'on n'a pas trouv' de position existante donc on prend la derniSre position disponible
+      // et on la sort avec un +1 (si d'but traitement 0 + 1 = 1)
+      IF LastPositionKnown_L+1 = ARRAYLEN(BaseTva_G) THEN
+        ERROR(STRSUBSTNO(Text8060992,"Purchase Header"."No.",ARRAYLEN(BaseTva_G)-1));
+
+      EXIT(LastPositionKnown_L+1);
+
+      // <-- 3LI-20110318-8060990/XXX-CMB6.00.01.01-JDL01
+    END;
+
+    PROCEDURE CalcTotalVAT@8060989();
+    VAR
+      VatPositionLine_L@8060982 : Integer;
+      VATLCYExist_L@8060983 : Boolean;
+    BEGIN
+      //Permet de calculer la total TVA
+
+      // --> 3LI-20110318-8060990/XXX-CMB6.00.01.01-JDL01
+      //Calcul du total
+      FOR VatPositionLine_L := 1 TO ARRAYLEN(BaseTva_G) - 1 DO BEGIN
+        BaseTva_G[ARRAYLEN(BaseTva_G)] += BaseTva_G[VatPositionLine_L];
+        MtTVA_G[ARRAYLEN(BaseTva_G)] += MtTVA_G[VatPositionLine_L];
+        BaseTvaLCY_G[ARRAYLEN(BaseTva_G)] += BaseTvaLCY_G[VatPositionLine_L];
+        MtTVALCY_G[ARRAYLEN(BaseTva_G)] += MtTVALCY_G[VatPositionLine_L];
+      END;
+
+
+      // Gestion en-t^te et total TVA (d'signation)
+      IF (BaseTva_G[ARRAYLEN(BaseTva_G)] = 0) THEN BEGIN
+        VATIdentifier_G[ARRAYLEN(BaseTva_G)] := ''
+      END ELSE BEGIN
+        VATIdentifier_G[ARRAYLEN(BaseTva_G)] := Text8060993;
+        DescEntTVA_G[1] := VATAmountLine.FIELDCAPTION("VAT Identifier");
+        DescEntTVA_G[3] := VATAmountLine.FIELDCAPTION("VAT %");
+        IF (MtTVALCY_G[ARRAYLEN(BaseTva_G)] <> 0) OR (BaseTvaLCY_G[ARRAYLEN(BaseTva_G)] <> 0) THEN BEGIN
+          //D'tail TVA LCY demand'
+          DescEntTVA_G[2] := STRSUBSTNO('%1 %2',VATAmountLine.FIELDCAPTION("VAT Base"),Text8060996);
+          DescEntTVA_G[4] := STRSUBSTNO('%1 %2',VATAmountLine.FIELDCAPTION("VAT Amount"),Text8060996);
+          VATLCYExist_L := TRUE;
+        END ELSE BEGIN
+          DescEntTVA_G[2] := VATAmountLine.FIELDCAPTION("VAT Base");
+          DescEntTVA_G[4] := VATAmountLine.FIELDCAPTION("VAT Amount");
+          VATLCYExist_L := FALSE;
+        END;
+        // Gestion des 2 valeurs TVA dans une colonne
+        FOR VatPositionLine_L := 1 TO ARRAYLEN(BaseTva_G) DO BEGIN
+          IF BaseTva_G[VatPositionLine_L] <> 0 THEN BEGIN
+            IF VATLCYExist_L THEN BEGIN
+              BaseTvaAsText_G[VatPositionLine_L] := STRSUBSTNO('%1 (%2)',BaseTva_G[VatPositionLine_L],BaseTvaLCY_G[VatPositionLine_L]);
+              MtTVAAsText_G[VatPositionLine_L] := STRSUBSTNO('%1 (%2)',MtTVA_G[VatPositionLine_L],MtTVALCY_G[VatPositionLine_L]);
+            END ELSE BEGIN
+              BaseTvaAsText_G[VatPositionLine_L] := STRSUBSTNO('%1',BaseTva_G[VatPositionLine_L]);
+              MtTVAAsText_G[VatPositionLine_L] := STRSUBSTNO('%1',MtTVA_G[VatPositionLine_L]);
+            END;
+          END;
+        END;
+      END;
+      // <-- 3LI-20110318-8060990/XXX-CMB6.00.01.01-JDL01
+    END;
+
+    PROCEDURE InitVatArray@8060986();
+    BEGIN
+      // initialise la tableau de TVA
+
+      // --> 3LI-20110318-8060990/XXX-CMB6.00.01.01-JDL01
+      FOR VatPositionLine_G :=1 TO ARRAYLEN(BaseTva_G) DO BEGIN
+         BaseTva_G[VatPositionLine_G]:=0;
+         TxTVA_G[VatPositionLine_G]:=0;
+         MtTVA_G[VatPositionLine_G]:=0;
+         VATIdentifier_G[VatPositionLine_G]:='';
+         BaseTvaLCY_G[VatPositionLine_G]:=0;
+         MtTVALCY_G[VatPositionLine_G]:=0;
+         BaseTvaAsText_G[VatPositionLine_G]:='';
+         MtTVAAsText_G[VatPositionLine_G]:='';
+      END;
+      DescEntTVA_G[1] := '';
+      DescEntTVA_G[2] := '';
+      DescEntTVA_G[3] := '';
+      DescEntTVA_G[4] := '';
+
+      // <-- 3LI-20110318-8060990/XXX-CMB6.00.01.01-JDL01
+    END;
+
+    PROCEDURE ManageTotal@8060982();
+    VAR
+      CurrencyCode_L@8060982 : Code[20];
+    BEGIN
+      // --> 3LI-20110318-8060990/XXX-CMB6.00.01.01-JDL01
+
+      // Gestion de la devise
+      IF "Purchase Header"."Currency Code" = '' THEN BEGIN
+        GLSetup.TESTFIELD("LCY Code");
+        CurrencyCode_L := GLSetup."LCY Code";
+      END ELSE BEGIN
+        CurrencyCode_L := "Purchase Header"."Currency Code";
+      END;
+
+      // Gestion du montant remise facture
+      InvDiscAmountTxt_G := '';
+      InvDiscAmountAmt_G := 0;
+      SubTotal_G := 0;
+      TotalText := '';
+      IF "Purchase Line"."Inv. Discount Amount" <> 0 THEN BEGIN
+        SubTotal_G := "Purchase Line"."Line Amount";
+        TotalText := STRSUBSTNO(Text8060994,CurrencyCode_L);
+        InvDiscAmountAmt_G := "Purchase Line"."Inv. Discount Amount";
+        InvDiscAmountTxt_G := "Purchase Line".FIELDCAPTION("Inv. Discount Amount");
+      END;
+
+      //Gestion des montant HT, TTC, devise ou sans devise
+      FirstTotalTxt_G := '';
+      FirstTotalAmt_G := 0;
+      SecondTotalTxt_G := '';
+      SecondTotalAmt_G := 0;
+      ThirdTotalTxt_G := '';
+      ThirdTotalAmt_G := 0;
+      IF "Purchase Line"."Amount Including VAT" = "Purchase Line".Amount THEN BEGIN
+        // pas de TVA dans le document
+        FirstTotalTxt_G := STRSUBSTNO(Text8060995,CurrencyCode_L);
+        FirstTotalAmt_G := "Purchase Line".Amount;
+      END ELSE BEGIN
+        IF (NOT "Purchase Header"."Prices Including VAT") THEN BEGIN
+          FirstTotalTxt_G := TotalExclVATText;
+          FirstTotalAmt_G := "Purchase Line".Amount;
+          SecondTotalTxt_G := VATAmountLine.VATAmountText;
+          SecondTotalAmt_G := "Purchase Line"."Amount Including VAT" - "Purchase Line".Amount;
+          ThirdTotalTxt_G := STRSUBSTNO(Text8060995,CurrencyCode_L);
+          ThirdTotalAmt_G := "Purchase Line"."Amount Including VAT";
+        END ELSE BEGIN
+          FirstTotalTxt_G := STRSUBSTNO(Text8060995,CurrencyCode_L);
+          FirstTotalAmt_G := "Purchase Line"."Amount Including VAT";
+          SecondTotalTxt_G := VATAmountLine.VATAmountText;
+          SecondTotalAmt_G := "Purchase Line"."Amount Including VAT" - "Purchase Line".Amount;
+          ThirdTotalTxt_G := TotalExclVATText;
+          ThirdTotalAmt_G := "Purchase Line".Amount;
+
+        END;
+      END;
+      // <-- 3LI-20110318-8060990/XXX-CMB6.00.01.01-JDL01
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20110601-8060990/071-CMB6.00.10.02-FEC01 : Cr'ation du Report
+      20111014-8060990/071-CMB6.00.10.04-FEC01 : MODCTRL(Mise en gras du "Prix TTC").
+      // <-- 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

@@ -1,0 +1,3510 @@
+OBJECT Codeunit 550 VAT Rate Change Conversion
+{
+  OBJECT-PROPERTIES
+  {
+    Date=30/10/14;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,VATRateChange;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            IF NOT VATRateChangeSetup.GET THEN BEGIN
+              VATRateChangeSetup.INIT;
+              VATRateChangeSetup.INSERT;
+            END;
+
+            Convert;
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      VATRateChangeSetup@1001 : Record 550;
+      VATRateChangeConversion@1000 : Record 551;
+      CopyDocumentMgt@1130000 : Codeunit 6620;
+      ProgressWindow@1002 : Dialog;
+      Text0001@1003 : TextConst 'ENU="Progressing Table #1#####################################  ";FRA="Table en cours #1##################################### \ "';
+      Text0002@1004 : TextConst 'ENU="Progressing Record #2############ of #3####################  ";FRA="Enregistrement en cours #2############# / #3####################  "';
+      Text0004@1005 : TextConst 'ENU=The order line %1 has drop shipment. Update the order manually.;FRA=La ligne de commande%1 est une exp'dition directe. Mise . jour de celle-ci manuellement.';
+      Text0005@1006 : TextConst 'ENU=The order line %1 has special order. Update the order manually.;FRA=La ligne de commande%1 est une commande sp'cial. Mise . jour de celle-ci manuellement.';
+      Text0006@1007 : TextConst 'ENU=The order has a partially shipped line with link to a WHSE document. Update the order manually.;FRA=La commande a une ligne partiellement livr' avec un lien vers un document entrep"t. Mise . jour de celle-ci manuellement.';
+      Text0007@1008 : TextConst 'ENU=There is nothing to convert. The outstanding quantity is zero.;FRA=Il n''y a rien . convertir. La quantit' restante est 'gale . z'ro.';
+      Text0008@1009 : TextConst 'ENU=There must be an entry in the %1 table for the combination of VAT business posting group %2 and VAT product posting group %3.;FRA=Il doit y avoir une 'criture dans la table %1 pour la combinaison des activit's de la TVA affichant groupe %2 et le produit de la TVA affichant groupe %3.';
+      Text0009@1010 : TextConst 'ENU=Conversion cannot be performed before %1 is set to true.;FRA=La conversion ne peut pas ^tre effectu'e avant que %1 soit . Oui.';
+      Text0010@1011 : TextConst 'ENU=The line has been shipped.;FRA=La ligne a 't' exp'di'e.';
+      Text0011@1012 : TextConst 'ENU=Documents that have posted prepayment must be converted manually.;FRA=Les documents d''acompte qui ont valid' doivent ^tre converties manuellement.';
+      Text0012@1013 : TextConst 'ENU=This line %1 have been split into two lines. The outstanding quantity will be on the new line.;FRA=Cette ligne %1 a 't' divis's en deux lignes. La quantit' restante sera sur la nouvelle ligne.';
+      Text0013@1014 : TextConst 'ENU=This line %1 have been added, it contains the outstanding quantity from line %2.;FRA=Cette ligne %1 a 't' ajout's, il reprend la quantit' restante de la ligne %2.';
+      Text0014@1015 : TextConst 'ENU=The order line %1 of type %2 have been partial Shipped/Invoiced . Update the order manually.;FRA=La ligne de commande %1 de type %2 a 't' partiellement Exp'di' / Facturation. Mise . jour de celle-ci manuellement.';
+      Text0015@1016 : TextConst 'ENU=There isn''t defined any Conversion. Define the Conversion.;FRA=Aucune conversion n''est d'finie. Veuillez en d'finir une.';
+      Text0016@1017 : TextConst 'ENU=There isn''t defined any Tables for Conversion.;FRA=Aucune table de conversion n''est d'finie';
+      Text0017@1018 : TextConst 'ENU=This line %1 will be splitted into two lines. The outstanding quantity will be on the new line.;FRA=Cette ligne %1 sera explos'e en deux lignes. La quantit' restante sera sur la nouvelle ligne.';
+      FiltersItemCheck@1000000000 : Boolean;
+      FiltersItem@1000000001 : Record 27;
+      VATRateChangeFinish_G@1000000002 : Boolean;
+      StartStep_G@1000000003 : 'Gen. Prod. Posting Group,Item,Ressource,GLAccount,Serv. Price Adj. Detail,Purchase,Sales,Service,Item Category,Item Charge,Gen. Journal Line,Gen. Jnl. Allocation,Standard General Journal Line,Res. Journal Line,Job Journal Line,Requisition Line,Std. Item Jnl. Lines,Production Order,Work Center,Machine Center,Reminder Line,Finance Charge Memo Line,BizTalk Partner Setup Header,CMC Tax Collected,CMC Service Price';
+      cduCMCMCDataMgt_G@1000000004 : Codeunit 8053306;
+      Text0018@8053000 : TextConst 'FRA=La ligne de commande %1 de type %2 n''a pas 't' trait' car l''article %3 %4  est indivisible.';
+
+    PROCEDURE Convert@2();
+    VAR
+      GenProductPostingGroup@1001 : Record 251;
+      TempGenProductPostingGroup@1000 : TEMPORARY Record 251;
+    BEGIN
+      VATRateChangeFinish_G:=FALSE;
+
+      VATRateChangeSetup.TESTFIELD("VAT Rate Change Tool Completed",FALSE);
+      IF VATRateChangeConversion.ISEMPTY THEN
+        ERROR(Text0015);
+      IF NOT AreTablesSelected THEN
+        ERROR(Text0016);
+      TestVATPostingSetup;
+      ProgressWindow.OPEN(FORMAT(TIME)+'\'+Text0001 + Text0002);
+
+
+      StartStep_G:=VATRateChangeSetup."Start At Step";
+
+
+
+      // --> 3LI START
+      // --> 20131022-TVA20-BMA
+      //ProgressWindow.UPDATE(1,COPYSTR(COMPANYNAME,STRLEN(COMPANYNAME) - 5));
+      ProgressWindow.UPDATE(1,COMPANYNAME);
+      // --< 3LI STOP
+
+      WITH VATRateChangeSetup DO BEGIN
+        ProgressWindow.UPDATE;
+
+        // --> 20131028-TVACMR-GDU
+        IF StartStep_G<=VATRateChangeSetup."Start At Step"::"Gen. Prod. Posting Group" THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          UpdateTable(
+            DATABASE::"Gen. Product Posting Group",
+            ConvertVATProdPostGrp("Update Gen. Prod. Post. Groups"),ConvertGenProdPostGrp("Update Gen. Prod. Post. Groups"));
+          // --> 20131028-TVACMR-GDU
+          //IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+          //  COMMIT;
+
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+        // <-- 20131028-TVACMR-GDU
+        SetNextAction(0);
+
+        TempGenProductPostingGroup.DELETEALL;
+        IF GenProductPostingGroup.FIND('-') THEN
+          REPEAT
+            TempGenProductPostingGroup := GenProductPostingGroup;
+            TempGenProductPostingGroup.INSERT;
+            GenProductPostingGroup."Auto Insert Default" := FALSE;
+            GenProductPostingGroup.MODIFY;
+          UNTIL GenProductPostingGroup.NEXT = 0;
+
+        // --> 20131028-TVACMR-GDU
+        IF (StartStep_G<=VATRateChangeSetup."Start At Step"::Item) AND
+        (VATRateChangeSetup."Update Items"<>VATRateChangeSetup."Update Items"::No)
+        THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+         IF FiltersItemCheck THEN BEGIN
+          //UpdateItemWithFilters;
+         END ELSE BEGIN
+            UpdateItemMS;
+          //UpdateItem;
+         END;
+          // --> 20131028-TVACMR-GDU
+          //IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+          //  COMMIT;
+
+         VATRateChangeFinish_G:=CheckTable(
+            DATABASE::Item,
+            ConvertVATProdPostGrp("Update Gen. Prod. Post. Groups"),ConvertGenProdPostGrp("Update Gen. Prod. Post. Groups"));
+
+        // <-- 20131028-TVACMR-GDU
+
+
+        // --> 20131028-TVACMR-GDU
+        END;
+        SetNextAction(1);
+        // <-- 20131028-TVACMR-GDU
+
+        // --> 20131028-TVACMR-GDU
+        IF (StartStep_G<=VATRateChangeSetup."Start At Step"::Ressource) AND
+        (VATRateChangeSetup."Update Resources"<>VATRateChangeSetup."Update Resources"::No)
+        THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          UpdateRessouce;
+
+          // --> 20131028-TVACMR-GDU
+          //IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+            //COMMIT;
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+        SetNextAction(2);
+        // <-- 20131028-TVACMR-GDU
+
+        // --> 20131028-TVACMR-GDU
+        IF (StartStep_G<=VATRateChangeSetup."Start At Step"::GLAccount) AND
+        (VATRateChangeSetup."Update G/L Accounts"<>VATRateChangeSetup."Update G/L Accounts"::No)
+        THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          //UpdateGLAccount;
+          UpdateGLAccountMS;
+          // --> 20131028-TVACMR-GDU
+          //IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+          //  COMMIT;
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+        SetNextAction(3);
+        // <-- 20131028-TVACMR-GDU
+
+
+        // --> 20131028-TVACMR-GDU
+        IF (VATRateChangeSetup."Start At Step"<=VATRateChangeSetup."Start At Step"::"Serv. Price Adj. Detail") AND
+        (VATRateChangeSetup."Update Serv. Price Adj. Detail"<>VATRateChangeSetup."Update Serv. Price Adj. Detail"::No)
+        THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          UpdateServPriceAdjDetail;
+
+          // --> 20131028-TVACMR-GDU
+          //IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+          //  COMMIT;
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+        SetNextAction(4);
+        // <-- 20131028-TVACMR-GDU
+
+
+        // --> 20131028-TVACMR-GDU
+        IF (StartStep_G<=VATRateChangeSetup."Start At Step"::Purchase) AND
+        (VATRateChangeSetup."Update Purchase Documents"<>VATRateChangeSetup."Update Purchase Documents"::No)
+        THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          UpdatePurchase;
+
+          // --> 20131028-TVACMR-GDU
+          //IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+          //  COMMIT;
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+        SetNextAction(5);
+        // <-- 20131028-TVACMR-GDU
+
+        // --> 20131028-TVACMR-GDU
+        IF (StartStep_G<=VATRateChangeSetup."Start At Step"::Sales) AND
+        (VATRateChangeSetup."Update Sales Documents"<>VATRateChangeSetup."Update Sales Documents"::No)
+        THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          UpdateSales;
+
+          // --> 20131028-TVACMR-GDU
+          //IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+          //  COMMIT;
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+        SetNextAction(6);
+        // <-- 20131028-TVACMR-GDU
+
+        // --> 20131028-TVACMR-GDU
+        IF (StartStep_G<=VATRateChangeSetup."Start At Step"::Service) THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          UpdateService;
+
+          // --> 20131028-TVACMR-GDU
+         // IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+          //  COMMIT;
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+        SetNextAction(7);
+        // <-- 20131028-TVACMR-GDU
+
+
+        // --> 20131028-TVACMR-GDU
+        IF (StartStep_G<=VATRateChangeSetup."Start At Step"::"Item Category") THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          UpdateTable(
+            DATABASE::"Item Category",
+            ConvertVATProdPostGrp("Update Item Categories"),ConvertGenProdPostGrp("Update Item Categories"));
+
+          // --> 20131028-TVACMR-GDU
+        //  IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+        //    COMMIT;
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+        SetNextAction(8);
+        // <-- 20131028-TVACMR-GDU
+
+        // --> 20131028-TVACMR-GDU
+        IF (StartStep_G<=VATRateChangeSetup."Start At Step"::"Item Charge") THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          UpdateTable(
+            DATABASE::"Item Charge",
+            ConvertVATProdPostGrp("Update Item Charges"),ConvertGenProdPostGrp("Update Item Charges"));
+
+          // --> 20131028-TVACMR-GDU
+        //  IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+        //    COMMIT;
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+        // <-- 20131028-TVACMR-GDU
+        SetNextAction(9);
+        // --> 20131028-TVACMR-GDU
+        IF (StartStep_G<=VATRateChangeSetup."Start At Step"::"Gen. Journal Line") THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          UpdateTable(
+            DATABASE::"Gen. Journal Line",
+            ConvertVATProdPostGrp("Update Gen. Journal Lines"),ConvertGenProdPostGrp("Update Gen. Journal Lines"));
+
+          // --> 20131028-TVACMR-GDU
+         // IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+         //   COMMIT;
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+        // <-- 20131028-TVACMR-GDU
+        SetNextAction(10);
+
+        // --> 20131028-TVACMR-GDU
+        IF (StartStep_G<=VATRateChangeSetup."Start At Step"::"Gen. Jnl. Allocation") AND
+        (VATRateChangeSetup."Update Gen. Journal Allocation"<>VATRateChangeSetup."Update Gen. Journal Allocation"::No)
+        THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          UpdateTable(
+            DATABASE::"Gen. Jnl. Allocation",
+            ConvertVATProdPostGrp("Update Gen. Journal Allocation"),ConvertGenProdPostGrp("Update Gen. Journal Allocation"));
+
+          // --> 20131028-TVACMR-GDU
+         // IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+         //   COMMIT;
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+        SetNextAction(11);
+        // <-- 20131028-TVACMR-GDU
+
+        // --> 20131028-TVACMR-GDU
+        IF (StartStep_G<=VATRateChangeSetup."Start At Step"::"Standard General Journal Line") AND
+        (VATRateChangeSetup."Update Std. Gen. Jnl. Lines"<>VATRateChangeSetup."Update Std. Gen. Jnl. Lines"::No)
+        THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          UpdateTable(
+            DATABASE::"Standard General Journal Line",
+            ConvertVATProdPostGrp("Update Std. Gen. Jnl. Lines"),ConvertGenProdPostGrp("Update Std. Gen. Jnl. Lines"));
+
+          // --> 20131028-TVACMR-GDU
+        //  IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+        //    COMMIT;
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+        SetNextAction(12);
+        // <-- 20131028-TVACMR-GDU
+
+
+        // --> 20131028-TVACMR-GDU
+        IF (StartStep_G<=VATRateChangeSetup."Start At Step"::"Res. Journal Line") AND
+        (VATRateChangeSetup."Update Res. Journal Lines"<>VATRateChangeSetup."Update Res. Journal Lines"::No)
+        THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          UpdateTable(
+            DATABASE::"Res. Journal Line",
+            ConvertVATProdPostGrp("Update Res. Journal Lines"),ConvertGenProdPostGrp("Update Res. Journal Lines"));
+
+          // --> 20131028-TVACMR-GDU
+         // IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+         //   COMMIT;
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+         SetNextAction(13);
+        // <-- 20131028-TVACMR-GDU
+
+
+        // --> 20131028-TVACMR-GDU
+        IF (StartStep_G<=VATRateChangeSetup."Start At Step"::"Job Journal Line") AND
+        (VATRateChangeSetup."Update Job Journal Lines"<>VATRateChangeSetup."Update Job Journal Lines"::No)
+        THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          UpdateTable(
+            DATABASE::"Job Journal Line",
+            ConvertVATProdPostGrp("Update Job Journal Lines"),ConvertGenProdPostGrp("Update Job Journal Lines"));
+
+          // --> 20131028-TVACMR-GDU
+         // IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+         //   COMMIT;
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+        SetNextAction(14);
+        // <-- 20131028-TVACMR-GDU
+
+
+        // --> 20131028-TVACMR-GDU
+        IF StartStep_G<=VATRateChangeSetup."Start At Step"::"Requisition Line" THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          UpdateTable(
+            DATABASE::"Requisition Line",
+            ConvertVATProdPostGrp("Update Requisition Lines"),ConvertGenProdPostGrp("Update Requisition Lines"));
+
+          // --> 20131028-TVACMR-GDU
+       //   IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+       //     COMMIT;
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+        SetNextAction(15);
+        // <-- 20131028-TVACMR-GDU
+
+
+        // --> 20131028-TVACMR-GDU
+        IF StartStep_G<=VATRateChangeSetup."Start At Step"::"Std. Item Jnl. Lines" THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          UpdateTable(
+            DATABASE::"Standard Item Journal Line",
+            ConvertVATProdPostGrp("Update Std. Item Jnl. Lines"),ConvertGenProdPostGrp("Update Std. Item Jnl. Lines"));
+
+          // --> 20131028-TVACMR-GDU
+         // IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+         //   COMMIT;
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+         SetNextAction(16);
+        // <-- 20131028-TVACMR-GDU
+
+
+        // --> 20131028-TVACMR-GDU
+        IF StartStep_G<=VATRateChangeSetup."Start At Step"::"Production Order" THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          UpdateTable(
+            DATABASE::"Production Order",
+            ConvertVATProdPostGrp("Update Production Orders"),ConvertGenProdPostGrp("Update Production Orders"));
+
+          // --> 20131028-TVACMR-GDU
+          //IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+           // COMMIT;
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+        SetNextAction(17);
+        // <-- 20131028-TVACMR-GDU
+
+
+        // --> 20131028-TVACMR-GDU
+        IF StartStep_G<=VATRateChangeSetup."Start At Step"::"Work Center" THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          UpdateTable(
+            DATABASE::"Work Center",
+            ConvertVATProdPostGrp("Update Work Centers"),ConvertGenProdPostGrp("Update Work Centers"));
+
+          // --> 20131028-TVACMR-GDU
+          //IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+           // COMMIT;
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+        // <-- 20131028-TVACMR-GDU
+        SetNextAction(18);
+
+        // --> 20131028-TVACMR-GDU
+        IF StartStep_G<=VATRateChangeSetup."Start At Step"::"Machine Center" THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          UpdateTable(
+            DATABASE::"Machine Center",
+            ConvertVATProdPostGrp("Update Machine Centers"),ConvertGenProdPostGrp("Update Machine Centers"));
+
+          // --> 20131028-TVACMR-GDU
+          //IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+          //  COMMIT;
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+        // <-- 20131028-TVACMR-GDU
+        SetNextAction(19);
+
+        // --> 20131028-TVACMR-GDU
+        IF StartStep_G<=VATRateChangeSetup."Start At Step"::"Reminder Line" THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          UpdateTable(
+            DATABASE::"Reminder Line",
+            ConvertVATProdPostGrp("Update Reminders"),ConvertGenProdPostGrp("Update Reminders"));
+
+          // --> 20131028-TVACMR-GDU
+          //IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+          //  COMMIT;
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+        // <-- 20131028-TVACMR-GDU
+        SetNextAction(20);
+
+        // --> 20131028-TVACMR-GDU
+        IF StartStep_G<=VATRateChangeSetup."Start At Step"::"Finance Charge Memo Line" THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          UpdateTable(
+            DATABASE::"Finance Charge Memo Line",
+            ConvertVATProdPostGrp("Update Finance Charge Memos"),ConvertGenProdPostGrp("Update Finance Charge Memos"));
+
+          // --> 20131028-TVACMR-GDU
+          //IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+          //  COMMIT;
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+        SetNextAction(21);
+        // <-- 20131028-TVACMR-GDU
+
+        // --> 20131028-TVACMR-GDU
+        IF StartStep_G<=VATRateChangeSetup."Start At Step"::"BizTalk Partner Setup Header" THEN BEGIN
+        // <-- 20131028-TVACMR-GDU
+          UpdateTable(
+            DATABASE::"BizTalk Partner Setup Header",
+            ConvertVATProdPostGrp("Update BizTalk Partner Setup"),ConvertGenProdPostGrp("Update BizTalk Partner Setup"));
+
+          // --> 20131028-TVACMR-GDU
+          //IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+          //  COMMIT;
+          // <-- 20131028-TVACMR-GDU
+        // --> 20131028-TVACMR-GDU
+        END;
+        SetNextAction(22);
+        // <-- 20131028-TVACMR-GDU
+
+         //-->3Li-BMA01-CMC-26112013
+         IF StartStep_G<=VATRateChangeSetup."Start At Step"::"CMC Tax Collected" THEN BEGIN
+           UpdateCMCCollectedTax;
+
+         END;
+         SetNextAction(23);
+
+         IF StartStep_G<=VATRateChangeSetup."Start At Step"::"CMC Service Price" THEN BEGIN
+           UpdateCMCServicePrices;
+
+         END;
+         SetNextAction(24);
+         //--<3Li-BMA01-CMC-26112013
+
+
+
+         //--<3Li-BMA01-CMC-26112013
+        GenProductPostingGroup.DELETEALL;
+        IF TempGenProductPostingGroup.FIND('-') THEN
+          REPEAT
+            GenProductPostingGroup := TempGenProductPostingGroup;
+            GenProductPostingGroup.INSERT;
+            TempGenProductPostingGroup.DELETE;
+          UNTIL TempGenProductPostingGroup.NEXT = 0;
+      END;
+      ProgressWindow.CLOSE;
+
+
+
+      IF VATRateChangeSetup."Perform Conversion" THEN BEGIN
+
+        IF NOT VATRateChangeFinish_G THEN BEGIN
+          VATRateChangeSetup."VAT Rate Change Tool Completed" := TRUE;
+          VATRateChangeSetup.MODIFY;
+        END;
+        VATRateChangeConversion.RESET;
+        IF VATRateChangeConversion.FINDSET(TRUE) THEN
+          REPEAT
+            VATRateChangeConversion."Converted Date" := WORKDATE;
+            VATRateChangeConversion.MODIFY;
+          UNTIL VATRateChangeConversion.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE TestVATPostingSetup@24();
+    VAR
+      VATPostingSetupOld@1000 : Record 325;
+      VATPostingSetupNew@1001 : Record 325;
+      VATRateChangeConversion@1002 : Record 551;
+    BEGIN
+      VATRateChangeConversion.SETRANGE(Type,VATRateChangeConversion.Type::"VAT Prod. Posting Group");
+      IF VATRateChangeConversion.FINDSET THEN
+        REPEAT
+          VATPostingSetupOld.SETRANGE("VAT Prod. Posting Group",VATRateChangeConversion."From Code");
+          IF VATPostingSetupOld.FINDSET THEN
+            REPEAT
+              IF NOT VATPostingSetupNew.GET(VATPostingSetupOld."VAT Bus. Posting Group",VATRateChangeConversion."To Code") THEN
+                ERROR(
+                  Text0008,
+                  VATPostingSetupNew.TABLECAPTION,
+                  VATPostingSetupOld."VAT Bus. Posting Group",
+                  VATRateChangeConversion."To Code");
+              IF VATPostingSetupOld."VAT Identifier" <> '' THEN
+                VATPostingSetupNew.TESTFIELD("VAT Identifier")
+            UNTIL VATPostingSetupOld.NEXT = 0;
+        UNTIL VATRateChangeConversion.NEXT = 0;
+    END;
+
+    PROCEDURE UpdateItem@5();
+    VAR
+      Item@1000 : Record 27;
+      RecRef@1001 : RecordRef;
+    BEGIN
+      ProgressWindow.UPDATE(1,Item.TABLECAPTION);
+      WITH VATRateChangeSetup DO BEGIN
+        //IF "Item Filter" = '' THEN
+          //UpdateTable(DATABASE::Item,ConvertVATProdPostGrp("Update Items"),ConvertGenProdPostGrp("Update Items"))
+        //ELSE BEGIN
+
+          IF "Item Filter" <> '' THEN
+           Item.SETFILTER("No.","Item Filter");
+
+          IF FiltersItemCheck THEN
+            Item.COPYFILTERS(FiltersItem);
+          IF Item.FIND('-') THEN
+            ProgressWindow.UPDATE(3,Item.COUNT);
+            REPEAT
+              RecRef.GETTABLE(Item);
+              UpdateRec(RecRef,ConvertVATProdPostGrp("Update Items"),ConvertGenProdPostGrp("Update Items"));
+              // <-- 20131112-TVACMR-BMA
+              IF VATRateChangeSetup."Commit at Item" THEN
+                COMMIT;
+              // >-- 20131112-TVACMR-BMA
+            UNTIL Item.NEXT = 0;
+        END;
+      //END;
+    END;
+
+    PROCEDURE UpdateGLAccount@8();
+    VAR
+      GLAccount@1000 : Record 15;
+      RecRef@1001 : RecordRef;
+    BEGIN
+      ProgressWindow.UPDATE(1,GLAccount.TABLECAPTION);
+      WITH VATRateChangeSetup DO BEGIN
+        IF "Account Filter" = '' THEN
+          UpdateTable(DATABASE::"G/L Account",ConvertVATProdPostGrp("Update G/L Accounts"),ConvertGenProdPostGrp("Update G/L Accounts"))
+        ELSE BEGIN
+          GLAccount.SETFILTER("No.","Account Filter");
+          IF GLAccount.FIND('-') THEN
+            REPEAT
+              RecRef.GETTABLE(GLAccount);
+              UpdateRec(RecRef,ConvertVATProdPostGrp("Update G/L Accounts"),ConvertGenProdPostGrp("Update G/L Accounts"));
+            UNTIL GLAccount.NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE UpdateRessouce@7();
+    VAR
+      Resource@1000 : Record 156;
+      RecRef@1001 : RecordRef;
+    BEGIN
+      WITH VATRateChangeSetup DO BEGIN
+        IF "Resource Filter" = '' THEN
+          UpdateTable(DATABASE::Resource,ConvertVATProdPostGrp("Update Resources"),ConvertGenProdPostGrp("Update Resources"))
+        ELSE BEGIN
+          Resource.SETFILTER("No.","Resource Filter");
+          IF Resource.FIND('-') THEN
+            REPEAT
+              RecRef.GETTABLE(Resource);
+              UpdateRec(RecRef,ConvertVATProdPostGrp("Update Resources"),ConvertGenProdPostGrp("Update Resources"));
+            UNTIL Resource.NEXT = 0;
+        END;
+      END;
+    END;
+
+    PROCEDURE ConvertVATProdPostGrp@3(UpdateOption@1000 : 'VAT Prod. Posting Group,Gen. Prod. Posting Group,Both,No') : Boolean;
+    BEGIN
+      IF UpdateOption IN [UpdateOption::"VAT Prod. Posting Group",UpdateOption::Both] THEN
+        EXIT(TRUE);
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE ConvertGenProdPostGrp@6(UpdateOption@1000 : 'VAT Prod. Posting Group,Gen. Prod. Posting Group,Both,No') : Boolean;
+    BEGIN
+      IF UpdateOption IN [UpdateOption::"Gen. Prod. Posting Group",UpdateOption::Both] THEN
+        EXIT(TRUE);
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE UpdateTable@4(TableID@1005 : Integer;ConvertVATProdPostingGroup@1000 : Boolean;ConvertGenProdPostingGroup@1001 : Boolean);
+    VAR
+      RecRef@1004 : RecordRef;
+      I@1003 : Integer;
+      FieldRef1@1000000000 : FieldRef;
+      FieldRef2@1000000001 : FieldRef;
+    BEGIN
+      IF NOT ConvertVATProdPostingGroup AND NOT ConvertGenProdPostingGroup THEN
+        EXIT;
+      RecRef.OPEN(TableID);
+      // --> 3LI-20131029-GDU
+      CASE TableID OF
+        DATABASE::"Production Order": BEGIN
+          IF VATRateChangeSetup."Test One Production Order" THEN BEGIN
+            FieldRef1 := RecRef.FIELD(1);  // Status
+            FieldRef2 := RecRef.FIELD(2);  // No.
+            FieldRef1.SETRANGE(VATRateChangeSetup."Production Order Status");
+            FieldRef2.SETRANGE(VATRateChangeSetup."Production Order No.");
+          END;
+        END;
+        DATABASE::"Reminder Line"  : BEGIN
+          IF VATRateChangeSetup."Test One Reminder" THEN BEGIN
+            FieldRef1 := RecRef.FIELD(1);  // Reminder No.
+            FieldRef1.SETRANGE(VATRateChangeSetup."Reminder No.");
+          END;
+        END;
+        DATABASE::"Finance Charge Memo Line" : BEGIN
+          IF VATRateChangeSetup."Test One Finance charge Memo" THEN BEGIN
+            FieldRef1 := RecRef.FIELD(1);  // Finance Charge Memo No.
+            FieldRef1.SETRANGE(VATRateChangeSetup."Finance charge Memo No.");
+          END;
+        END;
+        DATABASE::"BizTalk Partner Setup Header" : BEGIN
+          IF VATRateChangeSetup."Test One BizTalk Partner Setup" THEN BEGIN
+            FieldRef1 := RecRef.FIELD(1);  // BizTalk Partner No.
+            FieldRef1.SETRANGE(VATRateChangeSetup."BizTalk Partner Setup No.");
+          END;
+        END;
+      END;
+      // <-- 3LI-20131029-GDU
+
+      ProgressWindow.UPDATE(1,FORMAT(RecRef.CAPTION));
+      I := 0;
+      ProgressWindow.UPDATE(3,RecRef.COUNT);
+      IF RecRef.FIND('-') THEN
+        REPEAT
+          I := I + 1;
+          ProgressWindow.UPDATE(2,I);
+          UpdateRec(RecRef,ConvertVATProdPostingGroup,ConvertGenProdPostingGroup);
+        UNTIL RecRef.NEXT = 0;
+    END;
+
+    PROCEDURE UpdateRec@1(VAR RecRef@1005 : RecordRef;ConvertVATProdPostingGroup@1000 : Boolean;ConvertGenProdPostingGroup@1001 : Boolean);
+    VAR
+      Field@1008 : Record 2000000041;
+      VATRateChangeLogEntry@1002 : Record 552;
+      FieldRef@1003 : FieldRef;
+      GenProdPostingGroupConverted@1004 : Boolean;
+      VATProdPostingGroupConverted@1006 : Boolean;
+    BEGIN
+      VATRateChangeLogEntry.INIT;
+      VATRateChangeLogEntry.RecordID := RecRef.RECORDID;
+      VATRateChangeLogEntry."Table ID" := RecRef.NUMBER;
+      Field.SETRANGE(TableNo,RecRef.NUMBER);
+      Field.SETRANGE(RelationTableNo,DATABASE::"Gen. Product Posting Group");
+      IF Field.FIND('+') THEN
+        REPEAT
+          FieldRef := RecRef.FIELD(Field."No.");
+          GenProdPostingGroupConverted := FALSE;
+          IF ConvertGenProdPostingGroup THEN BEGIN
+            IF VATRateChangeConversion.GET(VATRateChangeConversion.Type::"Gen. Prod. Posting Group",FieldRef.VALUE) THEN BEGIN
+              VATRateChangeLogEntry."Old Gen. Prod. Posting Group" := FieldRef.VALUE;
+              FieldRef.VALIDATE(VATRateChangeConversion."To Code");
+              VATRateChangeLogEntry."New Gen. Prod. Posting Group" := FieldRef.VALUE;
+              GenProdPostingGroupConverted := TRUE;
+            END;
+          END;
+          IF NOT GenProdPostingGroupConverted THEN BEGIN
+            VATRateChangeLogEntry."Old Gen. Prod. Posting Group" := FieldRef.VALUE;
+            VATRateChangeLogEntry."New Gen. Prod. Posting Group" := FieldRef.VALUE;
+          END;
+        UNTIL Field.NEXT(-1) = 0;
+
+      Field.SETRANGE(RelationTableNo,DATABASE::"VAT Product Posting Group");
+      IF Field.FIND('+') THEN
+        REPEAT
+          FieldRef := RecRef.FIELD(Field."No.");
+          VATProdPostingGroupConverted := FALSE;
+          IF ConvertVATProdPostingGroup THEN BEGIN
+            IF VATRateChangeConversion.GET(VATRateChangeConversion.Type::"VAT Prod. Posting Group",FieldRef.VALUE) THEN BEGIN
+              VATRateChangeLogEntry."Old VAT Prod. Posting Group" := FieldRef.VALUE;
+              IF NOT (RecRef.NUMBER = DATABASE::"Gen. Product Posting Group") THEN
+                FieldRef.VALIDATE(VATRateChangeConversion."To Code")
+              ELSE
+                FieldRef.VALUE := VATRateChangeConversion."To Code";
+              VATRateChangeLogEntry."New VAT Prod. Posting Group" := FieldRef.VALUE;
+              VATProdPostingGroupConverted := TRUE;
+            END;
+          END;
+          IF NOT VATProdPostingGroupConverted THEN BEGIN
+            VATRateChangeLogEntry."Old VAT Prod. Posting Group" := FieldRef.VALUE;
+            VATRateChangeLogEntry."New VAT Prod. Posting Group" := FieldRef.VALUE;
+          END;
+        UNTIL Field.NEXT(-1) = 0;
+
+      IF VATRateChangeSetup."Perform Conversion" THEN BEGIN
+        RecRef.MODIFY;
+        VATRateChangeLogEntry.Converted := TRUE;
+      END;
+      IF (VATRateChangeLogEntry."New Gen. Prod. Posting Group" <> VATRateChangeLogEntry."Old Gen. Prod. Posting Group") OR
+         (VATRateChangeLogEntry."New VAT Prod. Posting Group" <> VATRateChangeLogEntry."Old VAT Prod. Posting Group")
+      THEN
+        WriteLogEntry(VATRateChangeLogEntry);
+    END;
+
+    PROCEDURE WriteLogEntry@10(VATRateChangeLogEntry@1000 : Record 552);
+    BEGIN
+      WITH VATRateChangeLogEntry DO BEGIN
+        IF Converted THEN
+          "Converted Date" := WORKDATE
+        ELSE
+          IF Description = '' THEN
+            Description := STRSUBSTNO(Text0009,VATRateChangeSetup.FIELDCAPTION("Perform Conversion"));
+        INSERT;
+      END;
+    END;
+
+    PROCEDURE UpdateSales@12();
+    VAR
+      SalesHeader@1000 : Record 36;
+      SalesHeader2@1004 : Record 36;
+      SalesLine@1003 : Record 37;
+      SalesLineOld@1011 : Record 37;
+      VATRateChangeLogEntry@1002 : Record 552;
+      RecRef@1001 : RecordRef;
+      SalesHeaderStatusChanged@1005 : Boolean;
+      NewVatProdPotingGroup@1007 : Code[10];
+      NewGenProdPostingGroup@1008 : Code[10];
+      ConvertVATProdPostingGroup@1009 : Boolean;
+      ConvertGenProdPostingGroup@1006 : Boolean;
+      RoundingPrecision@1010 : Decimal;
+      SalesLine_L@1000000000 : Record 37;
+      NewSalesLine_L@1000000001 : Record 37;
+      i_l@8053000 : Integer;
+    BEGIN
+      ProgressWindow.UPDATE(1,SalesHeader.TABLECAPTION);
+      ConvertVATProdPostingGroup := ConvertVATProdPostGrp(VATRateChangeSetup."Update Sales Documents");
+      ConvertGenProdPostingGroup := ConvertGenProdPostGrp(VATRateChangeSetup."Update Sales Documents");
+      IF NOT ConvertVATProdPostingGroup AND NOT ConvertGenProdPostingGroup THEN
+        EXIT;
+
+      IF VATRateChangeSetup."Test One Sale Document" THEN BEGIN
+        SalesHeader.SETRANGE("Document Type",VATRateChangeSetup."Sales Document Type");
+        SalesHeader.SETRANGE("No.",VATRateChangeSetup."Sales Document No.");
+      END ELSE
+        SalesHeader.SETFILTER(
+          "Document Type",'%1..%2|%3',SalesHeader."Document Type"::Quote,SalesHeader."Document Type"::Invoice,
+          SalesHeader."Document Type"::"Blanket Order");
+
+      //SalesHeader.SETFILTER("Order Date",'>=%1',010113D); // 20131223-wi00-CMC02.02.00-TVA-JLT01
+      ProgressWindow.UPDATE(3,SalesHeader.COUNT); // 20131226-wi00-CMC02.02.00-TVA-JLT01
+
+      IF SalesHeader.FIND('-') THEN
+        REPEAT
+         i_l:= i_l+1;
+         ProgressWindow.UPDATE(2,i_l); // 20131226-wi00-CMC02.02.00-TVA-JLT01
+
+          SalesHeaderStatusChanged := FALSE;
+          IF CanUpdateSales(SalesHeader,ConvertGenProdPostingGroup,ConvertVATProdPostingGroup) THEN BEGIN
+            IF VATRateChangeSetup."Ignore Status on Sales Docs." THEN BEGIN
+              IF SalesHeader.Status <> SalesHeader.Status::Open THEN BEGIN
+                SalesHeader2 := SalesHeader;
+                SalesHeader.Status := SalesHeader.Status::Open;
+                SalesHeader.MODIFY;
+                SalesHeaderStatusChanged := TRUE;
+              END;
+            END;
+            IF SalesHeader.Status = SalesHeader.Status::Open THEN BEGIN
+              SalesLine.SETRANGE("Document Type",SalesHeader."Document Type");
+              SalesLine.SETRANGE("Document No.",SalesHeader."No.");
+              SalesLine.SETFILTER(Quantity,'<>%1',0);// 20131218-wi00-CMC02.01.00-TVA-JLT01
+              IF SalesLine.FINDSET THEN
+                REPEAT
+                  IF LineInScope(SalesLine."Gen. Prod. Posting Group",SalesLine."VAT Prod. Posting Group",ConvertGenProdPostingGroup,
+                    ConvertVATProdPostingGroup) THEN BEGIN
+                    IF (SalesLine."Shipment No." = '') AND (SalesLine."Return Receipt No." = '') THEN BEGIN
+
+                      // --> 3LI-20131030-GDU
+                      UpdateSalesline(SalesHeader,SalesLine,NewSalesLine_L);
+
+                    END;
+                  END;
+                UNTIL SalesLine.NEXT = 0;
+            END;
+            IF SalesHeaderStatusChanged THEN BEGIN
+              SalesHeader.Status := SalesHeader2.Status;;
+              SalesHeader.MODIFY;
+            END;
+          END;
+        UNTIL SalesHeader.NEXT = 0;
+    END;
+
+    PROCEDURE CanUpdateSales@11(SalesHeader@1007 : Record 36;ConvertGenProdPostingGroup@1000000000 : Boolean;ConvertVATProdPostingGroup@1005 : Boolean) : Boolean;
+    VAR
+      SalesLine@1003 : Record 37;
+      VATRateChangeLogEntry@1002 : Record 552;
+      WhseValidateSourceLine@1000 : Codeunit 5777;
+      RecRef@1001 : RecordRef;
+      DescriptionTxt@1006 : Text[250];
+    BEGIN
+      WITH SalesLine DO BEGIN
+        SETRANGE("Document Type",SalesHeader."Document Type");
+        SETRANGE("Document No.",SalesHeader."No.");
+        IF FINDSET THEN
+          REPEAT
+            DescriptionTxt := '';
+            IF LineInScope("Gen. Prod. Posting Group","VAT Prod. Posting Group",ConvertGenProdPostingGroup,ConvertVATProdPostingGroup)
+            THEN BEGIN
+              // --> 3Li-20131030-GDU : D'sactivation pour gestion livraison directe et commande sp'ciale
+              {
+              IF "Drop Shipment" AND ("Purchase Order No." <> '') THEN
+                DescriptionTxt := STRSUBSTNO(Text0004,"Line No.");
+              IF "Special Order" AND ("Special Order Purchase No." <> '') THEN
+                DescriptionTxt := STRSUBSTNO(Text0005,"Line No.");;
+              }
+              IF ("Outstanding Quantity" <> Quantity) AND
+                 WhseValidateSourceLine.WhseLinesExist(DATABASE::"Sales Line","Document Type","Document No.","Line No.",0,Quantity) THEN
+                DescriptionTxt := Text0006;
+              IF ("Outstanding Quantity" <> Quantity) AND (Type = Type::"Charge (Item)") THEN
+                DescriptionTxt := STRSUBSTNO(Text0014,"Line No.",Type::"Charge (Item)");
+              //-->AVANT
+              //IF  "Prepmt. Amount Inv. Incl. VAT" <> 0 THEN
+               // DescriptionTxt := Text0011;
+              //--<
+            END;
+          UNTIL (NEXT = 0) OR (DescriptionTxt <> '');
+      END;
+      IF DescriptionTxt = '' THEN
+        EXIT(TRUE);
+
+      RecRef.GETTABLE(SalesHeader);
+      VATRateChangeLogEntry.INIT;
+      VATRateChangeLogEntry.RecordID := RecRef.RECORDID;
+      VATRateChangeLogEntry."Table ID" := RecRef.NUMBER;
+      VATRateChangeLogEntry.Description := DescriptionTxt;
+      WriteLogEntry(VATRateChangeLogEntry);
+    END;
+
+    PROCEDURE AddNewSalesLine@1000(SalesLine@1022 : Record 37;VATProdPostingGroup@1001 : Code[10];GenProdPostingGroup@1002 : Code[10];VAR NewSalesLine@1000000000 : Record 37);
+    VAR
+      NewSalesLineREMOVED@1004 : Record 37;
+      OldSalesLine@1005 : Record 37;
+      SalesHeader@1006 : Record 36;
+      OldReservationEntry@1009 : Record 337;
+      NewReservationEntry@1010 : Record 337;
+      OldItemChargeAssignmentSales@1011 : Record 5809;
+      NewItemChargeAssignmentSales@1012 : Record 5809;
+      VATRateChangeLogEntry@1003 : Record 552;
+      RecRef@1000 : RecordRef;
+      NewLineNo@1015 : Integer;
+      QtyRemainder@1016 : Decimal;
+      AmountRemainder@1017 : Decimal;
+      RoundingPrecision@1018 : Decimal;
+      SalesLinesCVO@1000000001 : Record 37;
+      Prepayment_L@1000000002 : Boolean;
+      VATBase_L@1000000003 : Decimal;
+      AmountPrepayment_L@1000000006 : Decimal;
+      AmountPrepayment2Dispatch_L@1000000004 : Decimal;
+      PrepaymentPercent_L@1000000005 : Decimal;
+      SalesLinesRPD@1000000007 : Record 37;
+    BEGIN
+      IF NOT GetNextSalesLineNo(SalesLine,NewLineNo) THEN
+        EXIT;
+
+      IF SalesLine."Outstanding Quantity"<=0 THEN EXIT ; // 20131223-wi00-CMC02.02.00-TVA-JLT01 :pb carr'
+
+      // 20131217-wi00-CMC02.01.00-TVA-JLT01 : START -->
+      IF QtyIndiv(SalesLine."No.",SalesLine."Variant Code",SalesLine."Outstanding Quantity")=FALSE THEN BEGIN
+        RecRef.GETTABLE(SalesLine);
+        VATRateChangeLogEntry.INIT;
+        VATRateChangeLogEntry.RecordID := RecRef.RECORDID;
+        VATRateChangeLogEntry."Table ID" := RecRef.NUMBER;
+        VATRateChangeLogEntry.Description := STRSUBSTNO(Text0018,FORMAT(SalesLine."Line No."),FORMAT(SalesLine."Line No."),
+        SalesLine."No.",SalesLine."Variant Code");
+        VATRateChangeLogEntry.Converted := FALSE;
+        WriteLogEntry(VATRateChangeLogEntry);
+        EXIT;
+      END;
+      // 20131217-wi00-CMC02.01.00-TVA-JLT01 : END
+
+      WITH NewSalesLine DO BEGIN
+
+        //-->Backup du taux de TVA par d'faut
+        VATBase_L:=SalesLine."VAT %";
+
+        INIT;
+        NewSalesLine := SalesLine;
+        "Line No." := NewLineNo;
+        "Quantity Shipped" := 0;
+        "Qty. Shipped (Base)" := 0;
+        "Return Qty. Received" := 0;
+        "Return Qty. Received (Base)" := 0;
+        "Quantity Invoiced" := 0;
+        "Qty. Invoiced (Base)" := 0;
+        "Reserved Quantity" := 0;
+        "Reserved Qty. (Base)" := 0;
+        "Qty. to Ship" := 0;
+        "Qty. to Ship (Base)" := 0;
+        "Return Qty. to Receive" := 0;
+        "Return Qty. to Receive (Base)" := 0;
+        "Qty. to Invoice" := 0;
+        "Qty. to Invoice (Base)" := 0;
+        "Qty. Shipped Not Invoiced" := 0;
+        "Return Qty. Rcd. Not Invd." := 0;
+        "Shipped Not Invoiced" := 0;
+        "Return Rcd. Not Invd." := 0;
+        "Qty. Shipped Not Invd. (Base)" := 0;
+        "Ret. Qty. Rcd. Not Invd.(Base)" := 0;
+        "Shipped Not Invoiced (LCY)" := 0;
+        "Return Rcd. Not Invd. (LCY)" := 0;
+
+
+        SalesHeader.GET("Document Type","Document No.");
+        //--> VAT-NAVAGRI-Gestion d'un accompte sur la ligne
+        Prepayment_L:=FALSE;
+        IF SalesLine."Prepayment %"<>0 THEN BEGIN
+          AmountPrepayment_L:=SalesLine."Prepmt. Amt. Inv.";
+
+          PrepaymentPercent_L:="Prepayment %";
+          "Prepayment %":=0;
+          "Prepmt. Line Amount":=0;
+          "Prepmt. Amt. Inv.":=0;
+          //"Prepmt. Amt. Incl. VAT":=0;
+          //"Prepayment Amount":=0;
+          //"Prepmt. VAT Base Amt.":=0;
+          "Prepayment VAT %":=0;
+          Prepayment_L:=TRUE;
+
+        END;
+        //--< VAT-NAVAGRI-Gestion d'un accompte sur la ligne
+
+
+        SuspendStatusCheck(TRUE);// 20131217-wi00-CMC02.01.00-TVA-JLT01
+
+
+        IF (GenProdPostingGroup <> '') AND ConvertGenProdPostGrp(VATRateChangeSetup."Update Sales Documents") THEN
+          VALIDATE("Gen. Prod. Posting Group",GenProdPostingGroup);
+        IF (VATProdPostingGroup <> '') AND ConvertVATProdPostGrp(VATRateChangeSetup."Update Sales Documents") THEN
+          VALIDATE("VAT Prod. Posting Group",VATProdPostingGroup);
+        IF ("Qty. to Ship">SalesLine."Outstanding Quantity") OR (("Qty. to Ship"<0) AND (SalesLine."Outstanding Quantity" >0)) THEN
+           VALIDATE("Qty. to Ship",0);// 20131218-wi00-CMC02.01.00-TVA-JLT01
+        VALIDATE(Quantity,SalesLine."Outstanding Quantity");
+
+
+        VALIDATE("Qty. to Ship",SalesLine."Qty. to Ship");
+        VALIDATE("Return Qty. to Receive",SalesLine."Return Qty. to Receive");
+        IF ABS(SalesLine."Qty. to Invoice") > (ABS(SalesLine."Quantity Shipped") - ABS(SalesLine."Quantity Invoiced")) THEN
+          VALIDATE(
+            "Qty. to Invoice",SalesLine."Qty. to Invoice" - (SalesLine."Quantity Shipped" - SalesLine."Quantity Invoiced"))
+        ELSE
+          VALIDATE("Qty. to Invoice",0);
+
+        RoundingPrecision := GetRoundingPrecision(SalesHeader."Currency Code");
+        IF SalesHeader."Prices Including VAT" THEN
+          VALIDATE("Unit Price",ROUND(SalesLine."Unit Price" * (100 + "VAT %") / (100 + SalesLine."VAT %"),RoundingPrecision))
+        ELSE
+          VALIDATE("Unit Price",SalesLine."Unit Price");
+        VALIDATE("Line Discount %",SalesLine."Line Discount %");
+
+
+        //--> VAT-NAVAGRI-Gestion d'un accompte sur la ligne.Mise . jour Nouvelle Ligne
+        IF Prepayment_L THEN BEGIN
+
+          //"Prepayment %":=PrepaymentPercent_L;
+          AmountPrepayment2Dispatch_L:=AmountPrepayment_L-(SalesLine."Quantity Shipped"*SalesLine."Unit Price"*
+                                       (1-("Line Discount %"/100)) );
+
+          IF AmountPrepayment2Dispatch_L>0 THEN BEGIN
+            "Prepmt. Line Amount":=AmountPrepayment2Dispatch_L;
+            "Prepmt. Amt. Inv.":=AmountPrepayment2Dispatch_L;
+            "Prepayment VAT %":=VATBase_L;
+            "Prepmt. Amount Inv. (LCY)":=AmountPrepayment2Dispatch_L;
+            "Prepmt. Amount Inv. Incl. VAT":=
+            ROUND(AmountPrepayment2Dispatch_L + (VATBase_L/100*AmountPrepayment2Dispatch_L),RoundingPrecision);
+            "Prepayment %":=ROUND(AmountPrepayment2Dispatch_L/"Line Amount"*100,RoundingPrecision);
+            PrepaymentPercent_L:="Prepayment %";
+          END ELSE BEGIN
+            "Prepmt. Line Amount":=0;
+            "Prepmt. Amt. Inv.":=0;
+            "Prepayment VAT %":=VATBase_L;
+            "Prepmt. Amount Inv. (LCY)":=0;
+            "Prepmt. Amount Inv. Incl. VAT":= 0;
+            "Prepayment %":=0;
+             PrepaymentPercent_L:=0;
+          END;
+
+          //"Prepmt. Amt. Incl. VAT":=0;
+          //"Prepayment Amount":=0;
+          //"Prepmt. VAT Base Amt.":=0;
+        END;
+        //--< VAT-NAVAGRI-Gestion d'un accompte sur la ligne
+
+        INSERT(TRUE);
+        //GenerateTaxLine(NewSalesLine);// 20131128-wi00-CMC01.07.00-TVA-JLT01
+
+        //--> VAT-NAVAGRI-Gestion d'un accompte sur la ligne
+        IF "Prepayment %"<>0 THEN BEGIN
+           //-->Mise . jour accompte sur la ligne CVO li' . la ligne article
+           SalesLinesCVO.RESET;
+           SalesLinesCVO.SETRANGE(SalesLinesCVO."Document Type","Document Type");
+           SalesLinesCVO.SETRANGE(SalesLinesCVO."Document No.","Document No.");
+           SalesLinesCVO.SETRANGE(SalesLinesCVO."CVO Item Attached Line","Line No.");
+           IF SalesLinesCVO.FINDFIRST THEN BEGIN
+
+            IF PrepaymentPercent_L=100 THEN BEGIN
+             SalesLinesCVO."Prepmt. Amt. Inv.":= ROUND(SalesLinesCVO.Quantity* SalesLinesCVO."Unit Price",RoundingPrecision);
+             SalesLinesCVO."Prepmt. Line Amount":= ROUND(SalesLinesCVO.Quantity* SalesLinesCVO."Unit Price",RoundingPrecision);
+             SalesLinesCVO."Prepayment %":=PrepaymentPercent_L;
+            END ELSE BEGIN
+             SalesLinesCVO."Prepmt. Amt. Inv.":= ROUND((SalesLinesCVO.Quantity* SalesLinesCVO."Unit Price")*PrepaymentPercent_L/100,
+             RoundingPrecision);
+             SalesLinesCVO."Prepmt. Line Amount":= ROUND((SalesLinesCVO.Quantity* SalesLinesCVO."Unit Price")*PrepaymentPercent_L/100,
+             RoundingPrecision);
+             SalesLinesCVO."Prepayment %":=PrepaymentPercent_L;
+            END;
+             SalesLinesCVO."Prepmt. Amount Inv. (LCY)":=SalesLinesCVO."Prepmt. Line Amount";
+             SalesLinesCVO."Prepmt. Amount Inv. Incl. VAT":=
+             ROUND(SalesLinesCVO."Prepmt. Line Amount" + (
+             SalesLinesCVO."Prepayment VAT %"/100*SalesLinesCVO."Prepmt. Line Amount"),RoundingPrecision);
+             SalesLinesCVO.MODIFY;
+           END;
+
+           //-->Mise . jour accompte sur la ligne CVO li' . la ligne article
+           SalesLinesRPD.RESET;
+           SalesLinesRPD.SETRANGE(SalesLinesRPD."Document Type","Document Type");
+           SalesLinesRPD.SETRANGE(SalesLinesRPD."Document No.","Document No.");
+           SalesLinesRPD.SETRANGE(SalesLinesRPD."RPD Item Attached Line","Line No.");
+           IF SalesLinesRPD.FINDFIRST THEN BEGIN
+
+            IF PrepaymentPercent_L=100 THEN BEGIN
+             SalesLinesRPD."Prepmt. Amt. Inv.":= ROUND(SalesLinesRPD.Quantity* SalesLinesRPD."Unit Price",RoundingPrecision);
+             SalesLinesRPD."Prepmt. Line Amount":= ROUND(SalesLinesRPD.Quantity* SalesLinesRPD."Unit Price",RoundingPrecision);
+             SalesLinesRPD."Prepayment %":=PrepaymentPercent_L;
+            END ELSE BEGIN
+             SalesLinesRPD."Prepmt. Amt. Inv.":= ROUND((SalesLinesRPD.Quantity* SalesLinesRPD."Unit Price")*PrepaymentPercent_L/100,
+             RoundingPrecision);
+             SalesLinesRPD."Prepmt. Line Amount":= ROUND((SalesLinesRPD.Quantity* SalesLinesRPD."Unit Price")*PrepaymentPercent_L/100,
+             RoundingPrecision);
+             SalesLinesRPD."Prepayment %":=PrepaymentPercent_L;
+            END;
+             SalesLinesRPD."Prepmt. Amount Inv. (LCY)":=SalesLinesRPD."Prepmt. Line Amount";
+             SalesLinesRPD."Prepmt. Amount Inv. Incl. VAT":=
+             ROUND(SalesLinesRPD."Prepmt. Line Amount" + (
+             SalesLinesRPD."Prepayment VAT %"/100*SalesLinesRPD."Prepmt. Line Amount"),RoundingPrecision);
+             SalesLinesRPD.MODIFY;
+           END;
+
+        END;
+        //--< VAT-NAVAGRI-Gestion d'un accompte sur la ligne
+
+
+
+        RecRef.GETTABLE(SalesLine);
+        VATRateChangeLogEntry.INIT;
+        VATRateChangeLogEntry.RecordID := RecRef.RECORDID;
+        VATRateChangeLogEntry."Table ID" := RecRef.NUMBER;
+        VATRateChangeLogEntry."Old Gen. Prod. Posting Group" := SalesLine."Gen. Prod. Posting Group";
+        VATRateChangeLogEntry."New Gen. Prod. Posting Group" := SalesLine."Gen. Prod. Posting Group";
+        VATRateChangeLogEntry."Old VAT Prod. Posting Group" := SalesLine."VAT Prod. Posting Group";
+        VATRateChangeLogEntry."New VAT Prod. Posting Group" := SalesLine."VAT Prod. Posting Group";
+        VATRateChangeLogEntry.Description := STRSUBSTNO(Text0012,FORMAT(SalesLine."Line No."));
+        VATRateChangeLogEntry.Converted := TRUE;
+        WriteLogEntry(VATRateChangeLogEntry);
+
+        RecRef.GETTABLE(NewSalesLine);
+        VATRateChangeLogEntry.INIT;
+        VATRateChangeLogEntry.RecordID := RecRef.RECORDID;
+        VATRateChangeLogEntry."Table ID" := RecRef.NUMBER;
+        VATRateChangeLogEntry."Old Gen. Prod. Posting Group" := SalesLine."Gen. Prod. Posting Group";
+        VATRateChangeLogEntry."New Gen. Prod. Posting Group" := "Gen. Prod. Posting Group";
+        VATRateChangeLogEntry."Old VAT Prod. Posting Group" := SalesLine."VAT Prod. Posting Group";
+        VATRateChangeLogEntry."New VAT Prod. Posting Group" := "VAT Prod. Posting Group";
+        VATRateChangeLogEntry.Description := STRSUBSTNO(Text0013,FORMAT("Line No."),FORMAT(SalesLine."Line No."));
+        VATRateChangeLogEntry.Converted := TRUE;
+        WriteLogEntry(VATRateChangeLogEntry);
+      END;
+      IF SalesLine.Quantity >=0 THEN // 20140102-wi00-CMC.02.02-TVA-OAR01
+        UpdateSalesBlanketOrder(NewSalesLine,SalesLine."Line No.");
+
+      // Copy Dimensions
+      // --> 3LI-20131010-KTR01
+      {BEFORE
+      CopyDocumentMgt.CopyFromSalesDocDimToLine(NewSalesLine,SalesLine);
+      AFTER}
+      CopyFromSalesDocDimToLine(NewSalesLine,SalesLine);
+      // --< 3LI-20131010-KTR01
+
+      OldReservationEntry.RESET;
+      OldReservationEntry.SETCURRENTKEY("Source ID","Source Ref. No.","Source Type","Source Subtype");
+      OldReservationEntry.SETRANGE("Source ID",SalesLine."Document No.");
+      OldReservationEntry.SETRANGE("Source Ref. No.",SalesLine."Line No.");
+      OldReservationEntry.SETRANGE("Source Type",DATABASE::"Sales Line");
+      OldReservationEntry.SETRANGE("Source Subtype",SalesLine."Document Type");
+      OldReservationEntry.SETFILTER(
+        "Reservation Status",'%1|%2',OldReservationEntry."Reservation Status"::Reservation,
+        OldReservationEntry."Reservation Status"::Surplus);
+      IF OldReservationEntry.FINDSET THEN
+        REPEAT
+          NewReservationEntry := OldReservationEntry;
+          NewReservationEntry."Source Ref. No." := NewLineNo;
+          NewReservationEntry.MODIFY;
+        UNTIL OldReservationEntry.NEXT = 0;
+
+
+
+      CASE SalesLine.Type OF
+        SalesLine.Type::Item:
+          BEGIN
+            OldItemChargeAssignmentSales.RESET;
+            OldItemChargeAssignmentSales.SETCURRENTKEY("Applies-to Doc. Type","Applies-to Doc. No.","Applies-to Doc. Line No.");
+            OldItemChargeAssignmentSales.SETRANGE("Applies-to Doc. Type",SalesLine."Document Type");
+            OldItemChargeAssignmentSales.SETRANGE("Applies-to Doc. No.",SalesLine."Document No.");
+            OldItemChargeAssignmentSales.SETRANGE("Applies-to Doc. Line No.",SalesLine."Line No.");
+            IF OldItemChargeAssignmentSales.FIND('-') THEN
+              REPEAT
+                QtyRemainder := OldItemChargeAssignmentSales."Qty. to Assign";
+                AmountRemainder := OldItemChargeAssignmentSales."Amount to Assign";
+                NewItemChargeAssignmentSales := OldItemChargeAssignmentSales;
+                NewItemChargeAssignmentSales."Line No." := GetNextItemChrgAssSaleLineNo(OldItemChargeAssignmentSales);
+                NewItemChargeAssignmentSales."Applies-to Doc. Line No." := NewLineNo;
+                NewItemChargeAssignmentSales."Qty. to Assign" :=
+                  ROUND(QtyRemainder / SalesLine.Quantity * SalesLine."Outstanding Quantity",0.00001);
+                IF SalesLine."Quantity Shipped" - SalesLine."Quantity Invoiced" = 0 THEN
+                  NewItemChargeAssignmentSales."Qty. to Assign" := QtyRemainder;
+                NewItemChargeAssignmentSales."Amount to Assign" :=
+                  ROUND(NewItemChargeAssignmentSales."Qty. to Assign" * NewItemChargeAssignmentSales."Unit Cost",RoundingPrecision);
+                NewItemChargeAssignmentSales.INSERT;
+                QtyRemainder := QtyRemainder - NewItemChargeAssignmentSales."Qty. to Assign";
+                AmountRemainder := AmountRemainder - NewItemChargeAssignmentSales."Amount to Assign";
+                OldItemChargeAssignmentSales."Qty. to Assign" := QtyRemainder;
+                OldItemChargeAssignmentSales."Amount to Assign" := AmountRemainder;
+                OldItemChargeAssignmentSales.MODIFY;
+              UNTIL OldItemChargeAssignmentSales.NEXT = 0;
+          END;
+      END;
+
+
+      OldSalesLine.GET(SalesLine."Document Type",SalesLine."Document No.",SalesLine."Line No.");
+
+
+        //--> VAT-NAVAGRI-Gestion d'un accompte sur la ligne- Mise . jour de la ligne d'origine
+        IF Prepayment_L THEN BEGIN
+
+          //--> Gestion du cas ou l'accompte est inf'rieur au montant exp'di'
+          IF AmountPrepayment2Dispatch_L<=0 THEN BEGIN
+           OldSalesLine."Prepmt. Line Amount":=AmountPrepayment_L;
+           OldSalesLine."Prepmt. Amt. Inv.":=AmountPrepayment_L;
+           OldSalesLine."Prepayment %":=((OldSalesLine."Quantity Shipped"*OldSalesLine."Unit Price")/AmountPrepayment_L)*100;
+          END ELSE BEGIN
+          //--> Gestion du cas ou l'accompte est sup'rieur au montant exp'di'(Ligne a 100% d'accompte)
+           OldSalesLine."Prepmt. Line Amount":=OldSalesLine."Quantity Shipped"*OldSalesLine."Unit Price";
+           OldSalesLine."Prepmt. Amt. Inv.":=OldSalesLine."Quantity Shipped"*OldSalesLine."Unit Price";
+           OldSalesLine."Prepayment %":=100;
+          END;
+
+           PrepaymentPercent_L:=OldSalesLine."Prepayment %";
+
+           OldSalesLine."Prepmt. Amount Inv. (LCY)":=OldSalesLine."Prepmt. Line Amount";
+           OldSalesLine."Prepmt. Amount Inv. Incl. VAT":=
+          ROUND(OldSalesLine."Prepmt. Line Amount" + (OldSalesLine."Prepayment VAT %"
+          /100*OldSalesLine."Prepmt. Line Amount"),RoundingPrecision);
+
+
+          SalesLinesCVO.RESET;
+          SalesLinesCVO.SETRANGE(SalesLinesCVO."Document Type",OldSalesLine."Document Type");
+          SalesLinesCVO.SETRANGE(SalesLinesCVO."Document No.",OldSalesLine."Document No.");
+          SalesLinesCVO.SETRANGE(SalesLinesCVO."CVO Item Attached Line",OldSalesLine."Line No.");
+          IF SalesLinesCVO.FINDFIRST THEN BEGIN
+           SalesLinesCVO."Prepayment %":=PrepaymentPercent_L;
+           SalesLinesCVO."Prepmt. Amt. Inv.":=0;
+           SalesLinesCVO."Prepmt. Line Amount":=0;
+           SalesLinesCVO.MODIFY;
+          END;
+
+          SalesLinesRPD.RESET;
+          SalesLinesRPD.SETRANGE(SalesLinesRPD."Document Type",OldSalesLine."Document Type");
+          SalesLinesRPD.SETRANGE(SalesLinesRPD."Document No.",OldSalesLine."Document No.");
+          SalesLinesRPD.SETRANGE(SalesLinesRPD."RPD Item Attached Line",OldSalesLine."Line No.");
+          IF SalesLinesRPD.FINDFIRST THEN BEGIN
+           SalesLinesRPD."Prepayment %":=PrepaymentPercent_L;
+           SalesLinesRPD."Prepmt. Amt. Inv.":=0;
+           SalesLinesRPD."Prepmt. Line Amount":=0;
+           SalesLinesRPD.MODIFY;
+          END;
+
+
+        END;
+        //--< VAT-NAVAGRI-Gestion d'un accompte sur la ligne
+
+      OldSalesLine.SuspendStatusCheck(TRUE);// 20131217-wi00-CMC02.01.00-TVA-JLT01
+      OldSalesLine.VALIDATE(Quantity,SalesLine."Quantity Shipped");
+
+      OldSalesLine.VALIDATE("Unit Price",SalesLine."Unit Price");
+      OldSalesLine.VALIDATE("Line Discount %",SalesLine."Line Discount %");
+
+      OldSalesLine.VALIDATE("Qty. to Ship",0);
+
+      OldSalesLine.VALIDATE("Return Qty. to Receive",0);
+      IF ABS(SalesLine."Qty. to Invoice") > (ABS(SalesLine."Quantity Shipped") - ABS(SalesLine."Quantity Invoiced")) THEN
+        OldSalesLine.VALIDATE("Qty. to Invoice",SalesLine."Quantity Shipped" - SalesLine."Quantity Invoiced")
+      ELSE
+        OldSalesLine.VALIDATE("Qty. to Invoice",SalesLine."Qty. to Invoice");
+
+      OldSalesLine.MODIFY(TRUE);
+
+       IF Prepayment_L THEN BEGIN
+            //-->Mise . jour de la ligne CVO li' . la ligne article
+          SalesLinesCVO.RESET;
+          SalesLinesCVO.SETRANGE(SalesLinesCVO."Document Type",OldSalesLine."Document Type");
+          SalesLinesCVO.SETRANGE(SalesLinesCVO."Document No.",OldSalesLine."Document No.");
+          SalesLinesCVO.SETRANGE(SalesLinesCVO."CVO Item Attached Line",OldSalesLine."Line No.");
+          IF SalesLinesCVO.FINDFIRST THEN BEGIN
+
+           IF PrepaymentPercent_L<100 THEN BEGIN
+            SalesLinesCVO."Prepmt. Amt. Inv.":= ROUND(SalesLinesCVO."Quantity Shipped"* SalesLinesCVO."Unit Price",RoundingPrecision);
+            SalesLinesCVO."Prepmt. Line Amount":= ROUND(SalesLinesCVO."Quantity Shipped"* SalesLinesCVO."Unit Price",RoundingPrecision);
+           END ELSE BEGIN
+            SalesLinesCVO."Prepmt. Amt. Inv.":= ROUND(SalesLinesCVO.Quantity* SalesLinesCVO."Unit Price"*(PrepaymentPercent_L/100)
+              ,RoundingPrecision);
+            SalesLinesCVO."Prepmt. Line Amount":= ROUND(SalesLinesCVO.Quantity* SalesLinesCVO."Unit Price"*(PrepaymentPercent_L/100)
+              ,RoundingPrecision);
+
+           END;
+            SalesLinesCVO."Prepayment %":=PrepaymentPercent_L;
+            SalesLinesCVO."Prepmt. Amount Inv. (LCY)":=SalesLinesCVO."Prepmt. Line Amount";
+            SalesLinesCVO."Prepmt. Amount Inv. Incl. VAT":=
+            ROUND(SalesLinesCVO."Prepmt. Line Amount" + (
+            SalesLinesCVO."Prepayment VAT %"/100*SalesLinesCVO."Prepmt. Line Amount"),RoundingPrecision);
+            SalesLinesCVO.MODIFY;
+           END;
+
+            //-->Mise . jour de la ligne RPD li' . la ligne article
+          SalesLinesRPD.RESET;
+          SalesLinesRPD.SETRANGE(SalesLinesRPD."Document Type",OldSalesLine."Document Type");
+          SalesLinesRPD.SETRANGE(SalesLinesRPD."Document No.",OldSalesLine."Document No.");
+          SalesLinesRPD.SETRANGE(SalesLinesRPD."RPD Item Attached Line",OldSalesLine."Line No.");
+          IF SalesLinesRPD.FINDFIRST THEN BEGIN
+
+           IF PrepaymentPercent_L<100 THEN BEGIN
+            SalesLinesRPD."Prepmt. Amt. Inv.":= ROUND(SalesLinesRPD."Quantity Shipped"* SalesLinesRPD."Unit Price",RoundingPrecision);
+            SalesLinesRPD."Prepmt. Line Amount":= ROUND(SalesLinesRPD."Quantity Shipped"* SalesLinesRPD."Unit Price",RoundingPrecision);
+           END ELSE BEGIN
+            SalesLinesRPD."Prepmt. Amt. Inv.":= ROUND(SalesLinesRPD.Quantity* SalesLinesRPD."Unit Price"*(PrepaymentPercent_L/100)
+              ,RoundingPrecision);
+            SalesLinesRPD."Prepmt. Line Amount":= ROUND(SalesLinesRPD.Quantity* SalesLinesRPD."Unit Price"*(PrepaymentPercent_L/100)
+              ,RoundingPrecision);
+
+           END;
+            SalesLinesRPD."Prepayment %":=PrepaymentPercent_L;
+            SalesLinesRPD."Prepmt. Amount Inv. (LCY)":=SalesLinesCVO."Prepmt. Line Amount";
+            SalesLinesRPD."Prepmt. Amount Inv. Incl. VAT":=
+            ROUND(SalesLinesRPD."Prepmt. Line Amount" + (
+            SalesLinesRPD."Prepayment VAT %"/100*SalesLinesRPD."Prepmt. Line Amount"),RoundingPrecision);
+            SalesLinesRPD.MODIFY;
+           END;
+
+
+
+      END;
+      //OldSalesLine.GenerateTaxLine(OldSalesLine);// 20131128-wi00-CMC01.07.00-TVA-JLT01
+    END;
+
+    PROCEDURE UpdateSalesBlanketOrder@20(SalesLine@1000 : Record 37;OriginalLineNo@1004 : Integer);
+    VAR
+      SalesHeader@1003 : Record 36;
+      SalesLine2@1002 : Record 37;
+      SalesLine3@1001 : Record 37;
+    BEGIN
+      IF SalesLine."Document Type" = SalesLine."Document Type"::"Blanket Order" THEN BEGIN
+        SalesLine2.SETCURRENTKEY("Document Type","Blanket Order No.","Blanket Order Line No.");
+        SalesLine2.SETRANGE("Blanket Order No.",SalesLine."Document No.");
+        SalesLine2.SETFILTER("Blanket Order Line No.",'=%1',OriginalLineNo);
+        SalesLine2.SETRANGE(Type,SalesLine.Type);
+        SalesLine2.SETRANGE("No.",SalesLine."No.");
+        CLEAR(SalesHeader);
+        IF SalesLine2.FINDSET THEN
+          REPEAT
+            IF (SalesHeader."Document Type" <> SalesLine2."Document Type") OR
+               (SalesHeader."No." <> SalesLine2."Document No.") THEN BEGIN
+              SalesHeader.GET(SalesLine2."Document Type",SalesLine2."Document No.");
+              SalesLine3.RESET;
+              SalesLine3.SETRANGE("Document Type",SalesHeader."Document Type");
+              SalesLine3.SETRANGE("Document No.",SalesHeader."No.");
+              SalesLine3.SETRANGE("Blanket Order No.",SalesLine2."Blanket Order No.");
+              SalesLine3.SETRANGE("Blanket Order Line No.",SalesLine2."Blanket Order Line No.");
+              IF SalesLine3.FINDLAST THEN BEGIN
+                SalesLine3."Blanket Order Line No." := SalesLine."Line No.";
+                SalesLine3.MODIFY;
+              END;
+            END;
+          UNTIL SalesLine2.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE UpdatePurchase@9();
+    VAR
+      PurchaseHeader@1000 : Record 38;
+      PurchaseHeader2@1004 : Record 38;
+      PurchaseLine@1003 : Record 39;
+      PurchaseLineOld@1010 : Record 39;
+      VATRateChangeLogEntry@1002 : Record 552;
+      RecRef@1001 : RecordRef;
+      NewVatProdPotingGroup@1007 : Code[10];
+      NewGenProdPostingGroup@1008 : Code[10];
+      StatusChanged@1005 : Boolean;
+      ConvertVATProdPostingGroup@1009 : Boolean;
+      ConvertGenProdPostingGroup@1006 : Boolean;
+      RoundingPrecision@1011 : Decimal;
+      "<< 3LI LOCALS >>"@1000000000 : Integer;
+      DropShip_L@1000000001 : Boolean;
+      SalesLine_L@1000000002 : Record 37;
+      SalesLineOld_L@1000000003 : Record 37;
+      SalesHeader_L@1000000004 : Record 36;
+      RecRef2@1000000005 : RecordRef;
+      RoundingPrecision_L@1000000006 : Decimal;
+      NewSalesLine_L@1000000007 : Record 37;
+      SalesLineNo_L@1000000008 : Integer;
+      NewPurchaseLine_L@1000000009 : Record 39;
+      SalesHeaderStatusChanged@1000000010 : Boolean;
+      SalesHeader2@1000000011 : Record 36;
+      PurchaseLineNo_L@1000000012 : Integer;
+      i_l@8053000 : Integer;
+    BEGIN
+      ProgressWindow.UPDATE(1,PurchaseHeader.TABLECAPTION);
+      ConvertVATProdPostingGroup := ConvertVATProdPostGrp(VATRateChangeSetup."Update Purchase Documents");
+      ConvertGenProdPostingGroup := ConvertGenProdPostGrp(VATRateChangeSetup."Update Purchase Documents");
+      IF NOT ConvertVATProdPostingGroup AND NOT ConvertGenProdPostingGroup THEN
+        EXIT;
+
+      // --> 3LI-20131029-GDU
+      IF VATRateChangeSetup."Test One Purchase Document" THEN BEGIN
+        PurchaseHeader.SETRANGE("Document Type",VATRateChangeSetup."Purchase Document Type");
+        PurchaseHeader.SETRANGE("No.",VATRateChangeSetup."Purchase Document No.");
+      END ELSE
+      // <-- 3LI-20131029-GDU
+        PurchaseHeader.SETFILTER(
+          "Document Type",'%1..%2|%3',PurchaseHeader."Document Type"::Quote,PurchaseHeader."Document Type"::Invoice,
+          PurchaseHeader."Document Type"::"Blanket Order");
+
+      ProgressWindow.UPDATE(3, PurchaseHeader.COUNT); // 20131226-wi00-CMC02.02.00-TVA-JLT01
+      IF PurchaseHeader.FIND('-') THEN
+        REPEAT
+         i_l:=i_l+1;
+         ProgressWindow.UPDATE(2,i_l); // 20131226-wi00-CMC02.02.00-TVA-JLT01
+          StatusChanged := FALSE;
+          IF CanUpdatePurchase(PurchaseHeader,ConvertGenProdPostingGroup,ConvertVATProdPostingGroup) THEN BEGIN
+            IF VATRateChangeSetup."Ignore Status on Purch. Docs." THEN BEGIN
+              IF PurchaseHeader.Status <> PurchaseHeader.Status::Open THEN BEGIN
+                PurchaseHeader2 := PurchaseHeader;
+                PurchaseHeader.Status := PurchaseHeader.Status::Open;
+                PurchaseHeader.MODIFY;
+                StatusChanged := TRUE;
+              END;
+            END;
+            IF PurchaseHeader.Status = PurchaseHeader.Status::Open THEN BEGIN
+              PurchaseLine.SETRANGE("Document Type",PurchaseHeader."Document Type");
+              PurchaseLine.SETRANGE("Document No.",PurchaseHeader."No.");
+              IF PurchaseLine.FINDSET THEN
+                REPEAT
+                  IF LineInScope(PurchaseLine."Gen. Prod. Posting Group",PurchaseLine."VAT Prod. Posting Group",
+                    ConvertGenProdPostingGroup,ConvertVATProdPostingGroup) THEN BEGIN
+                    IF (PurchaseLine."Receipt No." = '') AND (PurchaseLine."Return Shipment No." = '') THEN BEGIN
+                      IF PurchaseLine.Quantity = PurchaseLine."Outstanding Quantity" THEN BEGIN
+                        IF PurchaseHeader."Prices Including VAT" THEN
+                          PurchaseLineOld := PurchaseLine;
+
+                        // --> 3LI-20131030-GDU
+                        // CAS dans lequel la quantit' restante = Quantit' : Pas d''clatement de ligne vente ou de ligne achat
+                        DropShip_L := FALSE;
+
+                        // 20131221-wi00-CMC02.02.00-TVA-JLT01 : START -->
+                        //-->R'cup'ration de la ligne vente li' a la commande achat sp'cial/Livraison Direct
+                        IF PurchaseLine."Drop Shipment" THEN
+                          IF SalesLine_L.GET(SalesLine_L."Document Type"::Order,PurchaseLine."Sales Order No.",
+                                PurchaseLine."Sales Order Line No.") THEN DropShip_L:=TRUE;
+
+                        IF PurchaseLine."Special Order" THEN
+                          IF SalesLine_L.GET(SalesLine_L."Document Type"::Order,
+                              PurchaseLine."Special Order Sales No.",PurchaseLine."Special Order Sales Line No.") THEN
+                              DropShip_L:=TRUE;
+
+                        IF DropShip_L = TRUE THEN BEGIN
+                        // 20131221-wi00-CMC02.02.00-TVA-JLT01 : STOP <--
+                          //Backup de la ligne achat origine
+                          SavePurchaseLineData(PurchaseLine);
+
+                          //--> R'cup'ration de l'ent^te de vente .Et changement statut a "Ouvert"
+                          SalesHeader_L.GET(SalesLine_L."Document Type",SalesLine_L."Document No.");
+                          SalesHeaderStatusChanged := FALSE;
+                          IF VATRateChangeSetup."Ignore Status on Sales Docs." THEN BEGIN
+                            IF SalesHeader_L.Status <> SalesHeader_L.Status::Open THEN BEGIN
+                              SalesHeader2 := SalesHeader_L;
+                              SalesHeader_L.Status := SalesHeader_L.Status::Open;
+                              SalesHeader_L.MODIFY;
+                              SalesHeaderStatusChanged := TRUE;
+                            END;
+                          END;
+
+                          // Backup de la ligne vente d'origine
+                          SaveSalesLineData(SalesLine_L);
+
+                          //-->Suppression de la liaison sur ligne vente(Des donn'es de Commande sp'cial et livraison Direct)
+                          RemoveSalesLineData(SalesLine_L);
+
+                          //-->Suppression de la liaison sur ligne achat(Des donn'es de Commande sp'cial et livraison Direct)
+                          RemovePurchaseLineData(PurchaseLine);
+
+
+                          CLEAR(NewSalesLine_L);
+
+                          //-->Mise . jour de la TVA sur ligne vente
+                          UpdateSalesline(SalesHeader_L,SalesLine_L,NewSalesLine_L);
+                        END;
+                        // <-- 3LI-20131030-GDU
+
+
+                        //-->Mise . jour de la TVA sur ligne achat
+                        RecRef.GETTABLE(PurchaseLine);
+
+                        //20131216-wi00-CMC02.01.00-TVA-BMA01 : Gestion pour g'rer famille article
+                        IF PurchaseLine.Type=PurchaseLine.Type::Item THEN BEGIN
+                          UpdateRecCMC(RecRef,ConvertVATProdPostGrp(VATRateChangeSetup."Update Purchase Documents"),
+                          ConvertGenProdPostGrp(VATRateChangeSetup."Update Purchase Documents"),PurchaseLine."No.");
+                        END ELSE BEGIN
+                          UpdateRec(
+                            RecRef,ConvertVATProdPostGrp(VATRateChangeSetup."Update Purchase Documents"),
+                            ConvertGenProdPostGrp(VATRateChangeSetup."Update Purchase Documents"));
+
+                        END;
+                        //20131216-wi00-CMC02.01.00-TVA-BMA01 e
+
+
+
+                        IF PurchaseHeader."Prices Including VAT" AND VATRateChangeSetup."Perform Conversion" THEN BEGIN
+                          RecRef.SETTABLE(PurchaseLine);
+                          RoundingPrecision := GetRoundingPrecision(PurchaseHeader."Currency Code");
+                          PurchaseLine.VALIDATE("Direct Unit Cost",
+                            ROUND(PurchaseLineOld."Direct Unit Cost" * (100 + PurchaseLine."VAT %") / (100 + PurchaseLineOld."VAT %"),
+      RoundingPrecision));
+                        END;
+
+                        // --> 3LI-20131030-GDU
+                        IF DropShip_L THEN BEGIN
+                          SalesLine_L.GET(SalesLine_L."Document Type",SalesLine_L."Document No.",SalesLine_L."Line No.");
+                          PurchaseLine.GET(PurchaseLine."Document Type",PurchaseLine."Document No.",PurchaseLine."Line No.");
+                          RestoreSalesLineData(SalesLine_L);
+                          RestorePurchaseLineData(PurchaseLine);
+                          PurchaseLine.MODIFY;
+                          IF SalesHeaderStatusChanged THEN BEGIN
+                            SalesHeader_L.Status := SalesHeader2.Status;;
+                            SalesHeader_L.MODIFY;
+                          END;
+                        END;
+                        // <-- 3LI-20131030-GDU
+
+                      END ELSE BEGIN
+                        IF VATRateChangeSetup."Perform Conversion" AND (PurchaseLine."Outstanding Quantity" <> 0) THEN BEGIN
+
+                          // --> 3LI-20131030-GDU
+                          // CAS dans lequel une ligne doit ^tre 'clat'e.
+                          // CAS LD : Ligne achat 'clat'e : ligne vente 'clat'e automatiquement
+                          // CAS Commande Sp'ciale : Ligne achat 'clat'e : ligne vente pas forc'ment 'clat'e
+                          //      par le standard, dans le cas o- non exp'di'e. A 'clater n'anmoins
+                          //
+                          DropShip_L := FALSE;
+                          // 20131221-wi00-CMC02.02.00-TVA-JLT01 : START -->
+                          IF PurchaseLine."Drop Shipment" THEN
+                            IF SalesLine_L.GET(SalesLine_L."Document Type"::Order,PurchaseLine."Sales Order No.",
+                                  PurchaseLine."Sales Order Line No.") THEN DropShip_L := TRUE;
+                          IF PurchaseLine."Special Order" THEN
+                            IF SalesLine_L.GET(SalesLine_L."Document Type"::Order,
+                                PurchaseLine."Special Order Sales No.",PurchaseLine."Special Order Sales Line No.") THEN
+                                DropShip_L := TRUE;
+
+                          IF DropShip_L = TRUE THEN BEGIN
+                          // 20131221-wi00-CMC02.02.00-TVA-JLT01 : STOP <--
+                            SavePurchaseLineData(PurchaseLine);
+                            IF PurchaseLine."Drop Shipment" THEN BEGIN
+                              IF SalesLine_L.GET(SalesLine_L."Document Type"::Order,PurchaseLine."Sales Order No.",
+                                    PurchaseLine."Sales Order Line No.") THEN;
+                            END;
+                            IF PurchaseLine."Special Order" THEN BEGIN
+                              IF SalesLine_L.GET(SalesLine_L."Document Type"::Order,
+                                  PurchaseLine."Special Order Sales No.",PurchaseLine."Special Order Sales Line No.") THEN;
+                            END;
+                            SalesHeader_L.GET(SalesLine_L."Document Type",SalesLine_L."Document No.");
+                            SalesHeaderStatusChanged := FALSE;
+                            IF VATRateChangeSetup."Ignore Status on Sales Docs." THEN BEGIN
+                              IF SalesHeader_L.Status <> SalesHeader_L.Status::Open THEN BEGIN
+                                SalesHeader2 := SalesHeader_L;
+                                SalesHeader_L.Status := SalesHeader_L.Status::Open;
+                                SalesHeader_L.MODIFY;
+                                SalesHeaderStatusChanged := TRUE;
+                              END;
+                            END;
+
+                            SaveSalesLineData(SalesLine_L);
+                            RemoveSalesLineData(SalesLine_L);
+                            RemovePurchaseLineData(PurchaseLine);
+                            CLEAR(NewSalesLine_L);
+
+                            // ICI : souci, cas de l''clatement de ligne. Gestion du reliquat . revoir
+                            // Modification TVA et 'clatement possible de la ligne, r'ception dans NewSalesLine_L;
+                            UpdateSalesline(SalesHeader_L,SalesLine_L,NewSalesLine_L);
+                            SalesLineNo_L := 0;
+                            IF NewSalesLine_L."Line No."<>0 THEN
+                              SalesLineNo_L := NewSalesLine_L."Line No.";
+
+
+                          END;
+                          // <-- 3LI-20131030-GDU
+                          NewVatProdPotingGroup := PurchaseLine."VAT Prod. Posting Group";
+                          NewGenProdPostingGroup := PurchaseLine."Gen. Prod. Posting Group";
+                          IF ConvertVATProdPostingGroup THEN
+                            IF VATRateChangeConversion.GET(
+                                 VATRateChangeConversion.Type::"VAT Prod. Posting Group",PurchaseLine."VAT Prod. Posting Group")
+                            THEN
+                              NewVatProdPotingGroup := VATRateChangeConversion."To Code";
+                          IF ConvertGenProdPostingGroup THEN
+                            IF VATRateChangeConversion.GET(
+                                 VATRateChangeConversion.Type::"Gen. Prod. Posting Group",PurchaseLine."Gen. Prod. Posting Group")
+                            THEN
+                              NewGenProdPostingGroup := VATRateChangeConversion."To Code";
+                          // --> 3LI-20131104-GDU
+                          //AddNewPurchaseLine(PurchaseLine,NewVatProdPotingGroup,NewGenProdPostingGroup);
+                          CLEAR(NewPurchaseLine_L);
+                          AddNewPurchaseLine(PurchaseLine,NewVatProdPotingGroup,NewGenProdPostingGroup,NewPurchaseLine_L);
+
+                          PurchaseLineNo_L := 0;
+                          IF NewPurchaseLine_L."Line No."<>0 THEN
+                            PurchaseLineNo_L := NewPurchaseLine_L."Line No.";
+                          // <- 3LI-20131104-GDU
+
+
+                          // 20131218-wi00-CMC02.01.00-TVA-JLT01 : PB indivi. La nouvelle ligne n'a pas 't' g'n'r'e
+                          // IF DropShip_L THEN BEGIN
+                          IF DropShip_L AND (NewPurchaseLine_L."Line No."<>0) THEN BEGIN
+                          // 20131218-wi00-CMC02.01.00-TVA-JLT01 : STOP <--
+                            SalesLine_L.GET(SalesLine_L."Document Type",SalesLine_L."Document No.",SalesLine_L."Line No.");
+                            PurchaseLine.GET(PurchaseLine."Document Type",PurchaseLine."Document No.",PurchaseLine."Line No.");
+                            RestoreSalesLineData(SalesLine_L);
+                            RestorePurchaseLineData(PurchaseLine);
+
+                            IF PurchaseLineNo_L<>0 THEN BEGIN // CAS bidon . tester, il devrait toujorus ^tre <> 0 ici
+                              IF SalesLineNo_L=0 THEN  BEGIN // Cela signifie que le systSme n'a pas cr'' de nouvelle ligne => 0 exped!
+                                // Reprendre la fonction AddNewSalesLine et lui affecter un paramStre "Quantit'"
+                                // reprendre la fonction AddNewPurchaseLine et lui affecter un paramStre "quantit'" .
+                                // g'rer ce paramStre . la place de la quantit' restante.
+
+                                //ex : 10 achat ; 10 Vente
+                                //   5 r'ceptionn's ; 0 exp'di's
+                                // Standard actuel ==> 2 ligne achats (5 et 5)=> 1 ligne vente dont la TVA a 't' chang'e
+                                // -- Cas attendu : 2 lignes achat , 2 lignes de vente
+                                // 'clater la ligne vente en 2
+                                // 1 ligne avec Quantit' = Quantit' de la ligne achat (Nouvelle TVA)
+                                //    lien sur ligne achat origine
+                                // 1 ligne avec quantit' = Quantit' restante de la ligne achat.  (Nouvelle TVA)
+                                //      lien sur nouvelle ligne achat cr''e.
+                                // Ici la ligne vente a d'j. vu sa TVA chang'e
+                                //
+                                // --CAS non g'r' actuellement
+                                // ex : 5 r'ceptionn's ; 0 exp'di's
+                                // R'sultat g'n'r' : 2 lignes achat ( 5 - 5 ) => 1 lignes vente nouvelle TVA
+                                // Cas Attendu
+                                //                    1 ligne vente (5) avec N› ligne ancienne commande , nouvelle TVA
+                                //                    1 ligne vente (5) avec N› nouvelle ligne commande , nouvelle TVA
+
+
+
+
+                              END ELSE BEGIN
+                                // Cela signifie que le systSme a 'clat' la ligne vente en 2 lignes...
+                                // ex : 10 achat ; 10 Vente
+                                // --CAS g'r' actuellement et qui marchera
+                                // 5 r'ceptionn's ; 5 exp'di's
+                                // R'sultat g'n'r' : 2 lignes achat ( 5 - 5 ) => besoin de 2 lignes vente
+                                //                    1 ligne vente (5) avec N› ligne ancienne commande , ancienne TVA
+                                //                    1 ligne vente (5) avec N› nouvelle ligne commande , nouvelle TVA
+                                // comment g'rer la livraison partielle?
+                                // ex : 5 r'ceptionn's ; 4 exp'di's
+                                // R'sultat g'n'r' actuellement : 2 lignes achat ( 5 - 5 ) et 2 lignes vente
+                                //                    1 ligne vente (4) ancienne TVA
+                                //                    1 ligne vente (6) nouvelle TVA
+                                // r'sultat attendu : 3 lignes achat  , 3 lignes  de vente
+                                //        1 achat de (4) ancienne TVA ancien N› de ligne
+                                //        1 achat de (1) ancienne TVA Nouveau N› de ligne 1
+                                //        1 achat de (5) nouvelle TVA nouveau N› de ligne 2
+
+                                //        1 achat de (4) ancienne TVA lien ancien N› de ligne
+                                //        1 achat de (1) nouvelle TVA lien nouveau N› de ligne 1
+                                //        1 achat de (5) nouvelle TVA lien nouveau N› de ligne 2
+                                // ===> Besoin d''clater . nouveau l'ancienne ligne de commande achat en amont!
+                                //                    1 ligne vente (4) avec N› ligne ancienne commande , ancienne TVA
+                                //                    1 ligne vente (1) avec nouveau N› ligne commande ,
+                                //                            ancienne TVA achat, nouvelle TVA vente
+                                //                    1 ligne vente (5) avec N› nouvelle ligne commande , nouvelle TVA
+
+                                IF NewPurchaseLine_L.Quantity <> NewSalesLine_L.Quantity THEN BEGIN
+                                  IF NewSalesLine_L.Quantity > NewPurchaseLine_L.Quantity THEN
+                                    ;//SPLIT LINE EN 2
+                                  IF NewSalesLine_L.Quantity < NewPurchaseLine_L.Quantity THEN
+                                    ;//SPLIT LINE EN 3 de la ligne vente , et en 2 de la ligne achat C'est le bordel.
+
+
+
+                                END;
+                              END;
+                            END;
+                            IF PurchaseLine."Drop Shipment" THEN BEGIN
+                              IF SalesLineNo_L<>0 THEN BEGIN
+                                NewPurchaseLine_L."Drop Shipment" := TRUE;
+                                NewPurchaseLine_L."Sales Order No." := PurchaseLine."Sales Order No.";
+                                NewPurchaseLine_L."Sales Order Line No." := SalesLineNo_L;
+
+                                NewSalesLine_L."Drop Shipment" := TRUE;
+                                NewSalesLine_L."Purchase Order No." := PurchaseLine."Document No.";
+                                IF PurchaseLineNo_L<>0 THEN BEGIN
+                                  NewSalesLine_L."Purch. Order Line No." := PurchaseLineNo_L;
+                                END ELSE BEGIN
+                                  NewSalesLine_L."Purch. Order Line No." := PurchaseLine."Line No.";
+                                END;
+                                NewSalesLine_L.MODIFY;
+                              END;
+                            END;
+                            IF PurchaseLine."Special Order" THEN BEGIN
+                              IF SalesLineNo_L<>0 THEN BEGIN
+                                NewPurchaseLine_L."Special Order" := TRUE;
+                                NewPurchaseLine_L."Special Order Sales No." := PurchaseLine."Special Order Sales No.";
+                                NewPurchaseLine_L."Special Order Sales Line No." := SalesLineNo_L;
+                                NewSalesLine_L."Special Order" := TRUE;
+                                NewSalesLine_L."Special Order Purchase No." := PurchaseLine."Document No.";
+                                IF PurchaseLineNo_L<>0 THEN BEGIN
+                                  NewSalesLine_L."Special Order Purch. Line No." := PurchaseLineNo_L;
+                                END ELSE BEGIN
+                                  NewSalesLine_L."Special Order Purch. Line No." := PurchaseLine."Line No.";
+                                END;
+                                NewSalesLine_L.MODIFY;
+                              END;
+                            END;
+                            NewPurchaseLine_L.MODIFY;
+
+                            IF SalesHeaderStatusChanged THEN BEGIN
+                              SalesHeader_L.Status := SalesHeader2.Status;
+                              SalesHeader_L.MODIFY;
+                            END;
+                          END;
+
+
+
+                          // <-- 3LI-20131030-GDU
+                          // <--
+                        END ELSE BEGIN
+                          RecRef.GETTABLE(PurchaseLine);
+                          VATRateChangeLogEntry.INIT;
+                          VATRateChangeLogEntry.RecordID := RecRef.RECORDID;
+                          VATRateChangeLogEntry."Table ID" := RecRef.NUMBER;
+                          IF (PurchaseLine."Outstanding Quantity" = 0) AND (VATRateChangeSetup."Perform Conversion") THEN
+                            VATRateChangeLogEntry.Description := Text0007
+                          ELSE BEGIN
+                            VATRateChangeLogEntry.Description :=
+                              STRSUBSTNO(Text0009,VATRateChangeSetup.FIELDCAPTION("Perform Conversion"));
+                            IF PurchaseLine."Outstanding Quantity" <> 0 THEN
+                              VATRateChangeLogEntry.Description := STRSUBSTNO(Text0017,PurchaseLine."Line No.")
+                          END;
+                          VATRateChangeLogEntry."Old Gen. Prod. Posting Group" := PurchaseLine."Gen. Prod. Posting Group";
+                          VATRateChangeLogEntry."New Gen. Prod. Posting Group" := PurchaseLine."Gen. Prod. Posting Group";
+                          VATRateChangeLogEntry."Old VAT Prod. Posting Group" := PurchaseLine."VAT Prod. Posting Group";
+                          VATRateChangeLogEntry."New VAT Prod. Posting Group" := PurchaseLine."VAT Prod. Posting Group";
+                          WriteLogEntry(VATRateChangeLogEntry);
+                        END;
+                      END;
+                    END;
+                  END;
+                UNTIL PurchaseLine.NEXT = 0;
+            END;
+            IF StatusChanged THEN BEGIN
+              PurchaseHeader.Status := PurchaseHeader2.Status;;
+              PurchaseHeader.MODIFY;
+            END;
+          END;
+        UNTIL PurchaseHeader.NEXT = 0;
+    END;
+
+    PROCEDURE CanUpdatePurchase@16(PurchaseHeader@1007 : Record 38;ConvertGenProdPostingGroup@1004 : Boolean;ConvertVATProdPostingGroup@1005 : Boolean) : Boolean;
+    VAR
+      PurchaseLine@1003 : Record 39;
+      VATRateChangeLogEntry@1002 : Record 552;
+      WhseValidateSourceLine@1000 : Codeunit 5777;
+      RecRef@1001 : RecordRef;
+      DescriptionTxt@1006 : Text[250];
+    BEGIN
+      WITH PurchaseLine DO BEGIN
+        SETRANGE("Document Type",PurchaseHeader."Document Type");
+        SETRANGE("Document No.",PurchaseHeader."No.");
+        IF FINDSET THEN
+          REPEAT
+            DescriptionTxt := '';
+            IF LineInScope("Gen. Prod. Posting Group","VAT Prod. Posting Group",ConvertGenProdPostingGroup,ConvertVATProdPostingGroup)
+      THEN BEGIN
+              // --> 3Li-20131030-GDU : D'sactivation pour gestion livraison directe et commande sp'ciale
+              {
+              IF "Drop Shipment" AND ("Sales Order No." <> '') THEN
+                DescriptionTxt := STRSUBSTNO(Text0004,"Line No.");
+              IF "Special Order" AND ("Special Order Sales No." <> '') THEN
+                DescriptionTxt := STRSUBSTNO(Text0005,"Line No.");
+              }
+              IF ("Outstanding Quantity" <> Quantity) AND
+                 WhseValidateSourceLine.WhseLinesExist(
+                   DATABASE::"Purchase Line","Document Type","Document No.","Line No.",0,Quantity) THEN
+                DescriptionTxt := Text0006;
+              IF ("Outstanding Quantity" <> Quantity) AND (Type = Type::"Charge (Item)") THEN
+                DescriptionTxt := STRSUBSTNO(Text0014,"Line No.",Type::"Charge (Item)");
+              IF  "Prepmt. Amount Inv. (LCY)" <> 0 THEN
+                DescriptionTxt := Text0011;
+            END;
+          UNTIL (NEXT = 0) OR (DescriptionTxt <> '');
+      END;
+      IF DescriptionTxt = '' THEN
+        EXIT(TRUE);
+
+      VATRateChangeLogEntry.INIT;
+      RecRef.GETTABLE(PurchaseHeader);
+      VATRateChangeLogEntry.INIT;
+      VATRateChangeLogEntry.RecordID := RecRef.RECORDID;
+      VATRateChangeLogEntry."Table ID" := RecRef.NUMBER;
+      VATRateChangeLogEntry.Description := DescriptionTxt;
+      WriteLogEntry(VATRateChangeLogEntry);
+    END;
+
+    PROCEDURE AddNewPurchaseLine@17(PurchaseLine@1001 : Record 39;VATProdPostingGroup@1000 : Code[10];GenProdPostingGroup@1002 : Code[10];VAR NewPurchaseLine@1000000000 : Record 39);
+    VAR
+      NewPurchaseLineREMOVED@1004 : Record 39;
+      OldPurchaseLine@1005 : Record 39;
+      PurchaseHeader@1006 : Record 38;
+      OldReservationEntry@1009 : Record 337;
+      NewReservationEntry@1010 : Record 337;
+      OldItemChargeAssignmentPurch@1011 : Record 5805;
+      NewItemChargeAssignmentPurch@1012 : Record 5805;
+      VATRateChangeLogEntry@1007 : Record 552;
+      RecRef@1003 : RecordRef;
+      NewLineNo@1015 : Integer;
+      QtyRemainder@1016 : Decimal;
+      AmountRemainder@1017 : Decimal;
+      RoundingPrecision@1018 : Decimal;
+    BEGIN
+      IF NOT GetNextPurchaseLineNo(PurchaseLine,NewLineNo) THEN
+        EXIT;
+
+      // 20131217-wi00-CMC02.01.00-TVA-JLT01 : START -->
+      IF QtyIndiv(PurchaseLine."No.",PurchaseLine."Variant Code",PurchaseLine."Outstanding Quantity")=FALSE THEN BEGIN
+        RecRef.GETTABLE(PurchaseLine);
+        VATRateChangeLogEntry.INIT;
+        VATRateChangeLogEntry.RecordID := RecRef.RECORDID;
+        VATRateChangeLogEntry."Table ID" := RecRef.NUMBER;
+        VATRateChangeLogEntry.Description := STRSUBSTNO(Text0018,FORMAT(PurchaseLine."Line No."),FORMAT(PurchaseLine."Line No."),
+        PurchaseLine."No.",PurchaseLine."Variant Code");
+        VATRateChangeLogEntry.Converted := FALSE;
+        WriteLogEntry(VATRateChangeLogEntry);
+        EXIT;
+      END;
+
+      IF PurchaseLine."Outstanding Quantity"=0 THEN EXIT;
+      QtyIndiv(PurchaseLine."No.",PurchaseLine."Variant Code",PurchaseLine."Qty. to Receive");
+      IF PurchaseLine."Qty. to Receive">PurchaseLine."Outstanding Quantity" THEN
+        PurchaseLine."Qty. to Receive":=PurchaseLine."Outstanding Quantity";
+      // 20131217-wi00-CMC02.01.00-TVA-JLT01 : END
+
+
+      WITH NewPurchaseLine DO BEGIN
+        INIT;
+        NewPurchaseLine := PurchaseLine;
+        "Line No." := NewLineNo;
+        "Quantity Received" := 0;
+        "Qty. Received (Base)" := 0;
+        "Return Qty. Shipped" := 0;
+        "Return Qty. Shipped (Base)" := 0;
+        "Quantity Invoiced" := 0;
+        "Qty. Invoiced (Base)" := 0;
+        "Reserved Quantity" := 0;
+        "Reserved Qty. (Base)" := 0;
+        "Qty. Rcd. Not Invoiced" := 0;
+        "Qty. Rcd. Not Invoiced (Base)" := 0;
+        "Return Qty. Shipped Not Invd." := 0;
+        "Ret. Qty. Shpd Not Invd.(Base)" := 0;
+        "Qty. to Receive" := 0;
+        "Qty. to Receive (Base)" := 0;
+        "Return Qty. to Ship" := 0;
+        "Return Qty. to Ship (Base)" := 0;
+        "Qty. to Invoice" := 0;
+        "Qty. to Invoice (Base)" := 0;
+        "Amt. Rcd. Not Invoiced" := 0;
+        "Amt. Rcd. Not Invoiced (LCY)" := 0;
+        "Return Shpd. Not Invd." := 0;
+        "Return Shpd. Not Invd. (LCY)" := 0;
+        IF (GenProdPostingGroup <> '') AND ConvertGenProdPostGrp(VATRateChangeSetup."Update Purchase Documents") THEN
+          VALIDATE("Gen. Prod. Posting Group",GenProdPostingGroup);
+        IF (VATProdPostingGroup <> '') AND ConvertVATProdPostGrp(VATRateChangeSetup."Update Purchase Documents") THEN
+          VALIDATE("VAT Prod. Posting Group",VATProdPostingGroup);
+        SetAllowChangeDeletion(TRUE); // 20131221-wi00-CMC02.02.00-TVA-JLT01
+        IF Quantity<>PurchaseLine."Outstanding Quantity" THEN // 20131217-wi00-CMC02.01.00-TVA-JLT01
+          VALIDATE(Quantity,PurchaseLine."Outstanding Quantity");
+        VALIDATE("Qty. to Receive",PurchaseLine."Qty. to Receive");
+        VALIDATE("Return Qty. to Ship",PurchaseLine."Return Qty. to Ship");
+        IF ABS(PurchaseLine."Qty. to Invoice") > (ABS(PurchaseLine."Quantity Received") - ABS(PurchaseLine."Quantity Invoiced")) THEN
+        // 20131217-wi00-CMC02.01.00-TVA-JLT01 -->
+        BEGIN
+             //VALIDATE(
+          // "Qty. to Invoice",PurchaseLine."Qty. to Invoice" - (PurchaseLine."Quantity Received" - PurchaseLine."Quantity Invoiced"))
+          "Qty. to Invoice":=PurchaseLine."Qty. to Invoice" - PurchaseLine."Quantity Received" - PurchaseLine."Quantity Invoiced";
+          QtyIndiv(PurchaseLine."No.",PurchaseLine."Variant Code","Qty. to Invoice");
+          IF "Qty. to Invoice"<0 THEN VALIDATE("Qty. to Invoice",0) ELSE VALIDATE("Qty. to Invoice",0);
+        // 20131217-wi00-CMC02.01.00-TVA-JLT01 <--
+        END ELSE
+          VALIDATE("Qty. to Invoice",0);
+
+        PurchaseHeader.GET("Document Type","Document No.");
+        RoundingPrecision := GetRoundingPrecision(PurchaseHeader."Currency Code");
+
+        IF PurchaseHeader."Prices Including VAT" THEN
+          VALIDATE(
+            "Direct Unit Cost",
+            ROUND(PurchaseLine."Direct Unit Cost" * (100 + "VAT %") / (100 + PurchaseLine."VAT %"),RoundingPrecision))
+        ELSE
+          VALIDATE("Direct Unit Cost",PurchaseLine."Direct Unit Cost");
+
+        VALIDATE("Line Discount %",PurchaseLine."Line Discount %");
+        INSERT;
+        RecRef.GETTABLE(PurchaseLine);
+        VATRateChangeLogEntry.INIT;
+        VATRateChangeLogEntry.RecordID := RecRef.RECORDID;
+        VATRateChangeLogEntry."Table ID" := RecRef.NUMBER;
+        VATRateChangeLogEntry.Description := STRSUBSTNO(Text0012,FORMAT(PurchaseLine."Line No."));
+        VATRateChangeLogEntry."Old Gen. Prod. Posting Group" := PurchaseLine."Gen. Prod. Posting Group";
+        VATRateChangeLogEntry."New Gen. Prod. Posting Group" := PurchaseLine."Gen. Prod. Posting Group";
+        VATRateChangeLogEntry."Old VAT Prod. Posting Group" := PurchaseLine."VAT Prod. Posting Group";
+        VATRateChangeLogEntry."New VAT Prod. Posting Group" := PurchaseLine."VAT Prod. Posting Group";
+        VATRateChangeLogEntry.Converted := TRUE;
+        WriteLogEntry(VATRateChangeLogEntry);
+
+        RecRef.GETTABLE(NewPurchaseLine);
+        VATRateChangeLogEntry.INIT;
+        VATRateChangeLogEntry.RecordID := RecRef.RECORDID;
+        VATRateChangeLogEntry."Table ID" := RecRef.NUMBER;
+        VATRateChangeLogEntry."Old Gen. Prod. Posting Group" := PurchaseLine."Gen. Prod. Posting Group";
+        VATRateChangeLogEntry."New Gen. Prod. Posting Group" := "Gen. Prod. Posting Group";
+        VATRateChangeLogEntry."Old VAT Prod. Posting Group" := PurchaseLine."VAT Prod. Posting Group";
+        VATRateChangeLogEntry."New VAT Prod. Posting Group" := "VAT Prod. Posting Group";
+        VATRateChangeLogEntry.Description := STRSUBSTNO(Text0013,FORMAT("Line No."),FORMAT(PurchaseLine."Line No."));
+        VATRateChangeLogEntry.Converted := TRUE;
+        WriteLogEntry(VATRateChangeLogEntry);
+      END;
+
+      UpdatePurchaseBlanketOrder(NewPurchaseLine,PurchaseLine."Line No.");
+
+      // Copy Dimensions
+      // --> 3LI-20131010-KTR01
+      {BEFORE
+      CopyDocumentMgt.CopyFromPurchDocDimToLine(NewPurchaseLine,PurchaseLine);
+      AFTER}
+      CopyFromPurchDocDimToLine(NewPurchaseLine,PurchaseLine);
+      // --< 3LI-20131010-KTR01
+
+      OldReservationEntry.RESET;
+      OldReservationEntry.SETCURRENTKEY("Source ID","Source Ref. No.","Source Type","Source Subtype");
+      OldReservationEntry.SETRANGE("Source ID",PurchaseLine."Document No.");
+      OldReservationEntry.SETRANGE("Source Ref. No.",PurchaseLine."Line No.");
+      OldReservationEntry.SETRANGE("Source Type",DATABASE::"Purchase Line");
+      OldReservationEntry.SETRANGE("Source Subtype",PurchaseLine."Document Type");
+      OldReservationEntry.SETFILTER(
+        "Reservation Status",'%1|%2',
+        OldReservationEntry."Reservation Status"::Reservation,
+        OldReservationEntry."Reservation Status"::Surplus);
+      IF OldReservationEntry.FIND('-') THEN
+        REPEAT
+          NewReservationEntry := OldReservationEntry;
+          NewReservationEntry."Source Ref. No." := NewLineNo;
+          NewReservationEntry.MODIFY;
+        UNTIL OldReservationEntry.NEXT = 0;
+
+      CASE PurchaseLine.Type OF
+        PurchaseLine.Type::Item:
+          BEGIN
+            OldItemChargeAssignmentPurch.RESET;
+            OldItemChargeAssignmentPurch.SETCURRENTKEY("Applies-to Doc. Type","Applies-to Doc. No.","Applies-to Doc. Line No.");
+            OldItemChargeAssignmentPurch.SETRANGE("Applies-to Doc. Type",PurchaseLine."Document Type");
+            OldItemChargeAssignmentPurch.SETRANGE("Applies-to Doc. No.",PurchaseLine."Document No.");
+            OldItemChargeAssignmentPurch.SETRANGE("Applies-to Doc. Line No.",PurchaseLine."Line No.");
+            IF OldItemChargeAssignmentPurch.FINDSET THEN
+              REPEAT
+                QtyRemainder := OldItemChargeAssignmentPurch."Qty. to Assign";
+                AmountRemainder := OldItemChargeAssignmentPurch."Amount to Assign";
+                NewItemChargeAssignmentPurch := OldItemChargeAssignmentPurch;
+                NewItemChargeAssignmentPurch."Line No." := GetNextItemChrgAssPurchLineNo(OldItemChargeAssignmentPurch);
+                NewItemChargeAssignmentPurch."Applies-to Doc. Line No." := NewLineNo;
+                NewItemChargeAssignmentPurch."Qty. to Assign" :=
+                  ROUND(QtyRemainder / PurchaseLine.Quantity * PurchaseLine."Outstanding Quantity",0.00001);
+                IF PurchaseLine."Quantity Received" - PurchaseLine."Quantity Invoiced" = 0 THEN
+                  NewItemChargeAssignmentPurch."Qty. to Assign" := QtyRemainder;
+                NewItemChargeAssignmentPurch."Amount to Assign" :=
+                  ROUND(NewItemChargeAssignmentPurch."Qty. to Assign" * NewItemChargeAssignmentPurch."Unit Cost",RoundingPrecision);
+                NewItemChargeAssignmentPurch.INSERT;
+                QtyRemainder := QtyRemainder - NewItemChargeAssignmentPurch."Qty. to Assign";
+                AmountRemainder := AmountRemainder - NewItemChargeAssignmentPurch."Amount to Assign";
+                OldItemChargeAssignmentPurch."Qty. to Assign" := QtyRemainder;
+                OldItemChargeAssignmentPurch."Amount to Assign" := AmountRemainder;
+                OldItemChargeAssignmentPurch.MODIFY;
+              UNTIL OldItemChargeAssignmentPurch.NEXT = 0;
+          END;
+      END;
+
+      OldPurchaseLine.GET(PurchaseLine."Document Type",PurchaseLine."Document No.",PurchaseLine."Line No.");
+      OldPurchaseLine.SetAllowChangeDeletion(TRUE); // 20131221-wi00-CMC02.02.00-TVA-JLT01
+      OldPurchaseLine.VALIDATE(Quantity,PurchaseLine."Quantity Received");
+
+      OldPurchaseLine.VALIDATE("Direct Unit Cost",PurchaseLine."Direct Unit Cost");
+
+      OldPurchaseLine.VALIDATE("Line Discount %",PurchaseLine."Line Discount %");
+      OldPurchaseLine.VALIDATE("Qty. to Receive",0);
+      OldPurchaseLine.VALIDATE("Return Qty. to Ship",0);
+      IF ABS(PurchaseLine."Qty. to Invoice") > (ABS(PurchaseLine."Quantity Received") - ABS(PurchaseLine."Quantity Invoiced")) THEN
+        OldPurchaseLine.VALIDATE("Qty. to Invoice",PurchaseLine."Quantity Received" - PurchaseLine."Quantity Invoiced")
+      ELSE
+        OldPurchaseLine.VALIDATE("Qty. to Invoice",PurchaseLine."Qty. to Invoice");
+
+      OldPurchaseLine.MODIFY(TRUE);
+    END;
+
+    PROCEDURE GetNextPurchaseLineNo@18(PurchaseLine@1001 : Record 39;VAR NextLineNo@1002 : Integer) : Boolean;
+    VAR
+      PurchaseLine2@1000 : Record 39;
+    BEGIN
+      PurchaseLine2.RESET;
+      PurchaseLine2.SETRANGE("Document Type",PurchaseLine."Document Type");
+      PurchaseLine2.SETRANGE("Document No.",PurchaseLine."Document No.");
+      PurchaseLine2 := PurchaseLine;
+      IF PurchaseLine2.FIND('>') THEN
+        NextLineNo := PurchaseLine."Line No." + (PurchaseLine2."Line No." - PurchaseLine."Line No.") DIV 2;
+      IF (NextLineNo = PurchaseLine."Line No.") OR (NextLineNo = 0) THEN BEGIN
+        PurchaseLine2.FINDLAST;
+        NextLineNo := PurchaseLine2."Line No." + 10000;
+      END;
+      EXIT(NextLineNo <> PurchaseLine."Line No.");
+    END;
+
+    PROCEDURE UpdatePurchaseBlanketOrder@22(PurchaseLine@1000 : Record 39;OriginalLineNo@1004 : Integer);
+    VAR
+      PurchaseHeader@1003 : Record 38;
+      PurchaseLine2@1002 : Record 39;
+      PurchaseLine3@1001 : Record 39;
+    BEGIN
+      IF PurchaseLine."Document Type" = PurchaseLine."Document Type"::"Blanket Order" THEN BEGIN
+        PurchaseLine2.SETCURRENTKEY("Document Type","Blanket Order No.","Blanket Order Line No.");
+        PurchaseLine2.SETRANGE("Blanket Order No.",PurchaseLine."Document No.");
+        PurchaseLine2.SETFILTER("Blanket Order Line No.",'=%1',OriginalLineNo);
+        PurchaseLine2.SETRANGE(Type,PurchaseLine.Type);
+        PurchaseLine2.SETRANGE("No.",PurchaseLine."No.");
+        CLEAR(PurchaseHeader);
+        IF PurchaseLine2.FIND('-') THEN
+          REPEAT
+            IF (PurchaseHeader."Document Type" <> PurchaseLine2."Document Type") OR
+               (PurchaseHeader."No." <> PurchaseLine2."Document No.") THEN BEGIN
+              PurchaseHeader.GET(PurchaseLine2."Document Type",PurchaseLine2."Document No.");
+              PurchaseLine3.RESET;
+              PurchaseLine3.SETRANGE("Document Type",PurchaseHeader."Document Type");
+              PurchaseLine3.SETRANGE("Document No.",PurchaseHeader."No.");
+              PurchaseLine3.SETRANGE("Blanket Order No.",PurchaseLine2."Blanket Order No.");
+              PurchaseLine3.SETRANGE("Blanket Order Line No.",PurchaseLine2."Blanket Order Line No.");
+              IF PurchaseLine3.FINDLAST THEN BEGIN
+                PurchaseLine3."Blanket Order Line No." := PurchaseLine."Line No.";
+                PurchaseLine3.MODIFY;
+              END;
+            END;
+          UNTIL PurchaseLine2.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE LineInScope@13(GenProdPostingGroup@1000 : Code[10];VATProdPostingGroup@1001 : Code[10];ConvertGenProdPostingGroup@1002 : Boolean;ConvertVATProdPostingGroup@1003 : Boolean) : Boolean;
+    VAR
+      VATRateChangeConversion_L@1000000000 : Record 551;
+    BEGIN
+      {
+      IF ConvertGenProdPostingGroup THEN
+        IF VATRateChangeConversion.GET(VATRateChangeConversion.Type::"Gen. Prod. Posting Group",GenProdPostingGroup) THEN
+          EXIT(TRUE);
+      IF ConvertVATProdPostingGroup THEN
+        IF VATRateChangeConversion.GET(VATRateChangeConversion.Type::"VAT Prod. Posting Group",VATProdPostingGroup) THEN
+          EXIT(TRUE);
+      EXIT(FALSE);
+      }
+      // 20131221-wi00-CMC02.02.00-TVA-JLT01 : Modif LineInScope pour tenir compte des familles
+
+      IF ConvertGenProdPostingGroup THEN BEGIN
+        VATRateChangeConversion_L.SETRANGE(Type,VATRateChangeConversion.Type::"Gen. Prod. Posting Group");
+        VATRateChangeConversion_L.SETRANGE("From Code",GenProdPostingGroup);
+        IF VATRateChangeConversion_L.FINDSET THEN EXIT(TRUE);
+      END;
+
+      IF ConvertVATProdPostingGroup THEN BEGIN
+        VATRateChangeConversion_L.SETRANGE(Type,VATRateChangeConversion.Type::"VAT Prod. Posting Group");
+        VATRateChangeConversion_L.SETRANGE("From Code",VATProdPostingGroup);
+        IF VATRateChangeConversion_L.FINDSET THEN EXIT(TRUE);
+      END;
+
+      EXIT(FALSE);
+    END;
+
+    PROCEDURE GetNextSalesLineNo@1050(SalesLine@1000 : Record 37;VAR NextLineNo@1001 : Integer) : Boolean;
+    VAR
+      SalesLine2@1002 : Record 37;
+    BEGIN
+      SalesLine2.RESET;
+      SalesLine2.SETRANGE("Document Type",SalesLine."Document Type");
+      SalesLine2.SETRANGE("Document No.",SalesLine."Document No.");
+      SalesLine2 := SalesLine;
+      IF SalesLine2.FIND('>') THEN
+        NextLineNo := SalesLine."Line No." + (SalesLine2."Line No." - SalesLine."Line No.") DIV 2;
+      IF (NextLineNo = SalesLine."Line No.") OR (NextLineNo = 0) OR (NextLineNo<SalesLine2."Line No.") THEN BEGIN
+        SalesLine2.FINDLAST;
+        NextLineNo := SalesLine2."Line No." + 10000;
+      END;
+      EXIT(NextLineNo <> SalesLine."Line No.");
+    END;
+
+    PROCEDURE UpdateServPriceAdjDetail@14();
+    VAR
+      VatRateChangeConversion@1001 : Record 551;
+      ServPriceAdjustmentDetail@1000 : Record 6083;
+      ServPriceAdjustmentDetailNew@1002 : Record 6083;
+      VATRateChangeLogEntry@1003 : Record 552;
+      RecRef@1004 : RecordRef;
+    BEGIN
+      IF VATRateChangeSetup."Update Serv. Price Adj. Detail" <>
+         VATRateChangeSetup."Update Serv. Price Adj. Detail"::"Gen. Prod. Posting Group" THEN
+        EXIT;
+      VatRateChangeConversion.SETRANGE(Type,VatRateChangeConversion.Type::"Gen. Prod. Posting Group");
+      IF VatRateChangeConversion.FINDSET THEN
+        REPEAT
+          WITH ServPriceAdjustmentDetail DO BEGIN
+            SETRANGE("Gen. Prod. Posting Group",VatRateChangeConversion."From Code");
+            IF FINDSET THEN
+              REPEAT
+                VATRateChangeLogEntry.INIT;
+                RecRef.GETTABLE(ServPriceAdjustmentDetailNew);
+                VATRateChangeLogEntry.RecordID := RecRef.RECORDID;
+                VATRateChangeLogEntry."Table ID" := DATABASE::"Serv. Price Adjustment Detail";
+                VATRateChangeLogEntry."Old Gen. Prod. Posting Group" := "Gen. Prod. Posting Group";
+                VATRateChangeLogEntry."New Gen. Prod. Posting Group" := VatRateChangeConversion."To Code";
+                ServPriceAdjustmentDetailNew := ServPriceAdjustmentDetail;
+                IF VATRateChangeSetup."Perform Conversion" THEN BEGIN
+                  ServPriceAdjustmentDetailNew.RENAME(
+                    "Serv. Price Adjmt. Gr. Code",Type,"No.","Work Type",VatRateChangeConversion."To Code");
+                  VATRateChangeLogEntry.Converted := TRUE
+                END ELSE
+                  VATRateChangeLogEntry.Description := STRSUBSTNO(Text0009,VATRateChangeSetup.FIELDCAPTION("Perform Conversion"));
+                WriteLogEntry(VATRateChangeLogEntry);
+              UNTIL NEXT = 0;
+          END;
+        UNTIL VatRateChangeConversion.NEXT = 0;
+    END;
+
+    PROCEDURE GetRoundingPrecision@19(CurrencyCode@1000 : Code[10]) : Decimal;
+    VAR
+      Currency@1001 : Record 4;
+    BEGIN
+      IF CurrencyCode = '' THEN
+        Currency.InitRoundingPrecision
+      ELSE
+        Currency.GET(CurrencyCode);
+      EXIT(Currency."Unit-Amount Rounding Precision");
+    END;
+
+    PROCEDURE CanUpdateService@21(ServiceLine@1007 : Record 5902) : Boolean;
+    VAR
+      ServiceHeader@1002 : Record 5900;
+      VATRateChangeLogEntry@1000 : Record 552;
+      RecRef@1001 : RecordRef;
+      DescriptionTxt@1006 : Text[250];
+    BEGIN
+      DescriptionTxt := '';
+      WITH ServiceLine DO BEGIN
+        IF "Shipment No." <> '' THEN
+          DescriptionTxt := Text0010;
+      END;
+      IF DescriptionTxt = '' THEN
+        EXIT(TRUE);
+
+      VATRateChangeLogEntry.INIT;
+      ServiceHeader.GET(ServiceLine."Document Type",ServiceLine."Document No.");
+      RecRef.GETTABLE(ServiceHeader);
+      VATRateChangeLogEntry.INIT;
+      VATRateChangeLogEntry.RecordID := RecRef.RECORDID;
+      VATRateChangeLogEntry."Table ID" := RecRef.NUMBER;
+      VATRateChangeLogEntry.Description := DescriptionTxt;
+      WriteLogEntry(VATRateChangeLogEntry);
+    END;
+
+    PROCEDURE UpdateService@23();
+    VAR
+      ServiceHeader@1008 : Record 5900;
+      ServiceLine@1000 : Record 5902;
+      ServiceLineOld@1007 : Record 5902;
+      VATRateChangeLogEntry@1004 : Record 552;
+      RecRef@1001 : RecordRef;
+      NewVatProdPotingGroup@1003 : Code[10];
+      NewGenProdPostingGroup@1002 : Code[10];
+      ConvertVATProdPostingGroup@1006 : Boolean;
+      ConvertGenProdPostingGroup@1005 : Boolean;
+      RoundingPrecision@1009 : Decimal;
+      LastDocNo@1010 : Code[20];
+    BEGIN
+      ProgressWindow.UPDATE(1,ServiceLine.TABLECAPTION);
+      ConvertVATProdPostingGroup := ConvertVATProdPostGrp(VATRateChangeSetup."Update Service Docs.");
+      ConvertGenProdPostingGroup := ConvertGenProdPostGrp(VATRateChangeSetup."Update Service Docs.");
+      IF NOT ConvertVATProdPostingGroup AND NOT ConvertGenProdPostingGroup THEN
+        EXIT;
+
+      WITH ServiceLine DO BEGIN
+
+        // --> 3LI-20131029-GDU
+        IF VATRateChangeSetup."Test One Purchase Document" THEN BEGIN
+          SETRANGE("Document Type",VATRateChangeSetup."Service Document Type");
+          SETRANGE("Document No.",VATRateChangeSetup."Service Document No.");
+        END ELSE
+        // <-- 3LI-20131029-GDU
+          SETFILTER("Document Type",'%1|%2|%3',"Document Type"::Quote,"Document Type"::Order,"Document Type"::Invoice);
+        SETRANGE("Shipment No.",'');
+        LastDocNo := '';
+        IF FIND('-') THEN
+          REPEAT
+            IF LineInScope("Gen. Prod. Posting Group","VAT Prod. Posting Group",ConvertGenProdPostingGroup,ConvertVATProdPostingGroup)
+      THEN BEGIN
+              IF CanUpdateService(ServiceLine) THEN BEGIN
+                IF Quantity = "Outstanding Quantity" THEN BEGIN
+                  IF LastDocNo <> ServiceHeader."No." THEN BEGIN
+                    ServiceHeader.GET("Document Type","Document No.");
+                    LastDocNo := ServiceHeader."No.";
+                  END;
+
+                  IF ServiceHeader."Prices Including VAT" THEN
+                    ServiceLineOld := ServiceLine;
+
+                  RecRef.GETTABLE(ServiceLine);
+
+                  //20131216-wi00-CMC02.01.00-TVA-BMA01 : Gestion pour g'rer famille article
+                  IF ServiceLine.Type=ServiceLine.Type::Item THEN BEGIN
+                      UpdateRecCMC(RecRef,ConvertVATProdPostGrp(VATRateChangeSetup."Update Service Docs."),
+                          ConvertGenProdPostGrp(VATRateChangeSetup."Update Service Docs."),ServiceLine."No.");
+                  END ELSE BEGIN
+
+                  UpdateRec(
+                    RecRef,ConvertVATProdPostGrp(VATRateChangeSetup."Update Service Docs."),
+                    ConvertGenProdPostGrp(VATRateChangeSetup."Update Service Docs."));
+
+
+                  END;
+                  //20131216-wi00-CMC02.01.00-TVA-BMA01 e
+
+
+                  IF ServiceHeader."Prices Including VAT" AND VATRateChangeSetup."Perform Conversion" THEN BEGIN
+                    RecRef.SETTABLE(ServiceLine);
+                    RoundingPrecision := GetRoundingPrecision(ServiceHeader."Currency Code");
+                    VALIDATE("Unit Price",ROUND("Unit Price" * (100 + "VAT %") / (100 + ServiceLineOld."VAT %"),RoundingPrecision))
+                  END;
+
+                END ELSE BEGIN
+                  IF VATRateChangeSetup."Perform Conversion" AND ("Outstanding Quantity" <> 0) THEN BEGIN
+                    NewVatProdPotingGroup := "VAT Prod. Posting Group";
+                    NewGenProdPostingGroup := "Gen. Prod. Posting Group";
+                    IF ConvertVATProdPostingGroup THEN
+                      IF VATRateChangeConversion.GET(
+                           VATRateChangeConversion.Type::"VAT Prod. Posting Group","VAT Prod. Posting Group")
+                      THEN
+                        NewVatProdPotingGroup := VATRateChangeConversion."To Code";
+                    IF ConvertGenProdPostingGroup THEN
+                      IF VATRateChangeConversion.GET(
+                           VATRateChangeConversion.Type::"Gen. Prod. Posting Group","Gen. Prod. Posting Group")
+                      THEN
+                        NewGenProdPostingGroup := VATRateChangeConversion."To Code";
+                    AddNewServiceLine(ServiceLine,NewVatProdPotingGroup,NewGenProdPostingGroup);
+                  END ELSE BEGIN
+                    RecRef.GETTABLE(ServiceLine);
+                    VATRateChangeLogEntry.INIT;
+                    VATRateChangeLogEntry.RecordID := RecRef.RECORDID;
+                    VATRateChangeLogEntry."Table ID" := RecRef.NUMBER;
+                    IF ("Outstanding Quantity" = 0) AND VATRateChangeSetup."Perform Conversion" THEN
+                      VATRateChangeLogEntry.Description := Text0007
+                    ELSE BEGIN
+                      VATRateChangeLogEntry.Description :=
+                        STRSUBSTNO(Text0009,VATRateChangeSetup.FIELDCAPTION("Perform Conversion"));
+                      IF "Outstanding Quantity" <> 0 THEN
+                        VATRateChangeLogEntry.Description := STRSUBSTNO(Text0017,"Line No.")
+                    END;
+                    VATRateChangeLogEntry."Old Gen. Prod. Posting Group" := "Gen. Prod. Posting Group";
+                    VATRateChangeLogEntry."New Gen. Prod. Posting Group" := "Gen. Prod. Posting Group";
+                    VATRateChangeLogEntry."Old VAT Prod. Posting Group" := "VAT Prod. Posting Group";
+                    VATRateChangeLogEntry."New VAT Prod. Posting Group" := "VAT Prod. Posting Group";
+                    WriteLogEntry(VATRateChangeLogEntry);
+                  END;
+                END;
+              END
+            END;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE AddNewServiceLine@27(ServiceLine@1022 : Record 5902;VATProdPostingGroup@1001 : Code[10];GenProdPostingGroup@1002 : Code[10]);
+    VAR
+      NewServiceLine@1003 : Record 5902;
+      OldServiceLine@1005 : Record 5902;
+      ServiceHeader@1006 : Record 5900;
+      OldReservationEntry@1009 : Record 337;
+      NewReservationEntry@1010 : Record 337;
+      VATRateChangeLogEntry@1004 : Record 552;
+      RecRef@1000 : RecordRef;
+      NewLineNo@1015 : Integer;
+      RoundingPrecision@1007 : Decimal;
+    BEGIN
+      IF NOT GetNextServiceLineNo(ServiceLine,NewLineNo) THEN
+        EXIT;
+
+      WITH NewServiceLine DO BEGIN
+        INIT;
+        NewServiceLine := ServiceLine;
+        "Line No." := NewLineNo;
+        "Qty. to Invoice" := 0;
+        "Qty. to Ship" := 0;
+        "Qty. Shipped Not Invoiced" := 0;
+        "Quantity Shipped" := 0;
+        "Quantity Invoiced" := 0;
+        "Qty. to Invoice (Base)" := 0;
+        "Qty. to Ship (Base)" := 0;
+        "Qty. Shipped Not Invd. (Base)" := 0;
+        "Qty. Shipped (Base)" := 0;
+        "Qty. Invoiced (Base)" := 0;
+        "Qty. to Consume" := 0;
+        "Quantity Consumed" := 0;
+        "Qty. to Consume (Base)" := 0;
+        "Qty. Consumed (Base)" := 0;
+        IF (GenProdPostingGroup <> '') AND ConvertGenProdPostGrp(VATRateChangeSetup."Update Service Docs.") THEN
+          VALIDATE("Gen. Prod. Posting Group",GenProdPostingGroup);
+        IF (VATProdPostingGroup <> '') AND ConvertVATProdPostGrp(VATRateChangeSetup."Update Service Docs.") THEN
+          VALIDATE("VAT Prod. Posting Group",VATProdPostingGroup);
+
+        VALIDATE(Quantity,ServiceLine."Outstanding Quantity");
+        VALIDATE("Qty. to Ship",ServiceLine."Qty. to Ship");
+        VALIDATE("Qty. to Consume",ServiceLine."Qty. to Consume");
+        IF ABS(ServiceLine."Qty. to Invoice") >
+           (ABS(ServiceLine."Quantity Shipped") - ABS(ServiceLine."Quantity Invoiced"))
+        THEN
+          VALIDATE(
+            "Qty. to Invoice",
+            ServiceLine."Qty. to Invoice" - (ServiceLine."Quantity Shipped" - ServiceLine."Quantity Invoiced"))
+        ELSE
+          VALIDATE("Qty. to Invoice",0);
+        ServiceHeader.GET("Document Type","Document No.");
+        RoundingPrecision := GetRoundingPrecision(ServiceHeader."Currency Code");
+        IF ServiceHeader."Prices Including VAT" THEN
+          VALIDATE("Unit Price",ROUND(ServiceLine."Unit Price" * (100 + "VAT %") / (100 + ServiceLine."VAT %"),RoundingPrecision))
+        ELSE
+          VALIDATE("Unit Price",ServiceLine."Unit Price");
+        VALIDATE("Line Discount %",ServiceLine."Line Discount %");
+        INSERT;
+        RecRef.GETTABLE(ServiceLine);
+        VATRateChangeLogEntry.INIT;
+        VATRateChangeLogEntry.RecordID := RecRef.RECORDID;
+        VATRateChangeLogEntry."Table ID" := RecRef.NUMBER;
+        VATRateChangeLogEntry.Description := STRSUBSTNO(Text0012,FORMAT(ServiceLine."Line No."));
+        VATRateChangeLogEntry."Old Gen. Prod. Posting Group" := ServiceLine."Gen. Prod. Posting Group";
+        VATRateChangeLogEntry."New Gen. Prod. Posting Group" := ServiceLine."Gen. Prod. Posting Group";
+        VATRateChangeLogEntry."Old VAT Prod. Posting Group" := ServiceLine."VAT Prod. Posting Group";
+        VATRateChangeLogEntry."New VAT Prod. Posting Group" := ServiceLine."VAT Prod. Posting Group";
+        VATRateChangeLogEntry.Converted := TRUE;
+        WriteLogEntry(VATRateChangeLogEntry);
+
+        RecRef.GETTABLE(NewServiceLine);
+        VATRateChangeLogEntry.INIT;
+        VATRateChangeLogEntry.RecordID := RecRef.RECORDID;
+        VATRateChangeLogEntry."Table ID" := RecRef.NUMBER;
+        VATRateChangeLogEntry."Old Gen. Prod. Posting Group" := ServiceLine."Gen. Prod. Posting Group";
+        VATRateChangeLogEntry."New Gen. Prod. Posting Group" := "Gen. Prod. Posting Group";
+        VATRateChangeLogEntry."Old VAT Prod. Posting Group" := ServiceLine."VAT Prod. Posting Group";
+        VATRateChangeLogEntry."New VAT Prod. Posting Group" := "VAT Prod. Posting Group";
+        VATRateChangeLogEntry.Description := STRSUBSTNO(Text0013,FORMAT("Line No."),FORMAT(ServiceLine."Line No."));
+        VATRateChangeLogEntry.Converted := TRUE;
+        WriteLogEntry(VATRateChangeLogEntry);
+      END;
+      // Copy Dimensions
+      CopyFromServiceDocDimToLine(NewServiceLine,ServiceLine);
+
+      ServiceLine.CALCFIELDS("Reserved Quantity");
+      IF ServiceLine."Reserved Quantity" <> 0 THEN BEGIN
+        OldReservationEntry.RESET;
+        OldReservationEntry.SETCURRENTKEY("Source ID","Source Ref. No.","Source Type","Source Subtype");
+        OldReservationEntry.SETRANGE("Source ID",ServiceLine."Document No.");
+        OldReservationEntry.SETRANGE("Source Ref. No.",ServiceLine."Line No.");
+        OldReservationEntry.SETRANGE("Source Type",DATABASE::"Service Line");
+        OldReservationEntry.SETRANGE("Source Subtype",ServiceLine."Document Type");
+        OldReservationEntry.SETRANGE("Reservation Status",OldReservationEntry."Reservation Status"::Reservation);
+        IF OldReservationEntry.FINDSET THEN
+          REPEAT
+            NewReservationEntry := OldReservationEntry;
+            NewReservationEntry."Source Ref. No." := NewLineNo;
+            NewReservationEntry.MODIFY;
+          UNTIL OldReservationEntry.NEXT = 0;
+      END;
+
+      OldReservationEntry.RESET;
+      OldReservationEntry.SETCURRENTKEY("Source ID","Source Ref. No.","Source Type","Source Subtype");
+      OldReservationEntry.SETRANGE("Source ID",ServiceLine."Document No.");
+      OldReservationEntry.SETRANGE("Source Ref. No.",ServiceLine."Line No.");
+      OldReservationEntry.SETRANGE("Source Type",DATABASE::"Service Line");
+      OldReservationEntry.SETRANGE("Source Subtype",ServiceLine."Document Type");
+      OldReservationEntry.SETRANGE("Reservation Status",OldReservationEntry."Reservation Status"::Prospect);
+      IF OldReservationEntry.FIND('-') THEN
+        REPEAT
+          NewReservationEntry := OldReservationEntry;
+          NewReservationEntry."Source Ref. No." := NewLineNo;
+          NewReservationEntry.MODIFY;
+        UNTIL OldReservationEntry.NEXT = 0;
+
+      OldServiceLine.GET(ServiceLine."Document Type",ServiceLine."Document No.",ServiceLine."Line No.");
+      OldServiceLine.VALIDATE(Quantity,ServiceLine."Quantity Shipped");
+      OldServiceLine.VALIDATE("Unit Price",ServiceLine."Unit Price");
+      OldServiceLine.VALIDATE("Line Discount %",ServiceLine."Line Discount %");
+      OldServiceLine.VALIDATE("Qty. to Ship",0);
+      OldServiceLine.VALIDATE("Qty. to Consume",0);
+      IF ABS(OldServiceLine."Qty. to Invoice") >
+         (ABS(OldServiceLine."Quantity Shipped") - ABS(OldServiceLine."Quantity Consumed") - ABS(ServiceLine."Quantity Invoiced"))
+      THEN
+        OldServiceLine.VALIDATE(
+          "Qty. to Invoice",OldServiceLine."Qty. to Invoice" - ServiceLine."Quantity Shipped" - OldServiceLine."Quantity Consumed")
+      ELSE
+        OldServiceLine.VALIDATE("Qty. to Invoice",OldServiceLine."Qty. to Invoice");
+      OldServiceLine.MODIFY;
+    END;
+
+    PROCEDURE GetNextServiceLineNo@31(ServiceLine@1000 : Record 5902;VAR NextLineNo@1001 : Integer) : Boolean;
+    VAR
+      ServiceLine2@1002 : Record 5902;
+    BEGIN
+      ServiceLine2.RESET;
+      ServiceLine2.SETRANGE("Document Type",ServiceLine."Document Type");
+      ServiceLine2.SETRANGE("Document No.",ServiceLine."Document No.");
+      ServiceLine2 := ServiceLine;
+      IF ServiceLine2.FIND('>') THEN
+        NextLineNo := ServiceLine."Line No." + (ServiceLine2."Line No." - ServiceLine."Line No.") DIV 2;
+      IF (NextLineNo = ServiceLine."Line No.") OR (NextLineNo = 0)THEN BEGIN
+        ServiceLine2.FINDLAST;
+        NextLineNo := ServiceLine2."Line No." + 10000;
+      END;
+      EXIT(NextLineNo <> ServiceLine."Line No.");
+    END;
+
+    PROCEDURE GetNextItemChrgAssSaleLineNo@51(ItemChargeAssignmentSales@1002 : Record 5809) : Integer;
+    VAR
+      ItemChargeAssignmentSales2@1000 : Record 5809;
+      ExitValue@1001 : Integer;
+    BEGIN
+      ExitValue := 10000;
+      ItemChargeAssignmentSales2.RESET;
+      ItemChargeAssignmentSales2.SETCURRENTKEY("Document Type","Document No.","Document Line No.");
+      ItemChargeAssignmentSales2.SETRANGE("Document Type",ItemChargeAssignmentSales."Document Type");
+      ItemChargeAssignmentSales2.SETRANGE("Document No.",ItemChargeAssignmentSales."Document No.");
+      ItemChargeAssignmentSales2.SETRANGE("Document Line No.",ItemChargeAssignmentSales."Document Line No.");
+      IF ItemChargeAssignmentSales2.FINDLAST THEN
+        ExitValue := ItemChargeAssignmentSales2."Line No." + 10000;
+      EXIT(ExitValue);
+    END;
+
+    PROCEDURE GetNextItemChrgAssPurchLineNo@50(ItemChargeAssignmentPurch@1002 : Record 5805) : Integer;
+    VAR
+      ItemChargeAssignmentPurch2@1000 : Record 5805;
+      ExitValue@1001 : Integer;
+    BEGIN
+      ExitValue := 10000;
+      ItemChargeAssignmentPurch2.RESET;
+      ItemChargeAssignmentPurch2.SETCURRENTKEY("Document Type","Document No.","Document Line No.");
+      ItemChargeAssignmentPurch2.SETRANGE("Document Type",ItemChargeAssignmentPurch."Document Type");
+      ItemChargeAssignmentPurch2.SETRANGE("Document No.",ItemChargeAssignmentPurch."Document No.");
+      ItemChargeAssignmentPurch2.SETRANGE("Document Line No.",ItemChargeAssignmentPurch."Document Line No.");
+      IF ItemChargeAssignmentPurch2.FINDLAST THEN
+        ExitValue := ItemChargeAssignmentPurch2."Line No." + 10000;
+      EXIT(ExitValue);
+    END;
+
+    PROCEDURE AreTablesSelected@15() : Boolean;
+    BEGIN
+      WITH VATRateChangeSetup DO BEGIN
+        IF "Update Gen. Prod. Post. Groups" <> "Update Gen. Prod. Post. Groups"::No THEN
+          EXIT(TRUE);
+        IF "Update G/L Accounts" <> "Update G/L Accounts"::No THEN
+          EXIT(TRUE);
+        IF "Update Items" <> "Update Items"::No THEN
+          EXIT(TRUE);
+        IF "Update Item Categories" <> "Update Item Categories"::No THEN
+          EXIT(TRUE);
+        IF "Update Item Charges" <> "Update Item Charges"::No THEN
+          EXIT(TRUE);
+        IF "Update Resources" <> "Update Resources"::No THEN
+          EXIT(TRUE);
+        IF "Update Gen. Journal Lines" <> "Update Gen. Journal Lines"::No THEN
+          EXIT(TRUE);
+        IF "Update Gen. Journal Allocation" <> "Update Gen. Journal Allocation"::No THEN
+          EXIT(TRUE);
+        IF "Update Std. Gen. Jnl. Lines" <> "Update Std. Gen. Jnl. Lines"::No THEN
+          EXIT(TRUE);
+        IF "Update Res. Journal Lines" <> "Update Res. Journal Lines"::No THEN
+          EXIT(TRUE);
+        IF "Update Job Journal Lines" <> "Update Job Journal Lines"::No THEN
+          EXIT(TRUE);
+        IF "Update Requisition Lines" <> "Update Requisition Lines"::No THEN
+          EXIT(TRUE);
+        IF "Update Std. Item Jnl. Lines" <> "Update Std. Item Jnl. Lines"::No THEN
+          EXIT(TRUE);
+        IF "Update Service Docs." <> "Update Service Docs."::No THEN
+          EXIT(TRUE);
+        IF "Update Serv. Price Adj. Detail" <> "Update Serv. Price Adj. Detail"::No THEN
+          EXIT(TRUE);
+        IF "Update Sales Documents" <> "Update Sales Documents"::No THEN
+          EXIT(TRUE);
+        IF "Update Purchase Documents" <> "Update Purchase Documents"::No THEN
+          EXIT(TRUE);
+        IF "Update Production Orders" <> "Update Production Orders"::No THEN
+          EXIT(TRUE);
+        IF "Update Work Centers" <> "Update Work Centers"::No THEN
+          EXIT(TRUE);
+        IF "Update Machine Centers" <> "Update Machine Centers"::No THEN
+          EXIT(TRUE);
+        IF "Update Reminders" <> "Update Reminders"::No THEN
+          EXIT(TRUE);
+        IF "Update Finance Charge Memos" <> "Update Finance Charge Memos"::No THEN
+          EXIT(TRUE);
+      END;
+      EXIT(FALSE)
+    END;
+
+    LOCAL PROCEDURE CopyFromServiceDocDimToLine@1130000(VAR ToServiceLine@1002 : Record 5902;VAR FromServiceLine@1003 : Record 5902);
+    VAR
+      DocDim@1001 : Record 357;
+      FromDocDim@1000 : Record 357;
+    BEGIN
+      DocDim.SETRANGE("Table ID",DATABASE::"Service Line");
+      DocDim.SETRANGE("Document Type",ToServiceLine."Document Type");
+      DocDim.SETRANGE("Document No.",ToServiceLine."Document No.");
+      DocDim.SETRANGE("Line No.",ToServiceLine."Line No.");
+      DocDim.DELETEALL;
+      ToServiceLine."Shortcut Dimension 1 Code" := FromServiceLine."Shortcut Dimension 1 Code";
+      ToServiceLine."Shortcut Dimension 2 Code" := FromServiceLine."Shortcut Dimension 2 Code";
+      FromDocDim.SETRANGE("Table ID",DATABASE::"Service Line");
+      FromDocDim.SETRANGE("Document Type",FromServiceLine."Document Type");
+      FromDocDim.SETRANGE("Document No.",FromServiceLine."Document No.");
+      FromDocDim.SETRANGE("Line No.",FromServiceLine."Line No.");
+      IF FromDocDim.FIND('-') THEN BEGIN
+        REPEAT
+          DocDim.INIT;
+          DocDim."Table ID" := DATABASE::"Service Line";
+          DocDim."Document Type" := ToServiceLine."Document Type";
+          DocDim."Document No." := ToServiceLine."Document No.";
+          DocDim."Line No." := ToServiceLine."Line No.";
+          DocDim."Dimension Code" := FromDocDim."Dimension Code";
+          DocDim."Dimension Value Code" := FromDocDim."Dimension Value Code";
+          DocDim.INSERT;
+        UNTIL FromDocDim.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE "<<3LI-Functions>>"@1000000000();
+    BEGIN
+    END;
+
+    LOCAL PROCEDURE CopyFromSalesDocDimToLine@1000000002(VAR ToSalesLine@1002 : Record 37;VAR FromSalesLine@1003 : Record 37);
+    VAR
+      DocDim@1001 : Record 357;
+      FromDocDim@1000 : Record 357;
+    BEGIN
+      DocDim.SETRANGE("Table ID",DATABASE::"Sales Line");
+      DocDim.SETRANGE("Document Type",ToSalesLine."Document Type");
+      DocDim.SETRANGE("Document No.",ToSalesLine."Document No.");
+      DocDim.SETRANGE("Line No.",ToSalesLine."Line No.");
+      DocDim.DELETEALL;
+      ToSalesLine."Shortcut Dimension 1 Code" := FromSalesLine."Shortcut Dimension 1 Code";
+      ToSalesLine."Shortcut Dimension 2 Code" := FromSalesLine."Shortcut Dimension 2 Code";
+      FromDocDim.SETRANGE("Table ID",DATABASE::"Sales Line");
+      FromDocDim.SETRANGE("Document Type",FromSalesLine."Document Type");
+      FromDocDim.SETRANGE("Document No.",FromSalesLine."Document No.");
+      FromDocDim.SETRANGE("Line No.",FromSalesLine."Line No.");
+      IF FromDocDim.FIND('-') THEN BEGIN
+        REPEAT
+          DocDim.INIT;
+          DocDim."Table ID" := DATABASE::"Sales Line";
+          DocDim."Document Type" := ToSalesLine."Document Type";
+          DocDim."Document No." := ToSalesLine."Document No.";
+          DocDim."Line No." := ToSalesLine."Line No.";
+          DocDim."Dimension Code" := FromDocDim."Dimension Code";
+          DocDim."Dimension Value Code" := FromDocDim."Dimension Value Code";
+          DocDim.INSERT;
+        UNTIL FromDocDim.NEXT = 0;
+      END;
+    END;
+
+    LOCAL PROCEDURE CopyFromPurchDocDimToLine@1000000001(VAR ToPurchLine@1003 : Record 39;VAR FromPurchLine@1002 : Record 39);
+    VAR
+      DocDim@1001 : Record 357;
+      FromDocDim@1000 : Record 357;
+    BEGIN
+      DocDim.SETRANGE("Table ID",DATABASE::"Purchase Line");
+      DocDim.SETRANGE("Document Type",ToPurchLine."Document Type");
+      DocDim.SETRANGE("Document No.",ToPurchLine."Document No.");
+      DocDim.SETRANGE("Line No.",ToPurchLine."Line No.");
+      DocDim.DELETEALL;
+      ToPurchLine."Shortcut Dimension 1 Code" := FromPurchLine."Shortcut Dimension 1 Code";
+      ToPurchLine."Shortcut Dimension 2 Code" := FromPurchLine."Shortcut Dimension 2 Code";
+      FromDocDim.SETRANGE("Table ID",DATABASE::"Purchase Line");
+      FromDocDim.SETRANGE("Document Type",FromPurchLine."Document Type");
+      FromDocDim.SETRANGE("Document No.",FromPurchLine."Document No.");
+      FromDocDim.SETRANGE("Line No.",FromPurchLine."Line No.");
+      IF FromDocDim.FIND('-') THEN BEGIN
+        REPEAT
+          DocDim.INIT;
+          DocDim."Table ID" := DATABASE::"Purchase Line";
+          DocDim."Document Type" := ToPurchLine."Document Type";
+          DocDim."Document No." := ToPurchLine."Document No.";
+          DocDim."Line No." := ToPurchLine."Line No.";
+          DocDim."Dimension Code" := FromDocDim."Dimension Code";
+          DocDim."Dimension Value Code" := FromDocDim."Dimension Value Code";
+          DocDim.INSERT;
+        UNTIL FromDocDim.NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE SavePurchaseLineData@1000000004(PurchaseLine_P@1000000000 : Record 39);
+    VAR
+      VATSaveData_L@1000000001 : Record 8053329;
+    BEGIN
+      WITH PurchaseLine_P DO BEGIN
+        VATSaveData_L.INIT;
+        VATSaveData_L.TableID := 39;
+        VATSaveData_L."Document Type" := "Document Type";
+        VATSaveData_L."Document no." := "Document No.";
+        VATSaveData_L."Line No." := "Line No.";
+        VATSaveData_L."Drop Shipment" := "Drop Shipment";
+        VATSaveData_L."Drop Ship. Document No." := "Sales Order No.";
+        VATSaveData_L."Drop Ship. Document Line No." := "Sales Order Line No.";
+        VATSaveData_L."Special order" := "Special Order";
+        VATSaveData_L."Special order Document No." := "Special Order Sales No.";
+        VATSaveData_L."Special order Doc. line No." := "Special Order Sales Line No.";
+        IF NOT  VATSaveData_L.INSERT THEN
+          VATSaveData_L.MODIFY;
+      END;
+    END;
+
+    PROCEDURE SaveSalesLineData@1000000005(SalesLine_P@1000000000 : Record 37);
+    VAR
+      VATSaveData_L@1000000001 : Record 8053329;
+    BEGIN
+      WITH SalesLine_P DO BEGIN
+        VATSaveData_L.INIT;
+        VATSaveData_L.TableID := 37;
+        VATSaveData_L."Document Type" := "Document Type";
+        VATSaveData_L."Document no." := "Document No.";
+        VATSaveData_L."Line No." := "Line No.";
+        VATSaveData_L."Drop Shipment" := "Drop Shipment";
+        VATSaveData_L."Drop Ship. Document No." := "Purchase Order No.";
+        VATSaveData_L."Drop Ship. Document Line No." := "Purch. Order Line No.";
+        VATSaveData_L."Special order" := "Special Order";
+        VATSaveData_L."Special order Document No." := "Special Order Purchase No.";
+        VATSaveData_L."Special order Doc. line No." := "Special Order Purch. Line No.";
+        IF NOT  VATSaveData_L.INSERT THEN
+          VATSaveData_L.MODIFY;
+      END;
+    END;
+
+    PROCEDURE RemovePurchaseLineData@1000000006(VAR PurchaseLine_P@1000000000 : Record 39);
+    BEGIN
+      WITH PurchaseLine_P DO BEGIN
+        "Drop Shipment" := FALSE;
+        "Sales Order No." := '';
+        "Sales Order Line No." := 0;
+        "Special Order" := FALSE;
+        "Special Order Sales No." := '';
+        "Special Order Sales Line No." := 0;
+        MODIFY;
+      END;
+    END;
+
+    PROCEDURE RemoveSalesLineData@1000000007(VAR SalesLine_P@1000000000 : Record 37);
+    BEGIN
+      WITH SalesLine_P DO BEGIN
+        "Drop Shipment" := FALSE;
+        "Purchase Order No." := '';
+        "Purch. Order Line No." := 0;
+        "Special Order" := FALSE;
+        "Special Order Purchase No." := '';
+        "Special Order Purch. Line No." := 0;
+        MODIFY;
+      END;
+    END;
+
+    PROCEDURE RestorePurchaseLineData@1000000009(VAR PurchaseLine_P@1000000000 : Record 39);
+    VAR
+      VATSaveData_L@1000000001 : Record 8053329;
+    BEGIN
+      WITH PurchaseLine_P DO BEGIN
+        VATSaveData_L.GET(39,PurchaseLine_P."Document Type","Document No.","Line No.");
+        "Drop Shipment" := VATSaveData_L."Drop Shipment";
+        "Sales Order No." := VATSaveData_L."Drop Ship. Document No.";
+        "Sales Order Line No." := VATSaveData_L."Drop Ship. Document Line No.";
+        "Special Order" := VATSaveData_L."Special order";
+        "Special Order Sales No." := VATSaveData_L."Special order Document No.";
+        "Special Order Sales Line No." := VATSaveData_L."Special order Doc. line No.";
+        MODIFY;
+      END;
+    END;
+
+    PROCEDURE RestoreSalesLineData@1000000008(VAR SalesLine_P@1000000000 : Record 37);
+    VAR
+      VATSaveData_L@1000000001 : Record 8053329;
+    BEGIN
+      WITH SalesLine_P DO BEGIN
+        VATSaveData_L.GET(37,SalesLine_P."Document Type","Document No.","Line No.");
+        "Drop Shipment" := VATSaveData_L."Drop Shipment";
+        "Purchase Order No." := VATSaveData_L."Drop Ship. Document No.";
+        "Purch. Order Line No." := VATSaveData_L."Drop Ship. Document Line No.";
+        "Special Order" := VATSaveData_L."Special order";
+        "Special Order Purchase No." := VATSaveData_L."Special order Document No.";
+        "Special Order Purch. Line No." := VATSaveData_L."Special order Doc. line No.";
+        MODIFY;
+      END;
+    END;
+
+    PROCEDURE UpdateSalesline@1000000003(SalesHeader_P@1000000002 : Record 36;VAR SalesLine_P@1000000000 : Record 37;VAR NewSalesLine_P@1000000001 : Record 37);
+    VAR
+      SalesLineOld@1000000011 : Record 37;
+      VATRateChangeLogEntry@1000000010 : Record 552;
+      RecRef@1000000009 : RecordRef;
+      SalesHeaderStatusChanged@1000000008 : Boolean;
+      NewVatProdPotingGroup@1000000007 : Code[10];
+      NewGenProdPostingGroup@1000000006 : Code[10];
+      ConvertVATProdPostingGroup@1000000005 : Boolean;
+      ConvertGenProdPostingGroup@1000000004 : Boolean;
+      RoundingPrecision@1000000003 : Decimal;
+      VATStart_L@1000000012 : Decimal;
+      SalesLinePrepayment_L@1000000013 : Record 37;
+      Item_l@8053000 : Record 27;
+      ItemVariant_l@8053001 : Record 5401;
+    BEGIN
+      // 20131224-wi00-CMC02.02.00-TVA-JLT01 : START -->
+      IF (SalesLine_P.Type = SalesLine_P.Type::Item) AND (SalesLine_P."Document Type"=SalesLine_P."Document Type"::Order) THEN BEGIN
+        Item_l.GET(SalesLine_P."No.");
+        IF SalesLine_P."Variant Code"<>'' THEN
+          IF NOT ItemVariant_l.GET(SalesLine_P."No.",SalesLine_P."Variant Code") THEN EXIT ;
+        IF (Item_l."Blocked For Sales")  OR (ItemVariant_l."Blocked For Sales") THEN EXIT;
+      END;
+      // 20131224-wi00-CMC02.02.00-TVA-JLT01 : STOP <--
+
+      IF SalesLine_P.Quantity = SalesLine_P."Outstanding Quantity" THEN BEGIN
+
+
+        //--> VAT-NAVAGRI-Gestion d'un accompte sur la ligne
+        VATStart_L:=0;
+        IF SalesLine_P."Prepayment VAT %"<>0 THEN VATStart_L:= SalesLine_P."Prepayment VAT %";
+        //--< VAT-NAVAGRI
+
+
+        RecRef.GETTABLE(SalesLine_P);
+
+        IF SalesHeader_P."Prices Including VAT" THEN SalesLineOld := SalesLine_P;
+
+        //20131216-wi00-CMC02.01.00-TVA-BMA01 : Gestion pour g'rer famille article
+        {
+        IF SalesLine_P.Type=SalesLine_P.Type::Item THEN BEGIN
+         //UpdateRecCMC(RecRef,ConvertVATProdPostGrp(VATRateChangeSetup."Update Sales Documents"),
+         //ConvertGenProdPostGrp(VATRateChangeSetup."Update Sales Documents"),SalesLine_P."No.");
+         }
+         UpdateRecCMCWithSuspendStChe(SalesLine_P,ConvertVATProdPostGrp(VATRateChangeSetup."Update Sales Documents"),
+          ConvertGenProdPostGrp(VATRateChangeSetup."Update Sales Documents"),SalesLine_P."No.");
+        {
+        END ELSE BEGIN
+         UpdateRec(
+          RecRef,ConvertVATProdPostGrp(VATRateChangeSetup."Update Sales Documents"),
+          ConvertGenProdPostGrp(VATRateChangeSetup."Update Sales Documents"));
+        END;
+          //20131216-wi00-CMC02.01.00-TVA-BMA01
+        }
+
+        IF SalesHeader_P."Prices Including VAT" AND VATRateChangeSetup."Perform Conversion" THEN BEGIN
+          RecRef.SETTABLE(SalesLine_P);
+          RoundingPrecision := GetRoundingPrecision(SalesHeader_P."Currency Code");
+          SalesLine_P.VALIDATE("Unit Price",ROUND(SalesLineOld."Unit Price" * (100 + SalesLine_P."VAT %") / (100 +
+              SalesLineOld."VAT %"),RoundingPrecision))
+        END;
+
+        //--> VAT-NAVAGRI-Gestion d'un accompte sur la ligne/(Correction bogue NAVAGRI)
+        IF VATStart_L<>0 THEN BEGIN
+         SalesLinePrepayment_L.GET(SalesLine_P."Document Type",SalesLine_P."Document No.",SalesLine_P."Line No.");
+         SalesLinePrepayment_L."Prepayment VAT %":=VATStart_L;
+         SalesLinePrepayment_L.MODIFY;
+        END;
+        //--< VAT-NAVAGRI
+
+
+      END ELSE BEGIN
+
+        IF VATRateChangeSetup."Perform Conversion" AND (SalesLine_P."Outstanding Quantity" <> 0) THEN BEGIN
+          NewVatProdPotingGroup := SalesLine_P."VAT Prod. Posting Group";
+          NewGenProdPostingGroup := SalesLine_P."Gen. Prod. Posting Group";
+          IF VATRateChangeConversion.GET(
+               VATRateChangeConversion.Type::"VAT Prod. Posting Group",SalesLine_P."VAT Prod. Posting Group")
+          THEN
+            NewVatProdPotingGroup := VATRateChangeConversion."To Code";
+          IF VATRateChangeConversion.GET(
+               VATRateChangeConversion.Type::"Gen. Prod. Posting Group",SalesLine_P."Gen. Prod. Posting Group")
+          THEN
+            NewGenProdPostingGroup := VATRateChangeConversion."To Code";
+
+           // --> 20140102-wi00-CMC.02.02-TVA-OAR01
+          IF (SalesLine_P."Document Type" = SalesLine_P."Document Type"::"Blanket Order") THEN BEGIN
+            IF SalesLine_P."Quantity Invoiced" <= SalesLine_P."Quantity Shipped" THEN
+              AddNewSalesLine(SalesLine_P,NewVatProdPotingGroup,NewGenProdPostingGroup,NewSalesLine_P);
+          END ELSE
+          // <-- 20140102-wi00-CMC.02.02-TVA-OAR01
+             AddNewSalesLine(SalesLine_P,NewVatProdPotingGroup,NewGenProdPostingGroup,NewSalesLine_P);
+
+        END ELSE BEGIN
+          RecRef.GETTABLE(SalesLine_P);
+          VATRateChangeLogEntry.INIT;
+          VATRateChangeLogEntry.RecordID := RecRef.RECORDID;
+          VATRateChangeLogEntry."Table ID" := RecRef.NUMBER;
+          IF (SalesLine_P."Outstanding Quantity" = 0) AND VATRateChangeSetup."Perform Conversion" THEN
+            VATRateChangeLogEntry.Description := Text0007
+          ELSE BEGIN
+            VATRateChangeLogEntry.Description :=
+              STRSUBSTNO(Text0009,VATRateChangeSetup.FIELDCAPTION("Perform Conversion"));
+            IF SalesLine_P."Outstanding Quantity" <> 0 THEN
+              VATRateChangeLogEntry.Description := STRSUBSTNO(Text0017,SalesLine_P."Line No.")
+          END;
+          VATRateChangeLogEntry."Old Gen. Prod. Posting Group" := SalesLine_P."Gen. Prod. Posting Group";
+          VATRateChangeLogEntry."New Gen. Prod. Posting Group" := SalesLine_P."Gen. Prod. Posting Group";
+          VATRateChangeLogEntry."Old VAT Prod. Posting Group" := SalesLine_P."VAT Prod. Posting Group";
+          VATRateChangeLogEntry."New VAT Prod. Posting Group" := SalesLine_P."VAT Prod. Posting Group";
+          WriteLogEntry(VATRateChangeLogEntry);
+        END;
+      END;
+    END;
+
+    PROCEDURE SetFiltersItem@1000000011(VAR Item_P@1000000000 : Record 27);
+    BEGIN
+      FiltersItemCheck:=TRUE;
+      FiltersItem:=Item_P;
+      FiltersItem.SETRECFILTER;
+    END;
+
+    PROCEDURE UpdateItemWithFilters@1000000010();
+    VAR
+      Item@1000 : Record 27;
+      RecRef@1001 : RecordRef;
+      SalesPrice_L@1000000000 : Record 7002;
+      SalesPriceTemp_L@1000000001 : TEMPORARY Record 7002;
+      CustomerPriceGroup_L@1000000002 : Record 6;
+      I@1000000003 : Integer;
+    BEGIN
+      ProgressWindow.UPDATE(1,Item.TABLECAPTION);
+      WITH VATRateChangeSetup DO BEGIN
+        //IF "Item Filter" = '' THEN
+          //UpdateTable(DATABASE::Item,ConvertVATProdPostGrp("Update Items"),ConvertGenProdPostGrp("Update Items"))
+        //ELSE BEGIN
+
+
+
+          //IF FiltersItem.FIND('-') THEN
+            ProgressWindow.UPDATE(3,FiltersItem.COUNT);
+            REPEAT
+              I := I + 1;
+              ProgressWindow.UPDATE(2,I);
+
+              RecRef.GETTABLE(FiltersItem);
+
+              UpdateRec(RecRef,ConvertVATProdPostGrp("Update Items"),ConvertGenProdPostGrp("Update Items"));
+
+
+              // <-- 20131112-TVACMR-BMA
+              IF VATRateChangeSetup."Commit at Item" THEN
+                COMMIT;
+              // >-- 20131112-TVACMR-BMA
+            UNTIL FiltersItem.NEXT = 0;
+        END;
+      //END;
+    END;
+
+    PROCEDURE CheckTable@1000000012(TableID@1005 : Integer;ConvertVATProdPostingGroup@1000 : Boolean;ConvertGenProdPostingGroup@1001 : Boolean) ReturnStatus : Boolean;
+    VAR
+      RecRef@1004 : RecordRef;
+      I@1003 : Integer;
+      FieldRef1@1000000000 : FieldRef;
+      FieldRef2@1000000001 : FieldRef;
+      Field@1000000002 : Record 2000000041;
+      FieldRef@1000000003 : FieldRef;
+    BEGIN
+      IF NOT ConvertVATProdPostingGroup AND NOT ConvertGenProdPostingGroup THEN
+        EXIT;
+
+      RecRef.OPEN(TableID);
+      ReturnStatus:=FALSE;
+      VATRateChangeConversion.RESET;
+      IF VATRateChangeConversion.FINDFIRST THEN BEGIN
+       REPEAT
+        Field.SETRANGE(TableNo, TableID);
+        Field.SETRANGE(RelationTableNo,DATABASE::"VAT Product Posting Group");
+        IF Field.FIND('+') THEN
+          REPEAT
+              FieldRef := RecRef.FIELD(Field."No.");
+              //VATProdPostingGroupConverted := FALSE;
+
+              RecRef.RESET;
+              FieldRef.SETRANGE(VATRateChangeConversion."From Code");
+              IF RecRef.FIND('-') THEN BEGIN
+                ReturnStatus:=TRUE;
+              END;
+          UNTIL Field.NEXT(-1) = 0;
+
+       UNTIL VATRateChangeConversion.NEXT=0;
+      END;
+
+      EXIT(ReturnStatus);
+    END;
+
+    PROCEDURE SetNextAction@1000000013(Position_P@1000000002 : Integer);
+    VAR
+      Integer_L@1000000000 : Integer;
+    BEGIN
+      // Met . jour le champ Prochaine 'tape pour l'action suivante.(Si pas d'actions retour au d'but)
+      //---------------------------------------------------------------------------------------
+      // Entr'es: NA
+      //
+      // Sorties: NA
+      //---------------------------------------------------------------------------------------
+
+      Integer_L:=VATRateChangeSetup."Start At Step";
+
+      IF Integer_L<=Position_P THEN
+        Integer_L:=Integer_L+1;
+
+      IF Integer_L=25 THEN
+       Integer_L:=0;
+      VATRateChangeSetup."Start At Step":=Integer_L;
+      VATRateChangeSetup.MODIFY;
+
+      IF VATRateChangeSetup."Perform Conversion" AND VATRateChangeSetup."Commit at step" THEN
+       COMMIT;
+    END;
+
+    PROCEDURE UpdateCMCCollectedTax@1000000015();
+    VAR
+      CMCCollectedTax_L@1000000000 : Record 8053006;
+      I@1000000001 : Integer;
+      NewCMCCollectedTax_L@1000000002 : Record 8053006;
+    BEGIN
+      // Ajoute les codes TVA pour la table CMC Collected Tax qui sont dans la campagne en cours pour le changement TVA
+      //---------------------------------------------------------------------------------------
+      // Entr'es: NA
+      //
+      // Sorties: NA
+      //---------------------------------------------------------------------------------------
+      ProgressWindow.UPDATE(1,CMCCollectedTax_L.TABLECAPTION);
+      VATRateChangeConversion.RESET;
+      WITH VATRateChangeSetup DO BEGIN
+            IF VATRateChangeConversion.FINDFIRST THEN BEGIN
+              ProgressWindow.UPDATE(3,CMCCollectedTax_L.COUNT);
+              REPEAT
+                CMCCollectedTax_L.RESET;
+                CMCCollectedTax_L.SETRANGE("VAT Prod. Posting Group",VATRateChangeConversion."From Code");
+                CMCCollectedTax_L.SETRANGE(CMCCollectedTax_L."Campain No.",GetCMCCampaign(VATRateChangeConversion."Posting Date"));
+                IF CMCCollectedTax_L.FINDFIRST THEN BEGIN
+                 REPEAT
+                  NewCMCCollectedTax_L:=CMCCollectedTax_L;
+                  NewCMCCollectedTax_L.VALIDATE("VAT Prod. Posting Group",VATRateChangeConversion."To Code");
+                  NewCMCCollectedTax_L.VALIDATE(NewCMCCollectedTax_L."Starting date",VATRateChangeConversion."Posting Date");
+                  IF NewCMCCollectedTax_L.INSERT THEN;
+                 UNTIL CMCCollectedTax_L.NEXT=0;
+                END;
+                I := I + 1;
+                ProgressWindow.UPDATE(2,I);
+              UNTIL VATRateChangeConversion.NEXT = 0;
+            END;
+        END;
+    END;
+
+    PROCEDURE GetCMCCampaign@1000000016(DateCampaign_G@1000000000 : Date) CampaignCode : Code[10];
+    VAR
+      CMCCampaign_L@1000000001 : Record 8052991;
+    BEGIN
+      // Retourne la date de la campagne a modifier dans NAV pour la date de changement TVA
+      //---------------------------------------------------------------------------------------
+      // Entr'es: DateCampaign_G
+      //
+      // Sorties: NA
+      //---------------------------------------------------------------------------------------
+      IF DateCampaign_G=0D THEN
+       EXIT('');
+      CampaignCode:='';
+      CMCCampaign_L.RESET;
+      CMCCampaign_L.SETFILTER("Starting Date",'<='+FORMAT(DateCampaign_G));
+      CMCCampaign_L.SETFILTER("Ending Date",'>='+FORMAT(DateCampaign_G));
+      IF CMCCampaign_L.FINDFIRST THEN
+        CampaignCode:=CMCCampaign_L."No.";
+
+      EXIT(CampaignCode);
+    END;
+
+    PROCEDURE UpdateCMCServicePrices@1000000017();
+    VAR
+      CMCServicePrice_L@1000000000 : Record 8053000;
+      I@1000000001 : Integer;
+      NewCMCServicePrice_L@1000000002 : Record 8053000;
+    BEGIN
+      // Ajoute les codes TVA pour la table CMC Service Price qui sont dans la campagne en cours pour le changement TVA
+      //---------------------------------------------------------------------------------------
+      // Entr'es: NA
+      //
+      // Sorties: NA
+      //---------------------------------------------------------------------------------------
+      ProgressWindow.UPDATE(1,CMCServicePrice_L.TABLECAPTION);
+      VATRateChangeConversion.RESET;
+      WITH VATRateChangeSetup DO BEGIN
+            IF VATRateChangeConversion.FINDFIRST THEN BEGIN
+              ProgressWindow.UPDATE(3,CMCServicePrice_L.COUNT);
+              REPEAT
+                CMCServicePrice_L.SETRANGE("VAT Prod. Posting Group",VATRateChangeConversion."From Code");
+                CMCServicePrice_L.SETRANGE(CMCServicePrice_L."Campaign No.",GetCMCCampaign(VATRateChangeConversion."Posting Date"));
+                IF CMCServicePrice_L.FINDFIRST THEN REPEAT
+                // 20131210-wi00-CMC01.07.00-TVA-JLT01 : START -->
+                  IF (CMCServicePrice_L."Starting Date"<>VATRateChangeConversion."Posting Date") AND
+                     (CMCServicePrice_L."Ending Date">CALCDATE('-1J',VATRateChangeConversion."Posting Date")) THEN BEGIN
+                // 20131210-wi00-CMC01.07.00-TVA-JLT01 : STOP <--
+                    NewCMCServicePrice_L:= CMCServicePrice_L;
+                    NewCMCServicePrice_L.VALIDATE("VAT Prod. Posting Group",VATRateChangeConversion."To Code");
+                    NewCMCServicePrice_L.VALIDATE(NewCMCServicePrice_L."Starting Date",VATRateChangeConversion."Posting Date");
+                    //IF NewCMCServicePrice_L.INSERT THEN begin;// 20131210-wi00-CMC01.07.00-TVA-JLT01 : START -->
+                    IF NewCMCServicePrice_L.INSERT THEN ;
+                    CMCServicePrice_L."Ending Date":=CALCDATE('-1J',VATRateChangeConversion."Posting Date");
+                    CMCServicePrice_L.MODIFY;
+
+                 END;
+                UNTIL CMCServicePrice_L.NEXT=0;
+                I := I + 1;
+                ProgressWindow.UPDATE(2,I);
+              UNTIL VATRateChangeConversion.NEXT = 0;
+            END;
+        END;
+    END;
+
+    PROCEDURE GetOldVat@1000000014(Date_P@1000000000 : Date;VAR Group_P@1000000002 : Code[20];VAR GroupVAT_P@1000000003 : Code[20];Item_P@8053000 : Code[20]) Result : Boolean;
+    VAR
+      VATRateChangeConversion_L@1000000001 : Record 551;
+      item_l@8053001 : Record 27;
+      Bio_l@8053002 : Integer;
+      Group_l@1000000004 : Code[10];
+      GroupVat_l@1000000005 : Code[20];
+    BEGIN
+      //20131211-wi00-CMC02.01.00-TVA-JLT01 : Fonction GetOldVat
+      // renvoi en fonction de la date de changement l'ancien groupe compta, sinon ne change rien.
+      IF Date_P=0D THEN Date_P:=010114D ; // attention, changer la date de bascule ICI
+      Group_l:=Group_P;
+      GroupVat_l:=GroupVAT_P;
+      //Vatgroup
+      VATRateChangeConversion_L.SETFILTER(VATRateChangeConversion_L."Posting Date",'>%1',Date_P);
+      VATRateChangeConversion_L.SETRANGE(Type,VATRateChangeConversion_L.Type::"VAT Prod. Posting Group");
+      VATRateChangeConversion_L.SETRANGE("To Code",GroupVAT_P);
+
+      IF VATRateChangeConversion_L.FINDFIRST THEN GroupVAT_P:=VATRateChangeConversion_L."From Code";
+
+      IF item_l.GET(Item_P) THEN BEGIN
+        IF item_l."Permitted In Organic Farming"=TRUE THEN Bio_l:=0 ELSE Bio_l:=1;
+        VATRateChangeConversion_L.SETRANGE("Item family",item_l."Family Code");
+        VATRateChangeConversion_L.SETFILTER("Permitted In Organic Farming",'%1|%2',Bio_l,2);
+        IF VATRateChangeConversion_L.FINDFIRST THEN GroupVAT_P:=VATRateChangeConversion_L."From Code";
+      END;
+
+      // group
+      VATRateChangeConversion_L.RESET;
+
+      VATRateChangeConversion_L.SETFILTER(VATRateChangeConversion_L."Posting Date",'>%1',Date_P);
+      VATRateChangeConversion_L.SETRANGE(Type,VATRateChangeConversion_L.Type::"Gen. Prod. Posting Group");
+      VATRateChangeConversion_L.SETRANGE("To Code",Group_P);
+
+      IF VATRateChangeConversion_L.FINDFIRST THEN Group_P:=VATRateChangeConversion_L."From Code";
+
+      IF item_l.GET(Item_P) THEN BEGIN
+        VATRateChangeConversion_L.SETRANGE("Item family",item_l."Family Code");
+        VATRateChangeConversion_L.SETFILTER("Permitted In Organic Farming",'%1|%2',Bio_l,2);
+        IF VATRateChangeConversion_L.FINDFIRST THEN Group_P:=VATRateChangeConversion_L."From Code";
+      END;
+      IF (Group_l<>Group_P) OR (GroupVat_l<>GroupVAT_P) THEN EXIT(TRUE);
+    END;
+
+    PROCEDURE UpdateGLAccountMS@1000000019();
+    VAR
+      GLAccount@1000 : Record 8053078;
+      RecRef@1001 : RecordRef;
+      MCDataSetup_L@1000000000 : Record 8053077;
+      I@8053000 : Integer;
+    BEGIN
+      // GSre les Donn'es Master Data pour les compte g'n'raux
+      //---------------------------------------------------------------------------------------
+      // Entr'es: NA
+      //
+      // Sorties: NA
+      //---------------------------------------------------------------------------------------
+
+      ProgressWindow.UPDATE(1,GLAccount.TABLECAPTION);
+      WITH VATRateChangeSetup DO BEGIN
+
+        //IF "Account Filter" = '' THEN
+      //UpdateTable(DATABASE::"G/L Account",ConvertVATProdPostGrp("Update G/L Accounts"),ConvertGenProdPostGrp("Update G/L Accounts"))
+        //ELSE BEGIN
+
+          IF "Account Filter" <> ''THEN
+            GLAccount.SETFILTER("No.","Account Filter");
+          IF GLAccount.FIND('-') THEN BEGIN
+            REPEAT
+              RecRef.GETTABLE(GLAccount);
+              IF cduCMCMCDataMgt_G.IsMCCompany(15) THEN BEGIN   // 20131218-wi00-CMC02.02.00-TVA-JLT01
+                MCDataSetup_L.GET;
+                MCDataSetup_L.TESTFIELD("Master Company Code");
+
+                IF MCDataSetup_L."Master Company Code" <> cduCMCMCDataMgt_G.GetMCCompanyCode('') THEN
+                 EXIT;
+
+                cduCMCMCDataMgt_G.OpenMasterData(RecRef);
+                UpdateRec(RecRef,ConvertVATProdPostGrp("Update G/L Accounts"),ConvertGenProdPostGrp("Update G/L Accounts"));
+                cduCMCMCDataMgt_G.RunMasterData(RecRef);
+              END;
+                I := I + 1;
+                ProgressWindow.UPDATE(2,I);
+
+            UNTIL GLAccount.NEXT = 0;
+          END;
+      END;
+    END;
+
+    PROCEDURE UpdateItemMS@1000000020();
+    VAR
+      Item@1000 : Record 8053079;
+      RecRef@1001 : RecordRef;
+      MCDataSetup_L@1000000000 : Record 8053077;
+      I@8053000 : Integer;
+    BEGIN
+      // GSre les Donn'es Master Data pour les articles MS
+      //---------------------------------------------------------------------------------------
+      // Entr'es: NA
+      //
+      // Sorties: NA
+      //---------------------------------------------------------------------------------------
+
+      ProgressWindow.UPDATE(1,Item.TABLECAPTION);
+      WITH VATRateChangeSetup DO BEGIN
+        //IF "Item Filter" = '' THEN
+          //UpdateTable(DATABASE::Item,ConvertVATProdPostGrp("Update Items"),ConvertGenProdPostGrp("Update Items"))
+        //ELSE BEGIN
+
+          IF "Item Filter" <> '' THEN
+           Item.SETFILTER("No.","Item Filter");
+
+          IF FiltersItemCheck THEN
+            Item.COPYFILTERS(FiltersItem);
+          IF Item.FIND('-') THEN
+            ProgressWindow.UPDATE(3,Item.COUNT);
+            REPEAT
+              RecRef.GETTABLE(Item);
+              IF cduCMCMCDataMgt_G.IsMCCompany(27) THEN BEGIN   // 20131218-wi00-CMC02.02.00-TVA-JLT01
+                MCDataSetup_L.GET;
+                MCDataSetup_L.TESTFIELD("Master Company Code");
+
+                IF MCDataSetup_L."Master Company Code" <> cduCMCMCDataMgt_G.GetMCCompanyCode('') THEN
+                 EXIT;
+
+                cduCMCMCDataMgt_G.OpenMasterData(RecRef);
+
+                //20131216-wi00-CMC02.01.00-TVA-BMA01 : Gestion pour g'rer famille article
+                //AVANT->UpdateRec(RecRef,ConvertVATProdPostGrp("Update Items"),ConvertGenProdPostGrp("Update Items"));
+                UpdateRecCMC(RecRef,ConvertVATProdPostGrp("Update Items"),
+                          ConvertGenProdPostGrp("Update Items"),Item."No.");
+                //20131216-wi00-CMC02.01.00-TVA-BMA01
+
+
+
+                cduCMCMCDataMgt_G.RunMasterData(RecRef);
+              END;
+                I := I + 1;
+                ProgressWindow.UPDATE(2,I);
+
+            UNTIL Item.NEXT = 0;
+        END;
+      //END;
+    END;
+
+    PROCEDURE UpdateRecCMC@1000000018(VAR RecRef@1005 : RecordRef;ConvertVATProdPostingGroup@1000 : Boolean;ConvertGenProdPostingGroup@1001 : Boolean;ItemCode_P@1000000001 : Code[20]);
+    VAR
+      Field@1008 : Record 2000000041;
+      VATRateChangeLogEntry@1002 : Record 552;
+      FieldRef@1003 : FieldRef;
+      GenProdPostingGroupConverted@1004 : Boolean;
+      VATProdPostingGroupConverted@1006 : Boolean;
+      Item_L@1000000000 : Record 27;
+      GroupVat_L@1000000002 : Code[20];
+      Group_L@1000000003 : Code[20];
+    BEGIN
+      //20131216-wi00-CMC02.01.00-TVA-BMA01 : Fonction GetSetupWithItemCMC
+      // Fonction qui remplace en fonction du code TVA
+      //---------------------------------------------------------------------------------------
+      // Entr'es:
+      //
+      //          ItemCode_P                 ----> Code article
+      //
+      // Sorties: NA
+      //---------------------------------------------------------------------------------------
+
+      VATRateChangeLogEntry.INIT;
+      VATRateChangeLogEntry.RecordID := RecRef.RECORDID;
+      VATRateChangeLogEntry."Table ID" := RecRef.NUMBER;
+      Field.SETRANGE(TableNo,RecRef.NUMBER);
+      Field.SETRANGE(RelationTableNo,DATABASE::"Gen. Product Posting Group");
+      IF Field.FIND('+') THEN
+        REPEAT
+          FieldRef := RecRef.FIELD(Field."No.");
+          GenProdPostingGroupConverted := FALSE;
+          IF ConvertGenProdPostingGroup THEN BEGIN
+            GroupVat_L:='';
+            Group_L:=FieldRef.VALUE;
+
+            //IF VATRateChangeConversion.GET(VATRateChangeConversion.Type::"Gen. Prod. Posting Group",FieldRef.VALUE) THEN BEGIN
+            // 20131221-wi00-CMC02.02.00-TVA-JLT01 : START -->
+            //IF GetSetupWithItemCMC(ItemCode_P,GroupVat_L,Group_L,1,0D) THEN BEGIN
+            VATRateChangeLogEntry."Old Gen. Prod. Posting Group" := FieldRef.VALUE;
+            //  FieldRef.VALIDATE(VATRateChangeConversion."To Code");
+            //  VATRateChangeLogEntry."New Gen. Prod. Posting Group" := FieldRef.VALUE;
+
+            IF GetNewVat(0D,Group_L,GroupVat_L,ItemCode_P) THEN BEGIN
+            // 20131221-wi00-CMC02.02.00-TVA-JLT01 : STOP <--
+              FieldRef.VALIDATE(Group_L);
+              VATRateChangeLogEntry."New Gen. Prod. Posting Group" := FieldRef.VALUE;
+              // 20131221-wi00-CMC02.02.00-TVA-JLT01 : STOP <--
+              GenProdPostingGroupConverted := TRUE;
+            END;
+          END;
+          IF NOT GenProdPostingGroupConverted THEN BEGIN
+            VATRateChangeLogEntry."Old Gen. Prod. Posting Group" := FieldRef.VALUE;
+            VATRateChangeLogEntry."New Gen. Prod. Posting Group" := FieldRef.VALUE;
+          END;
+        UNTIL Field.NEXT(-1) = 0;
+
+      Field.SETRANGE(RelationTableNo,DATABASE::"VAT Product Posting Group");
+      IF Field.FIND('+') THEN
+        REPEAT
+          FieldRef := RecRef.FIELD(Field."No.");
+          VATProdPostingGroupConverted := FALSE;
+          IF ConvertVATProdPostingGroup THEN BEGIN
+            GroupVat_L:=FieldRef.VALUE;
+            Group_L:='';
+            //IF VATRateChangeConversion.GET(VATRateChangeConversion.Type::"VAT Prod. Posting Group",FieldRef.VALUE) THEN BEGIN
+            // 20131221-wi00-CMC02.02.00-TVA-JLT01 : START -->
+            //IF GetSetupWithItemCMC(ItemCode_P,GroupVat_L,Group_L,1,0D) THEN BEGIN
+            VATRateChangeLogEntry."Old VAT Prod. Posting Group" := FieldRef.VALUE;
+            //  IF NOT (RecRef.NUMBER = DATABASE::"Gen. Product Posting Group") THEN
+            //    FieldRef.VALIDATE(VATRateChangeConversion."To Code")
+            //  ELSE
+            //    FieldRef.VALUE := VATRateChangeConversion."To Code";
+            // VATRateChangeLogEntry."New VAT Prod. Posting Group" := FieldRef.VALUE;
+
+            IF GetNewVat(0D,Group_L,GroupVat_L,ItemCode_P) THEN BEGIN
+              IF NOT (RecRef.NUMBER = DATABASE::"Gen. Product Posting Group") THEN
+                FieldRef.VALIDATE(GroupVat_L)
+              ELSE
+                FieldRef.VALUE := GroupVat_L;
+              // 20131221-wi00-CMC02.02.00-TVA-JLT01 : STOP <--
+              VATRateChangeLogEntry."New VAT Prod. Posting Group" := FieldRef.VALUE;
+              VATProdPostingGroupConverted := TRUE;
+            END;
+          END;
+          IF NOT VATProdPostingGroupConverted THEN BEGIN
+            VATRateChangeLogEntry."Old VAT Prod. Posting Group" := FieldRef.VALUE;
+            VATRateChangeLogEntry."New VAT Prod. Posting Group" := FieldRef.VALUE;
+          END;
+        UNTIL Field.NEXT(-1) = 0;
+
+      IF VATRateChangeSetup."Perform Conversion" THEN BEGIN
+        RecRef.MODIFY;
+        VATRateChangeLogEntry.Converted := TRUE;
+      END;
+      IF (VATRateChangeLogEntry."New Gen. Prod. Posting Group" <> VATRateChangeLogEntry."Old Gen. Prod. Posting Group") OR
+         (VATRateChangeLogEntry."New VAT Prod. Posting Group" <> VATRateChangeLogEntry."Old VAT Prod. Posting Group")
+      THEN
+        WriteLogEntry(VATRateChangeLogEntry);
+    END;
+
+    PROCEDURE GetSetupWithItemCMC@1000000022(ItemCode_P@1000000001 : Code[20];VAR GroupVAT_P@1000000005 : Code[20];VAR Group_P@1000000004 : Code[20];OldOrNew_P@1000000003 : 'Old,New';PostingDate_P@1000000006 : Date) Bool : Boolean;
+    VAR
+      Item_L@1000000002 : Record 27;
+      Option_L@1000000000 : 'Two,Yes,No';
+    BEGIN
+      //20131216-wi00-CMC02.01.00-TVA-BMA01 : Fonction GetSetupWithItemCMC
+      // Retourne le nouveau ou l'ancien code TVA et Groupe Compta Produit pour un articl donn'
+      //---------------------------------------------------------------------------------------
+      // Entr'es:
+      //          ItemCode_P                 ----> Code article
+      //          GroupVAT_P                 ----> Groupe TVA (ancien ou nouveau) pour la recherche
+      //          Group_P                    ----> Groupe Produit (ancien ou nouveau) pour la recherche
+      //          OldOrNew_P                 ----> Old pour recherche de l'ancien et New pour recherche du nouveau
+      //          PostingDate_P              ----> Date de changement
+      // Sorties: NA
+      //---------------------------------------------------------------------------------------
+      IF Item_L.GET(ItemCode_P) THEN;
+      IF Item_L."Permitted In Organic Farming" THEN BEGIN
+       Option_L:=Option_L::Yes;
+      END ELSE BEGIN
+       Option_L:=Option_L::No;
+      END;
+
+      //-->Gestion TVA
+      IF GroupVAT_P<>'' THEN BEGIN
+      VATRateChangeConversion.RESET;
+      VATRateChangeConversion.SETRANGE(Type,VATRateChangeConversion.Type::"VAT Prod. Posting Group");
+      IF PostingDate_P<>0D THEN
+        VATRateChangeConversion.SETFILTER(VATRateChangeConversion."Posting Date",'>%1',PostingDate_P);
+      IF OldOrNew_P=OldOrNew_P::New THEN BEGIN
+       VATRateChangeConversion.SETRANGE("From Code",GroupVAT_P);
+      END ELSE BEGIN
+       VATRateChangeConversion.SETRANGE("To Code",GroupVAT_P);
+      END;
+      VATRateChangeConversion.SETRANGE("Item family",Item_L."Family Code");
+
+      VATRateChangeConversion.SETRANGE("Permitted In Organic Farming",VATRateChangeConversion."Permitted In Organic Farming"::Twice,
+      Option_L);
+      IF VATRateChangeConversion.FINDFIRST THEN BEGIN
+        IF OldOrNew_P=OldOrNew_P::New THEN BEGIN
+             GroupVAT_P:=VATRateChangeConversion."To Code";
+        END ELSE BEGIN
+             GroupVAT_P:=VATRateChangeConversion."From Code";
+        END;
+       EXIT(TRUE);
+      END ELSE BEGIN
+        IF VATRateChangeConversion.GET(VATRateChangeConversion.Type::"VAT Prod. Posting Group",GroupVAT_P) THEN BEGIN
+           IF OldOrNew_P=OldOrNew_P::New THEN BEGIN
+                GroupVAT_P:=VATRateChangeConversion."To Code";
+           END ELSE BEGIN
+                GroupVAT_P:=VATRateChangeConversion."From Code";
+           END;
+          EXIT(TRUE);
+         END;
+        END;
+      END;
+
+      IF Group_P<>'' THEN BEGIN
+      //-->Gestion Groupe
+      VATRateChangeConversion.RESET;
+      VATRateChangeConversion.SETRANGE(Type,VATRateChangeConversion.Type::"Gen. Prod. Posting Group");
+      IF PostingDate_P<>0D THEN
+        VATRateChangeConversion.SETFILTER(VATRateChangeConversion."Posting Date",'>%1',PostingDate_P);
+      IF OldOrNew_P=OldOrNew_P::New THEN BEGIN
+       VATRateChangeConversion.SETRANGE("From Code",Group_P);
+      END ELSE BEGIN
+       VATRateChangeConversion.SETRANGE("To Code",Group_P);
+      END;
+      VATRateChangeConversion.SETRANGE("Item family",Item_L."Family Code");
+      VATRateChangeConversion.SETRANGE("Permitted In Organic Farming",VATRateChangeConversion."Permitted In Organic Farming"::Twice,
+      Option_L);
+      IF VATRateChangeConversion.FINDFIRST THEN BEGIN
+        IF OldOrNew_P=OldOrNew_P::New THEN BEGIN
+             Group_P:=VATRateChangeConversion."To Code";
+        END ELSE BEGIN
+             Group_P:=VATRateChangeConversion."From Code";
+        END;
+       EXIT(TRUE);
+      END ELSE BEGIN
+        IF VATRateChangeConversion.GET(VATRateChangeConversion.Type::"Gen. Prod. Posting Group",Group_P) THEN BEGIN
+           IF OldOrNew_P=OldOrNew_P::New THEN BEGIN
+                Group_P:=VATRateChangeConversion."To Code";
+           END ELSE BEGIN
+                Group_P:=VATRateChangeConversion."From Code";
+           END;
+          EXIT(TRUE);
+         END;
+        END;
+
+      END;
+    END;
+
+    PROCEDURE UpdateRecCMCWithSuspendStChe@8053003(VAR SalesLine_P@1005 : Record 37;ConvertVATProdPostingGroup@1000 : Boolean;ConvertGenProdPostingGroup@1001 : Boolean;ItemCode_P@1000000001 : Code[20]);
+    VAR
+      Field@1008 : Record 2000000041;
+      VATRateChangeLogEntry@1002 : Record 552;
+      FieldRef@1003 : FieldRef;
+      GenProdPostingGroupConverted@1004 : Boolean;
+      VATProdPostingGroupConverted@1006 : Boolean;
+      Item_L@1000000000 : Record 27;
+      GroupVat_L@1000000002 : Code[20];
+      Group_L@1000000003 : Code[20];
+      RecRef_L@8053000 : RecordRef;
+    BEGIN
+      //20131216-wi00-CMC02.01.00-TVA-BMA01 : Fonction GetSetupWithItemCMC
+      // Fonction qui remplace en fonction du code TVA
+      //---------------------------------------------------------------------------------------
+      // Entr'es:
+      //
+      //          ItemCode_P                 ----> Code article
+      //
+      // Sorties: NA
+      //---------------------------------------------------------------------------------------
+
+      VATRateChangeLogEntry.INIT;
+      RecRef_L.GETTABLE(SalesLine_P);
+      VATRateChangeLogEntry.RecordID := RecRef_L.RECORDID;
+      VATRateChangeLogEntry."Table ID" := 37;
+      SalesLine_P.SuspendStatusCheck(TRUE);// 20131217-wi00-CMC02.01.00-TVA-f
+
+
+      GenProdPostingGroupConverted := FALSE;
+      IF ConvertGenProdPostingGroup THEN BEGIN
+        GroupVat_L:='';
+            Group_L:=SalesLine_P."Gen. Prod. Posting Group";
+        //IF VATRateChangeConversion.GET(VATRateChangeConversion.Type::"Gen. Prod. Posting Group",FieldRef.VALUE) THEN BEGIN
+        // 20131221-wi00-CMC02.02.00-TVA-JLT01 : START -->
+        //IF GetSetupWithItemCMC(ItemCode_P,GroupVat_L,Group_L,1,0D) THEN BEGIN
+        IF GetNewVat(0D,Group_L,GroupVat_L,ItemCode_P) THEN BEGIN
+        // 20131221-wi00-CMC02.02.00-TVA-JLT01 : STOP <--
+
+              VATRateChangeLogEntry."Old Gen. Prod. Posting Group" :=SalesLine_P."Gen. Prod. Posting Group";
+          // 20131221-wi00-CMC02.02.00-TVA-JLT01 : START -->
+          // SalesLine_P.VALIDATE("Gen. Bus. Posting Group",VATRateChangeConversion."To Code");
+          SalesLine_P.VALIDATE("Gen. Prod. Posting Group",Group_L);
+          // 20131221-wi00-CMC02.02.00-TVA-JLT01 : STOP <--
+              VATRateChangeLogEntry."New Gen. Prod. Posting Group" := SalesLine_P."Gen. Prod. Posting Group";
+          GenProdPostingGroupConverted := TRUE;
+        END;
+      END;
+      IF NOT GenProdPostingGroupConverted THEN BEGIN
+        VATRateChangeLogEntry."Old Gen. Prod. Posting Group" := SalesLine_P."Gen. Prod. Posting Group";
+        VATRateChangeLogEntry."New Gen. Prod. Posting Group" := SalesLine_P."Gen. Prod. Posting Group";
+      END;
+
+
+      VATProdPostingGroupConverted := FALSE;
+      IF ConvertVATProdPostingGroup THEN BEGIN
+        //GroupVat_L:=SalesLine_P."VAT Bus. Posting Group";// 20131221-wi00-CMC02.02.00-TVA-JLT01
+        GroupVat_L:=SalesLine_P."VAT Prod. Posting Group";// 20131221-wi00-CMC02.02.00-TVA-JLT01
+        Group_L:='';
+        //IF VATRateChangeConversion.GET(VATRateChangeConversion.Type::"VAT Prod. Posting Group",FieldRef.VALUE) THEN BEGIN
+        // 20131221-wi00-CMC02.02.00-TVA-JLT01 : START -->
+        //IF GetSetupWithItemCMC(ItemCode_P,GroupVat_L,Group_L,1,0D) THEN BEGIN
+        IF GetNewVat(0D,Group_L,GroupVat_L,ItemCode_P) THEN BEGIN
+        // 20131221-wi00-CMC02.02.00-TVA-JLT01 : STOP <--
+
+           VATRateChangeLogEntry."Old VAT Prod. Posting Group" := SalesLine_P."VAT Prod. Posting Group";
+           // 20131221-wi00-CMC02.02.00-TVA-JLT01 : START -->
+           //SalesLine_P."Gen. Prod. Posting Group":=VATRateChangeConversion."To Code";
+           SalesLine_P.VALIDATE("VAT Prod. Posting Group",GroupVat_L); // 20140104-wi00-CMC.02.02-TVA-JLT01
+           // 20131221-wi00-CMC02.02.00-TVA-JLT01 : STOP <--
+           VATRateChangeLogEntry."New VAT Prod. Posting Group" := SalesLine_P."VAT Prod. Posting Group";
+           VATProdPostingGroupConverted := TRUE;
+        END;
+      END;
+
+      IF NOT VATProdPostingGroupConverted THEN BEGIN
+        VATRateChangeLogEntry."Old VAT Prod. Posting Group" := SalesLine_P."VAT Prod. Posting Group";
+        VATRateChangeLogEntry."New VAT Prod. Posting Group" := SalesLine_P."VAT Prod. Posting Group";
+      END;
+
+      IF VATRateChangeSetup."Perform Conversion" THEN BEGIN
+        SalesLine_P.MODIFY;
+        VATRateChangeLogEntry.Converted := TRUE;
+      END;
+
+      IF (VATRateChangeLogEntry."New Gen. Prod. Posting Group" <> VATRateChangeLogEntry."Old Gen. Prod. Posting Group") OR
+         (VATRateChangeLogEntry."New VAT Prod. Posting Group" <> VATRateChangeLogEntry."Old VAT Prod. Posting Group")
+      THEN WriteLogEntry(VATRateChangeLogEntry);
+    END;
+
+    PROCEDURE QtyIndiv@8053000(ItemNo_P@8053000 : Code[20];VariantCode_p@8053001 : Code[20];VAR Qty_p@8053002 : Decimal) Indok : Boolean;
+    VAR
+      Item_l@8053003 : Record 27;
+      ItemVariant_L@8053004 : Record 5401;
+      IndivQty_L@8053005 : Decimal;
+      Qty_l@8053006 : Decimal;
+    BEGIN
+      // renvoie la qt' indivisible en fonction de l'article <=
+      Qty_l:=Qty_p;
+      IF (VariantCode_p<>'') AND (ItemVariant_L.GET(ItemNo_P,VariantCode_p)) THEN
+       IndivQty_L := ItemVariant_L."Indiv. Base Qty";
+
+      IF (IndivQty_L=0) AND (Item_l.GET(ItemNo_P)) THEN
+       IndivQty_L := Item_l."Indiv. Base Qty";
+
+      IF IndivQty_L=0 THEN EXIT(TRUE);
+
+      Qty_p := (Qty_p DIV IndivQty_L) * IndivQty_L;
+
+      IF Qty_p=Qty_l THEN EXIT(TRUE) ELSE EXIT(FALSE);
+    END;
+
+    PROCEDURE GetNewVat@1000000021(Date_P@1000000000 : Date;VAR Group_P@1000000002 : Code[20];VAR GroupVAT_P@1000000003 : Code[20];Item_P@8053000 : Code[20]) Result : Boolean;
+    VAR
+      VATRateChangeConversion_L@1000000001 : Record 551;
+      item_l@8053001 : Record 27;
+      Bio_l@8053002 : Integer;
+      Group_l@1000000004 : Code[20];
+      GroupVat_l@1000000005 : Code[20];
+    BEGIN
+      // 20131221-wi00-CMC02.02.00-TVA-JLT01
+      // renvoi en fonction de la date de changement le nouveau groupe compta et renvoi true, sinon ne change rien.
+      Group_l:=Group_P;
+      GroupVat_l:=GroupVAT_P;
+      IF Date_P=0D THEN Date_P:=010114D ; // attention, changer la date de bascule ICI
+      //Vatgroup
+      VATRateChangeConversion_L.SETRANGE(VATRateChangeConversion_L."Posting Date",Date_P);
+      VATRateChangeConversion_L.SETRANGE(Type,VATRateChangeConversion_L.Type::"VAT Prod. Posting Group");
+      VATRateChangeConversion_L.SETRANGE("From Code",GroupVAT_P);
+
+      IF VATRateChangeConversion_L.FINDFIRST THEN GroupVAT_P:=VATRateChangeConversion_L."To Code";
+
+      IF item_l.GET(Item_P) THEN BEGIN
+        IF item_l."Permitted In Organic Farming"=TRUE THEN Bio_l:=0 ELSE Bio_l:=1;
+        VATRateChangeConversion_L.SETRANGE("Item family",item_l."Family Code");
+        VATRateChangeConversion_L.SETFILTER("Permitted In Organic Farming",'%1|%2',Bio_l,2);
+        IF VATRateChangeConversion_L.FINDFIRST THEN GroupVAT_P:=VATRateChangeConversion_L."To Code";
+      END;
+
+      // group
+      VATRateChangeConversion_L.RESET;
+
+      VATRateChangeConversion_L.SETRANGE(VATRateChangeConversion_L."Posting Date",Date_P);
+      VATRateChangeConversion_L.SETRANGE(Type,VATRateChangeConversion_L.Type::"Gen. Prod. Posting Group");
+      VATRateChangeConversion_L.SETRANGE("From Code",Group_P);
+
+      IF VATRateChangeConversion_L.FINDFIRST THEN Group_P:=VATRateChangeConversion_L."To Code";
+
+      IF item_l.GET(Item_P) THEN BEGIN
+        VATRateChangeConversion_L.SETRANGE("Item family",item_l."Family Code");
+        VATRateChangeConversion_L.SETFILTER("Permitted In Organic Farming",'%1|%2',Bio_l,2);
+        IF VATRateChangeConversion_L.FINDFIRST THEN Group_P:=VATRateChangeConversion_L."To Code";
+      END;
+
+      IF (Group_l<>Group_P) OR (GroupVat_l<>GroupVAT_P) THEN EXIT(TRUE);
+    END;
+
+    BEGIN
+    {
+      3LI-20131010-KTR01: Modification afin d''viter l'appel du codeunit 6620 sp'cifique aux clients
+      20131128-wi00-CMC01.07.00-TVA-JLT01 : Taxes
+      20131210-wi00-CMC01.07.00-TVA-JLT01 : Prestation de services
+      20131211-wi00-CMC02.01.00-TVA-JLT01 : ADDFUNCTION GetOldVat : obtenir ancien groupe suite changement TVA
+      20131211-wi00-CMC02.01.00-TVA-BMA01 : Gestion des donn'es MS
+      20131216-wi00-CMC02.01.00-TVA-BMA01 : Gestion des donn'es (Agriculture Biologique et Code famille)
+      20131217-wi00-CMC02.01.00-TVA-JLT01 : Pb sur Commande Ouverte avec controle d'passement + indivis
+      20131218-wi00-CMC02.01.00-TVA-JLT01 : PB enlSvement avec acompte
+      20131218-wi00-CMC02.02.00-TVA-JLT01 : AccSs Soci't' MS
+      20131221-wi00-CMC02.02.00-TVA-JLT01 : Modif LineInScope pour tenir compte des familles + pb dropship sans commande + GetNewVat
+                                            + Les commandes de ventes < 010113 ne sont pas trait'es +
+                                            Ajout table 8053329 au lieu de 8075503
+      20131224-wi00-CMC02.02.00-TVA-JLT01 : Autoriser de modifier des lignes de RPD +ne pas traiter les articles bloqu's
+      20140104-wi00-CMC.02.02-TVA-JLT01 : Pb %VAT
+      20140102-wi00-CMC.02.02-TVA-OAR01 : Ne pas traiter les lignes de commandes avec une quantit' n'gative li'e . une commande ouverte
+                                          Si la quantit' factur'e de la commande ouverte > quantit' livr'e, on ne traite pas
+                                          On ne traite pas la ligne si la variante n'existe pas
+    }
+    END.
+  }
+}
+

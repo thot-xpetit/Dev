@@ -1,0 +1,406 @@
+OBJECT Codeunit 8053044 CMC Blanket Order Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=26/06/26;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text8053000@8053000 : TextConst 'ENU=Do you want to unassign the purchase contract;FRA=Voulez-vous annuler l''affectation au contrat d''achat ?';
+      Text8053002@8053010 : TextConst 'ENU=Contract quantity %1 , Line %2 excedeed;FRA=La quantit' du contrat %1, ligne %2 pour l''article %3 est d'pass'e';
+      Text8053003@8053009 : TextConst 'ENU=This line already link to sales contract %1;FRA=La ligne est d'ja attach' au contrat de vente %1';
+      Text8053005@8053007 : TextConst 'ENU=%1 - %2 is outside the contract tolerance period;FRA=%1 - %2 est en dehors de la p'riode de tol'rance de contrat';
+      Text8053006@8053006 : TextConst 'ENU=%1 - %2 is outside the contract tolerance period. Continue?;FRA=%1 - %2 est en dehors de la p'riode de tol'rance de contrat. Continuer?';
+      Text8053007@8053005 : TextConst 'ENU=%1 must be set;FRA=%1 ne doit pas ^tre vide.';
+      Text8053010@8053002 : TextConst 'FRA=Voulez-vous d'saffecter la ligne de commande du contrat li' ?';
+      Text8053011@8053001 : TextConst 'ENU=Contract Purchase Line Campaign must be the same than Sales Line.;FRA=La campagne de la ligne de contrat ne correspond pas . la campagne de la ligne de commande.';
+
+    PROCEDURE AffectSalesContract@8053000(VAR recSalesLineVar_P@8053000 : Record 37);
+    VAR
+      recSalesBlanketLine_L@8053011 : Record 37;
+      recSalesLine_L@8053010 : Record 37;
+      QuantityOnOrders_L@8053009 : Decimal;
+      cduBlanketSalesOrdertoOrder_L@8053008 : Codeunit 87;
+      recCMCSetup_L@8053007 : Record 8052982;
+      ReferenceDate_L@8053006 : Date;
+      recSalesHeader_L@8053005 : Record 36;
+      ReferenceDateField_L@8053004 : Text[30];
+      DummyDateFormula_L@8053003 : DateFormula;
+      CheckStartingDate_L@8053002 : Date;
+      CheckEndingDate_L@8053001 : Date;
+      ContractAffected_L@8053012 : Boolean;
+      OutstandingQtyOnContract_L@8053013 : Decimal;
+      Exceeded_quantity_L@1000000000 : Boolean;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Affectation du contrat de vente
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - RecSalesLineVar_P : Nouvel enregistrement
+      //  Sorties
+      //----------------------------------------------------------------------------------------------------------------------------------
+      WITH recSalesLineVar_P DO BEGIN
+        recSalesBlanketLine_L.RESET;
+        recSalesBlanketLine_L.SETCURRENTKEY("Document Type", Type, "No.");
+        recSalesBlanketLine_L.SETRANGE("Document Type", recSalesBlanketLine_L."Document Type"::"Blanket Order");
+        recSalesBlanketLine_L.SETRANGE(Type, recSalesBlanketLine_L.Type::Item);
+        recSalesBlanketLine_L.SETRANGE("No.", "No.");
+        recSalesBlanketLine_L.SETRANGE("Sell-to Customer No.", "Sell-to Customer No.");
+        recSalesBlanketLine_L.SETRANGE("Finished Blanket Order Line", FALSE);
+        // --> 20260513-WI00-ADV01.01.00-44552-CJY01
+        //recSalesBlanketLine_L.SETRANGE(Status, recSalesBlanketLine_L.Status::Released);
+        recSalesBlanketLine_L.SETRANGE("Header Status", recSalesBlanketLine_L."Header Status"::Released);
+        // <-- 20260513-WI00-ADV01.01.00-44552-CJY01
+        IF recSalesBlanketLine_L.ISEMPTY THEN BEGIN
+          EXIT;
+        END;
+
+        ContractAffected_L := FALSE;
+        IF (recSalesLineVar_P."Blanket Order No." <> '') AND (recSalesLineVar_P."Blanket Order Line No." <> 0) THEN BEGIN
+          ContractAffected_L := TRUE;
+          recSalesBlanketLine_L.GET(recSalesBlanketLine_L."Document Type"::"Blanket Order", recSalesLineVar_P."Blanket Order No.",
+            recSalesLineVar_P."Blanket Order Line No.");
+        END
+        ELSE BEGIN
+          IF ("Quantity Shipped" = 0) AND ("Quantity Invoiced" = 0) AND (Quantity <> 0) THEN BEGIN
+            IF PAGE.RUNMODAL(PAGE::"CMC Affect Blanket Sales Line", recSalesBlanketLine_L) = ACTION::LookupOK THEN BEGIN
+              ContractAffected_L := TRUE;
+            END;
+          END;
+        END;
+
+        IF ContractAffected_L = TRUE THEN BEGIN
+          OutstandingQtyOnContract_L := 0;
+          recSalesLine_L.RESET;
+          // --> 20180124-WI00-ADV01.01.00-32695-CJY01
+          {BEFORE
+          recSalesLine_L.SETCURRENTKEY("Document Type", "Purch. Blanket Order Line No.", "Purch. Blanket Order No.");
+          AFTER}
+          recSalesLine_L.SETCURRENTKEY("Document Type","Blanket Order No.","Blanket Order Line No.");
+          // <-- 20180124-WI00-ADV01.01.00-32695-CJY01
+          recSalesLine_L.SETRANGE("Document Type", recSalesLine_L."Document Type"::Order);
+          recSalesLine_L.SETRANGE("Blanket Order No.", recSalesBlanketLine_L."Document No.");
+          recSalesLine_L.SETRANGE("Blanket Order Line No.", recSalesBlanketLine_L."Line No.");
+          IF recSalesLine_L.FINDSET(FALSE, FALSE) THEN BEGIN
+            REPEAT
+              IF (recSalesLine_L."Document No." <> recSalesLineVar_P."Document No.") OR (recSalesLine_L."Line No." <>
+                recSalesLineVar_P."Line No.")
+              THEN BEGIN
+                OutstandingQtyOnContract_L += recSalesLine_L."Outstanding Qty. (Base)";
+              END;
+            UNTIL recSalesLine_L.NEXT = 0;
+          END;
+
+          //-->20160803-WI00-ADV01.01.00-1675-PSI01
+          Exceeded_quantity_L := FALSE;
+          //<--20160803-WI00-ADV01.01.00-1675-PSI01
+
+          IF OutstandingQtyOnContract_L + (recSalesBlanketLine_L."Quantity Shipped" - recSalesLineVar_P."Quantity Shipped") +
+             recSalesLineVar_P.Quantity > recSalesBlanketLine_L.Quantity THEN
+            //-->20160803-WI00-ADV01.01.00-1675-PSI01
+            //BEFORE
+            //ERROR(STRSUBSTNO(Text8053002, recSalesBlanketLine_L."Document No.", recSalesBlanketLine_L."Line No."));
+            //AFTER
+          BEGIN
+            MESSAGE(STRSUBSTNO(Text8053002, recSalesBlanketLine_L."Document No.", recSalesBlanketLine_L."Line No.",
+              recSalesBlanketLine_L."No."));
+            Exceeded_quantity_L := TRUE;
+          END;
+          //<--20160803-WI00-ADV01.01.00-1675-PSI01
+
+          ReferenceDate_L := 0D;
+          recCMCSetup_L.GET();
+          IF FORMAT(recCMCSetup_L."Sales Blank. Ord Date Tol Per") <> '' THEN BEGIN
+            CASE recCMCSetup_L."Sales Blanket Order Ref Date" OF
+              recCMCSetup_L."Sales Blanket Order Ref Date"::"Order Date": BEGIN
+                recSalesHeader_L.GET("Document Type", "Document No.");
+                ReferenceDate_L := recSalesHeader_L."Order Date";
+                ReferenceDateField_L := recSalesHeader_L.FIELDCAPTION("Order Date");
+              END;
+              recCMCSetup_L."Sales Blanket Order Ref Date"::"Requested Delivery Date": BEGIN
+                ReferenceDate_L := "Requested Delivery Date";
+                ReferenceDateField_L := FIELDCAPTION("Requested Delivery Date");
+              END;
+            END;
+
+            IF ReferenceDate_L = 0D THEN BEGIN
+              // --> 20180111-WI00-ADV01.01.00-1675-BSI
+              //ERROR(Text8053007, ReferenceDateField_L);
+              MESSAGE(Text8053007, ReferenceDateField_L);
+              EXIT;
+            END;
+              // <-- 20180111-WI00-ADV01.01.00-1675-BSI
+            EVALUATE(DummyDateFormula_L, STRSUBSTNO('-%1', recCMCSetup_L."Sales Blank. Ord Date Tol Per"));
+            IF (FORMAT(recCMCSetup_L."Sales Blank. Ord Date Tol Per") <> '') AND
+               (recSalesBlanketLine_L."Contract Starting Date" = 0D) THEN BEGIN
+              // --> 20180111-WI00-ADV01.01.00-1675-BSI
+              //ERROR(Text8053007, recSalesBlanketLine_L.FIELDCAPTION("Contract Starting Date"));
+              MESSAGE(Text8053007, recSalesBlanketLine_L.FIELDCAPTION("Contract Starting Date"));
+              EXIT;
+              // <-- 20180111-WI00-ADV01.01.00-1675-BSI
+            END;
+            IF (FORMAT(recCMCSetup_L."Sales Blank. Ord Date Tol Per") <> '') AND
+               (recSalesBlanketLine_L."Contract Ending Date" = 0D) THEN BEGIN
+              // --> 20180111-WI00-ADV01.01.00-1675-BSI
+              //ERROR(Text8053007, recSalesBlanketLine_L.FIELDCAPTION("Contract Ending Date"));
+              MESSAGE(Text8053007, recSalesBlanketLine_L.FIELDCAPTION("Contract Ending Date"));
+              EXIT;
+              // <-- 20180111-WI00-ADV01.01.00-1675-BSI
+            END;
+            CheckStartingDate_L := CALCDATE(DummyDateFormula_L, recSalesBlanketLine_L."Contract Starting Date");
+            CheckEndingDate_L := CALCDATE(recCMCSetup_L."Sales Blank. Ord Date Tol Per", recSalesBlanketLine_L."Contract Ending Date");
+            "In Blanket Ord. Tol. Per." := FALSE;
+            IF NOT ((ReferenceDate_L >= CheckStartingDate_L) AND (ReferenceDate_L <= CheckEndingDate_L)) THEN
+              CASE recCMCSetup_L."Sales Blank. Order Date Tol." OF
+                recCMCSetup_L."Sales Blank. Order Date Tol."::Total:
+                  "In Blanket Ord. Tol. Per." := TRUE;
+                // --> 20180111-WI00-ADV01.01.00-1675-BSI
+                {before
+                recCMCSetup_L."Sales Blank. Order Date Tol."::None:
+                  ERROR(Text8053005, ReferenceDateField_L, ReferenceDate_L);
+                after}
+                recCMCSetup_L."Sales Blank. Order Date Tol."::None: BEGIN
+                  MESSAGE(Text8053005, ReferenceDateField_L, ReferenceDate_L);
+                  EXIT;
+                END;
+                // <-- 20180111-WI00-ADV01.01.00-1675-BSI
+                recCMCSetup_L."Sales Blank. Order Date Tol."::Confirmation:
+                  IF NOT CONFIRM(Text8053006, FALSE, ReferenceDateField_L, ReferenceDate_L) THEN
+                    EXIT
+                  ELSE
+                    "In Blanket Ord. Tol. Per." := TRUE;
+              END
+            ELSE
+              IF ((ReferenceDate_L < recSalesBlanketLine_L."Contract Starting Date") AND (ReferenceDate_L >= CheckStartingDate_L)) OR
+                 ((ReferenceDate_L > recSalesBlanketLine_L."Contract Ending Date") AND (ReferenceDate_L <= CheckEndingDate_L))
+              THEN
+                "In Blanket Ord. Tol. Per." := TRUE;
+
+          END;
+
+          //-->20160803-WI00-ADV01.01.00-1675-PSI01
+          IF Exceeded_quantity_L = TRUE THEN
+            VALIDATE("Blanket Order No.",'')
+          ELSE BEGIN
+          //<--20160803-WI00-ADV01.01.00-1675-PSI01
+
+          "Blanket Order No." := recSalesBlanketLine_L."Document No.";
+          "Blanket Order Line No." := recSalesBlanketLine_L."Line No.";
+
+          //-->20160803-WI00-ADV01.01.00-1675-PSI01
+          END;
+          //<--20160803-WI00-ADV01.01.00-1675-PSI01
+
+          SetUnitPriceFromContract(recSalesLineVar_P);
+
+          VALIDATE("Unit Price");
+          // --> 20180122-WI00-ADV01.01.00-32550-CJY01
+          IF "Line No." <> 0 THEN
+          // <-- 20180122-WI00-ADV01.01.00-32550-CJY01
+            MODIFY;
+        END;
+      END;
+    END;
+
+    PROCEDURE UnassignSalesContract@8053001(VAR recSalesLineVar_P@8053000 : Record 37);
+    VAR
+      recSalesHeader_L@8053001 : Record 36;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Annule l'affectation du contrat de vente
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - RecSalesLineVar_P : Nouvel enregistrement
+      //  Sorties
+      //----------------------------------------------------------------------------------------------------------------------------------
+      WITH recSalesLineVar_P DO BEGIN
+        TESTFIELD(Type, Type::Item);
+        TESTFIELD("No.");
+        TESTFIELD("Blanket Order No.");
+        TESTFIELD("Quantity Shipped", 0);
+        recSalesHeader_L.GET("Document Type", "Document No.");
+        recSalesHeader_L.TESTFIELD(Status, recSalesHeader_L.Status::Open);
+        IF CONFIRM(Text8053010, FALSE) THEN
+          VALIDATE("Blanket Order No.", '');
+      END;
+    END;
+
+    PROCEDURE AffectPurchaseContract@8053002(VAR recSalesLineVar_P@8053000 : Record 37);
+    VAR
+      recPurchBlanketLine_L@8053005 : Record 39;
+      recSalesHeader_L@8053004 : Record 36;
+      recBlanketOrderQuotas_L@8053003 : Record 8053115;
+      recDocumentCategory_L@8053002 : Record 8061330;
+      recPurchBLanketHeader_L@8053001 : Record 38;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Affectation du contrat de vente
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - RecSalesLineVar_P : Nouvel enregistrement
+      //  Sorties
+      //----------------------------------------------------------------------------------------------------------------------------------
+      WITH recSalesLineVar_P DO BEGIN
+        TESTFIELD(Type, Type::Item);
+        TESTFIELD("No.");
+        recSalesHeader_L.GET("Document Type", "Document No.");
+
+        IF "Blanket Order No." <> '' THEN
+          ERROR(STRSUBSTNO(Text8053003, "Blanket Order No."));
+
+        recPurchBlanketLine_L.RESET;
+        recPurchBlanketLine_L.SETCURRENTKEY("Document Type", Type, "No.");
+        recPurchBlanketLine_L.SETRANGE("Document Type", recPurchBlanketLine_L."Document Type"::"Blanket Order");
+        recPurchBlanketLine_L.SETRANGE(Type, recPurchBlanketLine_L.Type::Item);
+        recPurchBlanketLine_L.SETRANGE("No.", "No.");
+        recPurchBlanketLine_L.SETRANGE("Finished Blanket Order Line", FALSE);
+        IF recPurchBlanketLine_L.ISEMPTY THEN BEGIN
+          EXIT;
+        END;
+        IF PAGE.RUNMODAL(PAGE::"CMC Affect Purch Line", recPurchBlanketLine_L) = ACTION::LookupOK THEN BEGIN
+          TestQuotasFromSalesLine(recPurchBlanketLine_L, recSalesHeader_L."Salesperson Code", Quantity);
+
+          IF recPurchBlanketLine_L."CMC Campaign No." <> "CMC Campaign No." THEN BEGIN
+            ERROR(Text8053011);
+          END;
+
+          "Purch. Blanket Order No." := recPurchBlanketLine_L."Document No.";
+          "Purch. Blanket Order Line No." := recPurchBlanketLine_L."Line No.";
+          "Include in Purch Blanket Order" := TRUE;
+          IF recPurchBLanketHeader_L.GET(recPurchBlanketLine_L."Document Type", recPurchBlanketLine_L."Document No.") THEN
+            IF recDocumentCategory_L.GET(recDocumentCategory_L."Sales/Purchase"::Purchase,
+              recDocumentCategory_L."Document Type"::"Blanket Order",recPurchBLanketHeader_L."Doc. Category Code") THEN
+            VALIDATE("Expected Prepayment %", recDocumentCategory_L."Sales Prepayment %");
+          MODIFY;
+        END;
+      END;
+    END;
+
+    PROCEDURE UnassignPurchaseContract@8053003(VAR recSalesLineVar_P@8053000 : Record 37);
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Annule l'affectation du contrat de vente
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - RecSalesLineVar_P : Nouvel enregistrement
+      //  Sorties
+      //----------------------------------------------------------------------------------------------------------------------------------
+      WITH recSalesLineVar_P DO BEGIN
+        IF ("Quantity Invoiced" = 0) THEN BEGIN
+          IF CONFIRM(Text8053000) THEN BEGIN
+            "Purch. Blanket Order No." := '';
+            "Purch. Blanket Order Line No." := 0;
+            "Include in Purch Blanket Order" := FALSE;
+            VALIDATE("Expected Prepayment %", 0);
+            MODIFY;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE UpdateInBlanketOrderTolerance@1000000000(VAR SalesLine_P@1000000007 : Record 37);
+    VAR
+      DummyDateFormula_L@1000000000 : DateFormula;
+      CMCSetup_L@1000000001 : Record 8052982;
+      CheckStartingDate_L@1000000002 : Date;
+      CheckEndingDate_L@1000000004 : Date;
+      SalesBlanketLine_L@1000000003 : Record 37;
+      ReferenceDate_L@1000000005 : Date;
+      ReferenceDateField_L@1000000006 : Text[30];
+      SalesHeader_L@1000000008 : Record 36;
+    BEGIN
+      WITH SalesLine_P DO BEGIN
+
+        "In Blanket Ord. Tol. Per." := FALSE;
+
+        IF "Blanket Order No." = '' THEN
+          EXIT;
+
+        ReferenceDate_L := 0D;
+
+        CMCSetup_L.GET;
+
+        IF FORMAT(CMCSetup_L."Sales Blank. Ord Date Tol Per") <> '' THEN BEGIN
+
+          SalesBlanketLine_L.GET(SalesBlanketLine_L."Document Type"::"Blanket Order","Blanket Order No.","Blanket Order Line No.");
+
+          CASE CMCSetup_L."Sales Blanket Order Ref Date" OF
+            CMCSetup_L."Sales Blanket Order Ref Date"::"Order Date": BEGIN
+              SalesHeader_L.GET("Document Type", "Document No.");
+              ReferenceDate_L := SalesHeader_L."Order Date";
+              ReferenceDateField_L := SalesHeader_L.FIELDCAPTION("Order Date");
+            END;
+            CMCSetup_L."Sales Blanket Order Ref Date"::"Requested Delivery Date": BEGIN
+              ReferenceDate_L := "Requested Delivery Date";
+              ReferenceDateField_L := FIELDCAPTION("Requested Delivery Date");
+            END;
+          END;
+
+          IF ReferenceDate_L = 0D THEN
+            ERROR(Text8053007, ReferenceDateField_L);
+
+          EVALUATE(DummyDateFormula_L, STRSUBSTNO('-%1', CMCSetup_L."Sales Blank. Ord Date Tol Per"));
+
+          IF (FORMAT(CMCSetup_L."Sales Blank. Ord Date Tol Per") <> '') AND
+             (SalesBlanketLine_L."Contract Starting Date" = 0D) THEN
+            ERROR(Text8053007, SalesBlanketLine_L.FIELDCAPTION("Contract Starting Date"));
+          IF (FORMAT(CMCSetup_L."Sales Blank. Ord Date Tol Per") <> '') AND
+             (SalesBlanketLine_L."Contract Ending Date" = 0D) THEN
+            ERROR(Text8053007, SalesBlanketLine_L.FIELDCAPTION("Contract Ending Date"));
+
+          CheckStartingDate_L := CALCDATE(DummyDateFormula_L, SalesBlanketLine_L."Contract Starting Date");
+          CheckEndingDate_L := CALCDATE(CMCSetup_L."Sales Blank. Ord Date Tol Per", SalesBlanketLine_L."Contract Ending Date");
+
+          IF NOT ((ReferenceDate_L >= CheckStartingDate_L) AND (ReferenceDate_L <= CheckEndingDate_L)) THEN
+            CASE CMCSetup_L."Sales Blank. Order Date Tol." OF
+              CMCSetup_L."Sales Blank. Order Date Tol."::Total:
+                "In Blanket Ord. Tol. Per." := TRUE;
+
+              CMCSetup_L."Sales Blank. Order Date Tol."::None:
+                ERROR(Text8053005, ReferenceDateField_L, ReferenceDate_L);
+
+              CMCSetup_L."Sales Blank. Order Date Tol."::Confirmation:
+                IF NOT CONFIRM(Text8053006, FALSE, ReferenceDateField_L, ReferenceDate_L) THEN
+                  EXIT
+                ELSE
+                  "In Blanket Ord. Tol. Per." := TRUE;
+            END
+          ELSE
+            IF ((ReferenceDate_L > SalesBlanketLine_L."Contract Ending Date") AND (ReferenceDate_L <= CheckEndingDate_L)) OR
+               ((ReferenceDate_L < SalesBlanketLine_L."Contract Starting Date") AND (ReferenceDate_L >= CheckStartingDate_L)) THEN
+              "In Blanket Ord. Tol. Per." := TRUE;
+
+        END;
+
+      END;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20140328-Wi00-CMC02.02.00-1915-FHS01 : NEWOBJ New CU to manage blanket order affectation
+      20140331-Wi00-CMC02.02.00-1915-FHS01 : ADDCODE (ne pas afficher la page d'affectation quand il n'y a rien . affecter)
+      20140425-Wi00-CMC02.02.00-2006-FHS01 : MODCODE (Ne pas r'affecter un contrat si un contrat est d'j. affect')
+      20140507-Wi00-CMC02.02.00-1915-FHS01 : MODCODE (Ne pas bloquer les modifications de quantit' si aucun contrat n'est affect')
+      20140918-Wi00-CMC02.02.00-2495-FHS01 : ADDCODE (ajoute des filtres sur les contrats affich's)
+      20160803-WI00-ADV01.01.00-1675-PSI01 : MODCODE (modification message erreur Text8053002 + ERROR en MESSAGE)
+      20180111-WI00-ADV01.01.00-1675-BSI : MODCODE (G'rer correctement les erreurs pour ne pas faire planter le traitement)
+      20180122-WI00-ADV01.01.00-32550-CJY01 : MODCODE (correction affectation contrat quand ligne vente pas encore totalement cr'e)
+      20180124-WI00-ADV01.01.00-32695-CJY01 : MODCODE (correction cl' non adapt'e)
+      20260513-WI00-ADV01.01.00-44552-CJY01 : MODFIELD (d'sactivation champs LS "status" remplac' par "Header status" )
+
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

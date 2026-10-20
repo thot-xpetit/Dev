@@ -1,0 +1,967 @@
+OBJECT Report 8053017 CMC CER Interface
+{
+  OBJECT-PROPERTIES
+  {
+    Date=30/10/14;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 21=rm,
+                TableData 25=rm;
+    CaptionML=[ENU=CER Interface;
+               FRA=Interface CER];
+    ProcessingOnly=Oui;
+    OnPreReport=BEGIN
+                  CMCSetup_G.GET;
+                  CMCSetup_G.TESTFIELD("Export Family Directory");
+                  CMCSetup_G.TESTFIELD("Export Item Directory");
+                  CMCSetup_G.TESTFIELD("Export Invoice Directory");
+                  IF CMCAccoutingCenter_G ='' THEN
+                   ERROR(Text8053000);
+                  IF (PeriodStart_G = 0D) OR (PeriodEnd_G=0D) THEN
+                   ERROR(Text8053002);
+                  CMCCenter_G.GET(CMCAccoutingCenter_G);
+                  FamilyFileName_G := 'FAMILLE.txt';
+                  ItemFileName_G := 'ARTICLE.txt';
+                  InvoiceFileName_G := 'SAIAUT.txt';
+                END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table18;
+        DataItemTableView=SORTING(No.)
+                          ORDER(Ascending);
+        OnPreDataItem=BEGIN
+                        DlgWindow_G.OPEN('Export fichier famille           #1########\' +
+                                         'Export fichier article           #2########\' +
+                                         'Export fichier facture client N› #3########\');
+
+                        Customer.SETRANGE("Customer Code Center",CMCAccoutingCenter_G);
+                        GenerateFamilyFile;
+                        GenerateItemFile;
+                        CreateInvoiceFile;
+                      END;
+
+        OnAfterGetRecord=VAR
+                           SalesInvoiceHeader_L@8053000 : Record 112;
+                           SalesInvoiceLine_L@8053001 : Record 113;
+                           LineNo_L@8053002 : Integer;
+                           Quantity_L@8053003 : Text[1024];
+                           PurchInvoiceHeader_L@8053005 : Record 122;
+                           PurchInvoiceLine_L@8053004 : Record 123;
+                           Vendor_L@8053006 : Record 23;
+                           CMCPostReceiptAnalysis_L@8053007 : Record 8052996;
+                           Sp_L@8053008 : Text[2];
+                           CustLedgerEntry_L@8053009 : Record 21;
+                           VendLedgerEntry_L@8053010 : Record 25;
+                           Sign_L@8053011 : Text[1];
+                           SalesCrMemoHeader_L@8053013 : Record 114;
+                           SalesCrMemoLine_L@8053012 : Record 115;
+                           FinanceChargeMemoHeader_L@8053014 : Record 304;
+                           FinanceChargeMemoLine_L@8053015 : Record 305;
+                           Code_L@8053016 : Code[20];
+                           CustPostingGroup_L@8053017 : Record 92;
+                           PurchCrMemoHeader_L@8053019 : Record 124;
+                           PurchCrMemoLine_L@8053018 : Record 125;
+                           Way_L@1000000020 : Text[1];
+                         BEGIN
+                           DlgWindow_G.UPDATE(3,Customer."No.");
+
+                           CustLedgerEntry_L.RESET;
+                           CustLedgerEntry_L.SETCURRENTKEY("Document Type","Customer No.","Posting Date");
+                           CustLedgerEntry_L.SETRANGE("Customer No.",Customer."No.");
+                           CustLedgerEntry_L.SETFILTER("Document Type",'%1|%2|%3',CustLedgerEntry_L."Document Type"::Invoice,
+                                                       CustLedgerEntry_L."Document Type"::"Credit Memo",
+                                                       CustLedgerEntry_L."Document Type"::"Finance Charge Memo");
+                           CustLedgerEntry_L.SETRANGE("Posting Date",PeriodStart_G,PeriodEnd_G);
+                           IF NOT AllEntries_G THEN
+                            CustLedgerEntry_L.SETRANGE("Export CER",FALSE);
+                           IF CustLedgerEntry_L.FIND('-') THEN
+                           REPEAT
+                             CustLedgerEntry_L.CALCFIELDS(Amount);
+                            IF CustLedgerEntry_L.Amount<>0 THEN BEGIN
+                            CASE CustLedgerEntry_L."Document Type" OF
+
+                            // Export des factures de vente
+                            CustLedgerEntry_L."Document Type"::Invoice:
+                            BEGIN
+                           SalesInvoiceHeader_L.RESET;
+                           SalesInvoiceLine_L.RESET;
+                             IF SalesInvoiceHeader_L.GET(CustLedgerEntry_L."Document No.") THEN BEGIN
+
+                            LineNo_L := 0;
+                            SalesInvoiceHeader_L.CALCFIELDS(Amount);
+                             IF CustLedgerEntry_L.Amount > 0 THEN
+                              Sign_L := '+'
+                             ELSE
+                              Sign_L := '-';
+                              Way_L:='D';
+                            GenerateLineHeader(CMCCenter_G."Center Company",Customer."No.",Customer."Customer Member",SalesInvoiceHeader_L."No.",
+                                               SalesInvoiceHeader_L."Posting Date",SalesInvoiceHeader_L."Posting Description",Way_L,
+                                               ABS(CustLedgerEntry_L.Amount),Sign_L,SalesInvoiceHeader_L."Location Code");
+
+                            SalesInvoiceLine_L.SETCURRENTKEY("Document No.");
+                            SalesInvoiceLine_L.SETRANGE("Document No.",SalesInvoiceHeader_L."No.");
+                             SalesInvoiceLine_L.SETFILTER(Type,'<>%1',SalesInvoiceLine_L.Type::" ");
+                             SalesInvoiceLine_L.SETFILTER("Unit Price",'<>%1',0);
+                            IF SalesInvoiceLine_L.FINDSET THEN
+                            REPEAT
+                              IF SalesInvoiceLine_L.Amount>0 THEN
+                              Sign_L := '+'
+                             ELSE
+                              Sign_L := '-';
+
+                             LineNo_L := LineNo_L + 1;
+                             IF LineNo_L > 999 THEN
+                              ERROR(Text8053005);
+                             CASE SalesInvoiceLine_L.Type OF
+                              SalesInvoiceLine_L.Type::"G/L Account":         Code_L := SalesInvoiceLine_L."No." + 'CG';
+                              SalesInvoiceLine_L.Type::Item:          Code_L := SalesInvoiceLine_L."No.";
+                              SalesInvoiceLine_L.Type::Resource:      Code_L := 'AUTRES';
+                              SalesInvoiceLine_L.Type::"Fixed Asset": Code_L := 'AUTRES';
+                              SalesInvoiceLine_L.Type::"Charge (Item)":      Code_L := SalesInvoiceLine_L."No." + 'FA';
+                             END;
+
+                            GenerateLineBody(CMCCenter_G."Center Company",Customer."No.",Customer."Customer Member",SalesInvoiceHeader_L."No.",
+                                             SalesInvoiceHeader_L."Posting Date",
+                                             PADSTR('',3 - STRLEN(STRSUBSTNO('%1',LineNo_L)),'0') + STRSUBSTNO('%1',LineNo_L),Code_L,
+                                             PADSTR('',6),ABS(SalesInvoiceLine_L."Quantity (Base)"),SalesInvoiceLine_L."VAT %",
+                                                ABS(SalesInvoiceLine_L.Amount),Sign_L,Way_L);
+                              IF (SalesInvoiceLine_L."Amount Including VAT"-SalesInvoiceLine_L.Amount)<>0
+                              THEN BEGIN
+                             GenerateLineBody(CMCCenter_G."Center Company",Customer."No.",Customer."Customer Member",SalesInvoiceHeader_L."No.",
+                                             SalesInvoiceHeader_L."Posting Date",
+                                             PADSTR('',3 - STRLEN(STRSUBSTNO('%1',LineNo_L)),'0') + STRSUBSTNO('%1',LineNo_L),
+                                             STRSUBSTNO('TVA-%1',SalesInvoiceLine_L."VAT %"),PADSTR('',6),ABS(1),SalesInvoiceLine_L."VAT %",
+                                                  ABS(SalesInvoiceLine_L."Amount Including VAT"-SalesInvoiceLine_L.Amount),Sign_L,Way_L);
+
+                              END;
+
+                            UNTIL SalesInvoiceLine_L.NEXT = 0;
+                              END;
+
+                            END;
+
+                            // Export des avoirs
+                            CustLedgerEntry_L."Document Type"::"Credit Memo":
+                            BEGIN
+                             SalesCrMemoHeader_L.RESET;
+                             SalesCrMemoLine_L.RESET;
+                             IF SalesCrMemoHeader_L.GET(CustLedgerEntry_L."Document No.") THEN BEGIN
+
+                             LineNo_L := 0;
+                             SalesCrMemoHeader_L.CALCFIELDS(Amount);
+                             IF CustLedgerEntry_L.Amount > 0 THEN
+                              Sign_L := '+'
+                             ELSE
+                              Sign_L := '-';
+                             Way_L:='D';
+                             GenerateLineHeader(CMCCenter_G."Center Company",Customer."No.",Customer."Customer Member",SalesCrMemoHeader_L."No.",
+                                               SalesCrMemoHeader_L."Posting Date",SalesCrMemoHeader_L."Posting Description",Way_L,
+                                               ABS(CustLedgerEntry_L.Amount),Sign_L,SalesCrMemoHeader_L."Location Code");
+
+                             SalesCrMemoLine_L.SETCURRENTKEY("Document No.");
+                             SalesCrMemoLine_L.SETRANGE("Document No.",SalesCrMemoHeader_L."No.");
+                             SalesCrMemoLine_L.SETFILTER(Type,'<>%1',SalesCrMemoLine_L.Type::" ");
+                             SalesCrMemoLine_L.SETFILTER("Unit Price",'<>%1',0);
+                             IF SalesCrMemoLine_L.FINDSET THEN
+                             REPEAT
+                              IF SalesCrMemoLine_L.Amount>0 THEN
+                              Sign_L := '-'
+                             ELSE
+                              Sign_L := '+';
+
+
+                              LineNo_L := LineNo_L + 1;
+                              IF LineNo_L > 999 THEN
+                               ERROR(Text8053005);
+
+                             CASE SalesCrMemoLine_L.Type OF
+                              SalesCrMemoLine_L.Type::"G/L Account":         Code_L := SalesCrMemoLine_L."No." + 'CG';
+                              SalesCrMemoLine_L.Type::Item:          Code_L := SalesCrMemoLine_L."No.";
+                              SalesCrMemoLine_L.Type::Resource:      Code_L := 'AUTRES';
+                              SalesCrMemoLine_L.Type::"Fixed Asset": Code_L := 'AUTRES';
+                              SalesCrMemoLine_L.Type::"Charge (Item)":      Code_L := SalesCrMemoLine_L."No." + 'FA';
+                             END;
+
+                             GenerateLineBody(CMCCenter_G."Center Company",Customer."No.",Customer."Customer Member",SalesCrMemoHeader_L."No.",
+                                             SalesCrMemoHeader_L."Posting Date",
+                                             PADSTR('',3 - STRLEN(STRSUBSTNO('%1',LineNo_L)),'0') + STRSUBSTNO('%1',LineNo_L),Code_L,
+                                             PADSTR('',6),ABS(SalesCrMemoLine_L."Quantity (Base)"),SalesCrMemoLine_L."VAT %",
+                                                ABS(SalesCrMemoLine_L.Amount),Sign_L,Way_L);
+
+                              IF (SalesCrMemoLine_L."Amount Including VAT"-SalesCrMemoLine_L.Amount)<>0
+                              THEN BEGIN
+
+                             GenerateLineBody(CMCCenter_G."Center Company",Customer."No.",Customer."Customer Member",SalesCrMemoHeader_L."No.",
+                                             SalesCrMemoHeader_L."Posting Date",
+                                             PADSTR('',3 - STRLEN(STRSUBSTNO('%1',LineNo_L)),'0') + STRSUBSTNO('%1',LineNo_L),
+                                             STRSUBSTNO('TVA-%1',SalesCrMemoLine_L."VAT %"),PADSTR('',6),ABS(1),SalesCrMemoLine_L."VAT %",
+                                                ABS(SalesCrMemoLine_L."Amount Including VAT"-SalesCrMemoLine_L.Amount),Sign_L,Way_L);
+
+                              END;
+
+
+                             UNTIL SalesCrMemoLine_L.NEXT = 0;
+
+                            END;
+
+                            END;
+
+                            // Export des factures d'int'r^ts
+                            CustLedgerEntry_L."Document Type"::"Finance Charge Memo":
+                            BEGIN
+                             CustPostingGroup_L.RESET;
+                             FinanceChargeMemoHeader_L.RESET;
+                             FinanceChargeMemoLine_L.RESET;
+                             FinanceChargeMemoHeader_L.GET(CustLedgerEntry_L."Document No.");
+                             LineNo_L := 0;
+                             IF CustLedgerEntry_L.Amount > 0 THEN
+                              Sign_L := '+'
+                             ELSE
+                              Sign_L := '-';
+
+                             Way_L:='D';
+                             CustPostingGroup_L.GET(FinanceChargeMemoHeader_L."Customer Posting Group");
+                             Code_L := CustPostingGroup_L."Interest Account" + 'CG';
+                             GenerateLineHeader(CMCCenter_G."Center Company",Customer."No.",Customer."Customer Member",FinanceChargeMemoHeader_L."No.",
+                                               FinanceChargeMemoHeader_L."Posting Date",FinanceChargeMemoHeader_L."Posting Description",Way_L,
+                                               ABS(CustLedgerEntry_L.Amount),Sign_L,'');
+
+                             FinanceChargeMemoLine_L.SETRANGE("Finance Charge Memo No.",FinanceChargeMemoHeader_L."No.");
+                             FinanceChargeMemoLine_L.SETFILTER(Amount,'<>%1',0);
+                             IF FinanceChargeMemoLine_L.FINDSET THEN
+                             REPEAT
+                              IF FinanceChargeMemoLine_L.Amount>0 THEN
+                              Sign_L := '+'
+                             ELSE
+                              Sign_L := '-';
+
+                              LineNo_L := LineNo_L + 1;
+                              IF LineNo_L > 999 THEN
+                               ERROR(Text8053005);
+
+                             GenerateLineBody(CMCCenter_G."Center Company",Customer."No.",Customer."Customer Member",FinanceChargeMemoHeader_L."No.",
+                                             FinanceChargeMemoHeader_L."Posting Date",
+                                             PADSTR('',3 - STRLEN(STRSUBSTNO('%1',LineNo_L)),'0') + STRSUBSTNO('%1',LineNo_L),Code_L,
+                                             PADSTR('',6),1,FinanceChargeMemoLine_L."VAT %",
+                                             ABS(FinanceChargeMemoLine_L.Amount),Sign_L,Way_L);
+
+                             UNTIL FinanceChargeMemoLine_L.NEXT = 0;
+                            END;
+                            END;
+
+                            CustLedgerEntry_L."Export CER" := TRUE;
+                            CustLedgerEntry_L.MODIFY;
+                            END;
+                           UNTIL CustLedgerEntry_L.NEXT = 0;
+
+                           // Compensation
+
+                           Vendor_L.RESET;
+                           Vendor_L.SETCURRENTKEY("Customer No.");
+                           Vendor_L.SETRANGE("Customer No.",Customer."No.");
+                           IF Vendor_L.FINDSET THEN
+                           REPEAT
+                            VendLedgerEntry_L.RESET;
+                            VendLedgerEntry_L.SETCURRENTKEY("Document Type","Vendor No.","Posting Date");
+                            VendLedgerEntry_L.SETRANGE("Vendor No.",Vendor_L."No.");
+                            VendLedgerEntry_L.SETFILTER("Document Type",'%1|%2',VendLedgerEntry_L."Document Type"::Invoice,
+                                                       VendLedgerEntry_L."Document Type"::"Credit Memo");
+                            VendLedgerEntry_L.SETRANGE("Posting Date",PeriodStart_G,PeriodEnd_G);
+                            IF NOT AllEntries_G THEN
+                             VendLedgerEntry_L.SETRANGE("Export CER",FALSE);
+                            IF VendLedgerEntry_L.FIND('-') THEN
+                            REPEAT
+                             VendLedgerEntry_L.CALCFIELDS(Amount);
+                             IF VendLedgerEntry_L.Amount<>0 THEN BEGIN
+                             CASE VendLedgerEntry_L."Document Type" OF
+                             // Export des factures fournisseurs
+                             VendLedgerEntry_L."Document Type"::Invoice:
+                             BEGIN
+                            PurchInvoiceHeader_L.RESET;
+                            PurchInvoiceLine_L.RESET;
+                              IF PurchInvoiceHeader_L.GET(VendLedgerEntry_L."Document No.")
+                              THEN BEGIN
+                             LineNo_L := 0;
+                              IF VendLedgerEntry_L.Amount > 0 THEN
+                               Sign_L := '-'
+                              ELSE
+                               Sign_L := '+';
+                              Way_L:='C';
+
+                             PurchInvoiceHeader_L.CALCFIELDS(Amount);
+                             GenerateLineHeader(CMCCenter_G."Center Company",Vendor_L."No.",Customer."Customer Member",PurchInvoiceHeader_L."No.",
+                                               PurchInvoiceHeader_L."Posting Date",PurchInvoiceHeader_L."Posting Description",Way_L,
+                                               ABS(VendLedgerEntry_L.Amount),Sign_L,PurchInvoiceHeader_L."Location Code");
+
+                             PurchInvoiceLine_L.SETCURRENTKEY("Document No.");
+                             PurchInvoiceLine_L.SETRANGE("Document No.",PurchInvoiceHeader_L."No.");
+                              PurchInvoiceLine_L.SETFILTER(PurchInvoiceLine_L.Amount,'<>%1',0);
+                             IF PurchInvoiceLine_L.FINDSET THEN
+                             REPEAT
+                                IF PurchInvoiceLine_L.Amount > 0 THEN
+                                 Sign_L := '+'
+                                ELSE
+                                 Sign_L := '-';
+
+
+                              LineNo_L := LineNo_L + 1;
+                              IF LineNo_L > 999 THEN
+                               ERROR(Text8053005);
+
+                             CMCPostReceiptAnalysis_L.RESET;
+                             CMCPostReceiptAnalysis_L.SETCURRENTKEY("Receipt Type","Receipt No.");
+                             CMCPostReceiptAnalysis_L.SETRANGE("Receipt Type",CMCPostReceiptAnalysis_L."Receipt Type"::Receipt);
+                             CMCPostReceiptAnalysis_L.SETRANGE("Receipt No.",PurchInvoiceLine_L."Collection recept No.");
+                             IF CMCPostReceiptAnalysis_L.FINDFIRST THEN
+                             // --> 20111210-Cer12-CMC02.01.00-SD: NavAgri - Code Analyse
+                             // a corriger
+                             {
+                              IF CMCPostReceiptAnalysis_L."Analysis Code" = CMCPostReceiptAnalysis_L."Analysis Code"::"0" THEN
+                               Sp_L := 'SP'
+                              ELSE
+                               Sp_L := '';
+                              }
+                              // <-- 20111210-Cer12-CMC02.01.00-SD: NavAgri - Code Analyse
+                             Code_L := '';
+                             CASE PurchInvoiceLine_L.Type OF
+                              PurchInvoiceLine_L.Type::"G/L Account":  Code_L := PurchInvoiceLine_L."No." + 'CG';
+                              PurchInvoiceLine_L.Type::Item:           Code_L := PurchInvoiceLine_L."No.";
+                              PurchInvoiceLine_L.Type::"Fixed Asset":  Code_L := 'AUTRES';
+                              PurchInvoiceLine_L.Type::"Charge (Item)":Code_L := PurchInvoiceLine_L."No." + 'FA';
+                             END;
+
+                             IF PurchInvoiceLine_L."Direct Unit Cost"<0 THEN
+                             Way_L:='D'
+                             ELSE
+                             Way_L:='C';
+
+                             GenerateLineBody(CMCCenter_G."Center Company",Vendor_L."No.",Customer."Customer Member",PurchInvoiceHeader_L."No.",
+                                             PurchInvoiceHeader_L."Posting Date",
+                                             PADSTR('',3 - STRLEN(STRSUBSTNO('%1',LineNo_L)),'0') + STRSUBSTNO('%1',LineNo_L),Code_L,
+                                             PADSTR(Sp_L,6),ABS(PurchInvoiceLine_L."Quantity (Base)")
+                                               ,PurchInvoiceLine_L."VAT %",ABS(PurchInvoiceLine_L."VAT Base Amount"),Sign_L,Way_L);
+
+                             IF (PurchInvoiceLine_L."Amount Including VAT"-PurchInvoiceLine_L.Amount)<>0
+                             THEN BEGIN
+                               GenerateLineBody(CMCCenter_G."Center Company",Vendor_L."No.",Customer."Customer Member",PurchInvoiceHeader_L."No.",
+                                             PurchInvoiceHeader_L."Posting Date",
+                                             PADSTR('',3 - STRLEN(STRSUBSTNO('%1',LineNo_L)),'0') + STRSUBSTNO('%1',LineNo_L),
+                                             STRSUBSTNO('TVA-%1',PurchInvoiceLine_L."VAT %"), PADSTR(Sp_L,6),ABS(1)
+                                               ,PurchInvoiceLine_L."VAT %",
+                                                 ABS(PurchInvoiceLine_L."Amount Including VAT"-PurchInvoiceLine_L.Amount),Sign_L,Way_L)
+                               END;
+
+                               IF PurchInvoiceLine_L."VAT Base Amount"<>PurchInvoiceLine_L.Amount
+                               THEN BEGIN
+                                 GenerateLineBody(CMCCenter_G."Center Company",Vendor_L."No.",Customer."Customer Member",PurchInvoiceHeader_L."No.",
+                                               PurchInvoiceHeader_L."Posting Date",
+                                               PADSTR('',3 - STRLEN(STRSUBSTNO('%1',LineNo_L)),'0') + STRSUBSTNO('%1',LineNo_L),Code_L,
+                                               PADSTR(Sp_L,6),ABS(PurchInvoiceLine_L."Quantity (Base)")
+                                                 ,0,ABS(PurchInvoiceLine_L.Amount-PurchInvoiceLine_L."VAT Base Amount")
+                                                 ,Sign_L,Way_L);
+
+                             END;
+
+
+                             UNTIL PurchInvoiceLine_L.NEXT = 0;
+                             END;
+                             END;
+
+                            // Export des avoirs fournisseurs
+                            VendLedgerEntry_L."Document Type"::"Credit Memo":
+                            BEGIN
+                             PurchCrMemoHeader_L.RESET;
+                             PurchCrMemoLine_L.RESET;
+                             IF PurchCrMemoHeader_L.GET(VendLedgerEntry_L."Document No.")
+                             THEN BEGIN
+                             LineNo_L := 0;
+                             IF VendLedgerEntry_L.Amount > 0 THEN
+                              Sign_L := '-'
+                             ELSE
+                              Sign_L := '+';
+                              Way_L:='C';
+                              PurchCrMemoHeader_L.CALCFIELDS(Amount);
+                              GenerateLineHeader(CMCCenter_G."Center Company",Vendor_L."No.",Customer."Customer Member",PurchCrMemoHeader_L."No.",
+                                               PurchCrMemoHeader_L."Posting Date",PurchCrMemoHeader_L."Posting Description",Way_L,
+                                               ABS(VendLedgerEntry_L.Amount),Sign_L,PurchCrMemoHeader_L."Location Code");
+
+                              PurchCrMemoLine_L.SETCURRENTKEY("Document No.");
+                              PurchCrMemoLine_L.SETRANGE("Document No.",PurchCrMemoHeader_L."No.");
+                              PurchCrMemoLine_L.SETFILTER(Amount,'<>%1',0);
+                              IF PurchCrMemoLine_L.FINDSET THEN
+                              REPEAT
+                               IF PurchCrMemoLine_L.Amount > 0 THEN
+                                Sign_L := '-'
+                               ELSE
+                                Sign_L := '+';
+
+                               LineNo_L := LineNo_L + 1;
+                               IF LineNo_L > 999 THEN
+                                ERROR(Text8053005);
+
+                              CMCPostReceiptAnalysis_L.RESET;
+                              CMCPostReceiptAnalysis_L.SETCURRENTKEY("Receipt Type","Receipt No.");
+                              CMCPostReceiptAnalysis_L.SETRANGE("Receipt Type",CMCPostReceiptAnalysis_L."Receipt Type"::Receipt);
+                              CMCPostReceiptAnalysis_L.SETRANGE("Receipt No.",PurchCrMemoLine_L."Collection recept No.");
+                              IF CMCPostReceiptAnalysis_L.FINDFIRST THEN
+                             // --> 20111210-Cer12-CMC02.01.00-SD: NavAgri - Code Analyse
+                             // a corriger
+                               {
+                               IF CMCPostReceiptAnalysis_L."Analysis Code" = CMCPostReceiptAnalysis_L."Analysis Code"::"0" THEN
+                                Sp_L := 'SP'
+                               ELSE
+                                Sp_L := '';
+                                }
+                             // <-- 20111210-Cer12-CMC02.01.00-SD: NavAgri - Code Analyse
+
+                             Code_L := '';
+                             CASE PurchCrMemoLine_L.Type OF
+                              PurchCrMemoLine_L.Type::"G/L Account":  Code_L := PurchCrMemoLine_L."No." + 'CG';
+                              PurchCrMemoLine_L.Type::Item:           Code_L := PurchCrMemoLine_L."No.";
+                              PurchCrMemoLine_L.Type::"Fixed Asset":  Code_L := 'AUTRES';
+                              PurchCrMemoLine_L.Type::"Charge (Item)":Code_L := PurchCrMemoLine_L."No." + 'FA';
+                             END;
+
+                             IF PurchInvoiceLine_L."Direct Unit Cost"<0 THEN
+                             Way_L:='D'
+                             ELSE
+                             Way_L:='C';
+
+                             GenerateLineBody(CMCCenter_G."Center Company",Vendor_L."No.",Customer."Customer Member",PurchCrMemoHeader_L."No.",
+                                             PurchCrMemoHeader_L."Posting Date",
+                                             PADSTR('',3 - STRLEN(STRSUBSTNO('%1',LineNo_L)),'0') + STRSUBSTNO('%1',LineNo_L),Code_L,
+                                             PADSTR(Sp_L,6),ABS(PurchCrMemoLine_L."Quantity (Base)"),PurchCrMemoLine_L."VAT %"
+                                               ,ABS(PurchCrMemoLine_L."VAT Base Amount"),Sign_L,Way_L);
+
+                             IF (PurchCrMemoLine_L."Amount Including VAT"-PurchCrMemoLine_L.Amount)<>0
+                             THEN BEGIN
+                               GenerateLineBody(CMCCenter_G."Center Company",Vendor_L."No.",Customer."Customer Member",PurchCrMemoHeader_L."No.",
+                                             PurchCrMemoHeader_L."Posting Date",
+                                             PADSTR('',3 - STRLEN(STRSUBSTNO('%1',LineNo_L)),'0') + STRSUBSTNO('%1',LineNo_L),
+                                             STRSUBSTNO('TVA-%1',PurchCrMemoLine_L."VAT %"),
+                                             PADSTR(Sp_L,6),ABS(1),PurchCrMemoLine_L."VAT %"
+                                                 ,ABS(PurchCrMemoLine_L."Amount Including VAT"-PurchCrMemoLine_L.Amount),Sign_L,Way_L)
+                               END;
+
+                               IF PurchCrMemoLine_L."VAT Base Amount"<>PurchCrMemoLine_L.Amount
+                               THEN BEGIN
+                                 GenerateLineBody(CMCCenter_G."Center Company",Vendor_L."No.",Customer."Customer Member",PurchCrMemoHeader_L."No.",
+                                               PurchCrMemoHeader_L."Posting Date",
+                                               PADSTR('',3 - STRLEN(STRSUBSTNO('%1',LineNo_L)),'0') + STRSUBSTNO('%1',LineNo_L),Code_L,
+                                               PADSTR(Sp_L,6),ABS(PurchCrMemoLine_L."Quantity (Base)")
+                                                 ,0,ABS(PurchCrMemoLine_L.Amount-PurchCrMemoLine_L."VAT Base Amount")
+                                                 ,Sign_L,Way_L);
+                             END;
+
+                              UNTIL PurchCrMemoLine_L.NEXT = 0;
+                             END;
+                            END;
+                            END;
+                            VendLedgerEntry_L."Export CER" := TRUE;
+                            VendLedgerEntry_L.MODIFY;
+                            END;
+                            UNTIL VendLedgerEntry_L.NEXT = 0;
+                           UNTIL Vendor_L.NEXT = 0;
+                         END;
+
+        OnPostDataItem=BEGIN
+                         DlgWindow_G.CLOSE;
+                         File_G.CLOSE;
+                       END;
+
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=5720;
+      Height=2420;
+    }
+    CONTROLS
+    {
+      { 1000000000;TextBox;3630 ;0    ;2090 ;440  ;InPage=-1;
+                                                   SourceExpr=CMCAccoutingCenter_G;
+                                                   OnLookup=VAR
+                                                              CMCAccoutingCenter_L@8053000 : Record 8053063;
+                                                            BEGIN
+                                                              CMCAccoutingCenter_L.RESET;
+                                                              IF FORM.RUNMODAL(FORM::Form8053124,CMCAccoutingCenter_L) = ACTION::LookupOK THEN
+                                                               CMCAccoutingCenter_G := CMCAccoutingCenter_L."Center Code";
+                                                            END;
+                                                             }
+      { 1000000002;Label  ;0    ;0    ;3630 ;440  ;CaptionML=[ELL=Accounting Center;
+                                                              ENU=Accouting Center;
+                                                              FRA=Centre de gestion] }
+      { 1000000001;Label  ;0    ;770  ;3630 ;440  ;InPage=-1;
+                                                   CaptionML=[ENU=Period Start;
+                                                              FRA=D'but p'riode] }
+      { 1000000003;Label  ;0    ;1320 ;3630 ;440  ;CaptionML=[ENU=Period End;
+                                                              FRA=Fin p'riode] }
+      { 1000000004;TextBox;3630 ;770  ;2090 ;440  ;InPage=-1;
+                                                   SourceExpr=PeriodStart_G;
+                                                   OnAfterValidate=BEGIN
+                                                                     PeriodEnd_G := PeriodStart_G;
+                                                                   END;
+                                                                    }
+      { 1000000005;TextBox;3630 ;1320 ;2090 ;440  ;SourceExpr=PeriodEnd_G;
+                                                   OnAfterValidate=BEGIN
+                                                                     IF PeriodStart_G > PeriodEnd_G THEN
+                                                                      ERROR(Text8053001);
+                                                                   END;
+                                                                    }
+      { 1000000006;CheckBox;4840;1980 ;440  ;440  ;InPage=-1;
+                                                   ShowCaption=Non;
+                                                   SourceExpr=AllEntries_G }
+      { 1000000007;Label  ;0    ;1980 ;4840 ;440  ;CaptionML=[ENU=Period End;
+                                                              FRA=Export 'critures d'ja export'es] }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+    }
+    CONTROLS
+    {
+      { 1000000000;;Container;
+                  ContainerType=ContentArea }
+
+      { 1000000001;1;Group  ;
+                  GroupType=Group }
+
+      { 1000000002;2;Field  ;
+                  CaptionML=FRA=Centre de gestion;
+                  SourceExpr=CMCAccoutingCenter_G;
+                  OnLookup=VAR
+                             CMCAccoutingCenter_L@1000000000 : Record 8053063;
+                           BEGIN
+                             CMCAccoutingCenter_L.RESET;
+                             IF FORM.RUNMODAL(FORM::Form8053124,CMCAccoutingCenter_L) = ACTION::LookupOK THEN
+                              CMCAccoutingCenter_G := CMCAccoutingCenter_L."Center Code";
+                           END;
+                            }
+
+      { 1000000003;2;Field  ;
+                  CaptionML=FRA=D'but p'riode;
+                  SourceExpr=PeriodStart_G;
+                  OnValidate=BEGIN
+                               PeriodEnd_G := PeriodStart_G;
+                             END;
+                              }
+
+      { 1000000004;2;Field  ;
+                  CaptionML=FRA=Fin p'riode;
+                  SourceExpr=PeriodEnd_G;
+                  OnValidate=BEGIN
+                               IF PeriodStart_G > PeriodEnd_G THEN
+                                ERROR(Text8053001);
+                             END;
+                              }
+
+      { 1000000005;2;Field  ;
+                  CaptionML=FRA=Export 'critures d'j. export'es;
+                  SourceExpr=AllEntries_G }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      CMCSetup_G@8053000 : Record 8052982;
+      FamilyFileName_G@8053001 : Text[50];
+      ItemFileName_G@8053002 : Text[50];
+      InvoiceFileName_G@8053003 : Text[50];
+      CMCAccoutingCenter_G@8053004 : Code[10];
+      Text8053000@8053005 : TextConst 'ENU=Please select a accouting center;FRA=Veuillez renseigner un centre de gestion';
+      PeriodStart_G@8053006 : Date;
+      PeriodEnd_G@8053007 : Date;
+      Text8053001@8053008 : TextConst 'ENU=End period date can not be less than start period date;FRA=La date de d'but p'riode ne peut pas ^tre sup'rieure . la date de fin p'riode';
+      Text8053002@8053009 : TextConst 'ENU=Please select a treatment period;FRA=Veuillez renseigner la p'riode de traitement';
+      DlgWindow_G@8053010 : Dialog;
+      Text8053003@8053011 : TextConst 'FRA=Impossible de cr'er le fichier %1';
+      Text8053004@8053012 : TextConst 'FRA=Impossible d''ouvrir le fichier %1';
+      CMCCenter_G@8053013 : Record 8053063;
+      FileName_G@8053015 : Text[1024];
+      File_G@8053014 : File;
+      Text8053005@8053016 : TextConst 'FRA=Nombre de lignes de facture sup'rieur . 999';
+      Text8053006@8053017 : TextConst 'FRA=La quantit' d'passe 99999999999';
+      Text8053007@8053018 : TextConst 'FRA=Le montant d'passe 99999999999';
+      AllEntries_G@8053019 : Boolean;
+      FormatFieldsManagement_G@1000000020 : Codeunit 8060985;
+
+    PROCEDURE GenerateFamilyFile@8053002();
+    VAR
+      CMCFamily_L@8053000 : Record 8052987;
+      File_L@8053001 : File;
+      FileName_L@8053002 : Text[1024];
+      COMPANY_L@8053003 : Text[5];
+      FAMILY_L@8053004 : Text[35];
+      NAME_L@8053005 : Text[30];
+      FamilyLine_L@8053006 : Text[1024];
+    BEGIN
+      // ***************************************************************
+      // G'n'ration du fichier Famille
+      // Champ largeur fixe
+      // Champ alphanum'rique cal' . gauche compl't' avec des espaces
+      // Champ num'rique cal' . droite avec des '0' pour compl't'
+      // ***************************************************************
+
+      CMCFamily_L.RESET;
+      CMCFamily_L.INIT;
+      CLEAR(File_L);
+      FileName_L := CMCSetup_G."Export Family Directory" + '\' + FamilyFileName_G;
+      File_L.TEXTMODE(TRUE);
+      IF NOT File_L.CREATE(FileName_L) THEN
+       ERROR(STRSUBSTNO(Text8053003,FileName_L));
+
+      IF CMCFamily_L.FIND('-') THEN
+      REPEAT
+       DlgWindow_G.UPDATE(1,CMCFamily_L.Code);
+
+      IF STRLEN(CMCCenter_G."Center Company") > 5 THEN
+       COMPANY_L := COPYSTR(CMCCenter_G."Center Company",1,5)
+      ELSE
+       COMPANY_L := PADSTR(CMCCenter_G."Center Company",5);
+       FAMILY_L  := PADSTR(CMCFamily_L.Code,35);
+       NAME_L    := PADSTR(CMCFamily_L.Name,30);
+       FamilyLine_L := COMPANY_L + FAMILY_L + NAME_L;
+       File_L.WRITE(FamilyLine_L);
+      UNTIL CMCFamily_L.NEXT = 0;
+
+      IF STRLEN(CMCCenter_G."Center Company") > 5 THEN
+       COMPANY_L := COPYSTR(CMCCenter_G."Center Company",1,5);
+      FAMILY_L  := PADSTR('COMPTA',35);
+      NAME_L    := PADSTR('COMPTA',30);
+      FamilyLine_L := COMPANY_L + FAMILY_L + NAME_L;
+      File_L.WRITE(FamilyLine_L);
+
+      FAMILY_L  := PADSTR('AUTRES',35);
+      NAME_L    := PADSTR('AUTRES',30);
+      FamilyLine_L := COMPANY_L + FAMILY_L + NAME_L;
+      File_L.WRITE(FamilyLine_L);
+
+
+      File_L.CLOSE;
+      DlgWindow_G.UPDATE(1,'Termin'');
+    END;
+
+    PROCEDURE GenerateItemFile@8053003();
+    VAR
+      Item_L@8053000 : Record 27;
+      File_L@8053006 : File;
+      FileName_L@8053005 : Text[1024];
+      COMPANY_L@8053004 : Text[5];
+      FAMILY_L@8053003 : Text[35];
+      ITEMCODE_L@8053002 : Text[35];
+      DESCRIPTION_L@8053007 : Text[30];
+      UNITY_L@8053008 : Text[1];
+      VALUE_L@8053009 : Text[6];
+      ItemLine_L@8053001 : Text[1024];
+      ItemUnitOfMeasure_L@8053010 : Record 5404;
+      String_L@8053011 : Text[250];
+      Account_L@8053012 : Record 15;
+      ItemCharge_L@8053013 : Record 5800;
+    BEGIN
+      // ***************************************************************
+      // G'n'ration du fichier Article
+      // Champ largeur fixe
+      // Champ alphanum'rique cal' . gauche compl't' avec des espaces
+      // Champ num'rique cal' . droite avec des '0' pour compl't'
+      // ***************************************************************
+
+      // Export des articles
+
+      Item_L.RESET;
+      Item_L.INIT;
+      ItemUnitOfMeasure_L.RESET;
+      ItemUnitOfMeasure_L.INIT;
+      FileName_L := CMCSetup_G."Export Item Directory" + '\' + ItemFileName_G;
+      File_L.TEXTMODE(TRUE);
+      IF NOT File_L.CREATE(FileName_L) THEN
+       ERROR(STRSUBSTNO(Text8053003,FileName_L));
+
+      IF Item_L.FIND('-') THEN
+      REPEAT
+       DlgWindow_G.UPDATE(2,Item_L."No.");
+
+      IF STRLEN(CMCCenter_G."Center Company") > 5 THEN
+       COMPANY_L := COPYSTR(CMCCenter_G."Center Company",1,5)
+      ELSE
+       COMPANY_L      := PADSTR(CMCCenter_G."Center Company",5);
+       FAMILY_L       := PADSTR(Item_L."Sub-Family Code",35);
+       ITEMCODE_L     := PADSTR(Item_L."No.",35);
+       DESCRIPTION_L  := PADSTR(Item_L.Description,30);
+       IF STRLEN(Item_L."Base Unit of Measure") > 1 THEN
+        UNITY_L := ' '
+       ELSE
+        UNITY_L := Item_L."Base Unit of Measure";
+       IF ItemUnitOfMeasure_L.GET(Item_L."No.",Item_L."Base Unit of Measure") THEN
+       BEGIN
+        String_L := STRSUBSTNO('%1',ItemUnitOfMeasure_L."Qty. per Unit of Measure");
+        IF STRLEN(String_L) > 6 THEN
+         VALUE_L := PADSTR('',6)
+        ELSE
+         VALUE_L := PADSTR('',6-STRLEN(String_L),'0') + String_L;
+       END ELSE
+        VALUE_L := PADSTR('',6);
+
+       ItemLine_L := COMPANY_L + FAMILY_L + ITEMCODE_L + DESCRIPTION_L + UNITY_L + VALUE_L ;
+       File_L.WRITE(ItemLine_L);
+
+      UNTIL Item_L.NEXT = 0;
+
+      // Export du plan comptable
+
+      Account_L.RESET;
+      IF Account_L.FIND('-') THEN
+      REPEAT
+       DlgWindow_G.UPDATE(2,Account_L."No.");
+      IF STRLEN(CMCCenter_G."Center Company") > 5 THEN
+       COMPANY_L := COPYSTR(CMCCenter_G."Center Company",1,5)
+      ELSE
+       COMPANY_L      := PADSTR(CMCCenter_G."Center Company",5);
+       FAMILY_L       := PADSTR('COMPTA',35);
+       ITEMCODE_L     := PADSTR(Account_L."No." + 'CG',35);
+       DESCRIPTION_L  := PADSTR(Account_L.Name,30);
+       UNITY_L := '1';
+       VALUE_L := '1';
+       ItemLine_L := COMPANY_L + FAMILY_L + ITEMCODE_L + DESCRIPTION_L + UNITY_L + VALUE_L ;
+       File_L.WRITE(ItemLine_L);
+      UNTIL Account_L.NEXT = 0;
+
+
+      // Export des frais annexes
+
+      ItemCharge_L.RESET;
+      IF ItemCharge_L.FIND('-') THEN
+      REPEAT
+       DlgWindow_G.UPDATE(2,ItemCharge_L."No.");
+       IF STRLEN(CMCCenter_G."Center Company") > 5 THEN
+        COMPANY_L := COPYSTR(CMCCenter_G."Center Company",1,5)
+       ELSE
+        COMPANY_L      := PADSTR(CMCCenter_G."Center Company",5);
+        FAMILY_L       := PADSTR('AUTRES',35);
+        ITEMCODE_L     := PADSTR(ItemCharge_L."No." + 'FA',35);
+        DESCRIPTION_L  := PADSTR(ItemCharge_L.Description,30);
+        UNITY_L := '1';
+        VALUE_L := '1';
+        ItemLine_L := COMPANY_L + FAMILY_L + ITEMCODE_L + DESCRIPTION_L + UNITY_L + VALUE_L ;
+        File_L.WRITE(ItemLine_L);
+      UNTIL ItemCharge_L.NEXT = 0;
+
+      File_L.CLOSE;
+
+      DlgWindow_G.UPDATE(2,'Termin'');
+    END;
+
+    PROCEDURE CreateInvoiceFile@8053004();
+    BEGIN
+      FileName_G := CMCSetup_G."Export Invoice Directory" + '\' + InvoiceFileName_G;
+      File_G.TEXTMODE(TRUE);
+      IF NOT File_G.CREATE(FileName_G) THEN
+       ERROR(STRSUBSTNO(Text8053003,FileName_G));
+    END;
+
+    PROCEDURE GenerateLineHeader@8053000(Company_P@8053014 : Code[10];CustomerNo_P@8053015 : Code[20];Member_P@8053016 : Text[15];DocumentNo_P@8053017 : Code[20];PostingDate_P@8053018 : Date;PostingDescription_P@8053019 : Text[50];Way_P@8053020 : Text[1];Amount_P@8053021 : Decimal;Sign_P@8053022 : Text[1];Location_P@8053023 : Code[20]);
+    VAR
+      COMPANY_L@8053013 : Text[5];
+      CUSTOMER_L@8053012 : Text[11];
+      MEMBER_L@8053011 : Text[9];
+      NO_L@8053010 : Text[15];
+      TYPE_L@8053009 : Text[1];
+      DATE_L@8053008 : Text[8];
+      NATURE_L@8053007 : Text[1];
+      NAME_L@8053006 : Text[26];
+      NAME2_L@8053005 : Text[29];
+      WAY_L@8053004 : Text[1];
+      AMOUNT_L@8053003 : Text[11];
+      SIGN_L@8053002 : Text[1];
+      DATE2_L@8053001 : Text[8];
+      LOCATION_L@8053000 : Text[4];
+      String_L@8053024 : Text[1024];
+      Line_L@8053025 : Text[1024];
+    BEGIN
+      IF STRLEN(Company_P) > 5 THEN
+       COMPANY_L := COPYSTR(Company_P,1,5)
+      ELSE
+      COMPANY_L   :=  PADSTR(Company_P,5);
+      CUSTOMER_L  :=  PADSTR(CustomerNo_P,11);
+      IF STRLEN(Member_P) > 9 THEN
+        MEMBER_L := COPYSTR(Member_P,1,9)
+      ELSE
+       MEMBER_L    :=  PADSTR(Member_P,9);
+      NO_L        :=  PADSTR(DocumentNo_P,15);
+      TYPE_L      :=  '1';
+      DATE_L      :=  FORMAT(PostingDate_P,8,'<Year4,4><Month,2><Day,2>');
+      NATURE_L    :=  '1';
+      // --> 20140115-INT40/001-CMC02.02.00-1488-OAR01
+      // BEFORE
+      // NAME_L      :=  PADSTR(PostingDescription_P,26);
+      // AFTER
+      NAME_L      :=  FormatFieldsManagement_G.Ascii2Ansi(PADSTR(PostingDescription_P,26));
+      // <-- 20140115-INT40/001-CMC02.02.00-1488-OAR01
+      NAME2_L     :=  PADSTR('',29);
+      WAY_L       :=  Way_P;
+
+
+      Amount_P:=ROUND(Amount_P,0.01);
+      String_L:=FORMAT(Amount_P,11,'<Precision,2:2><Integer><Decimals>');
+      String_L:=DELCHR(String_L,'=',',');
+      String_L:=DELCHR(String_L,'=','.');
+      String_L:=DELCHR(String_L,'=',' ');
+      String_L := DELCHR(FormatFieldsManagement_G.Ascii2Ansi(String_L));
+
+      IF STRLEN(String_L) <= 11 THEN
+        AMOUNT_L  := PADSTR('',11- STRLEN(String_L),'0') + String_L
+       ELSE
+        AMOUNT_L  := PADSTR('',11);
+
+      SIGN_L      :=  Sign_P;
+      DATE2_L     :=  FORMAT(PostingDate_P,8,'<Year4,4><Month,2><Day,2>');
+      LOCATION_L  :=  PADSTR(Location_P,4);
+
+      Line_L := COMPANY_L + CUSTOMER_L + MEMBER_L + NO_L + TYPE_L + DATE_L + NATURE_L + NAME_L + NAME2_L + WAY_L + AMOUNT_L + SIGN_L +
+                 DATE2_L + LOCATION_L;
+
+      File_G.WRITE(Line_L);
+    END;
+
+    PROCEDURE GenerateLineBody@8053001(Company_P@8053011 : Code[10];CustomerNo_P@8053010 : Code[20];Member_P@8053007 : Text[15];DocumentNo_P@8053006 : Code[20];PostingDate_P@8053005 : Date;Sequence_P@8053004 : Text[3];ItemNo_P@8053003 : Code[20];Sp_P@8053002 : Text[6];Quantity_P@8053001 : Decimal;"Vat%_P"@8053000 : Decimal;Amount_P@8053012 : Decimal;Sign_P@8053016 : Text[1];Way_P@1000000000 : Text[1]);
+    VAR
+      COMPANY_L@8053033 : Text[5];
+      CUSTOMER_L@8053032 : Text[11];
+      MEMBER_L@8053031 : Text[9];
+      NO_L@8053030 : Text[15];
+      TYPE_L@8053029 : Text[1];
+      DATE_L@8053028 : Text[8];
+      SEQUENCE_L@8053027 : Text[3];
+      ITEMNO_L@8053026 : Text[35];
+      SP_L@8053025 : Text[6];
+      QTY_L@8053024 : Text[11];
+      VAT_L@8053023 : Text[1];
+      WAY_L@8053022 : Text[1];
+      AMOUNT_L@8053015 : Text[11];
+      SIGN_L@8053014 : Text[1];
+      SPACE1_L@8053013 : Text[10];
+      ZONE_L@8053009 : Text[3];
+      COMMENT_L@8053008 : Text[35];
+      StrQty_L@8053018 : Text[1024];
+      PosSeparator_L@8053019 : Integer;
+      Ent_L@8053020 : Text[20];
+      Dec_L@8053021 : Text[20];
+      StrAmount_L@8053034 : Text[1024];
+      Line_L@8053035 : Text[1024];
+    BEGIN
+      IF STRLEN(Company_P) > 5 THEN
+       COMPANY_L := COPYSTR(Company_P,1,5)
+      ELSE
+       COMPANY_L   :=  PADSTR(Company_P,5);
+      CUSTOMER_L  :=  PADSTR(CustomerNo_P,11);
+      IF STRLEN(Member_P) > 9 THEN
+        MEMBER_L := COPYSTR(Member_P,1,9)
+      ELSE
+       MEMBER_L    :=  PADSTR(Member_P,9);
+      NO_L        :=  PADSTR(DocumentNo_P,15);
+      TYPE_L      :=  '2';
+      DATE_L      :=  FORMAT(PostingDate_P,8,'<Year4,4><Month,2><Day,2>');
+      SEQUENCE_L  :=  Sequence_P;
+      ITEMNO_L    :=  PADSTR(ItemNo_P,35);
+      SP_L        :=  Sp_P;
+
+
+
+      Quantity_P:=ROUND(Quantity_P,0.01);
+      StrQty_L:=FORMAT(Quantity_P,11,'<Precision,2:2><Integer><Decimals>');
+      StrQty_L:=DELCHR(StrQty_L,'=',',');
+      StrQty_L:=DELCHR(StrQty_L,'=','.');
+      StrQty_L:=DELCHR(StrQty_L,'=',' ');
+      StrQty_L := DELCHR(FormatFieldsManagement_G.Ascii2Ansi(StrQty_L));
+      //QTY_L:=_L;
+      QTY_L := PADSTR('',11- STRLEN(StrQty_L))+StrQty_L;
+      {
+      StrQty_L := STRSUBSTNO('%1',Quantity_P);
+      StrQty_L := DELCHR(FormatFieldsManagement_G.Ascii2Ansi(StrQty_L));
+      IF STRLEN(StrQty_L) > 11 THEN
+       ERROR(Text8053006);
+      PosSeparator_L := STRPOS(StrQty_L, ',');
+      IF PosSeparator_L = 0 THEN
+       QTY_L := PADSTR('',11- STRLEN(StrQty_L)) + StrQty_L
+      ELSE BEGIN
+       Ent_L := COPYSTR(StrQty_L,1,PosSeparator_L-1);
+       Dec_L := COPYSTR(StrQty_L,PosSeparator_L+1);
+       Dec_L := COPYSTR(Dec_L,1,2);
+       QTY_L := PADSTR('',11- STRLEN(Ent_L + Dec_L)) + Ent_L + Dec_L;
+      END;
+      }
+      CASE "Vat%_P" OF
+       0     : VAT_L := '0';
+       7     : VAT_L := '1';
+       33.33 : VAT_L := '4';
+       5.5   : VAT_L := '6';
+       19.6  : VAT_L := '7';
+
+      END;
+
+      WAY_L     := Way_P;
+
+      Amount_P:=ROUND(Amount_P,0.01);
+      StrAmount_L:=FORMAT(Amount_P,11,'<Precision,2:2><Integer><Decimals>');
+      StrAmount_L:=DELCHR(StrAmount_L,'=',',');
+      StrAmount_L:=DELCHR(StrAmount_L,'=','.');
+      StrAmount_L:=DELCHR(StrAmount_L,'=',' ');
+      StrAmount_L := DELCHR(FormatFieldsManagement_G.Ascii2Ansi(StrAmount_L));
+
+      IF STRLEN(StrAmount_L) <= 11 THEN
+        AMOUNT_L  := PADSTR('',11- STRLEN(StrAmount_L),'0') + StrAmount_L
+       ELSE
+        AMOUNT_L  := PADSTR('',11);
+
+      SIGN_L    := Sign_P;
+      SPACE1_L  := PADSTR('A',10);
+      ZONE_L    := PADSTR('A',3);
+      COMMENT_L := PADSTR('A',35);
+
+      Line_L := COMPANY_L + CUSTOMER_L + MEMBER_L + NO_L + TYPE_L + DATE_L + SEQUENCE_L + ITEMNO_L + SP_L + QTY_L + VAT_L +
+                WAY_L + AMOUNT_L + SIGN_L + SPACE1_L + ZONE_L + COMMENT_L;
+      File_G.WRITE(Line_L);
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+
+      20110601-Wi00-CMC01.04 : Version RTM 01.04 - NavAgri
+      20110801-CMC01.05.00-DRN : MODCODE (Correction appel des pages suite . la suppression des Forms)
+      20111224-Cer12-CMC02.01.00-SD: NavAgri - Code Analyse
+      20140115-INT40/001-CMC02.02.00-1488-OAR01 : Convert char before exporting (cause bad char - ASCII to ANSI)
+      // --> 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

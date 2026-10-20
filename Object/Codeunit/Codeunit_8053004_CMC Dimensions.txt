@@ -1,0 +1,924 @@
+OBJECT Codeunit 8053004 CMC Dimensions
+{
+  OBJECT-PROPERTIES
+  {
+    Date=02/06/16;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 349=ri;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      G_GLSetup@8053001 : Record 98;
+      G_CMCSetUp@8053003 : Record 8052982;
+      G_recDimension@8053002 : Record 348;
+      G_recDimValue@8053004 : Record 349;
+      G_recItem@8053000 : Record 27;
+      i@8053005 : Integer;
+      G_recLocation@8053006 : Record 14;
+
+    PROCEDURE DimFromPurch@8053000(VAR P_TemDocDim@8053001 : TEMPORARY Record 357;VAR P_PurchaseLine@8053000 : Record 39);
+    VAR
+      ItemCode_L@8053005 : Code[20];
+      LocationCode_L@8053004 : Code[10];
+      RecPurchLine_L@8053003 : Record 39;
+      RecDefaultDimension_L@8053002 : Record 352;
+      PurchHd_L@1000000000 : Record 38;
+      PostedCollReceipt_L@1000000001 : Record 8052995;
+      PostedDelivery_L@1000000002 : Record 8053014;
+      PurchReceiptHd_L@1000000003 : Record 120;
+      DecDim_L@1000000004 : Record 357;
+    BEGIN
+      // appeler  . partir du CU 90
+      G_CMCSetUp.GET;
+      G_GLSetup.GET;
+
+      ItemCode_L:='';
+      LocationCode_L:='';
+
+      IF (P_PurchaseLine.Type=P_PurchaseLine.Type::Item) AND (P_PurchaseLine."No."<>'') THEN BEGIN
+        // --> 20150731-APP27-TER01.01.00-2017-PDC01
+        //BEFORE
+        //ItemCode_L:=P_PurchaseLine."No.";
+
+        //AFTER
+        // --> 20150806-APP27-TER01.01.00-2017-PDC01
+        IF (P_PurchaseLine."Document Type"=P_PurchaseLine."Document Type"::Invoice) AND
+           PurchReceiptHd_L.GET(P_PurchaseLine."Receipt No.") THEN BEGIN
+          IF NOT PurchHd_L.GET(PurchHd_L."Document Type"::Order,PurchReceiptHd_L."Order No.") THEN
+            CLEAR(PurchHd_L);
+        END ELSE
+        // <-- 20150731-APP27-TER01.01.00-2017-PDC01
+        PurchHd_L.GET(P_PurchaseLine."Document Type",P_PurchaseLine."Document No.");
+
+        CASE TRUE OF
+          (PurchHd_L."Source Document Type"=PurchHd_L."Source Document Type"::"Collection Receipt") AND
+          PostedCollReceipt_L.GET(PostedCollReceipt_L."Receipt Type"::Receipt,PurchHd_L."Source Document No.") :
+            ItemCode_L:=PostedCollReceipt_L."Item No.";
+
+          (PurchHd_L."Source Document Type"=PurchHd_L."Source Document Type"::Delivery) AND
+          PostedDelivery_L.GET(PostedDelivery_L."Delivery Type"::Delivery,PurchHd_L."Source Document No.") :
+            ItemCode_L:=PostedDelivery_L."Item No.";
+
+          (PurchHd_L."Source Document Type"=PurchHd_L."Source Document Type"::"Ind. Transfer") AND
+          PostedDelivery_L.GET(PostedDelivery_L."Delivery Type"::Transfert,PurchHd_L."Source Document No.") :
+            ItemCode_L:=PostedDelivery_L."Item No.";
+
+          (PurchHd_L."Source Document Type"=PurchHd_L."Source Document Type"::Resumption) AND
+          PostedDelivery_L.GET(PostedDelivery_L."Delivery Type"::Resumption,PurchHd_L."Source Document No.") :
+            ItemCode_L:=PostedDelivery_L."Item No.";
+
+          ELSE
+            ItemCode_L:=P_PurchaseLine."No.";
+        END;
+        // <-- 20150731-APP27-TER01.01.00-2017-PDC014
+
+        LocationCode_L:=P_PurchaseLine."Location Code";
+      END ELSE BEGIN
+        // ligne frais annexes associ'
+        IF P_PurchaseLine."Item Charge Root Line No." <> 0 THEN BEGIN
+          RecPurchLine_L.GET(P_PurchaseLine."Document Type",P_PurchaseLine."Document No.",P_PurchaseLine."Item Charge Root Line No.");
+          ItemCode_L:=RecPurchLine_L."No.";
+          LocationCode_L:=RecPurchLine_L."Location Code";
+        END;
+      END;
+
+      IF NOT G_recItem.GET(ItemCode_L) THEN EXIT;
+
+      // --> 20160602-WI00-ADV01.01.00-2056-JCD01 : Pas de chargement d'axe analytique Location si CG et Axe d'j. pr'sent
+      IF (P_PurchaseLine.Type = P_PurchaseLine.Type::"G/L Account") THEN
+        IF (LocationCode_L = '') THEN // La ligne n'est pas li'e . une ligne article
+          IF G_CMCSetUp."Location Dimension" <> '' THEN BEGIN
+            DecDim_L.RESET;
+            DecDim_L.SETRANGE("Table ID",39);
+            DecDim_L.SETRANGE("Document Type",P_PurchaseLine."Document Type");
+            DecDim_L.SETRANGE("Document No.",P_PurchaseLine."Document No.");
+            DecDim_L.SETRANGE("Line No.",P_PurchaseLine."Line No.");
+            DecDim_L.SETRANGE("Dimension Code",G_CMCSetUp."Location Dimension");
+            IF NOT DecDim_L.ISEMPTY THEN //Analytique lieu saisi prioritaire
+              EXIT;
+          END;
+      // <-- 20160602-WI00-ADV01.01.00-2056-JCD01
+
+      // --> 20151106-WI00-TER01.01.00-2338-BSI01
+      {before
+      G_recLocation.INIT;
+      IF G_recLocation.GET(P_PurchaseLine."Location Code") THEN ;
+      after}
+      IF NOT G_recLocation.GET(P_PurchaseLine."Location Code") THEN
+        CLEAR(G_recLocation);
+      // <-- 20151106-WI00-TER01.01.00-2338-BSI01
+
+      FOR i := 0 TO 4 DO BEGIN
+        IF GetCMCDim(i) <> '' THEN BEGIN
+          IF NOT G_recDimValue.GET(GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i)) THEN
+            CreatDimVal(GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i),GetCMCDimDescrp(i,GetDimValue(G_recItem,G_recLocation,i)));
+            CreatTempDocDim(P_TemDocDim,DATABASE::"Purchase Line",P_PurchaseLine."Document No.",P_PurchaseLine."Line No.",
+              P_PurchaseLine."Document Type",GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i),P_PurchaseLine."Analytical Quantity")
+        END;
+        IF GetCMCDim(i) = G_GLSetup."Global Dimension 1 Code" THEN BEGIN
+          P_PurchaseLine."Shortcut Dimension 1 Code":=GetDimValue(G_recItem,G_recLocation,i);
+          P_PurchaseLine.MODIFY;
+        END;
+        IF GetCMCDim(i) = G_GLSetup."Global Dimension 2 Code" THEN BEGIN
+          P_PurchaseLine."Shortcut Dimension 2 Code":=GetDimValue(G_recItem,G_recLocation,i);
+          P_PurchaseLine.MODIFY;
+        END
+      END;
+
+      RecDefaultDimension_L.RESET;
+      RecDefaultDimension_L.SETRANGE("Table ID",27);
+      RecDefaultDimension_L.SETRANGE("No.",ItemCode_L);
+      IF RecDefaultDimension_L.FINDSET THEN
+        REPEAT
+          CreatTempDocDim(P_TemDocDim,DATABASE::"Purchase Line",P_PurchaseLine."Document No.",P_PurchaseLine."Line No.",
+            P_PurchaseLine."Document Type",RecDefaultDimension_L."Dimension Code",RecDefaultDimension_L."Dimension Value Code",
+            P_PurchaseLine."Analytical Quantity");
+          IF RecDefaultDimension_L."Dimension Code" = G_GLSetup."Global Dimension 1 Code" THEN BEGIN
+            P_PurchaseLine."Shortcut Dimension 1 Code":=RecDefaultDimension_L."Dimension Value Code";
+            P_PurchaseLine.MODIFY;
+          END;
+          IF RecDefaultDimension_L."Dimension Code" = G_GLSetup."Global Dimension 2 Code" THEN BEGIN
+            P_PurchaseLine."Shortcut Dimension 2 Code":=RecDefaultDimension_L."Dimension Value Code";
+            P_PurchaseLine.MODIFY;
+          END
+        UNTIL RecDefaultDimension_L.NEXT=0;
+    END;
+
+    PROCEDURE DimFromSales@8053001(VAR P_TemDocDim@8053001 : TEMPORARY Record 357;VAR P_SalesLine@8053000 : Record 37);
+    VAR
+      ItemCode_L@8053003 : Code[20];
+      LocationCode_L@8053004 : Code[10];
+      RecSalesLine_L@8053005 : Record 37;
+      RecDefaultDimension_L@8053002 : Record 352;
+      DecDim_L@1000000000 : Record 357;
+    BEGIN
+      // appeler  . partir du CU 80
+      G_CMCSetUp.GET;
+      G_GLSetup.GET;
+
+      ItemCode_L:='';
+      LocationCode_L:='';
+
+      IF (P_SalesLine.Type=P_SalesLine.Type::Item) AND (P_SalesLine."No."<>'') THEN BEGIN
+        ItemCode_L:=P_SalesLine."No.";
+        LocationCode_L:=P_SalesLine."Location Code";
+      END ELSE BEGIN
+        //avoir cvo
+        IF P_SalesLine."CVO Item Attached Line"<>0 THEN BEGIN
+          RecSalesLine_L.GET(P_SalesLine."Document Type",P_SalesLine."Document No.",P_SalesLine."CVO Item Attached Line");
+          // --> 20160301-WI00-ADV01.01.00-2358-JCD01
+          IF RecSalesLine_L.Type <> RecSalesLine_L.Type::Item THEN
+            OriginalItemLine(RecSalesLine_L);
+          // <-- 20160301-WI00-ADV01.01.00-2358-JCD01
+          ItemCode_L:=RecSalesLine_L."No.";
+          LocationCode_L:=RecSalesLine_L."Location Code";
+        END;
+        // cvo mais
+        IF P_SalesLine."CVO Corn Item Attached Line"<>0 THEN BEGIN
+          RecSalesLine_L.GET(P_SalesLine."Document Type",P_SalesLine."Document No.",P_SalesLine."CVO Corn Item Attached Line");
+          // --> 20160301-WI00-ADV01.01.00-2358-JCD01
+          IF RecSalesLine_L.Type <> RecSalesLine_L.Type::Item THEN
+            OriginalItemLine(RecSalesLine_L);
+          // <-- 20160301-WI00-ADV01.01.00-2358-JCD01
+          ItemCode_L:=RecSalesLine_L."No.";
+          LocationCode_L:=RecSalesLine_L."Location Code";
+        END;
+        //rpd
+        IF P_SalesLine."RPD Item Attached Line"<>0 THEN BEGIN
+          RecSalesLine_L.GET(P_SalesLine."Document Type",P_SalesLine."Document No.",P_SalesLine."RPD Item Attached Line");
+          // --> 20160301-WI00-ADV01.01.00-2358-JCD01
+          IF RecSalesLine_L.Type <> RecSalesLine_L.Type::Item THEN
+            OriginalItemLine(RecSalesLine_L);
+          // <-- 20160301-WI00-ADV01.01.00-2358-JCD01
+          ItemCode_L:=RecSalesLine_L."No.";
+          LocationCode_L:=RecSalesLine_L."Location Code";
+        END;
+
+        // produit gratuit
+        IF P_SalesLine."Free Item Root Line"<>0 THEN BEGIN
+          RecSalesLine_L.GET(P_SalesLine."Document Type",P_SalesLine."Document No.",P_SalesLine."Free Item Root Line");
+          // --> 20160301-WI00-ADV01.01.00-2358-JCD01
+          IF RecSalesLine_L.Type <> RecSalesLine_L.Type::Item THEN
+            OriginalItemLine(RecSalesLine_L);
+          // <-- 20160301-WI00-ADV01.01.00-2358-JCD01
+          ItemCode_L:=RecSalesLine_L."No.";
+          LocationCode_L:=RecSalesLine_L."Location Code";
+        END;
+
+        // ligne de remise
+        IF P_SalesLine."Disc. Root Line"<>0 THEN BEGIN
+          RecSalesLine_L.GET(P_SalesLine."Document Type",P_SalesLine."Document No.",P_SalesLine."Disc. Root Line");
+          // --> 20160301-WI00-ADV01.01.00-2358-JCD01
+          IF RecSalesLine_L.Type <> RecSalesLine_L.Type::Item THEN
+            OriginalItemLine(RecSalesLine_L);
+          // <-- 20160301-WI00-ADV01.01.00-2358-JCD01
+          ItemCode_L:=RecSalesLine_L."No.";
+          LocationCode_L:=RecSalesLine_L."Location Code";
+        END;
+
+        // ligne frais annexes associ'
+        IF P_SalesLine."Item Charge Root Line No."<>0 THEN BEGIN
+          RecSalesLine_L.GET(P_SalesLine."Document Type",P_SalesLine."Document No.",P_SalesLine."Item Charge Root Line No.");
+          // --> 20160301-WI00-ADV01.01.00-2358-JCD01
+          IF RecSalesLine_L.Type <> RecSalesLine_L.Type::Item THEN
+            OriginalItemLine(RecSalesLine_L);
+          // <-- 20160301-WI00-ADV01.01.00-2358-JCD01
+          ItemCode_L:=RecSalesLine_L."No.";
+          LocationCode_L:=RecSalesLine_L."Location Code";
+        END;
+      END;
+
+      // --> 20150319-Wi00-CMC02.02.00-2842-DAD
+      // Cas d'une ligne avec autre chose qu'un article et le code magasin vide.
+      IF (P_SalesLine."Location Code" = '') AND (RecSalesLine_L."No." = '') THEN
+        EXIT;
+      // <-- 20150319-Wi00-CMC02.02.00-2842-DAD
+
+      // --> 20160602-WI00-ADV01.01.00-2056-JCD01 : Pas de chargement d'axe analytique Location si CG et Axe d'j. pr'sent
+      IF (P_SalesLine.Type = P_SalesLine.Type::"G/L Account") THEN
+        IF (LocationCode_L = '') THEN // La ligne n'est pas li'e . une ligne article
+          IF G_CMCSetUp."Location Dimension" <> '' THEN BEGIN
+            DecDim_L.RESET;
+            DecDim_L.SETRANGE("Table ID",37);
+            DecDim_L.SETRANGE("Document Type",P_SalesLine."Document Type");
+            DecDim_L.SETRANGE("Document No.",P_SalesLine."Document No.");
+            DecDim_L.SETRANGE("Line No.",P_SalesLine."Line No.");
+            DecDim_L.SETRANGE("Dimension Code",G_CMCSetUp."Location Dimension");
+            IF NOT DecDim_L.ISEMPTY THEN //Analytique lieu saisi prioritaire
+              EXIT;
+          END;
+      // <-- 20160602-WI00-ADV01.01.00-2056-JCD01
+
+      // Cas d'une ligne avec autre chose qu'un article.
+      IF LocationCode_L = '' THEN
+        LocationCode_L := P_SalesLine."Location Code";
+
+      IF NOT G_recItem.GET(ItemCode_L) THEN BEGIN
+        CLEAR(G_recItem);
+        G_recItem.INIT;
+      END;
+
+      IF NOT G_recLocation.GET(LocationCode_L) THEN BEGIN
+        CLEAR(G_recLocation);
+       // G_recLocation.INIT;
+      END;
+
+      FOR i := 0 TO 4 DO BEGIN
+        IF GetCMCDim(i)<>'' THEN BEGIN
+         IF NOT G_recDimValue.GET(GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i)) THEN
+           CreatDimVal(GetCMCDim(i), GetDimValue(G_recItem,G_recLocation,i), GetCMCDimDescrp(i,GetDimValue(G_recItem,G_recLocation,i)));
+           CreatTempDocDim(P_TemDocDim,DATABASE::"Sales Line",P_SalesLine."Document No.",P_SalesLine."Line No.",
+             P_SalesLine."Document Type",GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i),P_SalesLine."Analytical Quantity")
+        END;
+        IF GetCMCDim(i) = G_GLSetup."Global Dimension 1 Code" THEN BEGIN
+          P_SalesLine."Shortcut Dimension 1 Code":=GetDimValue(G_recItem,G_recLocation,i);
+          P_SalesLine.MODIFY;
+        END;
+        IF GetCMCDim(i) = G_GLSetup."Global Dimension 2 Code" THEN BEGIN
+          P_SalesLine."Shortcut Dimension 2 Code":=GetDimValue(G_recItem,G_recLocation,i);
+          P_SalesLine.MODIFY;
+        END
+      END;
+
+      IF ItemCode_L <> '' THEN BEGIN
+        RecDefaultDimension_L.RESET;
+        RecDefaultDimension_L.SETRANGE("Table ID",27);
+        RecDefaultDimension_L.SETRANGE("No.",ItemCode_L);
+        IF RecDefaultDimension_L.FINDSET THEN
+          REPEAT
+          CreatTempDocDim(P_TemDocDim,DATABASE::"Sales Line",P_SalesLine."Document No.",P_SalesLine."Line No.",
+            P_SalesLine."Document Type",RecDefaultDimension_L."Dimension Code",RecDefaultDimension_L."Dimension Value Code",
+              P_SalesLine."Analytical Quantity");
+            IF RecDefaultDimension_L."Dimension Code" = G_GLSetup."Global Dimension 1 Code" THEN BEGIN
+              P_SalesLine."Shortcut Dimension 1 Code":=RecDefaultDimension_L."Dimension Value Code";
+              P_SalesLine.MODIFY;
+            END;
+            IF RecDefaultDimension_L."Dimension Code" = G_GLSetup."Global Dimension 2 Code" THEN BEGIN
+              P_SalesLine."Shortcut Dimension 2 Code":=RecDefaultDimension_L."Dimension Value Code";
+              P_SalesLine.MODIFY;
+            END
+          UNTIL RecDefaultDimension_L.NEXT=0;
+      END;
+    END;
+
+    PROCEDURE DimFromItemJnl@8053019(VAR P_TemJnlDim@8053001 : TEMPORARY Record 356;VAR P_ItemJnl@8053000 : Record 83;P_DimFromCMCObj@8053003 : Boolean);
+    VAR
+      L_@8053002 : Record 39;
+      RecDefaultDimension_L@8053004 : Record 352;
+      RecDefaultDimension2_L@8053007 : Record 352;
+      RecNewItem_L@8053005 : Record 27;
+      Mutation_L@8053006 : Boolean;
+    BEGIN
+      // appeler  . partir du CU 22
+      G_CMCSetUp.GET;
+      G_GLSetup.GET;
+      IF P_ItemJnl."Item No." = '' THEN
+        EXIT;
+      IF (P_ItemJnl."Journal Template Name"='') AND (P_DimFromCMCObj=FALSE) AND (P_ItemJnl."Item Charge No."='') AND
+        (P_ItemJnl."BO Doc. No."='')
+      THEN
+        EXIT;
+      IF NOT G_recItem.GET(P_ItemJnl."Item No.") THEN
+        EXIT;
+
+      // --> 20150217-WI00-CMC02.02.00-2763-DRN01
+      //Cas de la mutation sur article diff'rent
+      IF (P_ItemJnl."Entry Type" = P_ItemJnl."Entry Type"::Transfer) THEN
+        IF (P_ItemJnl."Item No." <> P_ItemJnl."New Item No.") AND (P_ItemJnl."New Item No." <> '') THEN BEGIN
+          RecNewItem_L.GET(P_ItemJnl."New Item No.");
+          Mutation_L := TRUE;
+        END;
+      // <-- 20150217-WI00-CMC02.02.00-2763-DRN01
+
+      // --> 20151106-WI00-TER01.01.00-2338-BSI01
+      {before
+      G_recLocation.INIT;
+      IF G_recLocation.GET(P_ItemJnl."Location Code") THEN;
+      after}
+      IF NOT G_recLocation.GET(P_ItemJnl."Location Code") THEN
+        CLEAR(G_recLocation);
+      // <-- 20151106-WI00-TER01.01.00-2338-BSI01
+
+
+      FOR i := 0 TO 4 DO BEGIN
+        IF GetCMCDim(i) <> '' THEN BEGIN
+          IF NOT G_recDimValue.GET(GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i)) THEN
+            CreatDimVal(GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i),GetCMCDimDescrp(i,GetDimValue(G_recItem,G_recLocation,i)));
+          // --> 20150217-WI00-CMC02.02.00-2763-DRN01
+          IF Mutation_L THEN
+            IF NOT G_recDimValue.GET(GetCMCDim(i),GetDimValue(RecNewItem_L,G_recLocation,i)) THEN
+              CreatDimVal(GetCMCDim(i),GetDimValue(RecNewItem_L,G_recLocation,i),
+                GetCMCDimDescrp(i,GetDimValue(RecNewItem_L,G_recLocation,i)));
+          // <-- 20150217-WI00-CMC02.02.00-2763-DRN01
+          IF P_ItemJnl."Entry Type" = P_ItemJnl."Entry Type"::Transfer THEN BEGIN
+            // --> 20150217-WI00-CMC02.02.00-2763-DRN01
+            IF Mutation_L THEN
+              CreatTempJnlDim(P_TemJnlDim,DATABASE::"Item Journal Line",P_ItemJnl."Journal Template Name",P_ItemJnl."Journal Batch Name"
+      ,
+                P_ItemJnl."Line No.",GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i),GetDimValue(RecNewItem_L,G_recLocation,i))
+            ELSE
+              CreatTempJnlDim(P_TemJnlDim,DATABASE::"Item Journal Line",P_ItemJnl."Journal Template Name",P_ItemJnl."Journal Batch Name"
+      ,
+                P_ItemJnl."Line No.",GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i),GetDimValue(G_recItem,G_recLocation,i))
+            // <-- 20150217-WI00-CMC02.02.00-2763-DRN01
+          END ELSE
+            CreatTempJnlDim(P_TemJnlDim,DATABASE::"Item Journal Line",P_ItemJnl."Journal Template Name",P_ItemJnl."Journal Batch Name",
+              P_ItemJnl."Line No.",GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i),'')
+        END;
+        IF GetCMCDim(i) = G_GLSetup."Global Dimension 1 Code" THEN BEGIN
+          P_ItemJnl."Shortcut Dimension 1 Code" := GetDimValue(G_recItem,G_recLocation,i);
+          IF P_ItemJnl."Entry Type" = P_ItemJnl."Entry Type"::Transfer THEN BEGIN
+            // --> 20150217-WI00-CMC02.02.00-2763-DRN01
+            IF Mutation_L THEN
+              P_ItemJnl."New Shortcut Dimension 1 Code" := GetDimValue(RecNewItem_L,G_recLocation,i)
+            ELSE
+            // <-- 20150217-WI00-CMC02.02.00-2763-DRN01
+              P_ItemJnl."New Shortcut Dimension 1 Code" := GetDimValue(G_recItem,G_recLocation,i);
+          END;
+        END;
+        IF GetCMCDim(i) = G_GLSetup."Global Dimension 2 Code" THEN BEGIN
+          P_ItemJnl."Shortcut Dimension 2 Code" := GetDimValue(G_recItem,G_recLocation,i);
+          IF P_ItemJnl."Entry Type" = P_ItemJnl."Entry Type"::Transfer THEN BEGIN
+            // --> 20150217-WI00-CMC02.02.00-2763-DRN01
+            IF Mutation_L THEN
+              P_ItemJnl."New Shortcut Dimension 2 Code" := GetDimValue(RecNewItem_L,G_recLocation,i)
+            ELSE
+            // <-- 20150217-WI00-CMC02.02.00-2763-DRN01
+              P_ItemJnl."New Shortcut Dimension 2 Code" := GetDimValue(G_recItem,G_recLocation,i);
+          END;
+        END
+      END;
+
+      RecDefaultDimension_L.RESET;
+      RecDefaultDimension_L.SETRANGE("Table ID",27);
+      RecDefaultDimension_L.SETRANGE("No.",P_ItemJnl."Item No.");
+      IF RecDefaultDimension_L.FINDSET THEN
+        REPEAT
+          // --> 20150217-WI00-CMC02.02.00-2763-DRN01
+          IF P_ItemJnl."Entry Type" = P_ItemJnl."Entry Type"::Transfer THEN BEGIN
+            IF Mutation_L THEN BEGIN
+              IF RecDefaultDimension2_L.GET(27,RecNewItem_L."No.",0,RecDefaultDimension_L."Dimension Code") THEN
+                CreatTempJnlDim(P_TemJnlDim,DATABASE::"Item Journal Line",P_ItemJnl."Journal Template Name",
+                  P_ItemJnl."Journal Batch Name",P_ItemJnl."Line No.",RecDefaultDimension_L."Dimension Code",
+                  RecDefaultDimension_L."Dimension Value Code",RecDefaultDimension2_L."Dimension Value Code")
+            END ELSE
+              CreatTempJnlDim(P_TemJnlDim,DATABASE::"Item Journal Line",P_ItemJnl."Journal Template Name",P_ItemJnl."Journal Batch Name"
+      ,
+                P_ItemJnl."Line No.",RecDefaultDimension_L."Dimension Code",RecDefaultDimension_L."Dimension Value Code",
+                RecDefaultDimension_L."Dimension Value Code")
+          END ELSE
+          // <-- 20150217-WI00-CMC02.02.00-2763-DRN01
+            CreatTempJnlDim(P_TemJnlDim,DATABASE::"Item Journal Line",P_ItemJnl."Journal Template Name",P_ItemJnl."Journal Batch Name",
+              P_ItemJnl."Line No.",RecDefaultDimension_L."Dimension Code",RecDefaultDimension_L."Dimension Value Code",'');
+
+          IF RecDefaultDimension_L."Dimension Code" = G_GLSetup."Global Dimension 1 Code" THEN BEGIN
+            P_ItemJnl."Shortcut Dimension 1 Code" := RecDefaultDimension_L."Dimension Value Code";
+            // --> 20150217-WI00-CMC02.02.00-2763-DRN01
+            IF P_ItemJnl."Entry Type" = P_ItemJnl."Entry Type"::Transfer THEN
+              IF Mutation_L THEN BEGIN
+                IF RecDefaultDimension2_L.GET(27,RecNewItem_L."No.",0,RecDefaultDimension_L."Dimension Code") THEN
+                  P_ItemJnl."New Shortcut Dimension 1 Code" := RecDefaultDimension2_L."Dimension Value Code";;
+              END ELSE
+                P_ItemJnl."New Shortcut Dimension 1 Code" := RecDefaultDimension_L."Dimension Value Code";;
+            // <-- 20150217-WI00-CMC02.02.00-2763-DRN01
+          END;
+          IF RecDefaultDimension_L."Dimension Code" = G_GLSetup."Global Dimension 2 Code" THEN BEGIN
+            P_ItemJnl."Shortcut Dimension 2 Code" := RecDefaultDimension_L."Dimension Value Code";
+            // --> 20150217-WI00-CMC02.02.00-2763-DRN01
+            IF P_ItemJnl."Entry Type" = P_ItemJnl."Entry Type"::Transfer THEN
+              IF Mutation_L THEN BEGIN
+                IF RecDefaultDimension2_L.GET(27,RecNewItem_L."No.",0,RecDefaultDimension_L."Dimension Code") THEN
+                  P_ItemJnl."New Shortcut Dimension 2 Code" := RecDefaultDimension2_L."Dimension Value Code";;
+              END ELSE
+                P_ItemJnl."New Shortcut Dimension 2 Code" := RecDefaultDimension_L."Dimension Value Code";;
+            // <-- 20150217-WI00-CMC02.02.00-2763-DRN01
+          END
+        UNTIL RecDefaultDimension_L.NEXT=0;
+    END;
+
+    PROCEDURE DimFromLS@8053020(P_ItemCode@8053000 : Code[20];VAR P_TempDimBufNew@8053001 : TEMPORARY Record 360;VAR GlobalDimension1Code@8053002 : Code[20];VAR GlobalDimension2Code@8053003 : Code[20]);
+    BEGIN
+      // appeler  . partir du LS
+      G_CMCSetUp.GET;
+      G_GLSetup.GET;
+      IF P_ItemCode=''THEN EXIT;
+
+      IF NOT G_recItem.GET(P_ItemCode) THEN EXIT;
+
+      FOR i := 0 TO 4 DO BEGIN
+        IF GetCMCDim(i) <> '' THEN BEGIN
+         IF NOT G_recDimValue.GET(GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i)) THEN
+           CreatDimVal(GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i),GetCMCDimDescrp(i,GetDimValue(G_recItem,G_recLocation,i)));
+         CreatDimBuffer(P_TempDimBufNew,27,GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i))
+        END;
+        IF GetCMCDim(i) = G_GLSetup."Global Dimension 1 Code" THEN BEGIN
+          GlobalDimension1Code:=GetDimValue(G_recItem,G_recLocation,i);
+        END;
+        IF GetCMCDim(i) = G_GLSetup."Global Dimension 2 Code" THEN BEGIN
+          GlobalDimension2Code:=GetDimValue(G_recItem,G_recLocation,i);
+        END
+      END;
+      P_TempDimBufNew.RESET;
+    END;
+
+    PROCEDURE DimPurchFromItem@8053004(VAR P_TemDocDim@8053001 : TEMPORARY Record 357;VAR P_PurchaseLine@8053000 : Record 39;P_ItemCode@8053003 : Code[20]);
+    VAR
+      L_PurchHeader@8053002 : Record 38;
+    BEGIN
+      G_CMCSetUp.GET;
+      G_GLSetup.GET;
+
+      IF NOT G_recItem.GET(P_ItemCode) THEN EXIT;
+
+      // --> 20151106-WI00-TER01.01.00-2338-BSI01
+      {before
+      G_recLocation.INIT;
+      IF G_recLocation.GET(P_PurchaseLine."Location Code") THEN;
+      after}
+      IF NOT G_recLocation.GET(P_PurchaseLine."Location Code") THEN
+        CLEAR(G_recLocation);
+      // <-- 20151106-WI00-TER01.01.00-2338-BSI01
+
+      FOR i := 0 TO 4 DO BEGIN
+        IF GetCMCDim(i) <> '' THEN BEGIN
+         IF NOT G_recDimValue.GET(GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i)) THEN
+           CreatDimVal(GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i),GetCMCDimDescrp(i,GetDimValue(G_recItem,G_recLocation,i)));
+         CreatTempDocDim(P_TemDocDim,DATABASE::"Purchase Line",P_PurchaseLine."Document No.",P_PurchaseLine."Line No.",
+           P_PurchaseLine."Document Type",GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i),P_PurchaseLine."Analytical Quantity")
+        END;
+
+        IF GetCMCDim(i) = G_GLSetup."Global Dimension 1 Code" THEN BEGIN
+          P_PurchaseLine."Shortcut Dimension 1 Code":=GetDimValue(G_recItem,G_recLocation,i);
+          P_PurchaseLine.MODIFY;
+        END;
+
+        IF GetCMCDim(i) = G_GLSetup."Global Dimension 2 Code" THEN BEGIN
+          P_PurchaseLine."Shortcut Dimension 2 Code":=GetDimValue(G_recItem,G_recLocation,i);
+          P_PurchaseLine.MODIFY;
+        END
+      END;
+    END;
+
+    PROCEDURE DimSalesFromItem@8053006(VAR P_TemDocDim@8053001 : TEMPORARY Record 357;VAR P_SalesLine@8053000 : Record 37;P_ItemCode@8053003 : Code[20]);
+    VAR
+      L_@8053002 : Record 39;
+      RecDefaultDimension_L@8053004 : Record 352;
+    BEGIN
+      // appeler  . partir du CU 808053009
+      G_CMCSetUp.GET;
+      G_GLSetup.GET;
+
+      IF NOT G_recItem.GET(P_ItemCode) THEN EXIT;
+
+      // --> 20151106-WI00-TER01.01.00-2338-BSI01
+      {before
+      G_recLocation.INIT;
+      IF G_recLocation.GET(P_SalesLine."Location Code") THEN;
+      after}
+      IF NOT G_recLocation.GET(P_SalesLine."Location Code") THEN
+        CLEAR(G_recLocation);
+      // <-- 20151106-WI00-TER01.01.00-2338-BSI01
+
+      FOR i := 0 TO 4 DO BEGIN
+        IF GetCMCDim(i)<>''
+        THEN BEGIN
+         IF NOT G_recDimValue.GET(GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i)) THEN
+           CreatDimVal(GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i),GetCMCDimDescrp(i,GetDimValue(G_recItem,G_recLocation,i)));
+         CreatTempDocDim(P_TemDocDim,DATABASE::"Sales Line",P_SalesLine."Document No.",P_SalesLine."Line No.",
+           P_SalesLine."Document Type",GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i),P_SalesLine."Analytical Quantity")
+        END;
+        IF GetCMCDim(i) = G_GLSetup."Global Dimension 1 Code" THEN BEGIN
+          P_SalesLine."Shortcut Dimension 1 Code":=GetDimValue(G_recItem,G_recLocation,i);
+          P_SalesLine.MODIFY;
+        END;
+        IF GetCMCDim(i) = G_GLSetup."Global Dimension 2 Code" THEN BEGIN
+          P_SalesLine."Shortcut Dimension 2 Code":=GetDimValue(G_recItem,G_recLocation,i);
+          P_SalesLine.MODIFY;
+        END
+      END;
+      // --> 20150206-Wi00-CMC02.02.00-2745-SDE01
+      IF P_ItemCode <> '' THEN BEGIN
+        RecDefaultDimension_L.RESET;
+        RecDefaultDimension_L.SETRANGE("Table ID",27);
+        RecDefaultDimension_L.SETRANGE("No.",P_ItemCode);
+        IF RecDefaultDimension_L.FINDSET THEN
+          REPEAT
+          CreatTempDocDim(P_TemDocDim,DATABASE::"Sales Line",P_SalesLine."Document No.",P_SalesLine."Line No.",
+            P_SalesLine."Document Type",RecDefaultDimension_L."Dimension Code",RecDefaultDimension_L."Dimension Value Code",
+              P_SalesLine."Analytical Quantity");
+            IF RecDefaultDimension_L."Dimension Code" = G_GLSetup."Global Dimension 1 Code" THEN BEGIN
+              P_SalesLine."Shortcut Dimension 1 Code":=RecDefaultDimension_L."Dimension Value Code";
+              P_SalesLine.MODIFY;
+            END;
+            IF RecDefaultDimension_L."Dimension Code" = G_GLSetup."Global Dimension 2 Code" THEN BEGIN
+              P_SalesLine."Shortcut Dimension 2 Code":=RecDefaultDimension_L."Dimension Value Code";
+              P_SalesLine.MODIFY;
+            END
+          UNTIL RecDefaultDimension_L.NEXT=0;
+      END;
+      // <-- 20150206-Wi00-CMC02.02.00-2745-SDE01
+    END;
+
+    PROCEDURE GetCMCDim@8053003(P_CMCDim@8053000 : 'Activity,Family,SubFamily,Specie,Location') R_DimCode : Code[20];
+    BEGIN
+      R_DimCode:='';
+      G_CMCSetUp.GET;
+
+      CASE P_CMCDim OF
+        P_CMCDim::Activity: R_DimCode:=G_CMCSetUp."Activity Dimension";
+        P_CMCDim::Family:  R_DimCode:=G_CMCSetUp."Family Dimension";
+        P_CMCDim::SubFamily:  R_DimCode:=G_CMCSetUp."Sub Family Dimension";
+        P_CMCDim::Specie:  R_DimCode:=G_CMCSetUp."Species Dimension";
+        P_CMCDim::Location:  R_DimCode:=G_CMCSetUp."Location Dimension";
+      END;
+
+      EXIT(R_DimCode);
+    END;
+
+    PROCEDURE GetDimValue@8053016(P_recItem@8053000 : Record 27;P_recLocation@8053002 : Record 14;P_CMCDim@8053001 : 'Activity,Family,SubFamily,Specie,Location') R_DimVal : Code[20];
+    BEGIN
+      R_DimVal:='';
+
+      CASE P_CMCDim OF
+        P_CMCDim::Activity: R_DimVal:=P_recItem."Activity Code";
+        P_CMCDim::Family : R_DimVal:=P_recItem."Family Code";
+        P_CMCDim::SubFamily : R_DimVal:=P_recItem."Sub-Family Code";
+        P_CMCDim::Specie  : R_DimVal:=P_recItem."Species Code";
+        P_CMCDim::Location  :
+          BEGIN
+            IF P_recLocation.Code <> '' THEN BEGIN
+              P_recLocation.TESTFIELD("Analytic Section");
+              R_DimVal:=P_recLocation."Analytic Section";
+            END;
+          END;
+      END;
+
+      EXIT(R_DimVal);
+    END;
+
+    PROCEDURE GetCMCDimDescrp@8053028(P_CMCDim@8053000 : 'Activity,Family,SubFamily,Specie,Location';P_CodeCMCAxes@8053001 : Code[20]) R_LibAxe : Text[30];
+    VAR
+      L_recActivity@8053002 : Record 8052985;
+      L_recFamily@8053003 : Record 8052986;
+      L_recSubFamily@8053004 : Record 8052987;
+      L_recSpecie@8053005 : Record 8052988;
+      L_recLocation@8053006 : Record 14;
+    BEGIN
+      R_LibAxe:='';
+
+      CASE P_CMCDim OF
+        P_CMCDim::Activity: IF L_recActivity.GET(P_CodeCMCAxes) THEN R_LibAxe:=L_recActivity.Name;
+        P_CMCDim::Family : IF L_recFamily.GET(P_CodeCMCAxes) THEN R_LibAxe:= L_recFamily.Name;
+        P_CMCDim::SubFamily : IF L_recSubFamily.GET (P_CodeCMCAxes) THEN R_LibAxe:=L_recSubFamily.Name ;
+        P_CMCDim::Specie  : IF L_recSpecie.GET(P_CodeCMCAxes) THEN R_LibAxe:=L_recSpecie.Name;
+        P_CMCDim::Location  : IF L_recLocation.GET(P_CodeCMCAxes) THEN R_LibAxe:=L_recLocation.Name;
+      END;
+
+      EXIT(R_LibAxe);
+    END;
+
+    PROCEDURE CreatDimVal@8053027(P_DimCode@8053000 : Code[20];P_DimValCode@8053001 : Code[20];P_LibValue@8053003 : Text[30]);
+    VAR
+      L_recDimValue@8053002 : Record 349;
+    BEGIN
+      IF (P_DimCode<>'') AND (P_DimValCode<>'') THEN BEGIN
+        IF NOT L_recDimValue.GET(P_DimCode,P_DimValCode) THEN BEGIN
+          L_recDimValue."Dimension Code":=P_DimCode;
+          L_recDimValue.Code:=P_DimValCode;
+          L_recDimValue.Name:=P_LibValue;
+          IF L_recDimValue.INSERT THEN;
+        END;
+      END
+    END;
+
+    PROCEDURE CreatTempDocDim@8053035(VAR P_TemDocDim@8053004 : TEMPORARY Record 357;P_TableId@8053000 : Integer;P_RecNo@8053003 : Code[20];P_RecLineNo@8053005 : Integer;P_TypDoc@8053006 : '0,1,2,3,4,5';P_DimCode@8053001 : Code[20];P_DimValueCode@8053002 : Code[20];Quantity_P@8053007 : Decimal);
+    BEGIN
+      IF P_DimValueCode<>'' THEN BEGIN
+        P_TemDocDim.INIT;
+        P_TemDocDim."Table ID":=P_TableId;
+        P_TemDocDim."Document Type":=P_TypDoc;
+        P_TemDocDim."Document No.":=P_RecNo;
+        P_TemDocDim."Line No.":=P_RecLineNo;
+        P_TemDocDim."Dimension Code":=P_DimCode;
+        P_TemDocDim."Dimension Value Code":=P_DimValueCode;
+        P_TemDocDim.Quantity := Quantity_P;
+        IF P_TemDocDim.INSERT THEN;
+      END;
+    END;
+
+    PROCEDURE CreatTempJnlDim@8053002(VAR P_TemJnlDim@8053004 : TEMPORARY Record 356;P_TableId@8053000 : Integer;P_RecNo@8053003 : Code[20];P_Jnline@8053007 : Code[20];P_RecLineNo@8053005 : Integer;P_DimCode@8053001 : Code[20];P_DimValueCode@8053002 : Code[20];P_NewDimValueCode@8053006 : Code[20]);
+    BEGIN
+      P_TemJnlDim.SETRANGE("Journal Template Name",P_RecNo);
+      P_TemJnlDim.SETRANGE("Journal Batch Name",P_Jnline);
+      P_TemJnlDim.SETRANGE("Journal Line No.",P_RecLineNo);
+      P_TemJnlDim.SETRANGE("Dimension Code",P_DimCode);
+
+      IF P_TemJnlDim.ISEMPTY THEN BEGIN
+        P_TemJnlDim.INIT;
+        P_TemJnlDim."Table ID":=P_TableId;
+        P_TemJnlDim."Journal Template Name":=P_RecNo;
+        P_TemJnlDim."Journal Batch Name":=P_Jnline;
+        P_TemJnlDim."Journal Line No.":=P_RecLineNo;
+        P_TemJnlDim."Dimension Code":=P_DimCode;
+        P_TemJnlDim."Dimension Value Code":=P_DimValueCode;
+        P_TemJnlDim."New Dimension Value Code":=P_NewDimValueCode;
+        IF P_TemJnlDim.INSERT THEN;
+      END;
+
+      P_TemJnlDim.RESET;
+    END;
+
+    PROCEDURE CreatDimBuffer@8053036(VAR P_TempDimBufNew@8053000 : TEMPORARY Record 360;P_TableID@8053001 : Integer;P_DimCode@8053002 : Code[20];P_DimValueCode@8053003 : Code[20]);
+    BEGIN
+      P_TempDimBufNew.RESET;
+
+      P_TempDimBufNew.SETRANGE("Dimension Code",P_DimCode);
+      IF P_TempDimBufNew.FINDFIRST THEN BEGIN
+        P_TempDimBufNew.DELETE;
+      END;
+
+      P_TempDimBufNew.RESET;
+      P_TempDimBufNew.INIT;
+      P_TempDimBufNew."Table ID" := P_TableID;
+      P_TempDimBufNew."Entry No." := 0;
+      P_TempDimBufNew."Dimension Code" := P_DimCode;
+      P_TempDimBufNew."Dimension Value Code" := P_DimValueCode;
+      IF NOT P_TempDimBufNew.INSERT THEN P_TempDimBufNew.MODIFY;
+    END;
+
+    PROCEDURE LookUpAxaAna@1000000005(P_TabId@1000000007 : Integer;P_NumRec@1000000006 : Code[20];P_NumAna@1000000005 : Integer;VAR P_CodeSec@1000000004 : Code[20]);
+    VAR
+      DimensionValue_L@1000000002 : Record 349;
+      FormDimVal@1000000003 : Page 560;
+    BEGIN
+      G_CMCSetUp.GET;
+      IF G_CMCSetUp."Location Dimension"='' THEN EXIT;
+
+      DimensionValue_L.RESET;
+
+      CLEAR(FormDimVal);
+      DimensionValue_L.FILTERGROUP := 2;
+
+      CASE P_NumAna OF
+        0:DimensionValue_L.SETRANGE("Dimension Code",G_CMCSetUp."Location Dimension");
+      END;
+
+      DimensionValue_L.FILTERGROUP := 0;
+      DimensionValue_L.SETRANGE(Code,P_CodeSec);
+      IF DimensionValue_L.FINDFIRST THEN
+        FormDimVal.SETRECORD(DimensionValue_L);
+
+      DimensionValue_L.SETRANGE(DimensionValue_L.Code);
+
+      FormDimVal.SETTABLEVIEW(DimensionValue_L);
+
+      FormDimVal.LOOKUPMODE(TRUE);
+      IF FormDimVal.RUNMODAL = ACTION::LookupOK THEN BEGIN
+        FormDimVal.GETRECORD(DimensionValue_L);
+        P_CodeSec:=DimensionValue_L.Code;
+        TestSectionAna(P_TabId,P_NumRec,P_NumAna,P_CodeSec);
+      END;
+    END;
+
+    PROCEDURE TestSectionAna@8053007(P_TabId@8053003 : Integer;P_NumRec@8053002 : Code[20];P_NumAna@8053001 : Integer;VAR P_CodeSec@8053000 : Code[20]);
+    VAR
+      DimensionValue_L@8053005 : Record 349;
+      FormDimVal@8053004 : Page 560;
+    BEGIN
+      IF P_CodeSec='' THEN EXIT;
+      G_CMCSetUp.GET;
+      IF G_CMCSetUp."Location Dimension"='' THEN EXIT;
+
+      CASE P_NumAna OF
+        0:DimensionValue_L.SETRANGE("Dimension Code",G_CMCSetUp."Location Dimension");
+      END;
+
+      DimensionValue_L.SETRANGE(Code,P_CodeSec);
+      DimensionValue_L.FINDFIRST;
+    END;
+
+    PROCEDURE DimFromTransferShip@1000000000(VAR P_TemDocDim@8053001 : TEMPORARY Record 357;VAR P_TransferLine@8053000 : Record 5741;IsOutbound_P@1000000000 : Boolean);
+    BEGIN
+      G_CMCSetUp.GET;
+      G_GLSetup.GET;
+
+      IF (P_TransferLine."Item No."='') THEN
+        EXIT;
+
+      IF NOT G_recItem.GET(P_TransferLine."Item No.") THEN EXIT;
+
+      G_recLocation.INIT;
+      IF IsOutbound_P THEN BEGIN
+        // --> 20151106-WI00-TER01.01.00-2338-BSI01
+        {before
+        IF G_recLocation.GET(P_TransferLine."Transfer-from Code") THEN ;
+        after}
+        IF NOT G_recLocation.GET(P_TransferLine."Transfer-from Code") THEN
+          CLEAR(G_recLocation);
+        // <-- 20151106-WI00-TER01.01.00-2338-BSI01
+      END ELSE BEGIN
+        // --> 20151106-WI00-TER01.01.00-2338-BSI01
+        {before
+        IF G_recLocation.GET(P_TransferLine."Transfer-to Code") THEN ;
+        after}
+        IF NOT G_recLocation.GET(P_TransferLine."Transfer-to Code") THEN
+          CLEAR(G_recLocation);
+        // <-- 20151106-WI00-TER01.01.00-2338-BSI01
+      END;
+
+      FOR i := 0 TO 4 DO BEGIN
+        IF GetCMCDim(i) <> '' THEN BEGIN
+         IF NOT G_recDimValue.GET(GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i)) THEN
+           CreatDimVal(GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i),GetCMCDimDescrp(i,GetDimValue(G_recItem,G_recLocation,i)));
+         CreatTempDocDim(P_TemDocDim,DATABASE::"Transfer Line",P_TransferLine."Document No.",P_TransferLine."Line No.",0,
+           GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i),P_TransferLine.Quantity)
+        END;
+        IF GetCMCDim(i) = G_GLSetup."Global Dimension 1 Code" THEN BEGIN
+          P_TransferLine."Shortcut Dimension 1 Code":=GetDimValue(G_recItem,G_recLocation,i);
+          P_TransferLine.MODIFY;
+        END;
+        IF GetCMCDim(i) = G_GLSetup."Global Dimension 2 Code" THEN BEGIN
+          P_TransferLine."Shortcut Dimension 2 Code":=GetDimValue(G_recItem,G_recLocation,i);
+          P_TransferLine.MODIFY;
+        END
+      END;
+    END;
+
+    PROCEDURE DimForSales@8053005(VAR P_TempDocDim@8053001 : Record 357;VAR P_SalesLine@8053000 : Record 37;P_ItemCode@8053006 : Code[20];P_LocationCode@8053007 : Code[20]);
+    VAR
+      RecDefaultDimension_L@8053002 : Record 352;
+    BEGIN
+      G_CMCSetUp.GET;
+      G_GLSetup.GET;
+
+      IF NOT G_recItem.GET(P_ItemCode) THEN EXIT;
+
+      // --> 20151106-WI00-TER01.01.00-2338-BSI01
+      {before
+      G_recLocation.INIT;
+      IF G_recLocation.GET(P_LocationCode) THEN;
+      after}
+      IF NOT G_recLocation.GET(P_LocationCode) THEN
+        CLEAR(G_recLocation);
+      // <-- 20151106-WI00-TER01.01.00-2338-BSI01
+
+      FOR i := 0 TO 4 DO BEGIN
+        IF GetCMCDim(i) <> '' THEN BEGIN
+         IF NOT G_recDimValue.GET(GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i)) THEN
+           CreatDimVal(GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i),GetCMCDimDescrp(i,GetDimValue(G_recItem,G_recLocation,i)));
+         CreatTempDocDim(P_TempDocDim,DATABASE::"Sales Line",P_SalesLine."Document No.",P_SalesLine."Line No.",
+           P_SalesLine."Document Type",GetCMCDim(i),GetDimValue(G_recItem,G_recLocation,i),P_SalesLine."Analytical Quantity")
+        END;
+        IF GetCMCDim(i) = G_GLSetup."Global Dimension 1 Code" THEN BEGIN
+          P_SalesLine."Shortcut Dimension 1 Code":=GetDimValue(G_recItem,G_recLocation,i);
+          P_SalesLine.MODIFY;
+        END;
+        IF GetCMCDim(i) = G_GLSetup."Global Dimension 2 Code" THEN BEGIN
+          P_SalesLine."Shortcut Dimension 2 Code":=GetDimValue(G_recItem,G_recLocation,i);
+          P_SalesLine.MODIFY;
+        END
+      END;
+
+      RecDefaultDimension_L.RESET;
+      RecDefaultDimension_L.SETRANGE("Table ID",27);
+      RecDefaultDimension_L.SETRANGE("No.",P_ItemCode);
+      IF RecDefaultDimension_L.FINDSET THEN
+        REPEAT
+          CreatTempDocDim(P_TempDocDim,DATABASE::"Sales Line",P_SalesLine."Document No.",P_SalesLine."Line No.",
+            P_SalesLine."Document Type",RecDefaultDimension_L."Dimension Code",RecDefaultDimension_L."Dimension Value Code",
+            P_SalesLine."Analytical Quantity");
+          IF RecDefaultDimension_L."Dimension Code" = G_GLSetup."Global Dimension 1 Code" THEN BEGIN
+            P_SalesLine."Shortcut Dimension 1 Code":=RecDefaultDimension_L."Dimension Value Code";
+            P_SalesLine.MODIFY;
+          END;
+          IF RecDefaultDimension_L."Dimension Code" = G_GLSetup."Global Dimension 2 Code" THEN BEGIN
+            P_SalesLine."Shortcut Dimension 2 Code":=RecDefaultDimension_L."Dimension Value Code";
+            P_SalesLine.MODIFY;
+          END
+        UNTIL RecDefaultDimension_L.NEXT=0;
+    END;
+
+    PROCEDURE OriginalItemLine@1000000001(VAR P_SalesLine@1000000000 : Record 37);
+    VAR
+      RecSalesLine_L@1000000001 : Record 37;
+    BEGIN
+      // --> 20160301-WI00-ADV01.01.00-2358-JCD01
+      //avoir cvo
+      IF P_SalesLine."CVO Item Attached Line"<>0 THEN BEGIN
+        RecSalesLine_L.GET(P_SalesLine."Document Type",P_SalesLine."Document No.",P_SalesLine."CVO Item Attached Line");
+        P_SalesLine.COPY(RecSalesLine_L);
+      END;
+      // cvo mais
+      IF P_SalesLine."CVO Corn Item Attached Line"<>0 THEN BEGIN
+        RecSalesLine_L.GET(P_SalesLine."Document Type",P_SalesLine."Document No.",P_SalesLine."CVO Corn Item Attached Line");
+        P_SalesLine.COPY(RecSalesLine_L);
+      END;
+      //rpd
+      IF P_SalesLine."RPD Item Attached Line"<>0 THEN BEGIN
+        RecSalesLine_L.GET(P_SalesLine."Document Type",P_SalesLine."Document No.",P_SalesLine."RPD Item Attached Line");
+        P_SalesLine.COPY(RecSalesLine_L);
+      END;
+
+      // produit gratuit
+      IF P_SalesLine."Free Item Root Line"<>0 THEN BEGIN
+        RecSalesLine_L.GET(P_SalesLine."Document Type",P_SalesLine."Document No.",P_SalesLine."Free Item Root Line");
+        P_SalesLine.COPY(RecSalesLine_L);
+      END;
+
+      // ligne de remise
+      IF P_SalesLine."Disc. Root Line"<>0 THEN BEGIN
+        RecSalesLine_L.GET(P_SalesLine."Document Type",P_SalesLine."Document No.",P_SalesLine."Disc. Root Line");
+        P_SalesLine.COPY(RecSalesLine_L);
+      END;
+
+      // ligne frais annexes associ'
+      IF P_SalesLine."Item Charge Root Line No."<>0 THEN BEGIN
+        RecSalesLine_L.GET(P_SalesLine."Document Type",P_SalesLine."Document No.",P_SalesLine."Item Charge Root Line No.");
+        P_SalesLine.COPY(RecSalesLine_L);
+      END;
+      // <-- 20160301-WI00-ADV01.01.00-2358-JCD01
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20110601-Wi00-CMC01.04 : Version RTM 01.04 - NavAgri
+      20120109-APP04-CMC02.01.00-PRD01 : ADDCODE
+      20130619-Fina14-CMC02.02.00-SDE : ADDCODE (Analytique magasin)
+      20130829-Wi00-CMC02.02.00-0728-DRN01 : Correction bug accSs concurrentiel sur l'analytique dans le cas de la validation d'une
+                                             mutation -> il n'est pas n'cessaire de faire un Modify sur la table 83 car le record
+                                             est pass' par r'f'rence dans la fonction DimFromItemJnl
+      20130902-Wi00-CMC02.02.00-0742-DRN01 : Correction bug insertion des sections analytiques dans le buffer TemJnlDim
+      20140331-Wi00-CMC02.02.00-1927-FEC01 : ADDFUNC(DimFromTransferShip).
+      20140403-WI00-CMC02.02.00-DRN01 : Ajout permission T349 ri
+      20140408-WI00-CMC02.02.00-SDE01 : ADDCODE (cas des lignes <> article)
+      20140409-Cer17-CMC02.02.00-1739-SDE01 : ADDCODE (DimForSales)
+      20140410-Cer17-CMC02.02.00-1739-SDE01 : ADDCODE (corrections)
+      20140415-Cer17-CMC02.02.00-1739-SDE01 : ADDCODE (corrections)
+      20140507-FINA25/001-CMC02.02.00-KEM01 : ADDCODE (ADD Quantity)
+      20140606-Wi00-CMC02.02.00-SDE01 : ADDCODE(optimisation)
+      20150206-Wi00-CMC02.02.00-2745-SDE01 : ADDCODE
+      20150217-WI00-CMC02.02.00-2763-DRN01 : Correction gestion des axes sur mutations article
+      20150319-Wi00-CMC02.02.00-2842-DAD : ADDCODE(Cas des lignes <> d'article et Code magasin vide)
+      20150731-APP27-TER01.01.00-2017-PDC01 : ADDCODE(DimFromPurch)
+      20150806-APP27-TER01.01.00-2017-PDC01 : ADDCODE(DimFromPurch)
+      20151106-WI00-TER01.01.00-2338-BSI01 : ADDCODE (Initialisation de la variable G_recLocation)
+      20160301-WI00-ADV01.01.00-2358-JCD01 : ADDFUNC (OriginalItemLine)
+                                             ADDCODE (Ajout analytique en validation vente si ligne ajout‚e d‚pend d'une
+                                             ligne qui n'est pas de type item)
+      20160602-WI00-ADV01.01.00-2056-JCD01 : ADDCODE (Sur la validation des piSces, si CG et axe ana saisie, pas d'affectation auto)
+
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

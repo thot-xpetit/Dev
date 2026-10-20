@@ -1,0 +1,211 @@
+OBJECT Codeunit 60026 Export Whse. Receipt Phyto
+{
+  OBJECT-PROPERTIES
+  {
+    Date=28/12/17;
+    Heure=00:00:00;
+    Liste versions=LogA07-SCT00.00.00;
+  }
+  PROPERTIES
+  {
+    TableNo=7316;
+    OnRun=VAR
+            RecItem_L@60015 : Record 27;
+            RecWhseRcptLine_L@60000 : Record 7317;
+            RecPackType_L@60001 : Record 8053152;
+            Count_L@60012 : Integer;
+          BEGIN
+            Count_L := 0;
+            RecPhytoInterfaceSetup_G.GET;
+            RecPhytoInterfaceSetup_G.TESTFIELD("Phyto Family Code");
+            RecPhytoInterfaceSetup_G.TESTFIELD("Rcpt Citrix Folder Export");
+            RecPhytoInterfaceSetup_G.TESTFIELD("Rcpt Local Folder Export");
+            RecPhytoInterfaceSetup_G.TESTFIELD("Rcpt File Export Extension");
+
+            CLEAR(RecWhseRcptLine_L);
+            RecWhseRcptLine_L.SETRANGE("No.","No.");
+            IF RecWhseRcptLine_L.FINDSET THEN
+            REPEAT
+              CLEAR(RecItem_L);
+              RecItem_L.GET(RecWhseRcptLine_L."Item No.");
+
+              CLEAR(RecPackType_L);
+              RecPackType_L.SETRANGE(Code,RecItem_L."Packaging Type");
+              RecPackType_L.SETRANGE("Include Export Terminal Scan",TRUE);
+              IF NOT RecPackType_L.ISEMPTY THEN
+                Count_L += 1;
+            UNTIL RecWhseRcptLine_L.NEXT = 0;
+
+            IF Count_L > 0 THEN BEGIN
+              IF "Terminal Scan File Generated" THEN
+                Confirm_G := CONFIRM(Text60004,FALSE,"No.");
+              IF NOT "Terminal Scan File Generated" OR Confirm_G THEN BEGIN
+                // --> 20171129-LogA07-SCT00.00.00-3313-NED
+                RecWhseRcptHeader_G.COPY(Rec);
+                CLEAR(RecWhseRcptLine_G);
+                RecWhseRcptLine_G.SETRANGE("No.","No.");
+                RecWhseRcptLine_G.SETRANGE("Source Document",RecWhseRcptLine_G."Source Document" :: "Sales Return Order");
+                RecWhseRcptLine_G.SETRANGE("Build Kit",FALSE);
+                IF RecWhseRcptLine_G.FINDFIRST THEN
+                  ExportRcpt(FALSE,'_' + "No.");
+                RecWhseRcptLine_G.SETRANGE("Build Kit",TRUE);
+                IF RecWhseRcptLine_G.FINDFIRST THEN
+                  ExportRcpt(TRUE,'_P'+ "No.");
+                // <-- 20171129-LogA07-SCT00.00.00-3313-NED
+                IF Exported_G THEN BEGIN
+                  "Terminal Scan File Generated" := TRUE;
+                  MODIFY;
+                  MESSAGE(Text60000);
+                END;
+              END;
+            END ELSE
+              MESSAGE(Text60001);
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      RecPhytoInterfaceSetup_G@60000 : Record 60076;
+      Text60000@60004 : TextConst 'FRA=Fichier g'n'r' avec succ's.';
+      Text60001@60003 : TextConst 'FRA=Il n''y a rien . traiter.';
+      Text60002@60002 : TextConst 'FRA="Le fichier de l''exp'dition N› %1 existe d'j., voulez-vous l'''craser ? "';
+      Text60003@60001 : TextConst 'FRA=Le dossier d''export n''existe pas. Veuillez contacter votre administrateur.';
+      Text60004@60005 : TextConst 'FRA=Le fichier de l''exp'dition N› %1  a d'j. 't' g'n'r', voulez-vous le r'g'n'rer ?';
+      RecWhseRcptHeader_G@60008 : Record 7316;
+      RecWhseRcptLine_G@60007 : Record 7317;
+      Confirm_G@60006 : Boolean;
+      Text60005@60009 : TextConst 'FRA="Le fichier de l''exp'dition N› %1 (articles composants kit) existe d'j., voulez-vous l'''craser ? "';
+      Exported_G@60010 : Boolean;
+
+    PROCEDURE GetFileName@60001(DestFolder_P@60006 : Text[1024];RcptNo_P@60004 : Code[20]) Filename_R : Text[1024];
+    VAR
+      StringArray@60005 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Array" RUNONCLIENT;
+      StringEnumerator@60003 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Collections.IEnumerator" RUNONCLIENT;
+      SysDirectory@60002 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.Directory" RUNONCLIENT;
+      SysPath@60001 : DotNet "'mscorlib, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.IO.Path" RUNONCLIENT;
+      Filename@60000 : Text[1024];
+    BEGIN
+      StringArray := SysDirectory.GetFiles(DestFolder_P,'*.' + RecPhytoInterfaceSetup_G."Rcpt File Export Extension");
+      StringEnumerator := StringArray.GetEnumerator;
+      WHILE StringEnumerator.MoveNext DO BEGIN
+        Filename := '';
+        Filename := SysPath.GetFileNameWithoutExtension(StringEnumerator.Current);
+        IF STRPOS(Filename,RcptNo_P) <> 0 THEN BEGIN
+          Filename_R := Filename;
+        END;
+      END;
+      EXIT(Filename_R);
+    END;
+
+    PROCEDURE ExportRcpt@60000(IsBuildkit_P@60001 : Boolean;RcptNo_P@60000 : Code[20]);
+    VAR
+      RecSalesHeader_L@60017 : Record 36;
+      ServerFileName_L@60016 : Text[1024];
+      ResultFile_L@60015 : File;
+      FileOutStream_L@60014 : OutStream;
+      ExistFileName_L@60013 : Text[1024];
+      FileToDownload@60012 : Text[1024];
+      FileVar@60011 : File;
+      IStream@60010 : InStream;
+      MagicPath@60009 : Text[1024];
+      DestinationFileName@60008 : Text[1024];
+      DestinationFolder@60007 : Text[1024];
+      FinalFileName_L@60006 : Text[1024];
+      FilesSysObj_L@60005 : Automation "{F935DC20-1CF0-11D0-ADB9-00C04FD58A0B} 1.0:{0D43FE01-F093-11CF-8940-00A0C9054228}:'Windows Script Host Object Model'.FileSystemObject";
+      FinalFileNameWithoutExt_L@60003 : Text[1024];
+      FileIORename_L@60002 : DotNet "'Microsoft.VisualBasic, Version=8.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a'.Microsoft.VisualBasic.FileIO.FileSystem" RUNONCLIENT;
+      XmlExpWhseRcptPhyto_L@60018 : XMLport 50023;
+      Confirm_L@60019 : Boolean;
+    BEGIN
+      // --> 20171129-LogA07-SCT00.00.00-3313-NED
+      WITH RecWhseRcptHeader_G DO BEGIN
+        IF NOT RecSalesHeader_L.GET(RecWhseRcptLine_G."Source Subtype",RecWhseRcptLine_G."Source No.") THEN
+          CLEAR(RecSalesHeader_L);
+        ServerFileName_L := TEMPORARYPATH +
+                        DELCHR(FORMAT(CURRENTDATETIME,0,'<Year><Month,2><Day,2><Hours24,2><Minutes,2><Seconds,2>'),'=','/:,.') +
+                          '_ADH_' + RecSalesHeader_L."Sell-to Customer No." + RcptNo_P + '.' +
+                              RecPhytoInterfaceSetup_G."Rcpt File Export Extension";
+
+        ResultFile_L.CREATE(ServerFileName_L);
+        ResultFile_L.CREATEOUTSTREAM(FileOutStream_L);
+        SETRECFILTER;
+        CLEAR(XmlExpWhseRcptPhyto_L);
+        XmlExpWhseRcptPhyto_L.IsBuildKit(IsBuildkit_P);
+        XmlExpWhseRcptPhyto_L.SETTABLEVIEW(RecWhseRcptHeader_G);
+        XmlExpWhseRcptPhyto_L.SETDESTINATION(FileOutStream_L);
+        IF NOT XmlExpWhseRcptPhyto_L.EXPORT THEN BEGIN
+          MESSAGE(GETLASTERRORTEXT);
+          ResultFile_L.CLOSE;
+          ERASE(ServerFileName_L);
+        END ELSE BEGIN
+          ResultFile_L.CLOSE;
+          IF ISSERVICETIER THEN BEGIN
+            FileToDownload := ServerFileName_L;
+            FileVar.OPEN(FileToDownload);
+            FileVar.CREATEINSTREAM(IStream);
+            DOWNLOADFROMSTREAM(IStream,'','<TEMP>', '',MagicPath);
+            FileVar.CLOSE;
+
+            IF ISCLEAR(FilesSysObj_L) THEN
+              CREATE(FilesSysObj_L,TRUE,TRUE);
+
+            DestinationFolder := RecPhytoInterfaceSetup_G."Rcpt Citrix Folder Export";
+            IF NOT  FilesSysObj_L.FolderExists(DestinationFolder) THEN BEGIN
+              DestinationFolder := RecPhytoInterfaceSetup_G."Rcpt Local Folder Export";
+              IF NOT FilesSysObj_L.FolderExists(DestinationFolder) THEN
+                ERROR(Text60003);
+            END;
+            FinalFileName_L := DELCHR(FORMAT(CURRENTDATETIME,0,'<Year><Month,2><Day,2><Hours24,2><Minutes,2><Seconds,2>'),'=','/:,.') +
+                              '_ADH_' + RecSalesHeader_L."Sell-to Customer No." + RcptNo_P + '.' +
+                                  RecPhytoInterfaceSetup_G."Rcpt File Export Extension";
+
+            // --> 20171010-LogA07-SCT00.00.00-30110-NED
+            FinalFileNameWithoutExt_L :=
+            DELCHR(FORMAT(CURRENTDATETIME,0,'<Year><Month,2><Day,2><Hours24,2><Minutes,2><Seconds,2>'),'=','/:,.')
+                                   + '_ADH_' + RecSalesHeader_L."Sell-to Customer No." + RcptNo_P;
+            //DestinationFileName := DestinationFolder + '\' + FinalFileName_L;
+            DestinationFileName := DestinationFolder + '\' + FinalFileNameWithoutExt_L;
+            // <-- 20171010-LogA07-SCT00.00.00-30110-NED
+
+            ExistFileName_L := GetFileName(DestinationFolder,RcptNo_P);
+
+            IF ExistFileName_L <> '' THEN BEGIN
+              IF IsBuildkit_P THEN
+                Confirm_L := CONFIRM(Text60005,FALSE,"No.")
+              ELSE
+                Confirm_L := CONFIRM(Text60002,FALSE,"No.");
+              IF Confirm_L THEN
+                FilesSysObj_L.DeleteFile(DestinationFolder + '\' + ExistFileName_L + '.' +
+                RecPhytoInterfaceSetup_G."Rcpt File Export Extension",TRUE)
+              ELSE
+                EXIT;
+            END;
+
+            FilesSysObj_L.CopyFile(MagicPath,DestinationFileName);
+            FilesSysObj_L.DeleteFile(MagicPath,TRUE);
+            // --> 20171010-LogA07-SCT00.00.00-30110-NED
+            FileIORename_L.RenameFile(DestinationFileName,FinalFileName_L);
+            // <-- 20171010-LogA07-SCT00.00.00-30110-NED
+            ERASE(ServerFileName_L);
+            CLEAR(FilesSysObj_L);
+            Exported_G := TRUE;
+          END;
+        END;
+      END;
+      // <-- 20171129-LogA07-SCT00.00.00-3313-NED
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20161125-LogA07-SCT00.00.00-3208-NED : (ADDOBJ)
+      20171010-LogA07-SCT00.00.00-30110-NED : ADDCODE (Enlever extension du fichier lors de sa cr'ation)
+      20171129-LogA07-SCT00.00.00-3313-NED : MODCODE (Refonte : Adaptation export article kit)
+      20171129-LogA07-SCT00.00.00-3313-NED : ADDFUNCT (ExportRcpt)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

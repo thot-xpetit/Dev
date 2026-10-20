@@ -1,0 +1,803 @@
+OBJECT Codeunit 60036 Isagri CRM WorkTable to SAS
+{
+  OBJECT-PROPERTIES
+  {
+    Date=23/05/24;
+    Heure=00:00:00;
+    Liste versions=SP3353,ADV18.12.11,SP3422,SP3474;
+  }
+  PROPERTIES
+  {
+    TableNo=8061230;
+    OnRun=VAR
+            IsagriSASOrderHeaderManage_L@1000000000 : Record 60094;
+            IsagriSASOrderLineManage_L@1000000002 : Record 60095;
+            WrkTable_L@1000000001 : Record 60099;
+            IsagriSASOrderHeaderRef_L@1000000003 : Record 60094;
+            CMCActivLogAreaScenario_L@1000000004 : Record 8053164;
+            Cust_L@1000000005 : Record 18;
+            IsagriSetup_L@1000000006 : Record 60096;
+            IsagriSASOrderHeaderUniq_L@1000000007 : Record 60094;
+            IsagriSASOrderArHeaderUniq_L@1000000008 : Record 60097;
+            Salesperson_L@1000000009 : Record 13;
+            CMCContactSalesperson_L@1000000010 : Record 8053160;
+            SalesHeader_L@1000000011 : Record 36;
+            Cust2_L@1000000012 : Record 18;
+            IsagriWrk2Sas_L@1000000013 : Codeunit 60042;
+          BEGIN
+            // --> 20190621-WI00-ADV01.01.00-3422-CJY01
+            // init origine avec le cu du CMB- Interface Engine Setup
+            IF Processing = 60035 THEN
+              Origine_G := Origine_G::Isagri
+            ELSE
+              Origine_G := Origine_G::Poseo;
+            // <-- 20190621-WI00-ADV01.01.00-3422-CJY01
+            ReadFileToWrkTable("File in use", COMPANYNAME, TRUE);
+
+            //-->20181112-ADV-ISA-OFT01
+            {
+            WITH WrkTable_L DO BEGIN
+              RESET;
+              SETRANGE(Treated,FALSE);
+              SETRANGE(Type,WrkTable_L.Type::Import);
+              //-->20181112-ADV-ISA-OFT01
+              SETRANGE("Identifiant ligne",'E');
+              //<--20181112-ADV-ISA-OFT01
+              IsagriSetup_L.GET;
+              IsagriSetup_L.TESTFIELD("Default Header Location code");
+              IsagriSetup_L.TESTFIELD("Default Header Shipment  code");
+              IsagriSetup_L.TESTFIELD("Formule calcul date liv");
+              IF FINDSET THEN REPEAT
+                //
+                //IF NOT CODEUNIT.RUN(60042,WrkTable_L) THEN BEGIN
+                //        ToolsFile_G.LogWriteErreur(COPYSTR(STRSUBSTNO(Text65004, "File in use", GETLASTERRORTEXT), 1, MAXSTRLEN(Result_L)));
+                //END;
+
+                CASE "Identifiant ligne" OF
+                'E' : //Ent^te commande
+                  //2 possibilit's : ent^te . cr'er ou . modifier
+                  // si l'ent^te est encore dans le SAS c'est que la commande n'existe pas dans Navagri
+                  BEGIN
+                      // --> 20181008-WI00-ADV01.01.00-3353-CJY01
+                      {BEFORE
+                      //test existance commande dans le SAS ?
+                      IF IsagriSetup_L."Verif GUID uniq. cde Nav" THEN BEGIN
+                        IsagriSASOrderHeaderUniq_L.RESET;
+                        IsagriSASOrderHeaderUniq_L.SETRANGE("Isagri CRM Guid","GUID Header");
+                        IF NOT  IsagriSASOrderHeaderUniq_L.ISEMPTY THEN
+                          ERROR(Text60020,"GUID Header");
+                      END;
+                      AFTER}
+                      //v'rification existance GUID dans commande Navision
+                      IF IsagriSetup_L."Verif GUID uniq. cde Nav" THEN BEGIN
+                        IF NOT ISNULLGUID("GUID Header") THEN BEGIN
+                          SalesHeader_L.RESET;
+                          SalesHeader_L.SETRANGE("Document Type",SalesHeader_L."Document Type"::Order);
+                          SalesHeader_L.SETRANGE("Isagri CRM Guid","GUID Header");
+                          IF SalesHeader_L.FINDFIRST THEN
+                            ERROR(Text60025,"GUID Header",SalesHeader_L."No.");
+                        END;
+                      END;
+                      // <-- 20181008-WI00-ADV01.01.00-3353-CJY01
+                      IF IsagriSetup_L."Verif GUID uniq. SAS Arch" THEN BEGIN
+                        IsagriSASOrderArHeaderUniq_L.RESET;
+                        IsagriSASOrderArHeaderUniq_L.SETRANGE("Isagri CRM Guid","GUID Header");
+                        IsagriSASOrderArHeaderUniq_L.SETFILTER("No.",'<>%1&<>%2','','SAS');
+                        IF IsagriSASOrderArHeaderUniq_L.FINDFIRST THEN
+                          ERROR(Text60021,"GUID Header",IsagriSASOrderArHeaderUniq_L."No.");
+                      END;
+                      // --> 20181008-WI00-ADV01.01.00-3353-CJY01
+                      IsagriSASOrderHeaderManage_L.INIT;
+                      IsagriSASOrderHeaderManage_L.VALIDATE("Isagri CRM Guid","GUID Header");
+                      IsagriSASOrderHeaderManage_L.VALIDATE("Sell-to Customer No.",Client);
+                      IsagriSASOrderHeaderManage_L.VALIDATE("No.",'SAS');
+                      IsagriSASOrderHeaderManage_L.VALIDATE("Ship-to Code","Code Adresse");
+                      // --> 20181031-WI00-ADV01.01.00-3385-CJY01
+                      IF ((IsagriSASOrderHeaderManage_L."Ship-to Code" = '000') OR
+                        (IsagriSASOrderHeaderManage_L."Ship-to Code" = '')) THEN BEGIN
+                        IF Cust2_L.GET(Client) THEN BEGIN
+                          IsagriSASOrderHeaderManage_L."Ship-to Name" := Cust2_L.Name;
+                          IsagriSASOrderHeaderManage_L."Ship-to Address" := Cust2_L.Address;
+                          IsagriSASOrderHeaderManage_L."Ship-to Address 2" := Cust2_L."Address 2";
+                          IsagriSASOrderHeaderManage_L."Ship-to City" := Cust2_L.City;
+                          IsagriSASOrderHeaderManage_L."Ship-to Post Code" := Cust2_L."Post Code";
+                        END;
+                      END;
+                      // <-- 20181031-WI00-ADV01.01.00-3385-CJY01
+
+                      IF "Code Mode Liv Header" <> '' THEN
+                        IsagriSASOrderHeaderManage_L.VALIDATE("Shipment Method Code","Code Mode Liv Header")
+                      ELSE
+                        IsagriSASOrderHeaderManage_L.VALIDATE("Shipment Method Code",IsagriSetup_L."Default Header Shipment  code");
+
+                      IF "Code Mag Header" <> '' THEN BEGIN
+                        IsagriSASOrderHeaderManage_L.VALIDATE("Location Code","Code Mag Header");
+                      END
+                      ELSE BEGIN
+                        Cust_L.GET(Client);
+                        IF Cust_L."Location Code" <> '' THEN
+                          IsagriSASOrderHeaderManage_L.VALIDATE("Location Code",Cust_L."Location Code")
+                        ELSE
+                          IsagriSASOrderHeaderManage_L.VALIDATE("Location Code",IsagriSetup_L."Default Header Location code");
+
+                      END;
+                      //controle sur le TC envoy' par ISAGRI
+                      //ou on le trouve directement dans Salesperson code
+                      //ou on va le chercher dans la table 8053160
+                      IF Salesperson_L.GET(TC) THEN BEGIN
+                        IsagriSASOrderHeaderManage_L.VALIDATE("Salesperson Code",TC)
+                      END
+                      ELSE BEGIN
+                        IF FindContact(IsagriSASOrderHeaderManage_L."Sell-to Customer No.") = '' THEN BEGIN
+                          ERROR(Text60022,IsagriSASOrderHeaderManage_L."Sell-to Customer No.");
+                        END
+                        ELSE BEGIN
+                          CMCContactSalesperson_L.RESET;
+                          CMCContactSalesperson_L.SETRANGE("Contact Code",FindContact(IsagriSASOrderHeaderManage_L."Sell-to Customer No."));
+                          CMCContactSalesperson_L.SETRANGE("Sales Network Code",'APPRO');
+                          IF CMCContactSalesperson_L.FINDFIRST THEN BEGIN
+                            IF CMCContactSalesperson_L."Salesperson Code" <> '' THEN
+                              IsagriSASOrderHeaderManage_L.VALIDATE("Salesperson Code",CMCContactSalesperson_L."Salesperson Code")
+                            ELSE
+                              ERROR(Text60023,FindContact(IsagriSASOrderHeaderManage_L."Sell-to Customer No."));
+                          END
+                          ELSE BEGIN
+                            ERROR(Text60024,FindContact(IsagriSASOrderHeaderManage_L."Sell-to Customer No."));
+                          END;
+                        END;
+                      END;
+
+                      IsagriSASOrderHeaderManage_L.VALIDATE(NA,"Code Mode Liv Header");
+                      //date debut de livraison dans le fichier reÎu ("Date Debut Liv Header")
+                      //si vide => attente info C'cile
+                      IF "Date Debut Liv Header" <> 0D THEN
+                        IsagriSASOrderHeaderManage_L."Requested Delivery Date" := "Date Debut Liv Header"
+                      ELSE
+
+                        IsagriSASOrderHeaderManage_L."Requested Delivery Date" := 0D;
+
+                      IF "Date Commande" <> 0D THEN
+                        IsagriSASOrderHeaderManage_L.VALIDATE("Date Commande","Date Commande");
+                      //pas de gestion de modification, l'envoi de la commande par Isagri ne peut avoir lieu qu'une fois
+
+                      //date livraison au plus tard
+                      IF "Date Fin Liv Header" <> 0D THEN
+                        IsagriSASOrderHeaderManage_L.VALIDATE("Last Requested Delivery Date","Date Fin Liv Header")
+                      ELSE
+                        IF IsagriSASOrderHeaderManage_L."Requested Delivery Date" <> 0D THEN
+                          IsagriSASOrderHeaderManage_L.VALIDATE("Last Requested Delivery Date",CALCDATE(
+                            IsagriSetup_L."Formule calcul date liv",IsagriSASOrderHeaderManage_L."Requested Delivery Date"));
+                        //"Formule calcul date liv"
+                      //diff'rent du champ standard navision "creation date" lors de la cr'ation de la commande elle m^me
+                      IF IsagriSASOrderHeaderManage_L."Creation Date" = 0DT THEN
+                        IsagriSASOrderHeaderManage_L."Creation Date" := CREATEDATETIME(TODAY,TIME);
+                      //IsagriSASOrderHeaderManage_L."Modification Date"
+                      IsagriSASOrderHeaderManage_L."Rec Status" := IsagriSASOrderHeaderManage_L."Rec Status"::"Brut Format";
+                      IsagriSASOrderHeaderManage_L.VALIDATE("Commentaire Logistique","Commentaire Liv");
+                      IsagriSASOrderHeaderManage_L.VALIDATE("Commentaire Facturation","Commentaire Fac");
+                      IsagriSASOrderHeaderManage_L.VALIDATE("A repartir",WrkTable_L."A repartir");
+
+
+
+                      IsagriSASOrderHeaderManage_L.INSERT;
+
+                  END;
+
+                'L' : //Ligne commande
+                  BEGIN
+                      // --> 20190621-WI00-ADV01.01.00-3422-CJY01
+                      {BEFORE
+                      IsagriSASOrderHeaderRef_L.GET("GUID Header");
+                      AFTER}
+                      //Origine_P := Origine_P::Isagri;
+                      IsagriSASOrderHeaderRef_L.GET(Origine_G,"GUID Header");
+                      // <-- 20190621-WI00-ADV01.01.00-3422-CJY01
+                      IsagriSASOrderLineManage_L.INIT;
+                      IsagriSASOrderLineManage_L.VALIDATE("Isagri CRM Header Guid","GUID Header");
+                      //IsagriSASOrderLineManage_L.VALIDATE(
+                      IsagriSASOrderLineManage_L.VALIDATE("Isagri CRM Line Guid",WrkTable_L."GUID Line");
+                      IF "Application Prix tarif" = 'O' THEN
+                        IsagriSASOrderLineManage_L.VALIDATE("Application Prix Tarif",TRUE)
+                      ELSE
+                        IsagriSASOrderLineManage_L.VALIDATE("Application Prix Tarif",FALSE);
+
+                      IF "Application Prix Moyen" = 'O' THEN
+                        IsagriSASOrderLineManage_L.VALIDATE("Application Prix Moyen",TRUE)
+                      ELSE
+                        IsagriSASOrderLineManage_L.VALIDATE("Application Prix Moyen",FALSE);
+
+
+                      //traitemet quantit'
+                      IF EVALUATE(IsagriSASOrderLineManage_L.Quantity,WrkTable_L."Quantity UV") THEN
+                        IsagriSASOrderLineManage_L.VALIDATE(Quantity);
+                      IsagriSASOrderLineManage_L.VALIDATE("Item/Variant Isagri","Code article variante");
+                      IF EVALUATE(IsagriSASOrderLineManage_L."Unit Price","Prix net") THEN
+                        IsagriSASOrderLineManage_L.VALIDATE("Unit Price");
+
+
+                      //utilisation fonction ligne vente pour magasin
+
+                      IF WrkTable_L."Code mode Liv Ligne" <> '' THEN
+                        IsagriSASOrderLineManage_L.VALIDATE("Shipment Method Code","Code mode Liv Ligne")
+                      ELSE
+                        IsagriSASOrderLineManage_L.VALIDATE("Shipment Method Code",IsagriSASOrderHeaderRef_L."Shipment Method Code");
+
+                      IF WrkTable_L."Code Mag ligne" <> ''  THEN
+                        IsagriSASOrderLineManage_L.VALIDATE("Location Code","Code Mag ligne")
+                      ELSE BEGIN
+                        IsagriSASOrderLineManage_L.VALIDATE("Location Code",IsagriSetup_L."Default Header Location code");
+                        IF IsagriSASOrderLineManage_L.FindActivScenarioSas(IsagriSASOrderLineManage_L,CMCActivLogAreaScenario_L) THEN BEGIN
+                          //MESSAGE('2 %1',CMCActivLogAreaScenario_L."Location Code");
+                          IsagriSASOrderLineManage_L.VALIDATE("Location Code",CMCActivLogAreaScenario_L."Location Code")
+                        END
+                          ELSE
+                            IF IsagriSASOrderLineManage_L."Location Code" = IsagriSetup_L."Default Header Location code" THEN
+                              IsagriSASOrderLineManage_L.VALIDATE("Location Code",'');
+                            //IF IsagriSASOrderHeaderRef_L."Location Code" <> '' THEN
+                              //IsagriSASOrderLineManage_L.VALIDATE("Location Code",IsagriSASOrderHeaderRef_L."Location Code");
+                            //ELSE
+                              //IsagriSASOrderLineManage_L.VALIDATE("Location Code",IsagriSetup_L."Default Header Location code");
+                       END;
+                      //MESSAGE('3 %1',IsagriSASOrderLineManage_L."Location Code");
+
+                      IF UPPERCASE("Code Saison") = 'PRINTEMPS' THEN
+                        IsagriSASOrderLineManage_L.VALIDATE("Saison Brute", IsagriSASOrderLineManage_L."Saison Brute"::PRINTEMPS)
+                      ELSE
+                        IF UPPERCASE("Code Saison") = 'AUTOMNE' THEN
+                          IsagriSASOrderLineManage_L.VALIDATE("Saison Brute", IsagriSASOrderLineManage_L."Saison Brute"::AUTOMNE)
+                          ELSE
+                            IF UPPERCASE("Code Saison") <> '' THEN
+                              ERROR(Text60000,UPPERCASE("Code Saison"));
+                      IsagriSASOrderLineManage_L.VALIDATE("Rec Status",IsagriSASOrderLineManage_L."Rec Status"::"Brut Format");
+
+                      IsagriSASOrderLineManage_L.VALIDATE("Document No.",IsagriSASOrderHeaderRef_L."No.");
+                      IsagriSASOrderLineManage_L.VALIDATE("Sell-to Customer No.",Client);
+                      IF "Date debut liv ligne" <> 0D THEN
+                        IsagriSASOrderLineManage_L.VALIDATE("Requested Delivery Date","Date debut liv ligne")
+                      ELSE
+                        IsagriSASOrderLineManage_L.VALIDATE("Requested Delivery Date",IsagriSASOrderHeaderRef_L."Requested Delivery Date");
+                      //valeurs initiales
+                      IsagriSASOrderLineManage_L."Initial Item/Variant Isagri" := "Code article variante";
+                      IsagriSASOrderLineManage_L."Initial Unit Price" := IsagriSASOrderLineManage_L."Unit Price";
+                      IsagriSASOrderLineManage_L."Initial Quantity" := IsagriSASOrderLineManage_L.Quantity;
+                      IsagriSASOrderLineManage_L."Initial Location Code" := IsagriSASOrderLineManage_L."Location Code";
+                      IsagriSASOrderLineManage_L."Initial Shipment Method Code" := IsagriSASOrderLineManage_L."Shipment Method Code";
+
+                      IF "Date debut liv ligne" <> 0D THEN
+                        IsagriSASOrderLineManage_L."Date Debut Livraison" := "Date debut liv ligne"
+                      ELSE
+                        IsagriSASOrderLineManage_L."Date Debut Livraison" := 0D;
+                      IF "Date fin liv ligne" <> 0D THEN
+                        IsagriSASOrderLineManage_L."Date Fin Livraison" := "Date fin liv ligne"
+                      ELSE
+                        IsagriSASOrderLineManage_L."Date Fin Livraison" := IsagriSASOrderHeaderRef_L."Last Requested Delivery Date";
+                      //coche prix n'goci'
+                      //IF IsagriSASOrderLineManage_L."Unit Price" <> 0 THEN
+                        IF ((IsagriSASOrderLineManage_L."Application Prix Tarif" = FALSE) AND
+                          (IsagriSASOrderLineManage_L."Application Prix Moyen" = FALSE)) THEN
+                            IsagriSASOrderLineManage_L."Negociated Price" := TRUE;
+                      IsagriSASOrderLineManage_L."Secondary Header Key" := IsagriSASOrderHeaderRef_L."Secondary Key";
+                      IsagriSASOrderLineManage_L.INSERT;
+                  END;
+
+                END;
+              UNTIL NEXT = 0;
+            END; //END WITH
+            COMMIT;
+            }
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text8053600@1000000007 : TextConst 'ENU=OK;FRA=OK';
+      Text8053601@1000000006 : TextConst 'ENU=Issue Read;FRA=ProblSme de lecture';
+      Text8053602@1000000005 : TextConst 'ENU=Issue Write;FRA=ProblSme d'''criture';
+      Text8053603@1000000004 : TextConst 'ENU=File doesn''t exist;FRA=Le fichier n''existe pas';
+      Text8053604@1000000003 : TextConst 'ENU=Destination folder doesn''t exist;FRA=Le dossier de destination n''existe pas';
+      Text8053605@1000000002 : TextConst 'ENU=Destination File already exist;FRA=Le fichier de destination existe d'j.';
+      Text8053606@1000000001 : TextConst 'ENU=Company with no active interface;FRA=La soci't' n''a pas l''interface active';
+      Text65000@1000000000 : TextConst 'FRA=Erreur lors de l''import de fichier %1, la premiSre ligne ne commence ni par "E" ni par "L".';
+      SetupAlreadyRead_G@1000000008 : Boolean;
+      Text60000@1000000009 : TextConst 'FRA=Erreur lors de l''import de fichier, la saison %1 n''est pas reconnue (valeur attendue : PRINTEMPS ou AUTOMNE)';
+      Text60010@1000000010 : TextConst 'FRA=Aucun magasin d''ent^te envoy' et le client %1 n''a pas de magasin par d'faut. Veuillez mettre . jour la fiche client svp.';
+      Text60020@1000000011 : TextConst 'FRA=Une ligne de GUID %1 existe d'ja dans le SAS. Fichier rejet', veuillez le modifier avant de l''int'grer . nouveau.';
+      Text60021@1000000012 : TextConst 'FRA=Une ligne de GUID %1 existe d'ja en archive SAS ayant g'n'r' la commande %2. Fichier rejet', veuillez le modifier avant de l''int'grer . nouveau.';
+      Text60022@1000000013 : TextConst 'FRA=Impossible de determiner un num'ro de contact dans les relation d''affaire pour le client %1.';
+      Text60023@1000000014 : TextConst 'FRA=Pas de num'ro TC par d'faut param'tr' pour le contact %1 en activit' APPRO.';
+      Text60024@1000000015 : TextConst 'FRA=Ligne param'trage non trouv' pour le contact %1 et l''activigt' APPRO dans la table "Vendeurs contact".';
+      Text60025@1000000016 : TextConst 'FRA=ProblSme d''unicit' : Le GUID %1 a 't' retrouv' dans le commande Navagri %2. Fichier rejet', veuillez le modifier avant de l''int'grer . nouveau.';
+      Origine_G@1000000017 : 'Isagri,Poseo';
+
+    PROCEDURE ReadFileToWrkTable@1000000014(Filename_P@1000000000 : Text[1000];CompanyNo_P@1000000001 : Code[10];ArchiveFile_P@1000000002 : Boolean) Result_L : Text[30];
+    VAR
+      File_L@1000000003 : File;
+      FileStream_L@1000000004 : InStream;
+      Line_L@1000000006 : Text[1000];
+      CharLF_L@1000000007 : Char;
+      CharRC_L@1000000008 : Char;
+      EndLine_L@1000000009 : Text[2];
+      recCrmOrganisation_L@8053600 : Record 8053075;
+      cduFormatFieldsMgt_L@8053601 : Codeunit 8060985;
+      LineToCut_L@1000000005 : Text[1000];
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Lit et lance l'action de d'coupage du fichier
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - Filename_P : adresse et nom du fichier
+      //    - CompanyNo_P : N› de soci't' . qui appartient le fichier
+      //    - DeleteFile_P : Indique si le fichier doit ^tre supprim'
+      //  Sorties
+      //    - Result_L : l'action c'est d'roul' correctement ou non :
+      //                  * Text8053600 : OK
+      //                  * Text8053601 : ProblSme de lecture
+      //                  * Text8053602 : ProblSme d''criture
+      //                  * Text8053603 : Le fichier n'existe pas
+      //                  * Text8053606 : La soci't' n'a pas l'interface active
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //IF InterfaceIsActive() THEN BEGIN
+
+        GetSetup();
+
+        //Initialisation des variables locales
+        Result_L := Text8053600;
+        CharLF_L := 10;
+        CharRC_L := 13;
+        EndLine_L := FORMAT(CharLF_L) + FORMAT(CharRC_L);
+        recCrmOrganisation_L.GET(CompanyNo_P);
+
+        //V'rification si le fichier exist
+        IF NOT(EXISTS(Filename_P)) THEN
+          Result_L := Text8053603;
+
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //Ouverture du fichier pour lire du texte en lecture seule
+      //----------------------------------------------------------------------------------------------------------------------------------
+        IF Result_L = Text8053600 THEN BEGIN
+          File_L.WRITEMODE(FALSE);
+          File_L.TEXTMODE(TRUE);
+          IF NOT(File_L.OPEN(Filename_P)) THEN
+            Result_L := Text8053601;
+        END;
+
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //D'coupage du fichier pour r'cup'rer chaque ligne
+      //----------------------------------------------------------------------------------------------------------------------------------
+        IF Result_L = Text8053600 THEN BEGIN
+          File_L.CREATEINSTREAM(FileStream_L);
+            REPEAT
+              IF FileStream_L.READTEXT(Line_L) > 0 THEN BEGIN
+                //conversion de ANSI vers ASCII
+                Line_L := cduFormatFieldsMgt_L.Ansi2Ascii(Line_L);
+                Line_L := DELCHR(Line_L, '=', EndLine_L);
+                LineToCut_L := Line_L;
+                ReadLine(Filename_P, recCrmOrganisation_L, LineToCut_L);
+              END;
+            UNTIL FileStream_L.EOS = TRUE;
+
+            //Fermeture du fichier aprSs traitement
+            File_L.CLOSE;
+            {//d'placement du fichier
+            IF NOT ToolsFile_G.FileRenameSav(Filename_P, 'Sav', TRUE) THEN BEGIN
+              ToolsFile_G.LogWriteErreur(STRSUBSTNO(Text1000, Filename_P));
+            END
+            ELSE BEGIN
+              //si tout se passe bien jusqu'au transfert de fichier, on commit pour figer
+              //l'import dans la table de travail
+              //COMMIT;
+            END;
+            }
+        END;
+      //COMMIT;
+
+        //Archivage du fichier
+        //IF ArchiveFile_P = TRUE THEN
+          //DeleteFile(Filename_P);
+      //END ELSE
+        //Result_L := Text8053606;
+
+      EXIT(Result_L);
+    END;
+
+    PROCEDURE GetSetup@8053683();
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Permet de r'cup'rer le param'trage de l'interface en faisant le moins possible de lecture dans la BDD
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //  Sorties
+      //----------------------------------------------------------------------------------------------------------------------------------
+      IF SetupAlreadyRead_G = FALSE THEN BEGIN
+        //recCRMSetup_G.GET();
+        SetupAlreadyRead_G := TRUE;
+      END;
+    END;
+
+    PROCEDURE ReadLine@1000000017(Filename_P@8053602 : Text[1000];recCrmOrganisation_P@8053601 : Record 8053075;Line_P@1000000000 : Text[1000]);
+    VAR
+      Origine_L@8053603 : Text[50];
+      CodeEvent_L@8053604 : Text[50];
+      User_L@8053605 : Text[50];
+      BufferLine_L@8053606 : Text[1000];
+      Position_L@8053607 : Integer;
+      i_L@8053608 : Integer;
+      GuidTxtHeader_L@1000000001 : Text[50];
+      recJournal_L@8053600 : Record 8053603;
+      cduSynchroError_L@8053609 : Codeunit 8053601;
+      recJournalSearch_L@8053610 : Record 8053603;
+      cduAddError_L@8053611 : Codeunit 8053603;
+      "-----------------------"@1000000002 : Integer;
+      IdLine_L@1000000003 : Code[1];
+      Tc_L@1000000004 : Code[10];
+      ModLiv_L@1000000005 : Code[10];
+      CodeMag_L@1000000006 : Code[10];
+      CodeAdd_L@1000000007 : Code[10];
+      DateDebutLiv_L@1000000008 : Date;
+      DateFinLiv_L@1000000009 : Date;
+      CommentLiv_L@1000000010 : Text[500];
+      CommentFac_L@1000000011 : Text[500];
+      OrderDate_L@1000000012 : Date;
+      Repartition_L@1000000013 : Code[1];
+      CodeClient_L@1000000014 : Code[20];
+      WrkTable_L@1000000015 : Record 60099;
+      GuidTxtLine_L@1000000016 : Text[50];
+      CodeArticleVariante_L@1000000017 : Text[32];
+      QteUv_L@1000000018 : Text[30];
+      PrixNet_L@1000000019 : Text[30];
+      PrixTarif_L@1000000020 : Code[10];
+      PrixMoyen_L@1000000021 : Code[1];
+      CodeSaison_L@1000000022 : Text[15];
+      DateDebutLivLine_L@1000000024 : Date;
+      DateFinLivLine_L@1000000023 : Date;
+      ModeLivLine_L@1000000025 : Text[15];
+      CodeMagLine_L@1000000026 : Text[15];
+      VerifHeaderSasExistance_L@1000000027 : Record 60094;
+      PhoneOrder_L@1000000028 : Code[1];
+      CdePoseo_L@1000000029 : Code[20];
+      CodeModeLivIsagri_L@1000000030 : Code[10];
+      ShipAddressCMC_L@1000000031 : Text[50];
+      ShipAddressCMC2_L@1000000032 : Text[50];
+      ShipCityCMC_L@1000000033 : Text[30];
+      ShipPostCodeCMC_L@1000000034 : Code[20];
+      ShipNameCMC_L@1000000035 : Text[50];
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // D'coupe la ligne pass'e en paramStre pour la traiter
+      // Attention, COMMIT dans cette fonction
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - Filename_P : adresse et nom du fichier
+      //    - recCrmOrganisation_P : Soci't' . l'origine de la demande
+      //    - Line_P : Ligne . traiter
+      //  Sorties
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Format de la ligne :
+      //    - Origine           : Pas utilis'
+      //    - Code 'vSnement    : Indique l'action qui doit ^tre trait'
+      //    - Utilisateur       : Pas utilis'
+      //    - ParamStre         : Donn'es de l''vSnement
+      //----------------------------------------------------------------------------------------------------------------------------------
+      BufferLine_L := Line_P;
+      //MESSAGE(BufferLine_L);
+      IdLine_L := ReadNextItem(BufferLine_L);
+      //MESSAGE(IdLine_L);
+
+      //IF ((IdLine_L <> 'E') AND (IdLine_L <> 'L')) THEN
+        //ERROR(Text65000,Filename_P);
+
+      //traitement ligne de type ent^te
+      IF IdLine_L = 'E' THEN BEGIN
+        CodeClient_L := ReadNextItem(BufferLine_L);
+        GuidTxtHeader_L := FormatGuid(ReadNextItem(BufferLine_L));
+        Tc_L:= ReadNextItem(BufferLine_L);
+        ModLiv_L := ReadNextItem(BufferLine_L);
+        CodeMag_L := ReadNextItem(BufferLine_L);
+        CodeAdd_L := ReadNextItem(BufferLine_L);
+        EVALUATE(DateDebutLiv_L,ReadNextItem(BufferLine_L));
+        // --> 20181019-WI00-ADV01.01.00-38245-CJY01
+        IF DateDebutLiv_L = 0D THEN
+          DateDebutLiv_L := TODAY;
+        // <-- 20181019-WI00-ADV01.01.00-38245-CJY01
+        EVALUATE(DateFinLiv_L,ReadNextItem(BufferLine_L));
+        CommentLiv_L := ReadNextItem(BufferLine_L);
+        CommentFac_L := ReadNextItem(BufferLine_L);
+
+        EVALUATE(OrderDate_L,ReadNextItem(BufferLine_L));
+        Repartition_L := ReadNextItem(BufferLine_L);
+        // --> 20190419-WI00-ADV01.01.00-3412-CJY01
+        PhoneOrder_L := ReadNextItem(BufferLine_L);
+        // <-- 20190419-WI00-ADV01.01.00-3412-CJY01
+
+        //import du code condition de livraison pour ISAGRI (vide pour POSEO)
+        //Isagri devra mettra . cet endroit une valeur vide
+        // --> 20200427-WI00-ADV01.01.00-3474-CJY01
+        {BEFORE
+        // --> 20190621-WI00-ADV01.01.00-3422-CJY01
+        IF Origine_G = Origine_G::Poseo THEN BEGIN
+          CdePoseo_L := ReadNextItem(BufferLine_L);
+        END;
+        // <-- 20190621-WI00-ADV01.01.00-3422-CJY01
+        AFTER}
+        //Plus de spcifit' pour Poseo, la zone sera vide pour Isagri
+        //mais doit ^tre g'r'e
+        CdePoseo_L := ReadNextItem(BufferLine_L);
+        CodeModeLivIsagri_L := ReadNextItem(BufferLine_L);
+        // <-- 20200427-WI00-ADV01.01.00-3474-CJY01
+        // --> 20240514-WI00-ADV01.01.00-3655-CJY01
+        IF Origine_G = Origine_G::Isagri THEN BEGIN
+           ShipAddressCMC_L := ReadNextItem(BufferLine_L);
+           ShipAddressCMC2_L := ReadNextItem(BufferLine_L);
+           ShipPostCodeCMC_L := ReadNextItem(BufferLine_L);
+           ShipCityCMC_L := ReadNextItem(BufferLine_L);
+        // --> 20240522-WI00-ADV01.01.00-3655-CJY01
+           ShipNameCMC_L := ReadNextItem(BufferLine_L);
+        // <-- 20240522-WI00-ADV01.01.00-3655-CJY01
+        END;
+        // <-- 20240514-WI00-ADV01.01.00-3655-CJY01
+      END;
+      //traitement ligne de type ligne
+      IF IdLine_L = 'L' THEN BEGIN
+        CodeClient_L := ReadNextItem(BufferLine_L);
+        GuidTxtHeader_L := FormatGuid(ReadNextItem(BufferLine_L));
+        CodeArticleVariante_L := ReadNextItem(BufferLine_L);
+        GuidTxtLine_L := FormatGuid(ReadNextItem(BufferLine_L));
+        QteUv_L := ReadNextItem(BufferLine_L);
+        QteUv_L := CONVERTSTR(QteUv_L, '.', ',');
+        PrixNet_L := ReadNextItem(BufferLine_L);
+        PrixNet_L := CONVERTSTR(PrixNet_L, '.', ',');
+        //IF EVALUATE(QteUv_L,ReadNextItem(BufferLine_L)) THEN;
+        //IF EVALUATE(PrixNet_L,ReadNextItem(BufferLine_L)) THEN;
+        PrixTarif_L := ReadNextItem(BufferLine_L);
+        PrixMoyen_L := ReadNextItem(BufferLine_L);
+        CodeSaison_L := ReadNextItem(BufferLine_L);
+        EVALUATE(DateDebutLivLine_L,ReadNextItem(BufferLine_L));
+        EVALUATE(DateFinLivLine_L,ReadNextItem(BufferLine_L));
+        ModeLivLine_L := ReadNextItem(BufferLine_L);
+        CodeMagLine_L := ReadNextItem(BufferLine_L);
+        //cde poseo dans la ligne aussi ?
+
+      END;
+
+      // --> 20190621-WI00-ADV01.01.00-3422-CJY01
+      {BEFORE
+      // --> 20181012-WI00-ADV01.01.00-3353-CJY01
+      //on neprend en compte que si la guid entete n'est pas d'j. dans le sas
+      IF NOT VerifHeaderSasExistance_L.GET(GuidTxtHeader_L) THEN BEGIN
+      // <-- 20181012-WI00-ADV01.01.00-3353-CJY01
+      AFTER}
+      //Origine_P := Origine_P::Isagri;
+      IF NOT VerifHeaderSasExistance_L.GET(Origine_G,GuidTxtHeader_L) THEN BEGIN
+      // <-- 20190621-WI00-ADV01.01.00-3422-CJY01
+        //Ecriture dans la table de travail
+        WrkTable_L.LOCKTABLE;
+        WrkTable_L.INIT;
+
+        IF ((IdLine_L = 'E') OR (IdLine_L = 'L')) THEN BEGIN
+          WrkTable_L."Entry No." := FindNextNo;
+          WrkTable_L.Type := WrkTable_L.Type::Import;
+          WrkTable_L."Identifiant ligne" := IdLine_L;
+          WrkTable_L.Client := CodeClient_L;
+          WrkTable_L."File Name" := COPYSTR(Filename_P,1,250);
+          WrkTable_L."Date Time Integration" := CREATEDATETIME(TODAY,TIME);
+          // --> 20190621-WI00-ADV01.01.00-3422-CJY01
+          //WrkTable_L.Origine := WrkTable_L.Origine::Isagri;
+          WrkTable_L.Origine := Origine_G;
+          // <-- 20190621-WI00-ADV01.01.00-3422-CJY01
+          IF IdLine_L = 'E' THEN BEGIN
+            //ligne type ent^te
+            WrkTable_L."GUID Header" := GuidTxtHeader_L;
+            WrkTable_L.TC := Tc_L;
+            WrkTable_L."Code Mode Liv Header" := ModLiv_L;
+            WrkTable_L."Code Mag Header" := CodeMag_L;
+            WrkTable_L."Code Adresse" := CodeAdd_L;
+            WrkTable_L."Date Debut Liv Header" := DateDebutLiv_L;
+            WrkTable_L."Date Fin Liv Header" := DateFinLiv_L;
+            // --> 20190205-WI00-ADV01.01.00-3402-CJY01
+            {BEFORE
+            WrkTable_L."Commentaire Liv" := CommentLiv_L;
+            WrkTable_L."Commentaire Fac" := CommentFac_L;
+            AFTER}
+            GestionCommentaires(CommentLiv_L,CommentFac_L, WrkTable_L);
+            // <-- 20190205-WI00-ADV01.01.00-3402-CJY01
+            WrkTable_L."Date Commande" := OrderDate_L;
+            IF Repartition_L = 'O' THEN
+              WrkTable_L."A repartir" := TRUE
+            ELSE
+              WrkTable_L."A repartir" := FALSE;
+            // --> 20190419-WI00-ADV01.01.00-3412-CJY01
+            IF PhoneOrder_L = 'O' THEN
+              WrkTable_L."Phone Order" := TRUE
+            ELSE
+              WrkTable_L."Phone Order" := FALSE;
+            // --> 20200427-WI00-ADV01.01.00-3474-CJY01
+            {BEFORE
+            //on profite du SP 3474 pour corriger le test ci-dessous
+
+            // --> 20190621-WI00-ADV01.01.00-3422-CJY01
+            IF Origine_G = Origine_G THEN
+              WrkTable_L."No. cde POSEO" := CdePoseo_L;
+            // <-- 20190621-WI00-ADV01.01.00-3422-CJY01
+            AFTER}
+            IF Origine_G = Origine_G::Poseo THEN
+              WrkTable_L."No. cde POSEO" := CdePoseo_L;
+
+            IF Origine_G = Origine_G::Isagri THEN
+              WrkTable_L."Code Mode Livraison" := CodeModeLivIsagri_L;
+
+            // <-- 20200427-WI00-ADV01.01.00-3474-CJY01
+
+            // <-- 20190419-WI00-ADV01.01.00-3412-CJY01
+            // --> 20240514-WI00-ADV01.01.00-3655-CJY01
+            //gestion nouvelles infos pour Isagri
+            IF Origine_G = Origine_G::Isagri THEN BEGIN
+                WrkTable_L."Ship-to Address CMC" := ShipAddressCMC_L;
+                WrkTable_L."Ship-to Address 2 CMC" := ShipAddressCMC2_L;
+                WrkTable_L."Ship-to City CMC" := ShipCityCMC_L;
+                WrkTable_L."Ship-to Post Code CMC" := ShipPostCodeCMC_L;
+                // --> 20240522-WI00-ADV01.01.00-3655-CJY01
+                WrkTable_L."Name-to Ship CMC" := ShipNameCMC_L;
+                // <-- 20240522-WI00-ADV01.01.00-3655-CJY01
+            END;
+            // <-- 20240514-WI00-ADV01.01.00-3655-CJY01
+
+
+
+          END
+          ELSE BEGIN
+            //ligne type ligne
+
+            WrkTable_L."GUID Header" := GuidTxtHeader_L;
+            WrkTable_L."Code article variante" := CodeArticleVariante_L;
+            WrkTable_L."GUID Line" := GuidTxtLine_L;
+            WrkTable_L."Quantity UV" := QteUv_L;
+            WrkTable_L."Prix net" := PrixNet_L;
+            WrkTable_L."Application Prix tarif" := PrixTarif_L;
+            WrkTable_L."Application Prix Moyen" := PrixMoyen_L;
+            WrkTable_L."Code Saison" := CodeSaison_L;
+            WrkTable_L."Date debut liv ligne" := DateDebutLivLine_L;
+            WrkTable_L."Date fin liv ligne" := DateFinLivLine_L;
+            WrkTable_L."Code mode Liv Ligne" := ModeLivLine_L;
+            WrkTable_L."Code Mag ligne" := CodeMagLine_L;
+          END;
+
+          WrkTable_L.INSERT;
+        END;
+      // --> 20181012-WI00-ADV01.01.00-3353-CJY01
+      END;
+      // <-- 20181012-WI00-ADV01.01.00-3353-CJY01
+    END;
+
+    PROCEDURE ReadNextItem@8053600(VAR Var_Line_P@8053600 : Text[1000]) Result_L : Text[500];
+    VAR
+      Position_L@8053601 : Integer;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // R'cupSre le prochain 'l'ment de la liste 'tant s'par' par des ; et l'enlSve de la liste
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - Var_Line_P : Ligne . traiter
+      //  Sorties
+      //    - Result_L : la prochain 'l'ment de la liste
+      //----------------------------------------------------------------------------------------------------------------------------------
+
+      Position_L := STRPOS(Var_Line_P, ';');
+      IF Position_L > 0 THEN BEGIN
+        Result_L := COPYSTR(Var_Line_P, 1, Position_L - 1);
+        Var_Line_P := COPYSTR(Var_Line_P, Position_L + 1, STRLEN(Var_Line_P));
+      END ELSE BEGIN
+      //Dernier 'l'ment de la liste
+        Result_L := Var_Line_P;
+        Var_Line_P := '';
+      END;
+      //MESSAGE('-%1-',Result_L);
+      EXIT(Result_L);
+    END;
+
+    PROCEDURE FormatGuid@8053609(Guid_P@8053600 : Text[50]) Result_L : Text[50];
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------------------------------
+      // Permet de mettre les accolades au GUID texte retourn' par le connecteur pour l'utiliser dans NAV
+      //----------------------------------------------------------------------------------------------------------------------------------
+      //  Entr'es
+      //    - Guid_P : GUID MS CRM
+      //  Sorties
+      //    - Result_L : GUID format'
+      //----------------------------------------------------------------------------------------------------------------------------------
+      IF STRLEN(Guid_P) = 36 THEN
+        Result_L := '{' + Guid_P + '}'
+      ELSE
+        Result_L := Guid_P;
+      EXIT(Result_L);
+    END;
+
+    PROCEDURE FindNextNo@1000000011() : Integer;
+    VAR
+      WrkTable_L@1000000000 : Record 60099;
+    BEGIN
+      WrkTable_L.RESET;
+      IF WrkTable_L.FINDLAST THEN
+        EXIT(WrkTable_L."Entry No." + 1)
+      ELSE
+        EXIT(1);
+    END;
+
+    PROCEDURE FindContact@1000000000(SellToCustomer_P@1000000000 : Code[20]) : Code[20];
+    VAR
+      ContactBusinessRelation_L@1000000001 : Record 5054;
+      Contact_L@1000000002 : Record 5050;
+    BEGIN
+      IF SellToCustomer_P = '' THEN
+        EXIT;
+      ContactBusinessRelation_L.RESET;
+      ContactBusinessRelation_L.SETRANGE("Link to Table",ContactBusinessRelation_L."Link to Table"::Customer);
+      ContactBusinessRelation_L.SETRANGE("No.",SellToCustomer_P);
+      IF ContactBusinessRelation_L.FINDFIRST THEN
+        IF Contact_L.GET(ContactBusinessRelation_L."Contact No.") THEN
+          EXIT(Contact_L."No.");
+
+      EXIT('');
+    END;
+
+    PROCEDURE GestionCommentaires@1000000005(CommentLiv_P@1000000001 : Text[500];CommentFac_P@1000000000 : Text[500];VAR WrkTable_P@1000000002 : Record 60099);
+    BEGIN
+      // --> 20190205-WI00-ADV01.01.00-3402-CJY01
+      //cette fontion se charge de g'rer des commentaires pouvant d'passer les 250 carractSres
+      //correspondant . la limite d'un champ texte d'une table
+      //la gestion se fait par d'coupe et utilisation de 2 champs au lieu d'un pour le stockage
+      IF CommentLiv_P <> '' THEN BEGIN
+        IF STRLEN(CommentLiv_P) <= 250 THEN BEGIN
+          WrkTable_P."Commentaire Liv" := CommentLiv_P;
+          WrkTable_P."Commentaire Liv 2" := '';
+        END
+        ELSE BEGIN
+          WrkTable_P."Commentaire Liv" := COPYSTR(CommentLiv_P,1,250);
+          WrkTable_P."Commentaire Liv 2" := COPYSTR(CommentLiv_P,251,500);
+        END;
+      END;
+
+      IF CommentFac_P <> '' THEN BEGIN
+        IF STRLEN(CommentFac_P) <= 250 THEN BEGIN
+          WrkTable_P."Commentaire Fac" := CommentFac_P;
+          WrkTable_P."Commentaire Fac 2" := '';
+        END
+        ELSE BEGIN
+          WrkTable_P."Commentaire Fac" := COPYSTR(CommentFac_P,1,250);
+          WrkTable_P."Commentaire Fac 2" := COPYSTR(CommentFac_P,251,500);
+        END;
+
+      END;
+
+      // <-- 20190205-WI00-ADV01.01.00-3402-CJY01
+    END;
+
+    BEGIN
+    {
+      //--> 3LI BEGIN
+      20180725-WI00-ADV01.01.00-3353-CJY01 CREATE Object
+      20180918-WI00-ADV01.01.00-3353-CJY01 : ADDCODE (gestion date commande)
+      20181008-WI00-ADV01.01.00-3353-CJY01 : ADDCODE (gestion de l'unicit' dans les commande Navagri)
+      20181012-WI00-ADV01.01.00-3353-CJY01 : ADDCODE (on ne prend en compte que si non d'j. pr'sent dans le sas)
+      20181019-WI00-ADV01.01.00-38245-CJY01 : ADDCODE (gestion du manque de date livraison envoy'e par Isagri)
+      20181031-WI00-ADV01.01.00-3385-CJY01 : ADDCODE ('volution gestion du manque de date livraison envoy'e par Isagri)
+      20190205-WI00-ADV01.01.00-3402-CJY01 : ADDCODE (gestion nouveaux commentaire plus long)
+      20190205-WI00-ADV01.01.00-3402-CJY01 : ADDFUNC (ajout fonction "GestionCommentaires")
+      20190205-WI00-ADV01.01.00-3402-CJY01 : MODCODE (augmentation taille variable, fonction ReadFile, de )
+      20190205-WI00-ADV01.01.00-3402-CJY01 : MODCODE (CommentLiv_L et CommentFac_L . 500 car)
+      20190419-WI00-ADV01.01.00-3412-CJY01 : MODCODE (ajout gestion zone "commande telephone" en fin de ligne ent^te)
+      20190621-WI00-ADV01.01.00-3422-CJY01 : ADDCODE (Gestion de l'origine Isagri pour differencier avec Poseo)
+      20190724-WI00-ADV01.01.00-3422-CJY01 : MODCTRL (Retrait terme Isagri dans constant text)
+      20200427-WI00-ADV01.01.00-3474-CJY01 : MODCODE (Gestion de "code mode livraison" pour le flux Isagri)
+      20240514-WI00-ADV01.01.00-3655-CJY01 : ADDCODE (gestion specifique adresses Isagri)
+      20240522-WI00-ADV01.01.00-3655-CJY01 : ADDCODE (compl'ment gestion specifique adresses Isagri)
+
+      //<-- 3LI END
+      //--> ADVITAM BEGIN
+      20181112-ADV-ISA-OFT01 : MODCODE (gestion des erreurs par no de doc et plus par flux complet)
+      //<-- ADVITAM END
+    }
+    END.
+  }
+}
+

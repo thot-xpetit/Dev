@@ -1,0 +1,315 @@
+OBJECT Codeunit 8060993 LedgerEntryUpdate
+{
+  OBJECT-PROPERTIES
+  {
+    Date=22/01/18;
+    Heure=00:00:00;
+    Liste versions=CMB6.00.01,CMC02.02.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 17=m,
+                TableData 21=m,
+                TableData 25=m,
+                TableData 271=m,
+                TableData 5601=m;
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      GLSetup_G@1180250002 : Record 98;
+
+    PROCEDURE UpdateGLApplied@60045(VAR GLEntry_P@60000 : Record 17;SumPos_P@60001 : Decimal;SumNeg_P@60002 : Decimal);
+    BEGIN
+      GLEntry_P.Applied := (SumPos_P + SumNeg_P = 0);
+    END;
+
+    PROCEDURE UpdateGLEntryDesc@1(VAR GLEntry2_P@1000000014 : Record 17;NewDesc_P@1000000005 : Text[50]);
+    VAR
+      GLEntry_L@1000000000 : Record 17;
+      CustLedgerEntry_L@1000000002 : Record 21;
+      VendLedgerEntry_L@1000000003 : Record 25;
+      Text1000000000@1000000015 : TextConst 'FRA=Il n''est pas possible de changer le libell' d''une 'criture abonn'e.';
+      RecCVLedgerEntry_L@8053000 : Record 8053380;
+      RecBanAccountLedgerEntry_L@1000000001 : Record 271;
+    BEGIN
+      IF GLEntry2_P.FINDFIRST THEN
+        REPEAT
+
+          GLEntry_L.GET(GLEntry2_P."Entry No.");
+          GLEntry_L.Description := NewDesc_P;
+          GLEntry_L.MODIFY;
+
+          IF CustLedgerEntry_L.GET(GLEntry2_P."Entry No.") THEN BEGIN
+            CustLedgerEntry_L.Description := NewDesc_P;
+            CustLedgerEntry_L.MODIFY;
+          END;
+
+          IF VendLedgerEntry_L.GET(GLEntry2_P."Entry No.") THEN BEGIN
+            VendLedgerEntry_L.Description := NewDesc_P;
+            VendLedgerEntry_L.MODIFY;
+          END;
+
+         // --> 20150720-FINA13-CMC02.02.00-1912-SDE01
+          IF RecBanAccountLedgerEntry_L.GET(GLEntry2_P."Entry No.") THEN BEGIN
+            RecBanAccountLedgerEntry_L.Description := NewDesc_P;
+            RecBanAccountLedgerEntry_L.MODIFY;
+          END;
+         // <-- 20150720-FINA13-CMC02.02.00-1912-SDE01
+
+          // --> 20141201-FINA13-CMC02.02.00-2623-DRN01
+          IF GLEntry_L."Source Type" = GLEntry_L."Source Type"::Vendor THEN BEGIN
+            IF RecCVLedgerEntry_L.GET(RecCVLedgerEntry_L."Customer / Vendor"::Vendor,GLEntry2_P."Entry No.") THEN BEGIN
+              RecCVLedgerEntry_L.Description := NewDesc_P;
+              RecCVLedgerEntry_L.MODIFY;
+            END;
+          END ELSE
+            IF GLEntry_L."Source Type" = GLEntry_L."Source Type"::Customer THEN
+              IF RecCVLedgerEntry_L.GET(RecCVLedgerEntry_L."Customer / Vendor"::Customer,GLEntry2_P."Entry No.") THEN BEGIN
+                RecCVLedgerEntry_L.Description := NewDesc_P;
+                RecCVLedgerEntry_L.MODIFY;
+              END;
+          // <-- 20141201-FINA13-CMC02.02.00-2623-DRN01
+
+        UNTIL GLEntry2_P.NEXT = 0;
+    END;
+
+    PROCEDURE ChangeGLEntryDim@60039(VAR GLEntry_P@60001 : Record 17;VAR LedgerEntryDim_P@60000 : Record 355);
+    VAR
+      i_L@60010 : Integer;
+      TableID_L@60009 : ARRAY [10] OF Integer;
+      No_L@60008 : ARRAY [10] OF Code[20];
+      GLEntry_L@60007 : Record 17;
+      LedgerEntryDim_L@60006 : Record 355;
+      CustLedgerEntry_L@60005 : Record 21;
+      VendLedgerEntry_L@60004 : Record 25;
+      BankAccLedgerEntry_L@60003 : Record 271;
+      FALedgerEntry_L@60002 : Record 5601;
+      TempDimBuf2_L@60011 : TEMPORARY Record 360;
+      DimMgt_L@60012 : Codeunit 408;
+      DimErr_L@60013 : Text[250];
+      GLSetupShortcutDimCode_L@60014 : ARRAY [2] OF Code[20];
+    BEGIN
+      GLSetup_G.GET;
+      GLSetupShortcutDimCode_L[1] := GLSetup_G."Shortcut Dimension 1 Code";
+      GLSetupShortcutDimCode_L[2] := GLSetup_G."Shortcut Dimension 2 Code";
+
+      // Pr'paration du test sur l'analytique
+      TempDimBuf2_L.RESET;
+      TempDimBuf2_L.DELETEALL;
+      IF LedgerEntryDim_P.FIND('-') THEN BEGIN
+        i_L := 1;
+        REPEAT
+          DimErr_L := DimMgt_L.ChangeDimCheckDimValue(LedgerEntryDim_P."Dimension Code",
+                                                      LedgerEntryDim_P."Dimension Value Code");
+          IF DimErr_L <> '' THEN
+            ERROR(DimErr_L);
+          TempDimBuf2_L.INIT;
+          TempDimBuf2_L."Table ID" := DATABASE::"Document Dimension";
+          TempDimBuf2_L."Entry No." := i_L;
+          TempDimBuf2_L."Dimension Code" := LedgerEntryDim_P."Dimension Code";
+          TempDimBuf2_L."Dimension Value Code" := LedgerEntryDim_P."Dimension Value Code";
+          TempDimBuf2_L.INSERT;
+          i_L := i_L + 1;
+        UNTIL LedgerEntryDim_P.NEXT = 0;
+      END;
+
+
+      IF GLEntry_P.FIND('-') THEN
+        REPEAT
+
+          // Tests sur l'analytique
+          TableID_L[1] := DATABASE::"G/L Account";
+          No_L[1] := GLEntry_P."G/L Account No.";
+
+          DimErr_L := DimMgt_L.ChangeDimCheckValuePosting(TableID_L,No_L,TempDimBuf2_L);
+          IF DimErr_L <> '' THEN
+            ERROR(DimErr_L);
+
+          // Ecriture comptable
+
+          GLEntry_L.GET(GLEntry_P."Entry No.");
+
+          LedgerEntryDim_L.RESET;
+          LedgerEntryDim_L.SETRANGE("Table ID",DATABASE::"G/L Entry");
+          LedgerEntryDim_L.SETRANGE("Entry No.",GLEntry_P."Entry No.");
+          LedgerEntryDim_L.DELETEALL;
+
+          GLEntry_L."Global Dimension 1 Code" := '';
+          GLEntry_L."Global Dimension 2 Code" := '';
+
+          IF LedgerEntryDim_P.FIND('-') THEN
+            REPEAT
+              LedgerEntryDim_L.INIT;
+              LedgerEntryDim_L := LedgerEntryDim_P;
+              LedgerEntryDim_L."Table ID" := DATABASE::"G/L Entry";
+              LedgerEntryDim_L."Entry No." := GLEntry_P."Entry No.";
+              LedgerEntryDim_L.INSERT;
+              IF LedgerEntryDim_L."Dimension Code" = GLSetupShortcutDimCode_L[1] THEN
+                GLEntry_L."Global Dimension 1 Code" := LedgerEntryDim_L."Dimension Value Code";
+              IF LedgerEntryDim_L."Dimension Code" = GLSetupShortcutDimCode_L[2] THEN
+                GLEntry_L."Global Dimension 2 Code" := LedgerEntryDim_L."Dimension Value Code";
+            UNTIL LedgerEntryDim_P.NEXT = 0;
+
+          GLEntry_L.MODIFY;
+
+          // Ecriture client
+
+          IF CustLedgerEntry_L.GET(GLEntry_P."Entry No.") THEN BEGIN
+
+            LedgerEntryDim_L.RESET;
+            LedgerEntryDim_L.SETRANGE("Table ID",DATABASE::"Cust. Ledger Entry");
+            LedgerEntryDim_L.SETRANGE("Entry No.",CustLedgerEntry_L."Entry No.");
+            LedgerEntryDim_L.DELETEALL;
+
+            CustLedgerEntry_L."Global Dimension 1 Code" := '';
+            CustLedgerEntry_L."Global Dimension 2 Code" := '';
+
+            IF LedgerEntryDim_P.FIND('-') THEN
+              REPEAT
+                LedgerEntryDim_L.INIT;
+                LedgerEntryDim_L := LedgerEntryDim_P;
+                LedgerEntryDim_L."Table ID" := DATABASE::"Cust. Ledger Entry";
+                LedgerEntryDim_L."Entry No." := CustLedgerEntry_L."Entry No.";
+                LedgerEntryDim_L.INSERT;
+                IF LedgerEntryDim_L."Dimension Code" = GLSetupShortcutDimCode_L[1] THEN
+                  CustLedgerEntry_L."Global Dimension 1 Code" := LedgerEntryDim_L."Dimension Value Code";
+                IF LedgerEntryDim_L."Dimension Code" = GLSetupShortcutDimCode_L[2] THEN
+                  CustLedgerEntry_L."Global Dimension 2 Code" := LedgerEntryDim_L."Dimension Value Code";
+              UNTIL LedgerEntryDim_P.NEXT = 0;
+
+            CustLedgerEntry_L.MODIFY;
+
+          END;
+
+          // Ecriture fournisseur
+
+          IF VendLedgerEntry_L.GET(GLEntry_P."Entry No.") THEN BEGIN
+
+            LedgerEntryDim_L.RESET;
+            LedgerEntryDim_L.SETRANGE("Table ID",DATABASE::"Vendor Ledger Entry");
+            LedgerEntryDim_L.SETRANGE("Entry No.",VendLedgerEntry_L."Entry No.");
+            LedgerEntryDim_L.DELETEALL;
+
+            VendLedgerEntry_L."Global Dimension 1 Code" := '';
+            VendLedgerEntry_L."Global Dimension 2 Code" := '';
+
+            IF LedgerEntryDim_P.FIND('-') THEN
+              REPEAT
+                LedgerEntryDim_L.INIT;
+                LedgerEntryDim_L := LedgerEntryDim_P;
+                LedgerEntryDim_L."Table ID" := DATABASE::"Vendor Ledger Entry";
+                LedgerEntryDim_L."Entry No." := VendLedgerEntry_L."Entry No.";
+                LedgerEntryDim_L.INSERT;
+                IF LedgerEntryDim_L."Dimension Code" = GLSetupShortcutDimCode_L[1] THEN
+                  VendLedgerEntry_L."Global Dimension 1 Code" := LedgerEntryDim_L."Dimension Value Code";
+                IF LedgerEntryDim_L."Dimension Code" = GLSetupShortcutDimCode_L[2] THEN
+                  VendLedgerEntry_L."Global Dimension 2 Code" := LedgerEntryDim_L."Dimension Value Code";
+              UNTIL LedgerEntryDim_P.NEXT = 0;
+
+            VendLedgerEntry_L.MODIFY;
+
+          END;
+
+          // Ecriture banque
+
+          IF BankAccLedgerEntry_L.GET(GLEntry_P."Entry No.") THEN BEGIN
+
+            LedgerEntryDim_L.RESET;
+            LedgerEntryDim_L.SETRANGE("Table ID",DATABASE::"Bank Account Ledger Entry");
+            LedgerEntryDim_L.SETRANGE("Entry No.",BankAccLedgerEntry_L."Entry No.");
+            LedgerEntryDim_L.DELETEALL;
+
+            BankAccLedgerEntry_L."Global Dimension 1 Code" := '';
+            BankAccLedgerEntry_L."Global Dimension 2 Code" := '';
+
+            IF LedgerEntryDim_P.FIND('-') THEN
+              REPEAT
+                LedgerEntryDim_L.INIT;
+                LedgerEntryDim_L := LedgerEntryDim_P;
+                LedgerEntryDim_L."Table ID" := DATABASE::"Bank Account Ledger Entry";
+                LedgerEntryDim_L."Entry No." := BankAccLedgerEntry_L."Entry No.";
+                LedgerEntryDim_L.INSERT;
+                IF LedgerEntryDim_L."Dimension Code" = GLSetupShortcutDimCode_L[1] THEN
+                  BankAccLedgerEntry_L."Global Dimension 1 Code" := LedgerEntryDim_L."Dimension Value Code";
+                IF LedgerEntryDim_L."Dimension Code" = GLSetupShortcutDimCode_L[2] THEN
+                  BankAccLedgerEntry_L."Global Dimension 2 Code" := LedgerEntryDim_L."Dimension Value Code";
+              UNTIL LedgerEntryDim_P.NEXT = 0;
+
+            BankAccLedgerEntry_L.MODIFY;
+
+          END;
+
+          // Ecriture immobilisation
+
+          FALedgerEntry_L.RESET;
+          FALedgerEntry_L.SETRANGE("G/L Entry No.",GLEntry_P."Entry No.");
+          IF FALedgerEntry_L.FIND('-') THEN BEGIN
+
+            LedgerEntryDim_L.RESET;
+            LedgerEntryDim_L.SETRANGE("Table ID",DATABASE::"FA Ledger Entry");
+            LedgerEntryDim_L.SETRANGE("Entry No.",FALedgerEntry_L."Entry No.");
+            LedgerEntryDim_L.DELETEALL;
+
+            FALedgerEntry_L."Global Dimension 1 Code" := '';
+            FALedgerEntry_L."Global Dimension 2 Code" := '';
+
+            IF LedgerEntryDim_P.FIND('-') THEN
+              REPEAT
+                LedgerEntryDim_L.INIT;
+                LedgerEntryDim_L := LedgerEntryDim_P;
+                LedgerEntryDim_L."Table ID" := DATABASE::"FA Ledger Entry";
+                LedgerEntryDim_L."Entry No." := FALedgerEntry_L."Entry No.";
+                LedgerEntryDim_L.INSERT;
+                IF LedgerEntryDim_L."Dimension Code" = GLSetupShortcutDimCode_L[1] THEN
+                  FALedgerEntry_L."Global Dimension 1 Code" := LedgerEntryDim_L."Dimension Value Code";
+                IF LedgerEntryDim_L."Dimension Code" = GLSetupShortcutDimCode_L[2] THEN
+                  FALedgerEntry_L."Global Dimension 2 Code" := LedgerEntryDim_L."Dimension Value Code";
+              UNTIL LedgerEntryDim_P.NEXT = 0;
+
+            FALedgerEntry_L.MODIFY;
+
+          END;
+
+        UNTIL GLEntry_P.NEXT = 0;
+    END;
+
+    PROCEDURE UpdateGLEntryCampain@1000000000(VAR GLEntry2_P@1000000014 : Record 17;NewCampain_P@1000000005 : Code[10]);
+    VAR
+      GLEntry_L@1000000000 : Record 17;
+      VendLedgerEntry_L@1000000003 : Record 25;
+      Text1000000000@1000000015 : TextConst 'FRA=Il n''est pas possible de changer le libell' d''une 'criture abonn'e.';
+    BEGIN
+      // --> 20180119-WI00-ADV01.01.00-3322-JCD01
+      IF GLEntry2_P.FINDFIRST THEN
+        REPEAT
+          GLEntry_L.GET(GLEntry2_P."Entry No.");
+          GLEntry_L."CMC Campaign No." := NewCampain_P;
+          GLEntry_L.MODIFY;
+          IF GLEntry_L."Source Type" = GLEntry_L."Source Type"::Vendor THEN
+            IF VendLedgerEntry_L.GET(GLEntry2_P."Entry No.") THEN BEGIN
+              VendLedgerEntry_L."Campain No." := NewCampain_P;
+              VendLedgerEntry_L.MODIFY;
+            END;
+        UNTIL GLEntry2_P.NEXT = 0;
+      // <-- 20180119-WI00-ADV01.01.00-3322-JCD01
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20101213-8060990/001-CMB6.00.01-FEC01 : ADDFUNCT (UpdateGLApplied).
+      20101213-8060990/066-CMB6.00.01-FEC02 : ADDFUNCT (UpdateGLEntryDesc).
+      20101213-8060990/041-CMB6.00.01-FEC03 : ADDFUNCT (ChangeGLEntryDim).
+      20141201-FINA13-CMC02.02.00-2623-DRN01 : MAJ du libell' dans les 'critures agriculteurs
+      20150720-FINA13-CMC02.02.00-1912-SDE01 : Maj libell' ecriture bank
+      20180119-WI00-ADV01.01.00-3322-JCD01 : ADDFUNC (UpdateGLEntryCampain Gestion modif campagne)
+      // <-- 3LI BEGIN
+    }
+    END.
+  }
+}
+

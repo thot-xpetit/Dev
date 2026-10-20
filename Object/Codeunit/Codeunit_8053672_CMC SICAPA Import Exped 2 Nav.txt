@@ -1,0 +1,407 @@
+OBJECT Codeunit 8053672 CMC SICAPA Import Exped 2 Nav
+{
+  OBJECT-PROPERTIES
+  {
+    Date=09/10/25;
+    Heure=12:06:15;
+    Modifi'=Oui;
+    Liste versions=;
+  }
+  PROPERTIES
+  {
+    TableNo=8087788;
+    OnRun=VAR
+            "<-- ADV LOCALS -->"@1000000000 : Integer;
+            TableSetup_L@1000000004 : Record 8053408;
+            TableSicapaExped_L@1000000003 : Record 8087788;
+            TablePurchHead_L@1000000001 : Record 38;
+            TablePurchLine_L@1000000002 : Record 39;
+            TableSaleHead_L@1000000011 : Record 36;
+            TableSaleHeadCmdLie_L@1000000024 : Record 36;
+            TableSaleLine_L@1000000008 : Record 37;
+            QteRest_L@1000000005 : Decimal;
+            w_NbLig@1000000009 : Integer;
+            RePurchDoc_L@1000000010 : Codeunit 415;
+            ApprovalMgt@1000000006 : Codeunit 439;
+            PurchSetup_L@1000000012 : Record 312;
+            PurchPost_L@1000000007 : Codeunit 90;
+            IntegNo_L@1000000013 : Text[20];
+            BSLMgt_L@1000000014 : Codeunit 8060982;
+            CreatedDoc_L@1000000015 : Text[250];
+            WhsePostReceiptcdu_L@1000000016 : Codeunit 5760;
+            cduWhsePostShipment_L@1000000017 : Codeunit 5763;
+            UnitPrice_L@1000000021 : Decimal;
+            LineDiscount_L@1000000020 : Decimal;
+            NewLineByAcompte_L@1000000019 : Boolean;
+            cduManageExtra_L@1000000018 : Codeunit 8053060;
+            CUPrepaymentMgt_L@1000000022 : Codeunit 8053068;
+            DirectUnitCost_L@1000000023 : Decimal;
+          BEGIN
+            IF TableSetup_L.FINDFIRST AND TableSetup_L."Import Exped" THEN BEGIN
+              MoteurInterface_G.GetParameter(TableSetup_L.CodeUnitIntegExpedConn, ConnectorName_G, ImpExpFolder_G,
+                LogFolder_G, ExtensionFile_G, PrefixFile_G);
+              MoteurInterface_G.GetTemplatesCode(ConnectorName_G, ItemTemplateCode_G, CustomerTemplateCode_G, VendorTemplateCode_G,
+                ContactTemplateCode_G, AccountTemplateCode_G, GlobalTemplateCode_G);
+
+              TableSicapaExped_L.SETCURRENTKEY("Document Name", "Document No.");
+
+              TableSicapaExped_L.SETRANGE("Document Name", "Document Name");
+              TableSicapaExped_L.SETRANGE(HoroIntegration, 0DT);
+              TableSicapaExped_L.SETRANGE("Document No.", "Document No.");
+              IF (HoroIntegration = 0DT) THEN BEGIN
+                // Toutes les articles ont un code NavAgri
+                TableSicapaExped_L.SETRANGE("Item No. NavAgri", '');
+                IF NOT TableSicapaExped_L.ISEMPTY THEN BEGIN
+                  ERROR(Text0020, TableSicapaExped_L."Document No.", TableSicapaExped_L.TABLECAPTION);
+                END;
+                TableSicapaExped_L.SETRANGE("Item No. NavAgri");
+                // Toutes les lignes ont un coefficient de conversion unit'
+                TableSicapaExped_L.SETRANGE("Coefficient Unit", 0);
+                IF NOT TableSicapaExped_L.ISEMPTY THEN BEGIN
+                  ERROR(Text0021, TableSicapaExped_L."Document No.", TableSicapaExped_L.TABLECAPTION);
+                END;
+                TableSicapaExped_L.SETRANGE("Coefficient Unit");
+
+                // Traiter la enreg
+                IF NOT TableSicapaExped_L.FINDSET THEN BEGIN
+                  ERROR(Text0001, TableSicapaExped_L."Document No.", TableSicapaExped_L.TABLECAPTION);
+                END ELSE BEGIN
+                  IF TableSicapaExped_L.HoroIntegration <> 0DT THEN BEGIN
+                    ERROR(Text0002, TableSicapaExped_L."Document No.", TableSicapaExped_L.TABLECAPTION);
+                  END ELSE BEGIN
+                    REPEAT //TableSicapaExped_L.NEXT = 0;
+                      QteRest_L := TableSicapaExped_L."Expedition quantity" * TableSicapaExped_L."Coefficient Unit";
+
+                      CASE TableSicapaExped_L."Document Name" OF
+                        // =*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*
+                        // 'TRANSFERT DE PROPRIETE'
+                        // =*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*
+                        'LIVRAISON DIRECTE AGRICULTEUR': BEGIN
+                          // V'rifier que la commande d'achat existe
+                          IF NOT TablePurchHead_L.GET(TablePurchHead_L."Document Type"::Order, TableSicapaExped_L.OrderNo) THEN BEGIN
+                            // Erreur commande achat non trouv'.
+                            ERROR(Text0001, TableSicapaExped_L.OrderNo, TablePurchHead_L.TABLECAPTION);
+                          END ELSE BEGIN
+                            // Ne traiter que les Franco "LIV"
+                            IF TablePurchHead_L."Shipment Method Code" <> 'LIV' THEN BEGIN
+                              CLEAR(QteRest_L);
+                              TableSicapaExped_L.NotIntegrated := TRUE;
+                            END ELSE BEGIN
+                              // Livraison directe une seule ligne : Pour plus de s'curit' filtrer avec le produit et la variante
+                              TablePurchLine_L.SETRANGE("Document Type", TablePurchHead_L."Document Type");
+                              TablePurchLine_L.SETRANGE("Document No.", TablePurchHead_L."No.");
+                              TablePurchLine_L.SETRANGE(Type, TablePurchLine_L.Type::Item);
+                              TablePurchLine_L.SETRANGE("No.", TableSicapaExped_L."Item No. NavAgri");
+                              TablePurchLine_L.SETRANGE("Variant Code", TableSicapaExped_L."Variant Code NavAgri");
+                              IF TablePurchLine_L.FINDSET THEN BEGIN
+                                CLEAR(w_NbLig);
+                                REPEAT
+                                  // Sur ligne article avec restant . livrer
+                                  // D'passement qt' ? : Limit' . un pourcentage
+                                  IF (TableSetup_L."Exped Liv Direct Max Depas Qte" = 0) THEN BEGIN
+                                    ERROR(TextParamNon001, TableSetup_L.FIELDCAPTION("Exped Liv Direct Max Depas Qte"));
+                                  END;
+                                  IF (ABS(QteRest_L) >
+                                    ABS(TablePurchLine_L."Outstanding Quantity" * TableSetup_L."Exped Liv Direct Max Depas Qte")) THEN BEGIN
+                                    ERROR(TextDepas0001, QteRest_L, ABS(TablePurchLine_L."Outstanding Quantity")
+                                      , TableSetup_L."Exped Liv Direct Max Depas Qte"
+                                      , (ABS(TablePurchLine_L."Outstanding Quantity") * TableSetup_L."Exped Liv Direct Max Depas Qte"));
+                                  END;
+                                  IF ((TablePurchLine_L.Type = TablePurchLine_L.Type::Item) AND
+                                    (TablePurchLine_L."Outstanding Quantity" > 0)) THEN BEGIN
+                                    IF ((TablePurchLine_L."No." = TableSicapaExped_L."Item No. NavAgri") AND
+                                      (TablePurchLine_L."Variant Code" = TableSicapaExped_L."Variant Code NavAgri")) THEN BEGIN
+
+                                      w_NbLig += 1;
+                                      // Contr"le commande de vente existe.
+                                      IF NOT TableSaleHead_L.GET(TableSaleLine_L."Document Type"::Order, TablePurchLine_L."Sales Order No."
+                                        ) THEN BEGIN
+                                        ERROR(Text0001_2, TablePurchLine_L."Sales Order No.", TablePurchLine_L."Sales Order Line No.",
+                                          TableSaleLine_L.TABLECAPTION);
+                                      END ELSE BEGIN
+                                        IF ((TableSicapaExped_L."UD Customer Ident" <> '') AND
+                                            (TableSaleHead_L."Sell-to Customer No." <> TableSicapaExped_L."UD Customer Ident")) THEN BEGIN
+                                          ERROR(Text0030, TablePurchLine_L."Sales Order No.", TableSicapaExped_L."UD Customer Ident");
+                                        END ELSE BEGIN
+                                          IF NOT TableSaleLine_L.GET(TableSaleLine_L."Document Type"::Order,
+                                            TablePurchLine_L."Sales Order No.", TablePurchLine_L."Sales Order Line No.") THEN BEGIN
+                                            ERROR(Text0001_2, TablePurchLine_L."Sales Order No.", TablePurchLine_L."Sales Order Line No.",
+                                              TableSaleLine_L.TABLECAPTION);
+                                          END ELSE BEGIN
+                                            IF TableSaleLine_L."Outstanding Quantity" > 0 THEN BEGIN
+                                              TableSaleLine_L.VALIDATE("Full Lorry", TRUE);
+                                              //-->20210817-CLA-ADV-CDL003
+                                              // Si commande li'e et une adresse livraison <> ==> D'cocher "Camion complet"
+                                              IF TableSaleHead_L."Linked Order No." <> '' THEN BEGIN
+                                                TableSaleHeadCmdLie_L.SETRANGE("Linked Order No.", TableSaleHead_L."Linked Order No.");
+                                                TableSaleHeadCmdLie_L.FINDFIRST();
+                                                REPEAT
+                                                  IF ((TableSaleHeadCmdLie_L."Ship-to Address" <> TableSaleHead_L."Ship-to Address") OR
+                                                     (TableSaleHeadCmdLie_L."Ship-to Address 2" <> TableSaleHeadCmdLie_L."Ship-to Address 2") OR
+                                                     (TableSaleHeadCmdLie_L."Ship-to City" <> TableSaleHeadCmdLie_L."Ship-to City")) THEN BEGIN
+
+                                                    TableSaleLine_L.VALIDATE("Full Lorry", FALSE);
+                                                  END;
+
+                                                UNTIL TableSaleHeadCmdLie_L.NEXT = 0;
+                                              END;
+                                              //<--20210817-CLA-ADV-CDL003
+                                              TableSaleLine_L.VALIDATE("Cancel Remaining Qty", TRUE);
+                                              TableSaleLine_L.MODIFY(TRUE);
+
+                                              IF TablePurchHead_L.Status = TablePurchHead_L.Status::Released THEN BEGIN
+                                                RePurchDoc_L.Reopen(TablePurchHead_L);
+                                              END;
+                                              TablePurchHead_L.VALIDATE("Posting Date", TableSicapaExped_L."Deliverie date");
+                                              TablePurchHead_L.VALIDATE("Vendor Shipment No.", TableSicapaExped_L."Document No.");
+                                              IF TablePurchLine_L.GET(TablePurchLine_L."Document Type", TablePurchLine_L."Document No.",
+                                                TablePurchLine_L."Line No.") THEN BEGIN
+                                                IF (QteRest_L * TablePurchLine_L.Quantity < 0) OR
+                                                  (ABS(QteRest_L) > ABS(TablePurchLine_L."Outstanding Quantity")) OR
+                                                  (TablePurchLine_L.Quantity * TablePurchLine_L."Outstanding Quantity" < 0) THEN BEGIN
+                                                  IF TablePurchLine_L."First Receipt Quantity" = 0 THEN
+                                                    TablePurchLine_L."First Receipt Quantity" := TablePurchLine_L.Quantity;
+                                                  IF TableSaleLine_L.GET(TableSaleLine_L."Document Type"::Order
+                                                    , TablePurchLine_L."Sales Order No."
+                                                    , TablePurchLine_L."Sales Order Line No.") THEN BEGIN
+                                                  END;
+
+                                                  //--------------------------------------------------------------------------------
+                                                  // Mise . jour commande achat entre autre Quantit' pour 'viter message confirm
+                                                  // w1 ==> WhsePostReceiptcdu_L.UpdateQtyOfPurchLine(QteRest_L, TablePurchLine_L);
+                                                  // w2 ==> cduWhsePostShipment_L.UpdateQtyOfSalesLine(QteRest_L, TableSaleLine_L);
+                                                  // ==> Ne peut-^tre appel' directement car confirmation Ventes (On boncle) :) :) :)
+                                                  //--------------------------------------------------------------------------------
+                                                  TablePurchLine_L.SuspendStatusCheck(TRUE); // w1
+                                                  TablePurchLine_L.UpdateQtyFromWhse(TRUE); // w1
+                                                  TablePurchLine_L.SetAllowChangeDeletion(TRUE); // w1
+                                                  DirectUnitCost_L := TablePurchLine_L."Direct Unit Cost"; // w1
+                                                  LineDiscount_L := TablePurchLine_L."Line Discount %"; // w1
+                                                  TablePurchLine_L.VALIDATE(Quantity, QteRest_L + TablePurchLine_L."Quantity Received"); // w1
+                                                  TablePurchLine_L.MODIFY(TRUE);
+
+            // Ici avant TablePurchLine_L.VALIDATE("Qty. to Receive", QteRest_L) : Faire Fichier Ventes (w2)
+                                                  IF (QteRest_L * TableSaleLine_L.Quantity < 0) OR
+                                                     (ABS(QteRest_L) > ABS(TableSaleLine_L."Outstanding Quantity")) OR
+                                                     (TableSaleLine_L.Quantity * TableSaleLine_L."Outstanding Quantity" < 0) THEN BEGIN
+                                                    IF (TableSaleLine_L."Drop Shipment") AND
+                                                       (TableSaleLine_L."Purch. Order Line No." <>0) THEN BEGIN
+                                                      IF TableSaleLine_L."Quantity before delivery" = 0 THEN
+                                                        TableSaleLine_L."Quantity before delivery" := TableSaleLine_L.Quantity;
+            //RecSalesLineBefore_L.GET(SalesLine_P."Document Type", SalesLine_P."Document No.", SalesLine_P."Line No."); // w2
+
+                                                        TableSaleLine_L.SuspendStatusCheck(TRUE); // w2
+                                                        TableSaleLine_L.UpdateQtyFromWhse(TRUE); // w2
+                                                        UnitPrice_L   := TableSaleLine_L."Unit Price"; // w2
+                                                        LineDiscount_L:= TableSaleLine_L."Line Discount %"; // w2
+                                                        TableSaleLine_L.MODIFY; // w2
+
+                                                        NewLineByAcompte_L := cduManageExtra_L.CheckShip(QteRest_L, TableSaleLine_L); // w2
+
+                                                        TableSaleLine_L.GET(TableSaleLine_L."Document Type", TableSaleLine_L."Document No."
+                                                          , TableSaleLine_L."Line No."); // w2
+
+                                                        TableSaleLine_L.SkipShowMix(TRUE); // w2
+                                                        TableSaleLine_L.VALIDATE(Quantity, QteRest_L + TableSaleLine_L."Quantity Shipped");
+                                                        TableSaleLine_L.MODIFY(TRUE);
+
+                                                        TableSaleLine_L.VALIDATE("Qty. to Ship", QteRest_L); // w2
+                                                        TableSaleLine_L.VALIDATE("Unit Price"     , UnitPrice_L); // w2
+                                                        IF NewLineByAcompte_L = TRUE THEN BEGIN // w2
+                                                          TableSaleLine_L."Prepmt Amt to Deduct" :=
+                                                            ROUND((TableSaleLine_L.Quantity - TableSaleLine_L."Quantity Shipped")
+                                                            *UnitPrice_L*(1-LineDiscount_L)*(TableSaleLine_L."Prepayment %"/100)); // w2
+                                                          TableSaleLine_L."Line Discount %" := LineDiscount_L; // w2
+                                                        END ELSE // w2
+                                                          TableSaleLine_L.VALIDATE("Line Discount %", LineDiscount_L); // w2
+                                                        TableSaleLine_L.MODIFY(TRUE); // w2
+
+                                                        CUPrepaymentMgt_L.FillInPrepCMtoIssue(TableSaleLine_L, QteRest_L, TRUE); // w2
+                                                    END;
+                                                  END;
+                                                  TablePurchLine_L.VALIDATE("Qty. to Receive", QteRest_L); // w1
+
+                                                  TablePurchLine_L.VALIDATE("Direct Unit Cost",DirectUnitCost_L); // w1
+                                                  TablePurchLine_L.VALIDATE("Line Discount %",LineDiscount_L); // w1
+                                                  TablePurchLine_L.MODIFY(TRUE); // w1
+
+                                                  TablePurchLine_L.SetAllowChangeDeletion(FALSE); // w1
+                                                  //--------------------------------------------------------------------------------
+                                                  // w1 ==> WhsePostReceiptcdu_L.UpdateQtyOfPurchLine(QteRest_L, TablePurchLine_L);
+                                                  // w2 ==> cduWhsePostShipment_L.UpdateQtyOfSalesLine(QteRest_L, TableSaleLine_L);
+                                                  // FIN
+                                                  //--------------------------------------------------------------------------------
+                                                //-->20210817-CLA-ADV-CDL002
+                                                END ELSE BEGIN
+                                                  TablePurchLine_L.VALIDATE("Qty. to Receive", QteRest_L);
+                                                  TablePurchLine_L.MODIFY(TRUE);
+                                                  TableSaleLine_L.VALIDATE("Qty. to Ship", QteRest_L);
+                                                  TableSaleLine_L.MODIFY(TRUE);
+                                                //<--20210817-CLA-ADV-CDL002
+                                                END;
+                                              END;
+                                              RePurchDoc_L.RUN(TablePurchHead_L);
+                                              //=======================================================
+                                              // Commande achat : Bouton Valider R'ception
+                                              //=======================================================
+                                              // Page 50 : Commande achat Valider
+                                              TablePurchLine_L.RESET;
+                                              TablePurchLine_L.SETRANGE("Document Type", TablePurchHead_L."Document Type");
+                                              TablePurchLine_L.SETRANGE("Document No.", TablePurchHead_L."No.");
+                                              TablePurchLine_L.SETFILTER("Sales Order No.",'<>%1','');
+                                              IF TablePurchLine_L.FINDSET THEN
+                                                REPEAT
+                                                  IF TableSaleHead_L.GET(TableSaleHead_L."Document Type"::Order,
+                                                    TablePurchLine_L."Sales Order No.") THEN
+                                                    TableSaleHead_L.TESTFIELD(Status, TableSaleHead_L.Status::Released);
+                                                UNTIL TablePurchLine_L.NEXT = 0;
+
+                                              IF ApprovalMgt.PrePostApprovalCheck(TableSaleHead_L, TablePurchHead_L) THEN BEGIN
+                                                IF ApprovalMgt.TestPurchasePrepayment(TablePurchHead_L) THEN
+                                                  ERROR(STRSUBSTNO(TextAcompte001, TablePurchHead_L."Document Type", TablePurchHead_L."No."))
+                                                ELSE BEGIN
+                                                  IF ApprovalMgt.TestPurchasePayment(TablePurchHead_L) THEN BEGIN
+                                                    ERROR(STRSUBSTNO(TextAcompte002, TablePurchHead_L."Document Type", TablePurchHead_L."No."));
+                                                  END ELSE
+                                                    // CodeUnit 91
+                                                    TablePurchHead_L.Receive := TRUE;
+                                                    CLEAR(PurchPost_L);
+                                                    //PurchPost_G.SetPostingDate(TRUE,TRUE,NewPostingDate_G);
+                                                    PurchPost_L.NeedToSetCurrFieldNo(TRUE);
+                                                    PurchPost_L.RUN(TablePurchHead_L);
+                                                    CreatedDoc_L := PurchPost_L.GetPostedDocNo;
+
+                                                    IntegNo_L := COPYSTR(CreatedDoc_L, 25, 20);
+
+                                                    BSLMgt_L.ShowPurchDocOnPosting(CreatedDoc_L);
+
+                                                    QteRest_L := 0;
+                                                  END;
+                                              END;
+                                            END;
+                                          END;
+                                        END;
+                                      END;
+                                    END;
+                                  END;
+                                UNTIL TablePurchLine_L.NEXT = 0;
+                                IF w_NbLig <> 1 THEN BEGIN
+                                  // Erreur plusieurs lignes
+                                END;
+                              END;
+                            END;
+                          END;
+                        END;
+                        // =*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*
+                        // 'TRANSFERT DE PROPRIETE'
+                        // =*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*
+                        'LIVRAISON DIRECTE DEPOT': BEGIN
+                          CLEAR(QteRest_L);
+                          TableSicapaExped_L.NotIntegrated := TRUE;
+                        END;
+                      END;//CASE TableSicapaExped_L."Document Name" OF
+                      // Si reste . r'partir ==> Erreur tout n'est pas int'gr' ?
+                      IF QteRest_L <> 0 THEN BEGIN
+                        ERROR(Text0003, QteRest_L, TableSicapaExped_L."Item No. NavAgri", TableSicapaExped_L."Document No.",
+                          TableSicapaExped_L."Document Name");
+                      END ELSE BEGIN
+                        TableSicapaExped_L.HoroIntegration := CURRENTDATETIME;
+                        //-->20251007-CLA-ADV-CDL004
+                        TableSicapaExped_L.HoroIntegrationValidation := CURRENTDATETIME;
+                        //<--20251007-CLA-ADV-CDL004
+                        TableSicapaExped_L."Integ No. Nav" := IntegNo_L;
+                        IF NOT TableSicapaExped_L.MODIFY(TRUE) THEN BEGIN
+                          ERROR(Text0013, TableSicapaExped_L.TABLECAPTION, TableSicapaExped_L."Document No.");
+                        END;
+                      END;
+                    UNTIL TableSicapaExped_L.NEXT = 0;
+                    TableSicapaExped_L."Integ No. Nav" := IntegNo_L;
+                  END;
+                END;
+              END;//IF (HoroIntegration = 0DT) THEN BEGIN
+            END;//IF TableSetup_L.FINDFIRST AND TableSetup_L."Import Exped" THEN BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      "<-- ADV GLOBALS -->"@1000000013 : Integer;
+      MoteurInterface_G@1000000012 : Codeunit 8061230;
+      ToolsFile_G@1000000011 : Codeunit 8053405;
+      ConnectorName_G@1000000010 : Code[20];
+      ImpExpFolder_G@1000000009 : Text[256];
+      LogFolder_G@1000000008 : Text[256];
+      ExtensionFile_G@1000000007 : Text[10];
+      PrefixFile_G@1000000006 : Text[30];
+      ItemTemplateCode_G@1000000005 : Code[20];
+      CustomerTemplateCode_G@1000000004 : Code[20];
+      VendorTemplateCode_G@1000000003 : Code[20];
+      ContactTemplateCode_G@1000000002 : Code[20];
+      AccountTemplateCode_G@1000000001 : Code[20];
+      GlobalTemplateCode_G@1000000000 : Code[20];
+      "<-- ADV TEXT GLOBALS -->"@1000000014 : TextConst;
+      Text0001@1000000017 : TextConst 'FRA="""%1"" non trouv'e dans ""%2""."';
+      Text0001_2@1000000019 : TextConst 'FRA="""%1-%2"" non trouv'e dans ""%3""."';
+      Text0002@1000000018 : TextConst 'FRA="""%1"" d'j. int'gr'e dans ""%2""."';
+      Text0003@1000000020 : TextConst 'FRA=Reste . r'partir "%1" produit "%2" : Pour "%3-%4"';
+      Text0013@1000000021 : TextConst 'FRA=Erreur INSERT table "%1" : "%2-%3"';
+      Text0020@1000000015 : TextConst 'FRA=Reste des produits sans correspondance : Enr. : "%1-%2"';
+      Text0021@1000000016 : TextConst 'FRA=Reste des produits sans coefficient conversion : Enr. : "%1-%2"';
+      Text0030@1000000022 : TextConst 'FRA=Commande vente "%1" non affect' au tiers "%2"';
+      MessageDebugNb_G@1000000023 : Integer;
+      TextAcompte001@1000000025 : TextConst 'ENU=There are non posted Prepayment Amounts on %1 %2.;FRA=%1 %2 contient des acomptes non enregistr's.';
+      TextAcompte002@1000000024 : TextConst 'ENU=There are unpaid Prepayment Invoices related to %1 %2. Do you wish to continue?;FRA=Il existe des factures acompte impay'es li'es . %1 %2. Souhaitez-vous continuer ?';
+      TextDepas0001@1000000026 : TextConst 'FRA="Quantit' livr'e %1 > quantit' restante autoris'e (%2 * %3 = %4)."';
+      TextParamNon001@1000000027 : TextConst 'FRA="""%1"" non param'tr'."';
+
+    PROCEDURE "<<ADV>>"@1000000007();
+    BEGIN
+    END;
+
+    PROCEDURE MessageDebug@1000000012(Message_P@1000000000 : Text[250]);
+    BEGIN
+      //MessageDebug (COPYSTR(STRSUBSTNO('DocumentNo_L %1 - %2', TablePurchaseHeader_G."No."), 1, 250));
+      IF ((USERID = 'ERIC SAINT-LEGER') OR (USERID = 'CHRISTOPHE DAL')) THEN BEGIN
+        IF MessageDebugNb_G < 20 THEN BEGIN
+          MessageDebugNb_G += 1;
+          MESSAGE(Message_P);
+        END;
+      END;
+    END;
+
+    BEGIN
+    {
+      //--> ADVITAM BEGIN
+      Traitement DesAdv Inoxa vers Un'al en Livraison directe.
+      - R'union avec Philippe : 08/06/2021
+        + Il est possible de traiter en automatique uniquement les Franco (Sur commande achat mode livraison LIV).
+          ==> Effectivement pour les d'parts "ENL" il faut connaitre en plus le transporteur, de plus problSme de chargement.
+          ==> Proc'dure manuelle :
+            - Ne traiter que si sur commande d'achat : Tiers de livraison directe & mode livraison Franco (LIV)
+              * Commande de ventes :
+                + Sur ligne : Cocher "Camion complet" & "Solder reliquats"
+                  ==> Si  commandes li's et une des commandes avec adresse livraison <> ==> D'cocher "Camion complet"
+                + Bouton "Commande achat".
+              * Commande d'achat
+                + Rouvrir
+                + Saisie Date comptabilisation = Date exp'dition.
+                + Saisie N› BL fournisseur saisie d'u N›
+                + Saisie Quantit' . recevoir
+                + Saisie N› transporteur r'el : Mais uniquement si d'part (NON concern').
+                + Lancer
+                + Bouton valider, Cocher r'ceptionner.
+                  - Message d'information quotas.
+                  - La r'ception fournisseur est g'n'r'e ainsi que l'exp'dition adh'rent.
+            - Sinon : Mettre date d'int'gration sans rien g'n'rer
+      - Livraison directe d'passement de quantit' param'tr' dans fichier de param'trage interface sicapa.
+      20210608-CLA-ADV-CDL001 : - Traitement DesAdv Livraison directe
+      20210817-CLA-ADV-CDL002 : - Si livraison = ou inf'rieur plus trait' depuis changement d'passement quantit'
+      20210817-CLA-ADV-CDL003 : -  Si  commandes li's et une des commandes avec adresse livraison <> ==> D'cocher "Camion complet"
+      20251007-CLA-ADV-CDL004 : -  Livraison directe : Pas de validation donc mettre .n jour en m^me temps l'horoValid que l'int'g
+      //<-- ADVITAM END
+    }
+    END.
+  }
+}
+

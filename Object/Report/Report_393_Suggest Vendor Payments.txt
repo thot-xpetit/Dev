@@ -1,0 +1,1252 @@
+OBJECT Report 393 Suggest Vendor Payments
+{
+  OBJECT-PROPERTIES
+  {
+    Date=26/02/15;
+    Heure=00:00:00;
+    Liste versions=NAVW16.00.01,CMC02.02.00,CMB6.00.10.09;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Suggest Vendor Payments;
+               FRA=Proposer paiements fournisseur];
+    ProcessingOnly=Oui;
+    OnPreReport=BEGIN
+                  VendorLedgEntryTemp.DELETEALL;
+                END;
+
+    OnPostReport=BEGIN
+                   COMMIT;
+                   IF NOT VendorLedgEntryTemp.ISEMPTY THEN
+                     IF CONFIRM(Text024) THEN
+                       FORM.RUNMODAL(0,VendorLedgEntryTemp);
+                 END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table23;
+        DataItemTableView=SORTING(No.);
+        OnPreDataItem=VAR
+                        "<-- 3LI Text Constants-->"@1000000002 : TextConst;
+                        Text8053000_L@1000000001 : TextConst 'ENU=You must put a vendor posting group filter.;FRA=Vous devez renseigner un filtre groupe compta. fournisseur.';
+                        Text8053001_L@1000000000 : TextConst 'ENU=You must put a payment method filter.;FRA=Vous devez renseigner un filtre mode de rSglement.';
+                      BEGIN
+
+                        // <-- 20110601-Wi00-CMC01.04
+                        // --> 20150107-Wi00-CMC02.02.00-2578-KEM01
+                        //BEFORE
+                        //PaymMentFilter_G := Vendor.GETFILTER(Vendor."Payment Method Code");
+                        // <-- 20150107-Wi00-CMC02.02.00-2578-KEM01
+                        Vendor.SETRANGE("Payment Method Code");
+                        // --> 20110601-Wi00-CMC01.04
+
+                        // --> 20120705-FINA03-CMC02.01.00-BRA01
+                        IF PaymMentFilter_G = '' THEN
+                         ERROR(Text8053001_L);
+                        // --> 20150107-Wi00-CMC02.02.00-2578-KEM01
+                        ///BEFORE
+                        //VendorPostigGpeFilter_G := Vendor.GETFILTER(Vendor."Vendor Posting Group");
+                        // <-- 20150107-Wi00-CMC02.02.00-2578-KEM01
+                        IF VendorPostigGpeFilter_G='' THEN
+                         ERROR(Text8053000_L);
+                        Vendor.SETRANGE(Vendor."Vendor Posting Group");
+                        // <-- 20120705-FINA03-CMC02.01.00-BRA01
+
+                        IF LastDueDateToPayReq = 0D THEN
+                          ERROR(Text000);
+                        IF PostingDate = 0D THEN
+                          ERROR(Text001);
+
+                        BankPmtType := GenJnlLine2."Bank Payment Type";
+                        BalAccType := GenJnlLine2."Bal. Account Type";
+                        BalAccNo := GenJnlLine2."Bal. Account No.";
+                        GenJnlLineInserted := FALSE;
+                        SeveralCurrencies := FALSE;
+                        MessageText := '';
+
+                        // <-- 20110601-Wi00-CMC01.04
+                         PaymentMethCode:=GenJnlLine2."Payment Method Code";
+                        // --> 20110601-Wi00-CMC01.04
+
+                        IF ((BankPmtType = BankPmtType::" ") OR
+                            SummarizePerVend) AND
+                            (NextDocNo = '')
+                        THEN
+                          ERROR(Text002);
+
+                        IF ((BankPmtType = BankPmtType::"Manual Check") AND
+                            NOT SummarizePerVend AND
+                            NOT DocNoPerLine)
+                        THEN
+                          ERROR(
+                            Text017+
+                            Text018,
+                            GenJnlLine2.FIELDCAPTION("Bank Payment Type"),SELECTSTR(BankPmtType + 1,Text023));
+
+                        IF UsePaymentDisc AND (LastDueDateToPayReq < WORKDATE) THEN
+                          IF NOT
+                             CONFIRM(
+                               Text003+
+                               Text004,FALSE,
+                               WORKDATE)
+                          THEN
+                            ERROR(Text005);
+
+                        Vend2.COPYFILTERS(Vendor);
+
+                        OriginalAmtAvailable := AmountAvailable;
+                        IF UsePriority THEN BEGIN
+                          SETCURRENTKEY(Priority);
+                          SETRANGE(Priority,1,2147483647);
+                          UsePriority := TRUE;
+                        END;
+                        Window.OPEN(Text006);
+
+                        SelectedDim.SETRANGE("User ID",USERID);
+                        SelectedDim.SETRANGE("Object Type",3);
+                        SelectedDim.SETRANGE("Object ID",REPORT::"Suggest Vendor Payments");
+                        SummarizePerDim := SelectedDim.FIND('-') AND SummarizePerVend;
+
+                        NextEntryNo := 1;
+                      END;
+
+        OnAfterGetRecord=BEGIN
+                           IF StopPayments THEN
+                             CurrReport.BREAK;
+                           Window.UPDATE(1,"No.");
+                           GetVendLedgEntries(TRUE,FALSE);
+                           GetVendLedgEntries(FALSE,FALSE);
+                           CheckAmounts(FALSE);
+                         END;
+
+        OnPostDataItem=BEGIN
+                         IF UsePriority AND NOT StopPayments THEN BEGIN
+                           RESET;
+                           COPYFILTERS(Vend2);
+                           SETCURRENTKEY(Priority);
+                           SETRANGE(Priority,0);
+                           IF FIND('-') THEN
+                             REPEAT
+                               Window.UPDATE(1,"No.");
+                               GetVendLedgEntries(TRUE,FALSE);
+                               GetVendLedgEntries(FALSE,FALSE);
+                               CheckAmounts(FALSE);
+                             UNTIL (NEXT = 0) OR StopPayments;
+                         END;
+
+                         IF UsePaymentDisc AND NOT StopPayments THEN BEGIN
+                           RESET;
+                           COPYFILTERS(Vend2);
+                           Window.OPEN(Text007);
+                           IF FIND('-') THEN
+                             REPEAT
+                               Window.UPDATE(1,"No.");
+                               PayableVendLedgEntry.SETRANGE("Vendor No.","No.");
+                               GetVendLedgEntries(TRUE,TRUE);
+                               GetVendLedgEntries(FALSE,TRUE);
+                               CheckAmounts(TRUE);
+                             UNTIL (NEXT = 0) OR StopPayments;
+                         END;
+
+                         ClearNegative;
+
+                         JnlLineDim.LOCKTABLE;
+                         GenJnlLine.LOCKTABLE;
+                         GenJnlTemplate.GET(GenJnlLine."Journal Template Name");
+                         GenJnlBatch.GET(GenJnlLine."Journal Template Name",GenJnlLine."Journal Batch Name");
+                         GenJnlLine.SETRANGE("Journal Template Name",GenJnlLine."Journal Template Name");
+                         GenJnlLine.SETRANGE("Journal Batch Name",GenJnlLine."Journal Batch Name");
+                         IF GenJnlLine.FIND('+') THEN BEGIN
+                           FirstLineNo := GenJnlLine."Line No.";
+                           LastLineNo := GenJnlLine."Line No.";
+                           GenJnlLine.INIT;
+                         END;
+
+                         Window.OPEN(Text008);
+
+                         PayableVendLedgEntry.RESET;
+                         PayableVendLedgEntry.SETRANGE(Priority,1,2147483647);
+                         MakeGenJnlLines;
+                         PayableVendLedgEntry.RESET;
+                         PayableVendLedgEntry.SETRANGE(Priority,0);
+                         MakeGenJnlLines;
+                         PayableVendLedgEntry.RESET;
+                         PayableVendLedgEntry.DELETEALL;
+
+                         Window.CLOSE;
+                         ShowMessage(MessageText);
+                       END;
+
+        ReqFilterFields=No.,Payment Method Code;
+      }
+      SECTIONS
+      {
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=9240;
+      Height=8250;
+      SaveValues=Oui;
+      LookupMode=Oui;
+      OnOpenForm=BEGIN
+                   IF PostingDate = 0D THEN
+                     PostingDate := WORKDATE;
+                   UpdateEnabled;
+                   ValidatePostingDate;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1   ;TextBox      ;3410 ;0    ;1650 ;440  ;CaptionML=[ENU=Last Payment Date;
+                                                              FRA=DerniSre date 'ch'ance];
+                                                   SourceExpr=LastDueDateToPayReq }
+      { 21  ;Label        ;0    ;0    ;3300 ;440  ;ParentControl=1 }
+      { 2   ;CheckBox     ;3410 ;550  ;440  ;440  ;ShowCaption=Non;
+                                                   CaptionML=[ENU=Find Payment Discounts;
+                                                              FRA=Rechercher les escomptes];
+                                                   SourceExpr=UsePaymentDisc }
+      { 22  ;Label        ;0    ;550  ;3300 ;440  ;ParentControl=2;
+                                                   VertAlign=Bottom;
+                                                   MultiLine=Oui }
+      { 4   ;TextBox      ;3410 ;2860 ;2750 ;440  ;CaptionML=[ENU=Available Amount (LCY);
+                                                              FRA=Montant disponible DS];
+                                                   SourceExpr=AmountAvailable;
+                                                   OnAfterValidate=BEGIN
+                                                                     IF AmountAvailable <> 0 THEN
+                                                                       UsePriority := TRUE;
+                                                                   END;
+                                                                    }
+      { 24  ;Label        ;0    ;2860 ;3300 ;440  ;ParentControl=4 }
+      { 5   ;TextBox      ;3410 ;3520 ;1650 ;440  ;CaptionML=[ENU=Posting Date;
+                                                              FRA=Date comptabilisation];
+                                                   SourceExpr=PostingDate;
+                                                   OnValidate=BEGIN
+                                                                ValidatePostingDate;
+                                                              END;
+                                                               }
+      { 25  ;Label        ;0    ;3520 ;3300 ;440  ;ParentControl=5 }
+      { 6   ;CheckBox     ;3410 ;1210 ;440  ;440  ;ShowCaption=Non;
+                                                   CaptionML=[ENU=Summarize per Vendor;
+                                                              FRA=Totaliser par fournisseur];
+                                                   SourceExpr=SummarizePerVend;
+                                                   OnAfterValidate=BEGIN
+                                                                     UpdateEnabled;
+                                                                   END;
+                                                                    }
+      { 7   ;Label        ;0    ;1210 ;3300 ;440  ;ParentControl=6 }
+      { 10  ;TextBox      ;3410 ;5280 ;2750 ;440  ;CaptionML=[ENU=Bal. Account Type;
+                                                              FRA=Type compte contrepartie];
+                                                   OptionCaptionML=[ENU=G/L Account,,,Bank Account;
+                                                                    FRA=Compte g'n'ral,,,Compte bancaire];
+                                                   OptionString=G/L Account,,,Bank Account;
+                                                   SourceExpr=GenJnlLine2."Bal. Account Type";
+                                                   OnValidate=BEGIN
+                                                                CASE GenJnlLine2."Bal. Account Type" OF
+                                                                  GenJnlLine2."Bal. Account Type"::"G/L Account":
+                                                                    BEGIN
+                                                                      IF GenJnlLine2."Bal. Account No." <> '' THEN
+                                                                        GLAcc.GET(GenJnlLine2."Bal. Account No.");
+                                                                      GenJnlLine2."Bank Payment Type" := GenJnlLine2."Bank Payment Type"::" ";
+                                                                    END;
+                                                                  GenJnlLine2."Bal. Account Type"::"Bank Account":
+                                                                    IF GenJnlLine2."Bal. Account No." <> '' THEN
+                                                                      BankAcc.GET(GenJnlLine2."Bal. Account No.");
+                                                                END;
+                                                              END;
+                                                               }
+      { 11  ;Label        ;0    ;5280 ;3300 ;440  ;ParentControl=10 }
+      { 12  ;TextBox      ;3410 ;5830 ;2750 ;440  ;CaptionML=[ENU=Bal. Account No.;
+                                                              FRA=N› compte contrepartie];
+                                                   SourceExpr=GenJnlLine2."Bal. Account No.";
+                                                   OnValidate=BEGIN
+                                                                IF GenJnlLine2."Bal. Account No." <> '' THEN
+                                                                  CASE GenJnlLine2."Bal. Account Type" OF
+                                                                    GenJnlLine2."Bal. Account Type"::"G/L Account":
+                                                                      GLAcc.GET(GenJnlLine2."Bal. Account No.");
+                                                                    GenJnlLine2."Bal. Account Type"::Customer,GenJnlLine2."Bal. Account Type"::Vendor:
+                                                                      ERROR(Text009,GenJnlLine2.FIELDCAPTION("Bal. Account Type"));
+                                                                    GenJnlLine2."Bal. Account Type"::"Bank Account":
+                                                                      BankAcc.GET(GenJnlLine2."Bal. Account No.");
+                                                                  END;
+                                                              END;
+
+                                                   OnLookup=BEGIN
+                                                              CASE GenJnlLine2."Bal. Account Type" OF
+                                                                GenJnlLine2."Bal. Account Type"::"G/L Account":
+                                                                  IF FORM.RUNMODAL(0,GLAcc) = ACTION::LookupOK THEN
+                                                                    GenJnlLine2."Bal. Account No." := GLAcc."No.";
+                                                                GenJnlLine2."Bal. Account Type"::Customer,GenJnlLine2."Bal. Account Type"::Vendor:
+                                                                  ERROR(Text009,GenJnlLine2.FIELDCAPTION("Bal. Account Type"));
+                                                                GenJnlLine2."Bal. Account Type"::"Bank Account":
+                                                                  IF FORM.RUNMODAL(0,BankAcc) = ACTION::LookupOK THEN
+                                                                    GenJnlLine2."Bal. Account No." := BankAcc."No.";
+                                                              END;
+                                                            END;
+                                                             }
+      { 13  ;Label        ;0    ;5830 ;3300 ;440  ;ParentControl=12 }
+      { 14  ;TextBox      ;3410 ;6380 ;2750 ;440  ;CaptionML=[ENU=Bank Payment Type;
+                                                              FRA=Mode 'mission paiement];
+                                                   OptionCaptionML=[ENU=" ,Computer Check,Manual Check";
+                                                                    FRA=" ,Informatique,Manuel"];
+                                                   OptionString=[ ,Computer Check,Manual Check];
+                                                   SourceExpr=GenJnlLine2."Bank Payment Type";
+                                                   OnValidate=BEGIN
+                                                                IF (GenJnlLine2."Bal. Account Type" <> GenJnlLine2."Bal. Account Type"::"Bank Account") AND
+                                                                   (GenJnlLine2."Bank Payment Type" > 0)
+                                                                THEN
+                                                                  ERROR(
+                                                                    Text010,
+                                                                    GenJnlLine2.FIELDCAPTION("Bank Payment Type"),
+                                                                    GenJnlLine2.FIELDCAPTION("Bal. Account Type"));
+                                                              END;
+                                                               }
+      { 15  ;Label        ;0    ;6380 ;3300 ;440  ;ParentControl=14 }
+      { 3   ;CheckBox     ;3410 ;2310 ;440  ;440  ;ShowCaption=Non;
+                                                   CaptionML=[ENU=Use Vendor Priority;
+                                                              FRA=Utiliser priorit' fournisseur];
+                                                   SourceExpr=UsePriority;
+                                                   OnValidate=BEGIN
+                                                                IF NOT UsePriority AND (AmountAvailable <> 0) THEN
+                                                                  ERROR(Text011);
+                                                              END;
+                                                               }
+      { 8   ;Label        ;0    ;2310 ;3300 ;440  ;ParentControl=3 }
+      { 9   ;TextBox      ;3410 ;4070 ;2750 ;440  ;CaptionML=[ENU=Starting Document No.;
+                                                              FRA=N› document d'but];
+                                                   SourceExpr=NextDocNo;
+                                                   OnValidate=BEGIN
+                                                                IF NextDocNo <> '' THEN
+                                                                  IF INCSTR(NextDocNo) = '' THEN
+                                                                    ERROR(Text012);
+                                                              END;
+                                                               }
+      { 16  ;Label        ;0    ;4070 ;3300 ;440  ;ParentControl=9 }
+      { 18  ;CheckBox     ;3410 ;4620 ;440  ;440  ;ShowCaption=Non;
+                                                   CaptionML=[ENU=New Doc. No. per Line;
+                                                              FRA=Nouveau n› document par ligne];
+                                                   SourceExpr=DocNoPerLine;
+                                                   OnValidate=BEGIN
+                                                                IF NOT UsePriority AND (AmountAvailable <> 0) THEN
+                                                                  ERROR(Text013);
+                                                              END;
+                                                               }
+      { 19  ;Label        ;0    ;4620 ;3300 ;440  ;ParentControl=18 }
+      { 17  ;TextBox      ;3410 ;1760 ;5500 ;440  ;Name=SummarizePerDimText;
+                                                   Editable=Non;
+                                                   PermanentAssist=Oui;
+                                                   CaptionML=[ENU=By Dimension;
+                                                              FRA=Par axe];
+                                                   SourceExpr=SummarizePerDimText;
+                                                   OnAssistEdit=VAR
+                                                                  DimSelectionBuf@1001 : Record 368;
+                                                                BEGIN
+                                                                  DimSelectionBuf.SetDimSelectionMultiple(3,REPORT::"Suggest Vendor Payments",SummarizePerDimText);
+                                                                END;
+                                                                 }
+      { 20  ;Label        ;110  ;1760 ;3190 ;440  ;ParentControl=17 }
+      { 1000000000;TextBox;3410 ;6930 ;2750 ;440  ;CaptionML=[ENU=Bal. Account No.;
+                                                              FRA=Code mode de rSglement];
+                                                   SourceExpr=GenJnlLine2."Payment Method Code";
+                                                   OnLookup=VAR
+                                                              PaymentMeth_L@1000000002 : Record 289;
+                                                            BEGIN
+                                                                  IF FORM.RUNMODAL(0,PaymentMeth_L) = ACTION::LookupOK THEN
+                                                                    GenJnlLine2."Payment Method Code" := PaymentMeth_L.Code;
+                                                            END;
+                                                             }
+      { 1000000001;Label  ;0    ;6930 ;3300 ;440  ;ParentControl=1000000000 }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Oui;
+      OnInit=BEGIN
+               SummarizePerDimTextEnable := TRUE;
+             END;
+
+      OnOpenPage=BEGIN
+                   IF PostingDate = 0D THEN
+                     PostingDate := WORKDATE;
+                   UpdateEnabled;
+                   ValidatePostingDate;
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 1900000001;0;Container;
+                  ContainerType=ContentArea }
+
+      { 1900000002;1;Group  ;
+                  CaptionML=[ENU=Options;
+                             FRA=Options] }
+
+      { 1   ;2   ;Field     ;
+                  CaptionML=[ENU=Last Payment Date;
+                             FRA=DerniSre date 'ch'ance];
+                  SourceExpr=LastDueDateToPayReq }
+
+      { 2   ;2   ;Field     ;
+                  CaptionML=[ENU=Find Payment Discounts;
+                             FRA=Rechercher les escomptes];
+                  SourceExpr=UsePaymentDisc;
+                  MultiLine=Oui }
+
+      { 6   ;2   ;Field     ;
+                  CaptionML=[ENU=Summarize per Vendor;
+                             FRA=Totaliser par fournisseur];
+                  SourceExpr=SummarizePerVend;
+                  OnValidate=BEGIN
+                               SummarizePerVendOnAfterValidat;
+                             END;
+                              }
+
+      { 17  ;2   ;Field     ;
+                  Name=SummarizePerDimText;
+                  CaptionML=[ENU=By Dimension;
+                             FRA=Par axe];
+                  SourceExpr=SummarizePerDimText;
+                  Enabled=SummarizePerDimTextEnable;
+                  Editable=FALSE;
+                  OnAssistEdit=VAR
+                                 DimSelectionBuf@1001 : Record 368;
+                               BEGIN
+                                 DimSelectionBuf.SetDimSelectionMultiple(3,REPORT::"Suggest Vendor Payments",SummarizePerDimText);
+                               END;
+                                }
+
+      { 3   ;2   ;Field     ;
+                  CaptionML=[ENU=Use Vendor Priority;
+                             FRA=Utiliser priorit' fournisseur];
+                  SourceExpr=UsePriority;
+                  OnValidate=BEGIN
+                               IF NOT UsePriority AND (AmountAvailable <> 0) THEN
+                                 ERROR(Text011);
+                             END;
+                              }
+
+      { 4   ;2   ;Field     ;
+                  CaptionML=[ENU=Available Amount (LCY);
+                             FRA=Montant disponible DS];
+                  SourceExpr=AmountAvailable;
+                  OnValidate=BEGIN
+                               AmountAvailableOnAfterValidate;
+                             END;
+                              }
+
+      { 5   ;2   ;Field     ;
+                  CaptionML=[ENU=Posting Date;
+                             FRA=Date comptabilisation];
+                  SourceExpr=PostingDate;
+                  OnValidate=BEGIN
+                               ValidatePostingDate;
+                             END;
+                              }
+
+      { 9   ;2   ;Field     ;
+                  CaptionML=[ENU=Starting Document No.;
+                             FRA=N› document d'but];
+                  SourceExpr=NextDocNo;
+                  OnValidate=BEGIN
+                               IF NextDocNo <> '' THEN
+                                 IF INCSTR(NextDocNo) = '' THEN
+                                   ERROR(Text012);
+                             END;
+                              }
+
+      { 18  ;2   ;Field     ;
+                  CaptionML=[ENU=New Doc. No. per Line;
+                             FRA=Nouveau n› document par ligne];
+                  SourceExpr=DocNoPerLine;
+                  OnValidate=BEGIN
+                               IF NOT UsePriority AND (AmountAvailable <> 0) THEN
+                                 ERROR(Text013);
+                             END;
+                              }
+
+      { 10  ;2   ;Field     ;
+                  CaptionML=[ENU=Bal. Account Type;
+                             FRA=Type compte contrepartie];
+                  OptionCaptionML=[ENU=G/L Account,,,Bank Account;
+                                   FRA=Compte g'n'ral,,,Compte bancaire];
+                  SourceExpr=GenJnlLine2."Bal. Account Type";
+                  OnValidate=BEGIN
+                               CASE GenJnlLine2."Bal. Account Type" OF
+                                 GenJnlLine2."Bal. Account Type"::"G/L Account":
+                                   BEGIN
+                                     IF GenJnlLine2."Bal. Account No." <> '' THEN
+                                       GLAcc.GET(GenJnlLine2."Bal. Account No.");
+                                     GenJnlLine2."Bank Payment Type" := GenJnlLine2."Bank Payment Type"::" ";
+                                   END;
+                                 GenJnlLine2."Bal. Account Type"::"Bank Account":
+                                   IF GenJnlLine2."Bal. Account No." <> '' THEN
+                                     BankAcc.GET(GenJnlLine2."Bal. Account No.");
+                               END;
+                             END;
+                              }
+
+      { 12  ;2   ;Field     ;
+                  CaptionML=[ENU=Bal. Account No.;
+                             FRA=N› compte contrepartie];
+                  SourceExpr=GenJnlLine2."Bal. Account No.";
+                  OnValidate=BEGIN
+                               IF GenJnlLine2."Bal. Account No." <> '' THEN
+                                 CASE GenJnlLine2."Bal. Account Type" OF
+                                   GenJnlLine2."Bal. Account Type"::"G/L Account":
+                                     GLAcc.GET(GenJnlLine2."Bal. Account No.");
+                                   GenJnlLine2."Bal. Account Type"::Customer,GenJnlLine2."Bal. Account Type"::Vendor:
+                                     ERROR(Text009,GenJnlLine2.FIELDCAPTION("Bal. Account Type"));
+                                   GenJnlLine2."Bal. Account Type"::"Bank Account":
+                                     BankAcc.GET(GenJnlLine2."Bal. Account No.");
+                                 END;
+                             END;
+
+                  OnLookup=BEGIN
+                             CASE GenJnlLine2."Bal. Account Type" OF
+                               GenJnlLine2."Bal. Account Type"::"G/L Account":
+                                 IF FORM.RUNMODAL(0,GLAcc) = ACTION::LookupOK THEN
+                                   GenJnlLine2."Bal. Account No." := GLAcc."No.";
+                               GenJnlLine2."Bal. Account Type"::Customer,GenJnlLine2."Bal. Account Type"::Vendor:
+                                 ERROR(Text009,GenJnlLine2.FIELDCAPTION("Bal. Account Type"));
+                               GenJnlLine2."Bal. Account Type"::"Bank Account":
+                                 IF FORM.RUNMODAL(0,BankAcc) = ACTION::LookupOK THEN
+                                   GenJnlLine2."Bal. Account No." := BankAcc."No.";
+                             END;
+                           END;
+                            }
+
+      { 14  ;2   ;Field     ;
+                  CaptionML=[ENU=Bank Payment Type;
+                             FRA=Mode 'mission paiement];
+                  OptionCaptionML=[ENU=" ,Computer Check,Manual Check";
+                                   FRA=" ,Informatique,Manuel"];
+                  SourceExpr=GenJnlLine2."Bank Payment Type";
+                  OnValidate=BEGIN
+                               IF (GenJnlLine2."Bal. Account Type" <> GenJnlLine2."Bal. Account Type"::"Bank Account") AND
+                                  (GenJnlLine2."Bank Payment Type" > 0)
+                               THEN
+                                 ERROR(
+                                   Text010,
+                                   GenJnlLine2.FIELDCAPTION("Bank Payment Type"),
+                                   GenJnlLine2.FIELDCAPTION("Bal. Account Type"));
+                             END;
+                              }
+
+      { 8053000;2;Field     ;
+                  CaptionML=[ENU=Include Ledger Entries Without Payment Method;
+                             FRA=Inclure 'critures sans mode de rSglement];
+                  SourceExpr=InclLdgEntriesWithoutPayMethod }
+
+      { 1000000001;2;Field  ;
+                  CaptionML=[ENU=Payment Method Code;
+                             FRA=Code mode de rSglement];
+                  SourceExpr=PaymMentFilter_G;
+                  OnLookup=VAR
+                             RecPaymentMethod_L@8053000 : Record 289;
+                             PaymentMethodPage_L@8053001 : Page 427;
+                           BEGIN
+                             // --> 20150107-Wi00-CMC02.02.00-2578-KEM01
+                             CLEAR(PaymentMethodPage_L);
+                             PaymentMethodPage_L.LOOKUPMODE := TRUE;
+                             IF PaymentMethodPage_L.RUNMODAL=ACTION::LookupOK THEN BEGIN
+                               PaymentMethodPage_L.GETRECORD(RecPaymentMethod_L);
+                               IF STRLEN(PaymMentFilter_G)>0 THEN
+                                 PaymMentFilter_G += '|'+RecPaymentMethod_L.Code
+                               ELSE
+                                 PaymMentFilter_G :=RecPaymentMethod_L.Code
+
+                             END;
+                             // <-- 20150107-Wi00-CMC02.02.00-2578-KEM01
+                           END;
+                            }
+
+      { 1000000000;2;Field  ;
+                  Name=Vendor Posting Group;
+                  CaptionML=[ENU=Vendor Posting Group;
+                             FRA=Groupe compta. fournisseur];
+                  SourceExpr=VendorPostigGpeFilter_G;
+                  OnLookup=VAR
+                             VendPostGrpPAGE_L@8053000 : Page 111;
+                             VendorPostingGroup_L@8053001 : Record 93;
+                           BEGIN
+                             // --> 20150107-Wi00-CMC02.02.00-2578-KEM01
+                             CLEAR(VendPostGrpPAGE_L);
+                             VendPostGrpPAGE_L.LOOKUPMODE := TRUE;
+                             IF VendPostGrpPAGE_L.RUNMODAL=ACTION::LookupOK THEN BEGIN
+                               VendPostGrpPAGE_L.GETRECORD(VendorPostingGroup_L);
+                               IF STRLEN(VendorPostigGpeFilter_G)>0 THEN
+                                 VendorPostigGpeFilter_G += '|'+VendorPostingGroup_L.Code
+                               ELSE
+                                 VendorPostigGpeFilter_G :=VendorPostingGroup_L.Code
+                             END;
+                             // <-- 20150107-Wi00-CMC02.02.00-2578-KEM01
+                           END;
+                            }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      Text000@1000 : TextConst 'ENU=Please enter the last payment date.;FRA=Veuillez entrer la derniSre date d'''ch'ance.';
+      Text001@1001 : TextConst 'ENU=Please enter the posting date.;FRA=Veuillez entrer une date de comptabilisation.';
+      Text002@1002 : TextConst 'ENU=Please enter a Starting Document No.;FRA=Veuillez renseigner le champ N› document d'but.';
+      Text003@1003 : TextConst 'ENU=The payment date is earlier than %1.\\;FRA=La date de paiement est ant'rieure . %1.\\';
+      Text004@1004 : TextConst 'ENU=Do you still want to run the batch job?;FRA=Souhaitez-vous tout de m^me ex'cuter ce traitement par lots ?';
+      Text005@1005 : TextConst 'ENU=The batch job was interrupted.;FRA=Le traitement par lots a 't' interrompu.';
+      Text006@1006 : TextConst 'ENU=Processing vendors     #1##########;FRA=Traitement des fournisseurs             #1##########';
+      Text007@1007 : TextConst 'ENU=Processing vendors for payment discounts #1##########;FRA=Traitement des escomptes fournisseur    #1##########';
+      Text008@1008 : TextConst 'ENU=Inserting payment journal lines #1##########;FRA=Insertion des lignes f. paiement        #1##########';
+      Text009@1009 : TextConst 'ENU=%1 must be G/L Account or Bank Account.;FRA=%1 doit ^tre un compte g'n'ral ou un compte bancaire.';
+      Text010@1010 : TextConst 'ENU=%1 must be filled only when %2 is Bank Account.;FRA=%1 ne doit ^tre renseign' que lorsque %2 est un compte bancaire.';
+      Text011@1011 : TextConst 'ENU=Use Vendor Priority must be activated when the value in the Amount Available field is not 0.;FRA=Le champ Utiliser priorit' fournisseur doit ^tre activ' lorsque la valeur du champ Montant disponible est diff'rente de 0.';
+      Text012@1012 : TextConst 'ENU=Starting Document No. must contain a number.;FRA=Le champ N› document d'but doit contenir un num'ro.';
+      Text013@1013 : TextConst 'ENU=Use Vendor Priority must be activated when the value in the Amount Available Amount (LCY) field is not 0.;FRA=Le champ Utiliser priorit' fournisseur doit ^tre activ' lorsque la valeur du champ Montant disponible DS est diff'rente de 0.';
+      Text014@1014 : TextConst 'ENU=Payment to vendor %1;FRA=Paiement au fournisseur %1';
+      Text015@1015 : TextConst 'ENU=Payment of %1 %2;FRA=Paiement de %1 %2';
+      Text016@1016 : TextConst 'ENU=" is already applied to %1 %2 for vendor %3.";FRA=" est d'j. lettr'(e) avec %1 %2 pour le fournisseur %3."';
+      Text017@1017 : TextConst 'ENU="When %1 = %2 and you have not placed a check mark in the Summarize per Vendor field,\";FRA="Lorsque %1 = %2 et que vous n''avez pas activ' le champ Totaliser par fournisseur,\"';
+      Text018@1018 : TextConst 'ENU=then you must place a check mark in New Doc. No. per Line.;FRA=vous devez donc activer le champ Nouveau n› document par ligne.';
+      Text019@1019 : TextConst 'ENU=You have only created suggested vendor payment lines for the %1 %2.\;FRA=Vous avez seulement cr'' des lignes proposition paiements fournisseur pour %1 %2.\';
+      Text020@1020 : TextConst 'ENU=There are, however, other open vendor ledger entries in currencies other than %2.;FRA=Il existe cependant d''autres 'critures comptables fournisseur ouvertes dans d''autres devises que la devise %2.';
+      Text021@1021 : TextConst 'ENU=There are no other open vendor ledger entries in other currencies.;FRA=Il n''existe aucune autre 'criture comptable fournisseur ouverte dans une autre devise.';
+      Text022@1022 : TextConst 'ENU=You have created suggested vendor payment lines for all currencies.;FRA=Vous avez cr'' des lignes proposition paiements fournisseur pour toutes les devises.';
+      Vend2@1023 : Record 23;
+      GenJnlTemplate@1024 : Record 80;
+      GenJnlBatch@1025 : Record 232;
+      GenJnlLine@1026 : Record 81;
+      JnlLineDim@1027 : Record 356;
+      GenJnlLine2@1028 : Record 81;
+      VendLedgEntry@1029 : Record 25;
+      GLAcc@1030 : Record 15;
+      BankAcc@1031 : Record 270;
+      PayableVendLedgEntry@1032 : TEMPORARY Record 317;
+      TempPaymentBuffer@1033 : TEMPORARY Record 372;
+      OldTempPaymentBuffer@1034 : TEMPORARY Record 372;
+      SelectedDim@1035 : Record 369;
+      VendorLedgEntryTemp@1102601000 : TEMPORARY Record 25;
+      GenJnlPostLine@1062 : Codeunit 12;
+      NoSeriesMgt@1036 : Codeunit 396;
+      VendEntryEdit@1037 : Codeunit 113;
+      DimMgt@1038 : Codeunit 408;
+      Window@1039 : Dialog;
+      UsePaymentDisc@1040 : Boolean;
+      PostingDate@1041 : Date;
+      LastDueDateToPayReq@1042 : Date;
+      NextDocNo@1043 : Code[20];
+      AmountAvailable@1044 : Decimal;
+      OriginalAmtAvailable@1045 : Decimal;
+      UsePriority@1046 : Boolean;
+      SummarizePerVend@1047 : Boolean;
+      SummarizePerDim@1048 : Boolean;
+      SummarizePerDimText@1049 : Text[250];
+      FirstLineNo@1050 : Integer;
+      LastLineNo@1051 : Integer;
+      NextEntryNo@1052 : Integer;
+      StopPayments@1053 : Boolean;
+      DocNoPerLine@1054 : Boolean;
+      BankPmtType@1055 : ' ,Computer Check,Manual Check';
+      BalAccType@1056 : 'G/L Account,Customer,Vendor,Bank Account';
+      BalAccNo@1057 : Code[20];
+      MessageText@1058 : Text[250];
+      GenJnlLineInserted@1059 : Boolean;
+      SeveralCurrencies@1060 : Boolean;
+      Text023@1061 : TextConst 'ENU=" ,Computer Check,Manual Check";FRA=" ,Informatique,Manuel"';
+      Text024@1102601001 : TextConst 'ENU=There are one or more entries for which no payment suggestions have been made because the posting dates of the entries are later than the posting date in the Suggest Vendor Payments batch job request window. Do you want to see the entries?;FRA=Il existe une ou plusieurs 'critures pour lesquelles aucune suggestion de paiement n''a 't' effectu'e car les dates de comptabilisation de ces 'critures sont post'rieures . celle de la fen^tre de demande de traitement par lots Proposer paiements fournisseur. Voulez-vous visualiser ces 'critures ?';
+      SummarizePerDimTextEnable@19039578 : Boolean INDATASET;
+      "<< 3LI GLOBALS >>"@1000000002 : Integer;
+      PaymMentFilter_G@1000000001 : Text[250];
+      Vendor_G@1000000000 : Record 23;
+      PaymentMethCode@1000000003 : Code[10];
+      VendorPostigGpeFilter_G@1000000004 : Text[250];
+      InclLdgEntriesWithoutPayMethod@8053000 : Boolean;
+
+    PROCEDURE SetGenJnlLine@1(NewGenJnlLine@1000 : Record 81);
+    BEGIN
+      GenJnlLine := NewGenJnlLine;
+    END;
+
+    LOCAL PROCEDURE ValidatePostingDate@7();
+    BEGIN
+      GenJnlBatch.GET(GenJnlLine."Journal Template Name",GenJnlLine."Journal Batch Name");
+      IF GenJnlBatch."No. Series" = '' THEN
+        NextDocNo := ''
+      ELSE BEGIN
+        NextDocNo := NoSeriesMgt.GetNextNo(GenJnlBatch."No. Series",PostingDate,FALSE);
+        CLEAR(NoSeriesMgt);
+      END;
+    END;
+
+    PROCEDURE InitializeRequest@3(LastPmtDate@1000 : Date;FindPmtDisc@1001 : Boolean;NewAvailableAmount@1002 : Decimal;NewPostingDate@1003 : Date;NewStartDocNo@1004 : Code[20];NewSummarizePerVend@1005 : Boolean;BalAccType@1006 : 'G/L Account,Customer,Vendor,Bank Account';BalAccNo@1007 : Code[20];BankPmtType@1008 : ' ,Computer Check,Manual Check');
+    BEGIN
+
+      LastDueDateToPayReq := LastPmtDate;
+      UsePaymentDisc := FindPmtDisc;
+      AmountAvailable := NewAvailableAmount;
+      PostingDate := NewPostingDate;
+      NextDocNo := NewStartDocNo;
+      SummarizePerVend := NewSummarizePerVend;
+      GenJnlLine2."Bal. Account Type" := BalAccType;
+      GenJnlLine2."Bal. Account No." := BalAccNo;
+      GenJnlLine2."Bank Payment Type" := BankPmtType;
+    END;
+
+    PROCEDURE GetVendLedgEntries@13(Positive@1000 : Boolean;Future@1001 : Boolean);
+    VAR
+      VendInFilter_L@1000000002 : Boolean;
+      VendLedgerEntry_L@1000000001 : Record 25;
+      EntryInFilter_L@1000000000 : Boolean;
+    BEGIN
+      VendLedgEntry.RESET;
+      VendLedgEntry.SETCURRENTKEY("Vendor No.",Open,Positive,"Due Date");
+      VendLedgEntry.SETRANGE("Vendor No.",Vendor."No.");
+      VendLedgEntry.SETRANGE(Open,TRUE);
+      VendLedgEntry.SETRANGE(Positive,Positive);
+      // --> 20120705-FINA03-CMC02.01.00-BRA01
+      VendLedgEntry.SETFILTER(VendLedgEntry."Vendor Posting Group",VendorPostigGpeFilter_G);
+      // <-- 20120705-FINA03-CMC02.01.00-BRA01
+      // --> 20140929-WI00-CMC02.02.00-2509-BRA01
+      VendLedgEntry.SETRANGE("Applies-to ID",'');
+      // <-- 20140929-WI00-CMC02.02.00-2509-BRA01
+
+      IF Future THEN BEGIN
+        VendLedgEntry.SETRANGE("Due Date",LastDueDateToPayReq+1,31129999D);
+        VendLedgEntry.SETRANGE("Pmt. Discount Date",PostingDate,LastDueDateToPayReq);
+        VendLedgEntry.SETFILTER("Remaining Pmt. Disc. Possible",'<>0');
+      END ELSE
+        VendLedgEntry.SETRANGE("Due Date",0D,LastDueDateToPayReq);
+      VendLedgEntry.SETRANGE("On Hold",'');
+      IF VendLedgEntry.FIND('-') THEN
+        REPEAT
+          // --> 20110601-Wi00-CMC01.04
+          VendInFilter_L := FALSE;
+          EntryInFilter_L := FALSE;
+          Vendor_G.SETCURRENTKEY("No.");
+          Vendor_G.SETRANGE("No.",VendLedgEntry."Vendor No.");
+          // --> 20150226-WI00-CMC02.02.00-2801-BRA01
+          //BEFORE
+          //Vendor_G.SETRANGE("Payment Method Code",PaymMentFilter_G);
+          //AFTER
+          Vendor_G.SETFILTER("Payment Method Code",PaymMentFilter_G);
+          // <-- 20150226-WI00-CMC02.02.00-2801-BRA01
+          IF Vendor_G.FINDFIRST THEN
+            VendInFilter_L := TRUE;
+
+          VendLedgerEntry_L.RESET;
+          VendLedgerEntry_L.SETRANGE("Entry No.",VendLedgEntry."Entry No.");
+          // --> 20150226-WI00-CMC02.02.00-2801-BRA01
+          //BEFORE
+          //VendLedgerEntry_L.SETRANGE("Payment Method Code",PaymMentFilter_G);
+          //AFTER
+          VendLedgerEntry_L.SETFILTER("Payment Method Code",PaymMentFilter_G);
+          // <-- 20150226-WI00-CMC02.02.00-2801-BRA01
+          IF VendLedgerEntry_L.FINDFIRST THEN
+            EntryInFilter_L := TRUE;
+
+          // --> 20130924-WI00-CMC02.02.00-0792-DRN01
+          //BEFORE
+          //IF ((VendLedgEntry."Payment Method Code"='') AND (VendInFilter_L)) OR
+          // (EntryInFilter_L) OR  (PaymMentFilter_G='') THEN
+          IF ((VendLedgEntry."Payment Method Code" = '') AND (VendInFilter_L) AND InclLdgEntriesWithoutPayMethod) OR
+            (EntryInFilter_L)
+          THEN
+          // <-- 20130924-WI00-CMC02.02.00-0792-DRN01
+          // <-- 20110601-Wi00-CMC01.04
+            SaveAmount;
+          IF (VendLedgEntry."Accepted Pmt. Disc. Tolerance") OR
+            (VendLedgEntry."Accepted Payment Tolerance" <> 0)
+          THEN BEGIN
+            VendLedgEntry."Accepted Pmt. Disc. Tolerance" := FALSE;
+            VendLedgEntry."Accepted Payment Tolerance" := 0;
+            VendEntryEdit.RUN(VendLedgEntry);
+          END;
+        UNTIL VendLedgEntry.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE SaveAmount@6();
+    BEGIN
+      WITH GenJnlLine DO BEGIN
+        INIT;
+        VALIDATE("Posting Date",PostingDate);
+        "Document Type" := "Document Type"::Payment;
+        "Account Type" := "Account Type"::Vendor;
+        Vend2.GET(VendLedgEntry."Vendor No.");
+        Vend2.CheckBlockedVendOnJnls(Vend2,"Document Type",FALSE);
+        Description := Vend2.Name;
+        "Posting Group" := Vend2."Vendor Posting Group";
+        "Salespers./Purch. Code" := Vend2."Purchaser Code";
+        "Payment Terms Code" := Vend2."Payment Terms Code";
+        VALIDATE("Bill-to/Pay-to No.","Account No.");
+        VALIDATE("Sell-to/Buy-from No.","Account No.");
+        "Gen. Posting Type" := 0;
+        "Gen. Bus. Posting Group" := '';
+        "Gen. Prod. Posting Group" := '';
+        "VAT Bus. Posting Group" := '';
+        "VAT Prod. Posting Group" := '';
+        VALIDATE("Payment Terms Code");
+        VendLedgEntry.CALCFIELDS("Remaining Amount");
+        IF GenJnlPostLine.CheckCalcPmtDiscGenJnlVend(GenJnlLine,VendLedgEntry,0,FALSE)
+        THEN
+          Amount := -(VendLedgEntry."Remaining Amount" - VendLedgEntry."Remaining Pmt. Disc. Possible")
+        ELSE
+          Amount := -VendLedgEntry."Remaining Amount";
+        VALIDATE("Account No.",Vend2."No.");
+        VALIDATE(Amount);
+      END;
+
+      IF UsePriority THEN
+        PayableVendLedgEntry.Priority := Vendor.Priority
+      ELSE
+        PayableVendLedgEntry.Priority := 0;
+      PayableVendLedgEntry."Vendor No." := VendLedgEntry."Vendor No.";
+      PayableVendLedgEntry."Entry No." := NextEntryNo;
+      PayableVendLedgEntry."Vendor Ledg. Entry No." := VendLedgEntry."Entry No.";
+      PayableVendLedgEntry.Amount := GenJnlLine.Amount;
+      PayableVendLedgEntry."Amount (LCY)" := GenJnlLine."Amount (LCY)";
+      PayableVendLedgEntry.Positive := (PayableVendLedgEntry.Amount > 0);
+      PayableVendLedgEntry.Future := (VendLedgEntry."Due Date" > LastDueDateToPayReq);
+      PayableVendLedgEntry."Currency Code" := VendLedgEntry."Currency Code";
+      PayableVendLedgEntry.INSERT;
+      NextEntryNo := NextEntryNo + 1;
+    END;
+
+    PROCEDURE CheckAmounts@10(Future@1000 : Boolean);
+    VAR
+      CurrencyBalance@1001 : Decimal;
+      PrevCurrency@1002 : Code[10];
+    BEGIN
+      PayableVendLedgEntry.SETRANGE("Vendor No.",Vendor."No.");
+      PayableVendLedgEntry.SETRANGE(Future,Future);
+
+      IF PayableVendLedgEntry.FIND('-') THEN BEGIN
+        REPEAT
+          IF PayableVendLedgEntry."Currency Code" <> PrevCurrency THEN BEGIN
+            IF CurrencyBalance > 0 THEN
+              AmountAvailable := AmountAvailable - CurrencyBalance;
+            CurrencyBalance := 0;
+            PrevCurrency := PayableVendLedgEntry."Currency Code";
+          END;
+          IF (OriginalAmtAvailable = 0) OR
+             (AmountAvailable >= CurrencyBalance + PayableVendLedgEntry."Amount (LCY)")
+          THEN
+            CurrencyBalance := CurrencyBalance + PayableVendLedgEntry."Amount (LCY)"
+          ELSE
+            PayableVendLedgEntry.DELETE;
+        UNTIL PayableVendLedgEntry.NEXT = 0;
+        IF OriginalAmtAvailable > 0 THEN
+          AmountAvailable := AmountAvailable - CurrencyBalance;
+        IF (OriginalAmtAvailable > 0) AND (AmountAvailable <= 0) THEN
+          StopPayments := TRUE;
+      END;
+      PayableVendLedgEntry.RESET;
+    END;
+
+    LOCAL PROCEDURE MakeGenJnlLines@2();
+    VAR
+      GenJnlLine3@1000 : Record 81;
+      LedgEntryDim@1001 : Record 355;
+      TempDimBuf@1002 : Record 360;
+      DimBufMgt@1003 : Codeunit 411;
+      EntryNo@1004 : Integer;
+      "<-- 3LI LOCALS-->"@8061000 : Integer;
+      VendLedgerEntry_L@8061001 : Record 25;
+      Vendor_L@1000000000 : Record 23;
+    BEGIN
+      TempPaymentBuffer.RESET;
+      TempPaymentBuffer.DELETEALL;
+
+      IF BalAccType = BalAccType::"Bank Account" THEN BEGIN
+        CheckCurrencies(BalAccType,BalAccNo,PayableVendLedgEntry);
+        SetBankAccCurrencyFilter(BalAccType,BalAccNo,PayableVendLedgEntry);
+      END;
+
+      IF PayableVendLedgEntry.FIND('-') THEN
+        REPEAT
+          PayableVendLedgEntry.SETRANGE("Vendor No.",PayableVendLedgEntry."Vendor No.");
+          PayableVendLedgEntry.FIND('-');
+          REPEAT
+            VendLedgEntry.GET(PayableVendLedgEntry."Vendor Ledg. Entry No.");
+            IF VendLedgEntry."Posting Date" <= PostingDate THEN BEGIN
+              TempPaymentBuffer."Vendor No." := VendLedgEntry."Vendor No.";
+              TempPaymentBuffer."Currency Code" := VendLedgEntry."Currency Code";
+
+              IF SummarizePerDim THEN BEGIN
+                TempDimBuf.RESET;
+                TempDimBuf.DELETEALL;
+                IF SelectedDim.FIND('-') THEN
+                  REPEAT
+                    IF LedgEntryDim.GET(
+                         DATABASE::"Vendor Ledger Entry",VendLedgEntry."Entry No.",SelectedDim."Dimension Code")
+                    THEN BEGIN
+                      TempDimBuf."Table ID" := LedgEntryDim."Table ID";
+                      TempDimBuf."Dimension Code" := LedgEntryDim."Dimension Code";
+                      TempDimBuf."Dimension Value Code" := LedgEntryDim."Dimension Value Code";
+                      TempDimBuf.INSERT;
+                    END;
+                  UNTIL SelectedDim.NEXT = 0;
+                EntryNo := DimBufMgt.FindDimensions(TempDimBuf);
+                IF EntryNo = 0 THEN
+                  EntryNo := DimBufMgt.InsertDimensions(TempDimBuf);
+                TempPaymentBuffer."Dimension Entry No." := EntryNo;
+                TempPaymentBuffer."Global Dimension 1 Code" := VendLedgEntry."Global Dimension 1 Code";
+                TempPaymentBuffer."Global Dimension 2 Code" := VendLedgEntry."Global Dimension 2 Code";
+              END ELSE BEGIN
+                TempPaymentBuffer."Dimension Entry No." := 0;
+                TempPaymentBuffer."Global Dimension 1 Code" := '';
+                TempPaymentBuffer."Global Dimension 2 Code" := '';
+              END;
+
+              VendLedgEntry.CALCFIELDS("Remaining Amount");
+
+              IF SummarizePerVend THEN BEGIN
+                TempPaymentBuffer."Vendor Ledg. Entry No." := 0;
+                IF TempPaymentBuffer.FIND THEN BEGIN
+                  TempPaymentBuffer.Amount := TempPaymentBuffer.Amount + PayableVendLedgEntry.Amount;
+                  TempPaymentBuffer.MODIFY;
+                END ELSE BEGIN
+                  TempPaymentBuffer."Document No." := NextDocNo;
+                  NextDocNo := INCSTR(NextDocNo);
+                  TempPaymentBuffer.Amount := PayableVendLedgEntry.Amount;
+                  Window.UPDATE(1,VendLedgEntry."Vendor No.");
+                  TempPaymentBuffer.INSERT;
+                END;
+                VendLedgEntry.TESTFIELD("Applies-to ID",'');
+                VendLedgEntry."Applies-to ID" := TempPaymentBuffer."Document No.";
+              END ELSE BEGIN
+                GenJnlLine3.RESET;
+                GenJnlLine3.SETCURRENTKEY(
+                  "Account Type","Account No.","Applies-to Doc. Type","Applies-to Doc. No.");
+                GenJnlLine3.SETRANGE("Account Type",GenJnlLine3."Account Type"::Vendor);
+                GenJnlLine3.SETRANGE("Account No.",VendLedgEntry."Vendor No.");
+                GenJnlLine3.SETRANGE("Applies-to Doc. Type",VendLedgEntry."Document Type");
+                GenJnlLine3.SETRANGE("Applies-to Doc. No.",VendLedgEntry."Document No.");
+                IF GenJnlLine3.FIND('-') THEN
+                  GenJnlLine3.FIELDERROR(
+                    "Applies-to Doc. No.",
+                    STRSUBSTNO(
+                      Text016,
+                      VendLedgEntry."Document Type",VendLedgEntry."Document No.",
+                      VendLedgEntry."Vendor No."));
+
+                TempPaymentBuffer."Vendor Ledg. Entry Doc. Type" := VendLedgEntry."Document Type";
+                TempPaymentBuffer."Vendor Ledg. Entry Doc. No." := VendLedgEntry."Document No.";
+                TempPaymentBuffer."Global Dimension 1 Code" := VendLedgEntry."Global Dimension 1 Code";
+                TempPaymentBuffer."Global Dimension 2 Code" := VendLedgEntry."Global Dimension 2 Code";
+                TempPaymentBuffer."Vendor Ledg. Entry No." := VendLedgEntry."Entry No.";
+                TempPaymentBuffer.Amount := PayableVendLedgEntry.Amount;
+                Window.UPDATE(1,VendLedgEntry."Vendor No.");
+                TempPaymentBuffer.INSERT;
+              END;
+
+              VendLedgEntry."Amount to Apply" := VendLedgEntry."Remaining Amount";
+              VendEntryEdit.RUN(VendLedgEntry);
+            END ELSE BEGIN
+              VendorLedgEntryTemp := VendLedgEntry;
+              VendorLedgEntryTemp.INSERT;
+            END;
+
+          UNTIL PayableVendLedgEntry.NEXT = 0;
+          PayableVendLedgEntry.DELETEALL;
+          PayableVendLedgEntry.SETRANGE("Vendor No.");
+        UNTIL NOT PayableVendLedgEntry.FIND('-');
+
+      CLEAR(OldTempPaymentBuffer);
+      TempPaymentBuffer.SETCURRENTKEY("Document No.");
+      IF TempPaymentBuffer.FIND('-') THEN
+        REPEAT
+          WITH GenJnlLine DO BEGIN
+            INIT;
+            Window.UPDATE(1,TempPaymentBuffer."Vendor No.");
+            LastLineNo := LastLineNo + 10000;
+            "Line No." := LastLineNo;
+            VALIDATE("Posting Date",PostingDate);
+            "Document Type" := "Document Type"::Payment;
+            "Posting No. Series" := GenJnlBatch."Posting No. Series";
+            IF SummarizePerVend THEN
+              "Document No." := TempPaymentBuffer."Document No."
+            ELSE
+              IF DocNoPerLine THEN BEGIN
+                IF TempPaymentBuffer.Amount < 0 THEN
+                  "Document Type" := "Document Type"::Refund;
+
+                "Document No." := NextDocNo;
+                NextDocNo := INCSTR(NextDocNo);
+              END ELSE BEGIN
+                IF (TempPaymentBuffer."Vendor No." = OldTempPaymentBuffer."Vendor No.") AND
+                  (TempPaymentBuffer."Currency Code" = OldTempPaymentBuffer."Currency Code")
+                THEN
+                  "Document No." := OldTempPaymentBuffer."Document No."
+                ELSE BEGIN
+                  "Document No." := NextDocNo;
+                  NextDocNo := INCSTR(NextDocNo);
+                  OldTempPaymentBuffer := TempPaymentBuffer;
+                  OldTempPaymentBuffer."Document No." := "Document No.";
+                END;
+              END;
+            "Account Type" := "Account Type"::Vendor;
+            VALIDATE("Account No.",TempPaymentBuffer."Vendor No.");
+            "Bal. Account Type" := BalAccType;
+            VALIDATE("Bal. Account No.",BalAccNo);
+            VALIDATE("Currency Code",TempPaymentBuffer."Currency Code");
+            "Bank Payment Type" := BankPmtType;
+
+            // <-- 20110601-Wi00-CMC01.04
+            VALIDATE("Payment Method Code",PaymentMethCode);
+            // --> 20110601-Wi00-CMC01.04
+
+            IF SummarizePerVend THEN BEGIN
+              "Applies-to ID" := "Document No.";
+              Description := STRSUBSTNO(Text014,TempPaymentBuffer."Vendor No.");
+            END ELSE
+              Description :=
+                STRSUBSTNO(
+                  Text015,
+                  TempPaymentBuffer."Vendor Ledg. Entry Doc. Type",
+                  TempPaymentBuffer."Vendor Ledg. Entry Doc. No.");
+            // --> 20150226-WI00-CMC02.02.00-2801-AKH01
+            Vendor_L.GET(TempPaymentBuffer."Vendor No.");
+            Description := Vendor_L.Name;
+            // <-- 20150226-WI00-CMC02.02.00-2801-AKH01
+            "Shortcut Dimension 1 Code" := TempPaymentBuffer."Global Dimension 1 Code";
+            "Shortcut Dimension 2 Code" := TempPaymentBuffer."Global Dimension 2 Code";
+            "Source Code" := GenJnlTemplate."Source Code";
+            "Reason Code" := GenJnlBatch."Reason Code";
+            VALIDATE(Amount,TempPaymentBuffer.Amount);
+            "Applies-to Doc. Type" := TempPaymentBuffer."Vendor Ledg. Entry Doc. Type";
+            "Applies-to Doc. No." := TempPaymentBuffer."Vendor Ledg. Entry Doc. No.";
+            // --> 20140204-8060990/100-CMB6.00.10.09-1645-KEM01
+            VALIDATE("Payment Method Code",Vend2."Payment Method Code");
+            // <-- 20140204-8060990/100-CMB6.00.10.09-1645-KEM01
+
+            // --> 20140307-Wi00-CMC02.02.00-1809-BRA01
+            //BEFORE
+            {
+            // --> 20140211-8060990/100-CMB6.00.10.09-1663-BRA01
+            //BEFORE
+            {
+            INSERT;
+            GenJnlLineInserted := TRUE;
+            }
+            //AFTER
+            IF Amount <>0 THEN BEGIN
+              INSERT;
+              GenJnlLineInserted := TRUE;
+            END ELSE BEGIN
+              //GenJnlLineInserted := TRUE;
+              VendLedgerEntry_L.RESET;
+              VendLedgerEntry_L.SETRANGE(VendLedgerEntry_L.Open,TRUE);
+              VendLedgerEntry_L.SETRANGE("Applies-to ID" ,"Document No.");
+              IF VendLedgerEntry_L.FINDSET THEN
+               REPEAT
+                 VendLedgerEntry_L."Applies-to ID" := '';
+                 VendEntryEdit.RUN(VendLedgerEntry_L)
+               UNTIL VendLedgerEntry_L.NEXT=0;
+            END;
+            // <-- 20140211-8060990/100-CMB6.00.10.09-1663-BRA01
+            }
+            //AFTER
+            IF SummarizePerVend THEN BEGIN
+              IF Amount >0 THEN BEGIN
+                INSERT;
+                GenJnlLineInserted := TRUE;
+              END ELSE BEGIN
+                VendLedgerEntry_L.RESET;
+                VendLedgerEntry_L.SETRANGE(VendLedgerEntry_L.Open,TRUE);
+                VendLedgerEntry_L.SETRANGE("Applies-to ID" ,"Document No.");
+                IF VendLedgerEntry_L.FINDSET THEN
+                 REPEAT
+                   VendLedgerEntry_L."Applies-to ID" := '';
+                   VendEntryEdit.RUN(VendLedgerEntry_L)
+                 UNTIL VendLedgerEntry_L.NEXT=0;
+              END;
+            END ELSE BEGIN
+              IF Amount <>0 THEN BEGIN
+                INSERT;
+                GenJnlLineInserted := TRUE;
+              END ELSE BEGIN
+                VendLedgerEntry_L.RESET;
+                VendLedgerEntry_L.SETRANGE(VendLedgerEntry_L.Open,TRUE);
+                VendLedgerEntry_L.SETRANGE("Applies-to ID" ,"Document No.");
+                IF VendLedgerEntry_L.FINDSET THEN
+                 REPEAT
+                   VendLedgerEntry_L."Applies-to ID" := '';
+                   VendEntryEdit.RUN(VendLedgerEntry_L)
+                 UNTIL VendLedgerEntry_L.NEXT=0;
+              END;
+            END;
+            // <-- 20140307-Wi00-CMC02.02.00-1809-BRA01
+
+            JnlLineDim.SETRANGE("Table ID",DATABASE::"Gen. Journal Line");
+            JnlLineDim.SETRANGE("Journal Template Name","Journal Template Name");
+            JnlLineDim.SETRANGE("Journal Batch Name","Journal Batch Name");
+            JnlLineDim.SETRANGE("Journal Line No.","Line No.");
+            JnlLineDim.DELETEALL;
+
+            IF SummarizePerVend THEN BEGIN
+              TempDimBuf.RESET;
+              TempDimBuf.DELETEALL;
+              DimBufMgt.GetDimensions(TempPaymentBuffer."Dimension Entry No.",TempDimBuf);
+              DimMgt.MoveDimBufToJnlLineDim(
+                  TempDimBuf,JnlLineDim,DATABASE::"Gen. Journal Line",
+                  "Journal Template Name","Journal Batch Name","Line No.");
+            END ELSE BEGIN
+              LedgEntryDim.SETRANGE("Table ID",DATABASE::"Vendor Ledger Entry");
+              LedgEntryDim.SETRANGE("Entry No.",TempPaymentBuffer."Vendor Ledg. Entry No.");
+              DimMgt.MoveLedgEntryDimToJnlLineDim(
+                LedgEntryDim,JnlLineDim,DATABASE::"Gen. Journal Line",
+                "Journal Template Name","Journal Batch Name","Line No.",0);
+            END;
+          END;
+        UNTIL TempPaymentBuffer.NEXT = 0;
+    END;
+
+    LOCAL PROCEDURE SetBankAccCurrencyFilter@11(BalAccType@1000 : 'G/L Account,Customer,Vendor,Bank Account';BalAccNo@1001 : Code[20];VAR TmpPayableVendLedgEntry@1002 : Record 317);
+    VAR
+      BankAcc@1003 : Record 270;
+    BEGIN
+      IF BalAccType = BalAccType::"Bank Account" THEN
+        IF BalAccNo <> '' THEN BEGIN
+          BankAcc.GET(BalAccNo);
+          IF BankAcc."Currency Code" <> '' THEN
+            TmpPayableVendLedgEntry.SETRANGE("Currency Code",BankAcc."Currency Code");
+        END;
+    END;
+
+    LOCAL PROCEDURE ShowMessage@15(VAR Text@1000 : Text[250]);
+    BEGIN
+      IF (Text <> '') AND GenJnlLineInserted THEN
+        MESSAGE(Text);
+    END;
+
+    LOCAL PROCEDURE CheckCurrencies@4(BalAccType@1000 : 'G/L Account,Customer,Vendor,Bank Account';BalAccNo@1001 : Code[20];VAR TmpPayableVendLedgEntry@1002 : Record 317);
+    VAR
+      BankAcc@1003 : Record 270;
+      TmpPayableVendLedgEntry2@1004 : TEMPORARY Record 317;
+    BEGIN
+      IF BalAccType = BalAccType::"Bank Account" THEN
+        IF BalAccNo <> '' THEN BEGIN
+          BankAcc.GET(BalAccNo);
+          IF BankAcc."Currency Code" <> '' THEN BEGIN
+            TmpPayableVendLedgEntry2.RESET;
+            TmpPayableVendLedgEntry2.DELETEALL;
+            IF TmpPayableVendLedgEntry.FIND('-') THEN
+              REPEAT
+                TmpPayableVendLedgEntry2 := TmpPayableVendLedgEntry;
+                TmpPayableVendLedgEntry2.INSERT;
+              UNTIL TmpPayableVendLedgEntry.NEXT = 0;
+
+            TmpPayableVendLedgEntry2.SETFILTER("Currency Code",'<>%1',BankAcc."Currency Code");
+            SeveralCurrencies := SeveralCurrencies OR TmpPayableVendLedgEntry2.FIND('-');
+
+            IF SeveralCurrencies THEN
+              MessageText :=
+                STRSUBSTNO(
+                   Text019+
+                   Text020,
+                    BankAcc.FIELDCAPTION("Currency Code"),BankAcc."Currency Code")
+            ELSE
+              MessageText :=
+                STRSUBSTNO(
+                  Text019+
+                  Text021,
+                   BankAcc.FIELDCAPTION("Currency Code"),BankAcc."Currency Code");
+          END ELSE
+            MessageText := Text022;
+        END;
+    END;
+
+    LOCAL PROCEDURE UpdateEnabled@5();
+    BEGIN
+      IF ISSERVICETIER THEN BEGIN
+        PageUpdateEnabled;
+        EXIT;
+      END;
+      IF NOT ISSERVICETIER THEN BEGIN
+        IF SummarizePerVend THEN
+          RequestOptionsForm.SummarizePerDimText.ENABLED := TRUE
+        ELSE
+          RequestOptionsForm.SummarizePerDimText.ENABLED := FALSE;
+      END;
+    END;
+
+    PROCEDURE ClearNegative@8();
+    VAR
+      TempCurrency@1000 : TEMPORARY Record 4;
+      PayableVendLedgEntry2@1001 : TEMPORARY Record 317;
+      CurrencyBalance@1002 : Decimal;
+    BEGIN
+      CLEAR(PayableVendLedgEntry);
+      PayableVendLedgEntry.SETRANGE("Vendor No.",Vendor."No.");
+
+      WHILE PayableVendLedgEntry.NEXT <> 0 DO BEGIN
+        TempCurrency.Code := PayableVendLedgEntry."Currency Code";
+        CurrencyBalance := 0;
+        PayableVendLedgEntry2 := PayableVendLedgEntry;
+        IF TempCurrency.INSERT THEN BEGIN
+          PayableVendLedgEntry.SETRANGE("Currency Code",PayableVendLedgEntry."Currency Code");
+          REPEAT
+            CurrencyBalance := CurrencyBalance + PayableVendLedgEntry."Amount (LCY)"
+          UNTIL PayableVendLedgEntry.NEXT = 0;
+          IF CurrencyBalance < 0 THEN
+            PayableVendLedgEntry.DELETEALL;
+        END;
+        PayableVendLedgEntry.SETRANGE("Currency Code");
+        PayableVendLedgEntry := PayableVendLedgEntry2;
+      END;
+      PayableVendLedgEntry.RESET;
+    END;
+
+    LOCAL PROCEDURE AmountAvailableOnAfterValidate@19035272();
+    BEGIN
+      IF AmountAvailable <> 0 THEN
+        UsePriority := TRUE;
+    END;
+
+    LOCAL PROCEDURE SummarizePerVendOnAfterValidat@19009003();
+    BEGIN
+      UpdateEnabled;
+    END;
+
+    LOCAL PROCEDURE PageUpdateEnabled@19050232();
+    BEGIN
+      IF NOT ISSERVICETIER THEN BEGIN
+        IF SummarizePerVend THEN
+          SummarizePerDimTextEnable := TRUE
+        ELSE
+          SummarizePerDimTextEnable := FALSE;
+      END;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20110601-Wi00-CMC01.04 : Version RTM 01.04 - NavAgri
+      20120328-FINA03-CMC02.01.00-BRA01 : ADDCODE (Filtre groupe compta. fournisseur obligatoire)
+      20130924-WI00-CMC02.02.00-0792-DRN01 : Ajout option inclure 'critures sans mode de rSglement
+      20140204-8060990/100-CMB6.00.10.09-1645-KEM01 : ADDCODE (Transfert de valeur Mode de r'glement)
+      20140211-8060990/100-CMB6.00.10.09-1663-BRA01 : ADDCODE (Ne pas ins'rer ligne . Mnt Nul et enlever ID lettrage)
+      20140307-Wi00-CMC02.02.00-1809-BRA01 : ADDCODE(Ne pas ins'rer ligne et enlever ID lettrage si regroupement par frs et mnt<0)
+      20140929-WI00-CMC02.02.00-2509-BRA01 : ADDCODE (Ne pas prendre les 'critures avec ID lettrage non vide)
+      20150107-Wi00-CMC02.02.00-2578-KEM01 : ADDCTRL (filtres sp'cifiques code mode rSglement et groupe compta fournisseur )
+                                             ADDCODE (lookup & annulation code pour faire filtre manuel)
+      20150226-WI00-CMC02.02.00-2801-AKH01 : ADDCODE (r'cup'rer le nom du tiers sur la d'signation)
+      20150226-WI00-CMC02.02.00-2801-BRA01 : MODCODE (Filter au lieu du RANGE)
+      // <-- 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

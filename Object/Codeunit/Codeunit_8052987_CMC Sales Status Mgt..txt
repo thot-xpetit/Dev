@@ -1,0 +1,393 @@
+OBJECT Codeunit 8052987 CMC Sales Status Mgt.
+{
+  OBJECT-PROPERTIES
+  {
+    Date=06/03/23;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00,TER01.01.00,ADV01.01.00;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      G_PostDelivery@8053000 : Codeunit 8052988;
+      Text8053000@8053001 : TextConst 'ENU=Cancel for modification;FRA=Annulation sur modification';
+      Text8053001@8053002 : TextConst 'FRA=Un transfert ne peut ^tre modifi'.';
+      Text8053002@60000 : TextConst 'ENU=Order No. %1  can''t be re-open when invoicing weight have value.;FRA=Vous ne pouvez pas rouvrir le bon %1 car le poids . facturer a 't' saisi.';
+      Text8053003@60001 : TextConst 'ENU=A IC delivery and transfered to IC partner can''t be re-open.;FRA=Vous ne pouvez pas rouvrir un bon IC envoy' vers le partenaire.';
+
+    PROCEDURE LockSalesContract@8053001(VAR _P_CMCSalesContract@8053000 : Record 8053012);
+    BEGIN
+      // --> 20230306-WI00-ADV01.01.00-3616-IJI01
+      CheckUCBC(_P_CMCSalesContract);
+      // <-- 20230306-WI00-ADV01.01.00-3616-IJI01
+
+      _P_CMCSalesContract.VALIDATE(Status,_P_CMCSalesContract.Status :: Locked);
+      _P_CMCSalesContract.MODIFY(FALSE);
+    END;
+
+    PROCEDURE OpenSalesContract@8053002(VAR _P_CMCSalesContract@8053000 : Record 8053012);
+    BEGIN
+      _P_CMCSalesContract.VALIDATE(Status,_P_CMCSalesContract.Status :: Open);
+      _P_CMCSalesContract.MODIFY(FALSE);
+    END;
+
+    PROCEDURE CloseSalesContract@8053003(VAR _P_CMCSalesContract@8053000 : Record 8053012);
+    BEGIN
+      _P_CMCSalesContract.VALIDATE(Status,_P_CMCSalesContract.Status :: Closed);
+      _P_CMCSalesContract.MODIFY(FALSE);
+    END;
+
+    PROCEDURE OpenDelivery@8053004(_P_RecDelivery@8053000 : Record 8053013);
+    BEGIN
+      _P_RecDelivery.VALIDATE(Status,_P_RecDelivery.Status::Open);
+      _P_RecDelivery.MODIFY(FALSE);
+    END;
+
+    PROCEDURE ReleaseDelivery@8053005(_P_RecDelivery@8053000 : Record 8053013);
+    BEGIN
+      _P_RecDelivery.VALIDATE(Status,_P_RecDelivery.Status::Released);
+      _P_RecDelivery.MODIFY(FALSE);
+    END;
+
+    PROCEDURE OpenPostedDelivery@805306(_P_RecPostedDelivery@8053000 : Record 8053014);
+    BEGIN
+      IF _P_RecPostedDelivery."Delivery Type"=_P_RecPostedDelivery."Delivery Type"::Transfert THEN BEGIN
+         ERROR(Text8053001)
+      END ELSE BEGIN
+        // --> 20151008-GEN15/001-ADV01.01.00-2321-FBE01
+        IF _P_RecPostedDelivery."Send IC Document" AND
+          (_P_RecPostedDelivery."IC Direction" = _P_RecPostedDelivery."IC Direction"::Outgoing) THEN
+          ERROR(Text8053003);
+        // <-- 20151008-GEN15/001-ADV01.01.00-2321-FBE01
+        _P_RecPostedDelivery.TESTFIELD(Invoiced,FALSE);
+        _P_RecPostedDelivery.TESTFIELD(Canceled,FALSE);
+        // --> 20150928-GEN15/001-ADV01.01.00-2133-SDE01
+        {
+        // --> 20150710-GEN15/001-CMC02.02.00-1834-FBE01
+        IF _P_RecPostedDelivery."Weight Gap Posted" THEN
+          ERROR(Text8053002,_P_RecPostedDelivery."No.");
+        // <-- 20150710-GEN15/001-CMC02.02.00-1834-FBE01
+        }
+        // <-- 20150928-GEN15/001-ADV01.01.00-2133-SDE01
+        _P_RecPostedDelivery.VALIDATE(Status,_P_RecPostedDelivery.Status::Open);
+        _P_RecPostedDelivery.MODIFY(FALSE);
+      END;
+    END;
+
+    PROCEDURE ReleasePostedDelivery@8053007(VAR _P_RecPostedDelivery@8053000 : Record 8053014);
+    VAR
+      L_Qte@1000000000 : Decimal;
+      L_CuPostRecept@1000000001 : Codeunit 8052984;
+      L_PostingDate@1000000002 : Date;
+      CduICManagement_L@8053001 : Codeunit 427;
+      DocActionType_L@8053002 : 'Create,Update,Delete,Cancel,Reconcile';
+      DelivOnBehalfSharedSilo_L@60000 : Boolean;
+      MovementType_L@60001 : ' ,E01,E02,E03,E04,E05,S03,S04,S05,S10,S20,T10,T20,T30,T11,S11,S21,S22';
+      SumQtyToCancel_L@60002 : Decimal;
+      QtyToCancel_L@60003 : Decimal;
+      PostInvoicingWeight_L@60004 : Boolean;
+    BEGIN
+      _P_RecPostedDelivery.VALIDATE(Status,_P_RecPostedDelivery.Status::Released);
+
+      IF NOT _P_RecPostedDelivery."Cancellation Delivery" THEN BEGIN
+        _P_RecPostedDelivery.VALIDATE("Net Weight");
+        L_PostingDate:=L_CuPostRecept.GetGoodDate(_P_RecPostedDelivery."Item Ledger Entry No.",WORKDATE);
+        // --> 20150710-GEN15/001-CMC02.02.00-1834-FBE01
+        //BEFORE
+        // IF CheckILEChange(_P_RecPostedDelivery) THEN BEGIN
+        //AFTER
+        IF CheckILEChange(_P_RecPostedDelivery)
+        // --> 20151016-GEN15/001-ADV01.01.00-2132-SDE01
+        //OR
+        //   ((_P_RecPostedDelivery."Invoicing Weight" <> 0))
+        // <-- 20151016-GEN15/001-ADV01.01.00-2132-SDE01
+           // --> 20150928-GEN15/001-ADV01.01.00-2133-SDE01
+           //AND
+           //NOT _P_RecPostedDelivery."Weight Gap Posted" )
+           // <-- 20150928-GEN15/001-ADV01.01.00-2133-SDE01
+        THEN BEGIN
+          // --> 20160513-Gen15/001-ADV01.01.00-2813-FBE
+          //IF (_P_RecPostedDelivery."IC Partner Code" <> '') AND _P_RecPostedDelivery."Shared Silo"
+          IF _P_RecPostedDelivery."On Behalf Of" AND (_P_RecPostedDelivery."IC Direction" = _P_RecPostedDelivery."IC Direction"::
+      Incoming)
+          // <-- 20160513-Gen15/001-ADV01.01.00-2813-FBE
+             // --> 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+             //BEFORE
+             //AND (_P_RecPostedDelivery."Standard Weight" <> _P_RecPostedDelivery."Source Standard Weight")
+             // <-- 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+          THEN
+            DelivOnBehalfSharedSilo_L := TRUE;
+        // <-- 20150710-GEN15/001-CMC02.02.00-1834-FBE01
+
+          L_Qte:=0;
+          IF _P_RecPostedDelivery."Standard Weight"<>_P_RecPostedDelivery."Net Weight" THEN
+            L_Qte:=- _P_RecPostedDelivery."Standard Weight";
+          // --> 20150710-GEN15/001-CMC02.02.00-1834-FBE01
+          IF DelivOnBehalfSharedSilo_L THEN BEGIN
+            SumQtyToCancel_L := SumTypedILEQty(_P_RecPostedDelivery,MovementType_L::T10);
+            // --> 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+            SumQtyToCancel_L += SumTypedILEQty(_P_RecPostedDelivery,MovementType_L::T11);
+            // <-- 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+            IF
+            // --> 20150928-GEN15/001-ADV01.01.00-2133-SDE01
+            //NOT _P_RecPostedDelivery."Weight Gap Posted" AND
+            // <-- 20150928-GEN15/001-ADV01.01.00-2133-SDE01
+            (_P_RecPostedDelivery."Invoicing Weight" <> 0) THEN BEGIN
+              PostInvoicingWeight_L := TRUE;
+              // --> 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+              //BEFORE
+              //QtyToCancel_L := - _P_RecPostedDelivery."Source Standard Weight" + _P_RecPostedDelivery."Invoicing Weight"
+              //                    - SumQtyToCancel_L;
+              //AFTER
+              QtyToCancel_L :=
+                _P_RecPostedDelivery."Source Standard Weight" - _P_RecPostedDelivery."Invoicing Weight" + SumQtyToCancel_L;
+              _P_RecPostedDelivery.Quantity := _P_RecPostedDelivery."Invoicing Weight";
+              // <-- 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+            END ELSE BEGIN
+              // --> 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+              //BEFORE
+              //QtyToCancel_L := _P_RecPostedDelivery."Source Standard Weight" - _P_RecPostedDelivery."Standard Weight" -
+              //  SumQtyToCancel_L;
+              //AFTER
+              QtyToCancel_L :=
+                _P_RecPostedDelivery."Source Standard Weight" - _P_RecPostedDelivery."Standard Weight" + SumQtyToCancel_L;
+              _P_RecPostedDelivery.Quantity := _P_RecPostedDelivery."Standard Weight";
+              // <-- 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+            END;
+            G_PostDelivery.SetForceSharedSilo(TRUE);
+            IF QtyToCancel_L <> 0 THEN
+              G_PostDelivery.CancelItemLedgEntryOnBehalfOf(_P_RecPostedDelivery."Item Ledger Entry No.", Text8053000, L_PostingDate, '',
+                // --> 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+                //BEFORE
+                //QtyToCancel_L,MovementType_L::T10,_P_RecPostedDelivery."Lot No.");
+                //AFTER
+                -QtyToCancel_L,MovementType_L::T10,_P_RecPostedDelivery."Lot No.");
+                // <-- 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+          END;
+          // <-- 20150710-GEN15/001-CMC02.02.00-1834-FBE01
+
+          // Cr'ation ligne annulation
+          _P_RecPostedDelivery."Canceled Item Ledg. Entry No." := G_PostDelivery.CancelItemLedgEntry(
+            _P_RecPostedDelivery."Item Ledger Entry No.", Text8053000, L_PostingDate, '', TRUE,L_Qte, _P_RecPostedDelivery."Lot No.");
+
+          // Cr'ation nouvelle ligne
+          // --> 20150710-GEN15/001-CMC02.02.00-1834-FBE01
+          IF PostInvoicingWeight_L THEN BEGIN
+            G_PostDelivery.SetInvoicingWeight(_P_RecPostedDelivery."Invoicing Weight");
+            // --> 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+            //BEFORE
+            //_P_RecPostedDelivery.Quantity := _P_RecPostedDelivery."Invoicing Weight";
+            // <-- 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+            // --> 20150928-GEN15/001-ADV01.01.00-2133-SDE01
+            //_P_RecPostedDelivery."Weight Gap Posted" := TRUE;
+            // <-- 20150928-GEN15/001-ADV01.01.00-2133-SDE01
+          END;
+          // <-- 20150710-GEN15/001-CMC02.02.00-1834-FBE01
+
+          _P_RecPostedDelivery."Item Ledger Entry No." :=
+            G_PostDelivery.CreateItemJnlLine(_P_RecPostedDelivery,L_PostingDate,TRUE,_P_RecPostedDelivery."Lot No.");
+
+          // --> 20150710-GEN15/001-CMC02.02.00-1834-FBE01
+          IF DelivOnBehalfSharedSilo_L THEN
+            G_PostDelivery.SetForceSharedSilo(FALSE);
+          // <-- 20150710-GEN15/001-CMC02.02.00-1834-FBE01
+        END;
+      END;
+      _P_RecPostedDelivery.MODIFY(FALSE);
+    END;
+
+    PROCEDURE CheckILEChange@8053008(_P_RecPostedDelivery@8053000 : Record 8053014) Res_ILEChange : Boolean;
+    VAR
+      L_ILE@8053001 : Record 32;
+    BEGIN
+      // --> 20151016-GEN15/001-ADV01.01.00-2132-SDE01
+      {BEFORE
+      EXIT((L_ILE.GET(_P_RecPostedDelivery."Item Ledger Entry No.")) AND
+      ((L_ILE.Quantity <>- _P_RecPostedDelivery."Standard Weight") OR
+        (L_ILE."Sales Contract No." <> _P_RecPostedDelivery."Contract No." ) OR
+        (L_ILE."Source No." <>  _P_RecPostedDelivery."Customer No.") OR (L_ILE."Item No." <> _P_RecPostedDelivery."Item No.")));
+      AFTER}
+      L_ILE.GET(_P_RecPostedDelivery."Item Ledger Entry No.");
+      Res_ILEChange:=FALSE;
+      IF (L_ILE."Sales Contract No." <> _P_RecPostedDelivery."Contract No." ) THEN
+      Res_ILEChange:=TRUE;
+      IF (L_ILE."Source No." <>  _P_RecPostedDelivery."Customer No.") THEN
+      Res_ILEChange:=TRUE;
+      IF (L_ILE."Item No." <> _P_RecPostedDelivery."Item No.") THEN
+      Res_ILEChange:=TRUE;
+
+      IF (_P_RecPostedDelivery."Invoicing Weight"=0) AND
+        (L_ILE.Quantity <>- _P_RecPostedDelivery."Standard Weight") THEN
+        Res_ILEChange:=TRUE;
+      IF (_P_RecPostedDelivery."Invoicing Weight"<>0) AND
+        // --> 20160513-Gen15/001-ADV01.01.00-2813-NED
+        //(L_ILE.Quantity <>- _P_RecPostedDelivery."Invoicing Weight") THEN
+        (L_ILE.Quantity <>- _P_RecPostedDelivery."Invoicing Weight") OR
+        ((L_ILE.Quantity = - _P_RecPostedDelivery."Invoicing Weight") AND (SumILEQty(_P_RecPostedDelivery) <>
+         - _P_RecPostedDelivery."Standard Weight")) THEN
+        // <-- 20160513-Gen15/001-ADV01.01.00-2813-NED
+        Res_ILEChange:=TRUE;
+
+      EXIT(Res_ILEChange);
+      // <-- 20151016-GEN15/001-ADV01.01.00-2132-SDE01
+    END;
+
+    PROCEDURE LockMATIFPrimeContract@8053009(VAR _P_MATIFPrimeContract@8053000 : Record 8053066);
+    BEGIN
+      _P_MATIFPrimeContract.VALIDATE(Status, _P_MATIFPrimeContract.Status::Locked);
+      _P_MATIFPrimeContract.MODIFY(FALSE);
+    END;
+
+    PROCEDURE OpenMATIFPrimeContract@8053010(VAR _P_MATIFPrimeContract@8053000 : Record 8053066);
+    BEGIN
+      _P_MATIFPrimeContract.VALIDATE(Status, _P_MATIFPrimeContract.Status::Open);
+      _P_MATIFPrimeContract.MODIFY(FALSE);
+    END;
+
+    PROCEDURE CloseMATIFPrimeContract@8053011(VAR _P_MATIFPrimeContract@8053000 : Record 8053066);
+    BEGIN
+      _P_MATIFPrimeContract.VALIDATE(Status, _P_MATIFPrimeContract.Status::Closed);
+      _P_MATIFPrimeContract.MODIFY(FALSE);
+    END;
+
+    PROCEDURE SumTypedILEQty@60001(PostedDelivery_P@8053002 : Record 8053014;MovementType_P@8053004 : ' ,E01,E02,E03,E04,E05,S03,S04,S05,S10,S20,T10,T20,T30,T11,S11,T21,T22') : Decimal;
+    VAR
+      ILE_L@8053001 : Record 32;
+      QtySum_L@8053003 : Decimal;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Somme les quantit's du Type mouvement pass' en parametre pour un document
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - PostedDelivery_P : Livraison pour laquelle on recherche la somme des qt's
+      //   - MovementType_P   : Type du mouvement pour lequel on veut obtenir la somme des qt's
+      // Sorties:
+      //   - QtySum_L         : Somme des quantit's de type  sur le document
+      //----------------------------------------------------------------------------------------------------------
+      QtySum_L := 0;
+      ILE_L.SETCURRENTKEY("Document No.","Document Type","Document Line No.");
+      ILE_L.SETRANGE("Document No.",PostedDelivery_P."No.");
+      // --> 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+      //BEFORE
+      //ILE_L.SETRANGE("Entry Type",ILE_L."Entry Type"::Sale);
+      // <-- 20150731-GEN15/001-ADV01.01.00-1834-DRN01
+      ILE_L.SETRANGE("Movement Type", MovementType_P);
+      IF ILE_L.FINDSET THEN
+      REPEAT
+        QtySum_L += ILE_L.Quantity;
+      UNTIL ILE_L.NEXT = 0;
+      EXIT(QtySum_L);
+    END;
+
+    PROCEDURE ReturnLastEntryNoComp@1000000003(RecPostedDelivery_P@8053002 : Record 8053014) : Integer;
+    VAR
+      RecItemLedgerEntry_L@1000000003 : Record 32;
+      RecIcPartner_L@1000000002 : Record 413;
+      EntryNo_L@1000000001 : Integer;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Renvoie le N› de la derniere 'criture sur le magasin de compensation
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - PostedRcpt_P   : Entete de bon de sortie
+      // Sorties:
+      //   - EntryNo_L       : Le N› de s'quence de l'ecriture
+      //----------------------------------------------------------------------------------------------------------
+      // --> 20160513-Gen15/001-ADV01.01.00-2813-NED
+      EntryNo_L := 0;
+      RecIcPartner_L.GET(RecPostedDelivery_P."IC Partner Code");
+      RecIcPartner_L.TESTFIELD("Set Off Location Code");
+      RecItemLedgerEntry_L.SETCURRENTKEY("Document No.","Document Type","Document Line No.");
+      RecItemLedgerEntry_L.SETRANGE("Document No.",RecPostedDelivery_P."No.");
+      RecItemLedgerEntry_L.SETRANGE("Entry Type",RecItemLedgerEntry_L."Entry Type" :: Sale);
+      RecItemLedgerEntry_L.SETRANGE("Location Code",RecIcPartner_L."Set Off Location Code");
+      IF RecItemLedgerEntry_L.FINDLAST THEN
+        EntryNo_L := RecItemLedgerEntry_L."Entry No.";
+      EXIT(EntryNo_L);
+      // <-- 20160513-Gen15/001-ADV01.01.00-2813-NED
+    END;
+
+    PROCEDURE SumILEQty@60000(PostedDelivery_P@8053002 : Record 8053014) : Decimal;
+    VAR
+      ILE_L@8053001 : Record 32;
+      QtySum_L@8053003 : Decimal;
+    BEGIN
+      //----------------------------------------------------------------------------------------------------------
+      // Somme les quantit's des 'critures article pour un document
+      //----------------------------------------------------------------------------------------------------------
+      // Entr'es:
+      //   - PostedDelivery_P : Livraison pour laquelle on recherche la somme des qt's
+      // Sorties:
+      //   - QtySum_L         : Somme des quantit's de type  sur le document
+      //----------------------------------------------------------------------------------------------------------
+      // --> 20160513-Gen15/001-ADV01.01.00-2813-NED
+      QtySum_L := 0;
+      ILE_L.SETCURRENTKEY("Document No.","Document Type","Document Line No.");
+      ILE_L.SETRANGE("Document No.",PostedDelivery_P."No.");
+      IF ILE_L.FINDSET THEN
+      REPEAT
+        QtySum_L += ILE_L.Quantity;
+      UNTIL ILE_L.NEXT = 0;
+      EXIT(QtySum_L);
+      // <-- 20160513-Gen15/001-ADV01.01.00-2813-NED
+    END;
+
+    PROCEDURE CheckUCBC@1000000001(_P_CMCSalesContract@1000000000 : Record 8053012);
+    VAR
+      UCBCExportSetup_L@1000000001 : Record 60162;
+      CMCSpeciesSetup_L@1000000002 : Record 8053323;
+      TxtEmptyField@1000000003 : TextConst 'FRA=%1 doit avoir une valeur dans le contrat !;ENG=%1 must have a value in the contract !';
+    BEGIN
+      // --> 20230306-WI00-ADV01.01.00-3616-IJI01
+      UCBCExportSetup_L.GET;
+
+      IF _P_CMCSalesContract."Customer No."=UCBCExportSetup_L."UCBC Customer Code" THEN
+        IF _P_CMCSalesContract."Species Code"<>'' THEN
+          IF CMCSpeciesSetup_L.GET(_P_CMCSalesContract."Species Code") THEN
+            IF CMCSpeciesSetup_L."Biologic Species" THEN BEGIN
+
+              IF _P_CMCSalesContract."Customer Reference"='' THEN
+                ERROR(TxtEmptyField,_P_CMCSalesContract.FIELDCAPTION("Customer Reference"));
+
+              IF _P_CMCSalesContract."Subcontract No."='' THEN
+                ERROR(TxtEmptyField,_P_CMCSalesContract.FIELDCAPTION("Subcontract No."));
+
+              IF _P_CMCSalesContract."Ship-to Code"='' THEN
+                ERROR(TxtEmptyField,_P_CMCSalesContract.FIELDCAPTION("Ship-to Code"));
+
+              IF _P_CMCSalesContract."Shipping Type"=_P_CMCSalesContract."Shipping Type"::" " THEN
+                ERROR(TxtEmptyField,_P_CMCSalesContract.FIELDCAPTION("Shipping Type"));
+
+            END;
+      // <-- 20230306-WI00-ADV01.01.00-3616-IJI01
+    END;
+
+    BEGIN
+    {
+      // <-- 3LI BEGIN
+
+      20110601-Wi00-CMC01.04 : Version RTM 01.04 - NavAgri
+      20120919-Wi00-CMC01.04.05-TLM14674-JLT01 : Modification du contrat
+      20140606-Wi00-CMC02.02.00-SDE01 : ADDCODE(optimisation)
+      20150430-GEN15/001-CMC02.02.00-2944-FBE01 : Gestion des 'critures d''cart de poids sur Bons de sortie en IC
+      20150710-GEN15/001-CMC02.02.00-1834-FBE01 : Gestion des 'critures d''cart de poids sur Bons de sortie en IC
+      20150731-GEN15/001-ADV01.01.00-1834-DRN01 : MODCODE (Correction bug sur la gestion du poids . facturer)
+      20150928-GEN15/001-ADV01.01.00-2133-SDE01 : MODECODE (Ouverture bon)
+      20151008-GEN15/001-ADV01.01.00-2321-FBE01 : MODCODE Ne pas ouvir un Bon IC envoy' vers le partenaire
+      20151016-GEN15/001-ADV01.01.00-2132-SDE01 : MODECODE (modification checkILE)
+      20160513-Gen15/001-ADV01.01.00-2813-FBE : MODFUNCT (ReleasePostedDelivery, Gestion des poids factur's sur silos non partag's)
+      20160513-Gen15/001-ADV01.01.00-2813-NED : MODCODE (Correct. bug sur les conditions pour ins'rer ecrit. art. lors de modif qt' fact)
+      20160513-Gen15/001-ADV01.01.00-2813-NED : ADDFUNCT (ReturnLastEntryNoComp,SumILEQty)
+      20230306-WI00-ADV01.01.00-3616-IJI01  : ADDFUNC (CheckUCBC : verification champs rempli pour export UCBC)
+      // --> 3LI END
+    }
+    END.
+  }
+}
+

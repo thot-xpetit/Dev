@@ -1,0 +1,253 @@
+OBJECT Codeunit 8087772 CMC RADAR Order Integ 2
+{
+  OBJECT-PROPERTIES
+  {
+    Date=05/05/15;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    TableNo=8053405;
+    OnRun=VAR
+            "<-- 3LI LOCALS -->"@1000000005 : Integer;
+            TableRadarSetup_L@1000000004 : Record 8053404;
+            TableImportTemp_L@1000000003 : Record 8053405;
+            TableTrfHead_L@1000000002 : Record 5740;
+            TableTrfLine_L@1000000001 : Record 5741;
+            TableItemUnit_L@1000000024 : Record 5404;
+            TableSetupLoc_L@1000000026 : Record 8087773;
+            MoteurInterface_L@1000000006 : Codeunit 8061230;
+            ReleaseTransferDocument_L@1000000000 : Codeunit 5708;
+            ConnectorName_L@1000000011 : Code[20];
+            ImpExpFolder_L@1000000010 : Text[250];
+            LogFolder_L@1000000009 : Text[250];
+            ExtensionFile_L@1000000008 : Text[10];
+            PrefixFile_L@1000000007 : Text[10];
+            ItemTemplateCode_L@1000000017 : Code[20];
+            CustomerTemplateCode_L@1000000016 : Code[20];
+            VendorTemplateCode_L@1000000015 : Code[20];
+            ContactTemplateCode_L@1000000014 : Code[20];
+            AccountTemplateCode_L@1000000013 : Code[20];
+            GlobalTemplateCode_L@1000000012 : Code[20];
+            EnteteCree_L@1000000018 : Boolean;
+            TrfHeadModif_L@1000000019 : Boolean;
+            TrfLineModif_L@1000000023 : Boolean;
+            Result_L@1000000020 : Text[250];
+            SiloDest_L@1000000021 : Text[30];
+            Ligne_L@1000000022 : Integer;
+            ConvUnite_L@1000000025 : Decimal;
+            TrfFrom_L@1000000027 : Code[10];
+          BEGIN
+            //-->20130221-Int05-CMC02.02.00-ADVITAM-CDL
+            //----------------------------------------------------------------------------------------------------------------------------------
+            // Importation des commane d'achat copie table temporaire vers Table 38 & 39.
+            //----------------------------------------------------------------------------------------------------------------------------------
+            // Entr'es:
+            //   - ToolsFile_L                  : Code unit CMC ToolsFile : Pour loguer Erreur
+            // Sorties:
+            //   - Result_L   : Erreur Retourn'e, Vide si Ok
+            //----------------------------------------------------------------------------------------------------------------------------------
+            EnteteCree_L := FALSE;
+            TableImportTemp_L.SETCURRENTKEY(NoOperraOrder, NoOerraOrderLine);
+            TableImportTemp_L.SETRANGE("Integration Date", 0D);
+            TableImportTemp_L.SETRANGE(NoOperraOrder, NoOperraOrder);
+
+            IF TableImportTemp_L.FINDSET() THEN BEGIN
+              IF TableRadarSetup_L.FINDFIRST AND TableRadarSetup_L."Import Buy Order" THEN BEGIN
+                // ParamStre du connecteur de l'interface pas du codeUnit en cours
+                CodeUnit_G := TableRadarSetup_L.TransfertOrderCodeUnit;
+                MoteurInterface_L.GetParameter(CodeUnit_G, ConnectorName_L, ImpExpFolder_L, LogFolder_L, ExtensionFile_L, PrefixFile_L);
+                MoteurInterface_L.GetTemplatesCode (ConnectorName_L, ItemTemplateCode_L, CustomerTemplateCode_L, VendorTemplateCode_L,
+                  ContactTemplateCode_L, AccountTemplateCode_L, GlobalTemplateCode_L);
+
+                CLEAR(Ligne_L);
+
+                REPEAT
+                  IF (NOT EnteteCree_L) THEN BEGIN
+                    EnteteCree_L := TRUE;
+                    TrfHeadModif_L := FALSE;
+                    CLEAR (TableTrfHead_L);
+                    IF TableImportTemp_L.NoTrf <> '' THEN BEGIN
+                      IF TableTrfHead_L.GET(TableImportTemp_L.NoTrf) THEN BEGIN
+                        TrfHeadModif_L := TRUE;
+                        ReleaseTransferDocument_L.Reopen(TableTrfHead_L);
+                      END;
+                    END;
+                    IF GUIALLOWED THEN BEGIN
+                      TableTrfHead_L.SetHideValidationDialog(TRUE);
+                    END;
+                    IF NOT TrfHeadModif_L THEN BEGIN
+                      TableTrfHead_L."No." := TableRadarSetup_L.RadicalNoOrder + FORMAT(TableImportTemp_L.NoOperraOrder);
+                      IF NOT TableTrfHead_L.INSERT(TRUE) THEN BEGIN
+                        ERROR(COPYSTR(STRSUBSTNO(Text0010, TableTrfHead_L.TABLECAPTION, GETLASTERRORTEXT), 1, MAXSTRLEN(Result_L)));
+                        CLEARLASTERROR;
+                      END;
+                      TableTrfHead_L.VALIDATE("Doc. Category Code", TableRadarSetup_L."Doc. Category Code");
+                    END;
+                    // Correspondance silo
+                    SiloDest_L := MoteurInterface_L.Getcorrespondance(GlobalTemplateCode_L, 'Location', 'Code',
+                      TableImportTemp_L."Location Code", TRUE, TRUE);
+                    IF SiloDest_L = '' THEN BEGIN
+                      ERROR(COPYSTR(STRSUBSTNO(Text0013,TableImportTemp_L.FIELDCAPTION(TableImportTemp_L."Location Code"),
+                        TableImportTemp_L."Location Code", TableImportTemp_L."No."), 1, MAXSTRLEN(Result_L)));
+                    END ELSE BEGIN
+                      TableTrfHead_L.VALIDATE(TableTrfHead_L."Transfer-to Code", SiloDest_L);
+                    END;
+                    // Silo emetteur en fonction du destinataire : Radical + Silo
+                    TableSetupLoc_L.SETRANGE(VendorRadarNo, TableImportTemp_L.VendorNo);
+                    TableSetupLoc_L.SETRANGE(LocationStartRadar, COPYSTR(TableImportTemp_L.Remarq, 1, 3));
+                    TableSetupLoc_L.SETRANGE(LocationArrivedRadar, TableImportTemp_L."Location Code");
+                    IF TableSetupLoc_L.FINDFIRST THEN BEGIN
+                      TrfFrom_L := TableSetupLoc_L.LocationStartNav;
+                    END ELSE BEGIN
+                      TableSetupLoc_L.SETRANGE(VendorRadarNo, '');
+                      TableSetupLoc_L.SETRANGE(LocationStartRadar, '');
+                      TableSetupLoc_L.SETRANGE(LocationArrivedRadar, '');
+                      IF TableSetupLoc_L.FINDFIRST THEN BEGIN
+                        TrfFrom_L := TableSetupLoc_L.LocationStartNav;
+                      END ELSE BEGIN
+                        ERROR(COPYSTR(STRSUBSTNO(Text0019, TableImportTemp_L.VendorNo, COPYSTR(TableImportTemp_L.Remarq, 1, 3),
+                          TableImportTemp_L."Location Code", TableSetupLoc_L.TABLECAPTION), 1, MAXSTRLEN(Result_L)));
+                      END;
+                    END;
+                    TableTrfHead_L.VALIDATE(TableTrfHead_L."Transfer-from Code", TrfFrom_L);
+
+                    //-->20150423-Int05-CMC02.02.00-ADVITAM-CDL001
+                    // BEFORE
+                    {
+                    TableTrfHead_L.VALIDATE("Shipment Method Code", TableImportTemp_L."Shipment Method Code");
+                    }
+                    //AFTER
+                    IF TableImportTemp_L.DeliveryCondition = '' THEN BEGIN
+                      TableTrfHead_L.VALIDATE("Shipment Method Code", TableRadarSetup_L."Dft Shipment Method Code");
+                    END ELSE BEGIN
+                      TableTrfHead_L.VALIDATE("Shipment Method Code", TableImportTemp_L.DeliveryCondition);
+                    END;
+
+                    //<--20150423-Int05-CMC02.02.00-ADVITAM-CDL001
+                    TableTrfHead_L.VALIDATE("External Document No.", FORMAT(TableImportTemp_L.NoOperraOrder));
+                    TableTrfHead_L.VALIDATE("Posting Date", TODAY);
+                    TableTrfHead_L.VALIDATE(TableTrfHead_L."In-Transit Code", 'TRANSIT');
+                    // En modification si toutes Qt' . 0 permet de pouvoir lancer quand m^me la commande.
+                    TableTrfHead_L.VALIDATE(TableTrfHead_L."Pre Receive Reference No.", '.');
+                    IF NOT TableTrfHead_L.MODIFY(TRUE) THEN BEGIN
+                      ERROR(COPYSTR(STRSUBSTNO(Text0012, TableTrfHead_L.TABLECAPTION, GETLASTERRORTEXT), 1, MAXSTRLEN(Result_L)));
+                      CLEARLASTERROR;
+                    END;
+                    Ligne_L := 0;
+                  END;
+
+                  TrfLineModif_L := FALSE;
+                  CLEAR (TableTrfLine_L);
+                  IF TableImportTemp_L.NoTrf <> '' THEN BEGIN
+                    IF TableTrfLine_L.GET(TableImportTemp_L.NoTrf, TableImportTemp_L."Line NoTrf") THEN BEGIN
+                      TrfLineModif_L := TRUE;
+                    END;
+                  END;
+
+                  Ligne_L +=1;
+                  TableTrfLine_L.VALIDATE("Document No.", TableTrfHead_L."No.");
+                  TableTrfLine_L.VALIDATE("Line No.", Ligne_L);
+                  TableTrfLine_L.VALIDATE("Item No.", TableImportTemp_L.ItemNoOperra);
+                  TableTrfLine_L.VALIDATE("Receipt Date", TableImportTemp_L.DateAllocatesVendorPlanned);
+                  // T5404 filtre sur code article et unit
+                  TableItemUnit_L.SETCURRENTKEY("Item No.", "Qty. per Unit of Measure");
+                  TableItemUnit_L.SETRANGE("Item No.", TableImportTemp_L.ItemNoOperra);
+                  IF TableItemUnit_L.FINDFIRST THEN BEGIN
+                    // Test Unit' convertible (uS = UNav (ConvUnite = 0, 1 si idem
+                    CASE TableItemUnit_L.Code OF
+                      'T': BEGIN
+                        ConvUnite_L := 0.001;
+                      END;
+                      'KG': BEGIN
+                        ConvUnite_L := 1;
+                      END ELSE BEGIN
+                        ConvUnite_L := 0;
+                        ERROR(COPYSTR(STRSUBSTNO(Text0018, TableImportTemp_L.ItemNoOperra, TableItemUnit_L.Code), 1, MAXSTRLEN(Result_L)));
+                      END;
+                    END;
+                    TableTrfLine_L.VALIDATE(Quantity, TableImportTemp_L.QuantityPlanned * ConvUnite_L);
+                  END ELSE BEGIN
+                    TableTrfLine_L.VALIDATE(Quantity, TableImportTemp_L.QuantityPlanned);
+                  END;
+
+                  IF TrfLineModif_L THEN BEGIN
+                    IF NOT TableTrfLine_L.MODIFY(TRUE) THEN BEGIN
+                      ERROR(COPYSTR(STRSUBSTNO(Text0012, TableTrfLine_L.TABLECAPTION, GETLASTERRORTEXT), 1, MAXSTRLEN(Result_L)));
+                      CLEARLASTERROR;
+                    END ELSE BEGIN
+                      TableImportTemp_L.NoTrf := TableTrfLine_L."Document No.";
+                      TableImportTemp_L."Line NoTrf" := TableTrfLine_L."Line No.";
+                      TableImportTemp_L."Integration Date" := TODAY;
+                      IF NOT TableImportTemp_L.MODIFY(TRUE) THEN BEGIN
+                        ERROR(COPYSTR(STRSUBSTNO(Text0012, TableImportTemp_L.TABLECAPTION, GETLASTERRORTEXT), 1, MAXSTRLEN(Result_L)));
+                        CLEARLASTERROR;
+                      END;
+                    END;
+                  END ELSE BEGIN
+                    IF NOT TableTrfLine_L.INSERT(TRUE) THEN BEGIN
+                      ERROR(COPYSTR(STRSUBSTNO(Text0010, TableTrfLine_L.TABLECAPTION, GETLASTERRORTEXT), 1, MAXSTRLEN(Result_L)));
+                      CLEARLASTERROR;
+                    END ELSE BEGIN
+                      TableImportTemp_L.NoTrf := TableTrfLine_L."Document No.";
+                      TableImportTemp_L."Line NoTrf" := TableTrfLine_L."Line No.";
+                      TableImportTemp_L."Integration Date" := TODAY;
+                      IF NOT TableImportTemp_L.MODIFY(TRUE) THEN BEGIN
+                        ERROR(COPYSTR(STRSUBSTNO(Text0012, TableImportTemp_L.TABLECAPTION, GETLASTERRORTEXT),
+                          1, MAXSTRLEN(Result_L)));
+                        CLEARLASTERROR;
+                      END;
+                    END;
+                  END;
+                UNTIL TableImportTemp_L.NEXT = 0;
+                ReleaseTransferDocument_L.RUN(TableTrfHead_L);
+            // Ne fonctionne pas Erreur Navision
+            //          IF NOT ReleaseTransferDocument_L.RUN(TableTrfHead_L) THEN BEGIN
+                IF 1 = 2 THEN BEGIN
+                  ERROR(COPYSTR(STRSUBSTNO(Text0017, TableTrfHead_L.TABLECAPTION, GETLASTERRORTEXT), 1, MAXSTRLEN(Result_L)));
+                  CLEARLASTERROR;
+                END;
+              END;
+            END;
+            //<--20130118-Int02-CMC02.02.00-ADVITAM-CDL
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      "<-- 3LI TEXT GLOBALS -->"@1000000008 : TextConst;
+      Text0001@1000000007 : TextConst 'ENU=Error create file %1 : %2;FRA=Erreur cr'ation fichier %1 : %2';
+      Text0002@1000000006 : TextConst 'ENU=Error open file %1 : %2;FRA=Erreur ouverture fichier %1 : %2';
+      Text0003@1000000005 : TextConst 'ENU=Error Cash Setup was not exist;FRA=Erreur param'trage tr'sorerie inexistant';
+      Text0004@1000000004 : TextConst 'ENU=Error export in file %1;FRA=Erreur export dans fichier %1';
+      Text0005@1000000003 : TextConst 'ENU=Error file %1 already exist.;FRA=Erreur fichier %1 existe d'j..';
+      Text0006@1000000002 : TextConst 'ENU=Error during define keys for table %1;FRA=Erreur lors de la d'finition de la cl' pour table %1';
+      Text0007@1000000000 : TextConst 'ENU=Confirm traitment %1;FRA=Confirmer export %1';
+      Text0008@1000000010 : TextConst 'ENU=Error field %1 : Record %2;FRA="Erreur zone ""%1""=""%2"" : Enregistrement %3"';
+      Text0009@1000000009 : TextConst 'ENU=Error file %1 was not exist.;FRA=Erreur fichier %1 inexistant.';
+      Text0010@1000000001 : TextConst 'ENU=Error INSERT table %1 : %2;FRA=Erreur INSERT table %1 : %2';
+      Text0011@1000000011 : TextConst 'ENU=Error record type %1 is not valid;FRA=Erreur type d''enregistrement %1 non valide.';
+      Text0012@1000000014 : TextConst 'FRA=Erreur MODIFY table %1 : %2';
+      Text0013@1000000018 : TextConst 'FRA=Erreur correspondance "%1" : "%2" non param'tr' pour %3.';
+      Text0014@1000000012 : TextConst 'ENU=Error backup copy.;FRA=Erreur copie de sauvegarde.';
+      Text0015@1000000013 : TextConst 'FRA=Correspondance article "%1" non param'tr' : Enregistrement %2.';
+      Text0016@1000000015 : TextConst 'FRA=Correspondance fournisseur "%1" non param'tr' : Enregistrement %2';
+      "<-- 3LI GLOBALS -->"@1000000017 : Integer;
+      CodeUnit_G@1000000016 : Integer;
+      Text0017@1000000019 : TextConst 'FRA=Erreur "Lancement" table %1 : %2';
+      Text0018@1000000020 : TextConst 'FRA=Produit "%1" unit' sicapa "%2" non convertible.';
+      Text0019@1000000021 : TextConst 'FRA=Erreur "%1-%2-%3" non param'tr' en table "%4" ou pas d''enregistrement par d'faut.';
+
+    BEGIN
+    {
+      //--> 3LI BEGIN
+      20130221-Int05-CMC02.02.00-ADVITAM-CDL : - RADAR : Import commande r'appro.
+      20150423-Int05-CMC02.02.00-ADVITAM-CDL001 : - Modification divers
+      //<-- 3LI END
+    }
+    END.
+  }
+}
+

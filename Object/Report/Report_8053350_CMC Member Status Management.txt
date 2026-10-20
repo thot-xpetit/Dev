@@ -1,0 +1,428 @@
+OBJECT Report 8053350 CMC Member Status Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=05/10/21;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Member Status Management;
+               FRA=Traitement statut adh'rent];
+    ProcessingOnly=Oui;
+    OnPreReport=BEGIN
+                  IF CampagneNo_G = '' THEN
+                    ERROR(Text60002_G);
+                  CMCCampaign_G.GET(CampagneNo_G);
+                  ArretDate_G := CMCCampaign_G."Ending Date";
+
+                  CLEAR(LastLineNo_G);
+                  MbrJnlLine_G.SETRANGE(MbrJnlLine_G."Capital Journal Template",CurrTemplateName_G);
+                  MbrJnlLine_G.SETRANGE(MbrJnlLine_G."Capital Batch Name",CurrWorksheetName_G);
+                  IF MbrJnlLine_G.FINDLAST THEN
+                    LastLineNo_G := MbrJnlLine_G."Line No.";
+                END;
+
+    OnPostReport=BEGIN
+                   CloseWindow;
+                 END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table5050;
+        DataItemTableView=SORTING(No.)
+                          WHERE(Type=CONST(Company),
+                                Contact Type=FILTER(Farm),
+                                Partner Type=FILTER(Cooperator));
+        OnPreDataItem=VAR
+                        FormuleText_L@8053000 : Text[30];
+                        Text8053000_L@8053001 : TextConst 'ENU=Field Date Formula can not be empty;FRA=Le champ formule date ne doit pas ^tre vide';
+                      BEGIN
+                        CapitalSetup_G.GET;
+                        CLEAR(MvtType_G);
+
+                        CASE ActionMsg_G OF
+                          ActionMsg_G :: "Active To Not Active":
+                            BEGIN
+                              CapitalSetup_G.TESTFIELD(CapitalSetup_G."Mvt Type Active To Not Active");
+                              MvtType_G := CapitalSetup_G."Mvt Type Active To Not Active";
+                              Contact.SETRANGE(Contact."Activity State",Contact."Activity State"::Active);
+                              {
+                              FormuleText_L := FORMAT(DateFormula_G);
+                              IF FormuleText_L='' THEN
+                                ERROR(Text8053000_L);
+                              }
+                            END;
+                          ActionMsg_G :: "Not Active To Active":
+                            BEGIN
+                              CapitalSetup_G.TESTFIELD(CapitalSetup_G."Mvt Type Not Active To Active");
+                              MvtType_G := CapitalSetup_G."Mvt Type Not Active To Active";
+                              Contact.SETRANGE(Contact."Activity State",Contact."Activity State"::"Not Active");
+                            END;
+                        ELSE
+                          ERROR(Text60000_G);
+                        END;
+                        OpenWindow;
+                      END;
+
+        OnAfterGetRecord=VAR
+                           TxtDescription_L@1000000000 : Text[30];
+                         BEGIN
+                           UpdateWindow;
+
+                           PartTypeRec_G.RESET;
+                           PartTypeRec_G.SETFILTER("Member Filter",Contact."No.");
+                           PartTypeRec_G.SETFILTER("Date Filter",'%1..%2',0D,CMCCampaign_G."Ending Date");
+                           PartTypeRec_G.CALCFIELDS("Total Part Amount");
+                           IF MaxCapital_G <> 0 THEN BEGIN
+                             IF (PartTypeRec_G."Total Part Amount" > MaxCapital_G) OR (PartTypeRec_G."Total Part Amount" <= 0) THEN
+                               CurrReport.SKIP;
+                           END ELSE BEGIN
+                             IF PartTypeRec_G."Total Part Amount" <= 0 THEN
+                               CurrReport.SKIP;
+                           END;
+
+                           {A VOIR
+                           IF (Contact."Customer No." <> '') AND (Contact."Activity State" = Contact."Activity State"::Active) THEN
+                             BEGIN
+                               CustEntry_G.RESET;
+                               CustEntry_G.SETRANGE(CustEntry_G."Customer No.",Contact."Customer No.");
+                               CustEntry_G.SETFILTER("Posting Date",'%1..%2',Date_G,ArretDate_G);
+                               IF CustEntry_G.FINDFIRST THEN
+                                 CurrReport.SKIP;
+                               CustEntry_G.SETRANGE("Posting Date");
+                               CustEntry_G.SETRANGE(CustEntry_G.Open,TRUE);
+                               IF CustEntry_G.FINDFIRST THEN
+                                 CurrReport.SKIP;
+                             END;
+
+                           IF (Contact."Vendor No." <> '') AND (Contact."Activity State" = Contact."Activity State"::Active) THEN
+                             BEGIN
+                               VendEntry_G.RESET;
+                               VendEntry_G.CALCFIELDS("Capital Ledger");
+                               VendEntry_G.SETRANGE(VendEntry_G."Capital Ledger",FALSE);
+                               VendEntry_G.SETRANGE(VendEntry_G."Vendor No.",Contact."Vendor No.");
+                               VendEntry_G.SETFILTER("Posting Date",'%1..%2',Date_G,ArretDate_G);
+                               IF VendEntry_G.FINDFIRST THEN
+                                 CurrReport.SKIP;
+                               VendEntry_G.SETRANGE("Posting Date");
+                               VendEntry_G.SETRANGE(VendEntry_G.Open,TRUE);
+                               IF VendEntry_G.FINDFIRST THEN
+                                 CurrReport.SKIP;
+                             END;
+                           }
+
+                           CapitalSocial_G.SETCURRENTKEY(ADHERENT,NO_CAMPAGNE);
+                           CapitalSocial_G.SETRANGE(ADHERENT,"No.");
+                           CapitalSocial_G.SETRANGE(NO_CAMPAGNE,CampagneNo_G);
+
+                           TxtDescription_L := '';
+                           IF CapitalSocial_G.FIND('-') = FALSE THEN BEGIN
+                             // Pas d'enregistrement dans la table ADVITAM Capital social
+                             IF Contact."Activity State" = Contact."Activity State"::"Not Active" THEN
+                               CurrReport.SKIP;
+                             TxtDescription_L := STRSUBSTNO(Text60003_G,CampagneNo_G);
+                             CapitalSocial_G.SETRANGE(NO_CAMPAGNE);
+                             IF CapitalSocial_G.FINDLAST THEN
+                               TxtDescription_L += ' OK ' + CapitalSocial_G.NO_CAMPAGNE;
+                           END ELSE BEGIN
+                             CASE Contact."Activity State" OF
+                             Contact."Activity State"::Active :
+                               IF CapitalSocial_G.CAPITAL_STATUTAIRE <> 0 THEN
+                                 CurrReport.SKIP;
+                             Contact."Activity State"::"Not Active" :
+                               IF CapitalSocial_G.CAPITAL_STATUTAIRE = 0 THEN
+                                 CurrReport.SKIP;
+                             ELSE
+                               CurrReport.SKIP;
+                             END;
+                           END;
+
+                           InsertJnlMember(Contact,TxtDescription_L);
+                         END;
+
+        ReqFilterFields=No.;
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=12000;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=9020;
+      Height=3410;
+    }
+    CONTROLS
+    {
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      OnOpenPage=BEGIN
+                   PostingDate_G:=WORKDATE;
+                   IsEditable_G := TRUE;
+                   ActionMsg_G := ActionMsg_G :: "Active To Not Active";
+                 END;
+
+    }
+    CONTROLS
+    {
+      { 8053000; ;Container ;
+                  ContainerType=ContentArea }
+
+      { 8053001;1;Group     ;
+                  CaptionML=[ENU=Options;
+                             FRA=Options];
+                  GroupType=Group }
+
+      { 8053005;2;Field     ;
+                  Name=Posting Date;
+                  CaptionML=[ENU=Posting Date;
+                             FRA=Date comptabilisation];
+                  SourceExpr=PostingDate_G }
+
+      { 8053006;2;Field     ;
+                  Name=Document No.;
+                  CaptionML=[ENU=Document No.;
+                             FRA=N› Document];
+                  SourceExpr=DocNo_G }
+
+      { 8053002;2;Field     ;
+                  Name=Action Message;
+                  CaptionML=[ENU=Action Message;
+                             FRA=Message action];
+                  OptionCaptionML=[ENU=Active To Actif Without activity,Active To Not Active,Active Without Activity To Active,Active Without Activity To Not Active,Not Active To Active;
+                                   FRA=Actif->Actif sans activit',Actif->Non Actif,Actif sans activit'->Actif,Actif sans activit'->Non actif,Non actif->Actif];
+                  SourceExpr=ActionMsg_G;
+                  OnValidate=BEGIN
+                               // --> 20130410-FINA09-CMC02.02.00-BRA01
+                               //BEFORE
+                               {
+                               IF (ActionMsg_G=ActionMsg_G::"Active Without Activity To Active") OR
+                                 (ActionMsg_G=ActionMsg_G::"Not Active To Active") THEN
+                                 IsEditable_G := FALSE
+                               ELSE
+                                 IsEditable_G := TRUE;
+                               }
+                               // <-- 20130410-FINA09-CMC02.02.00-BRA01
+                               CLEAR(DateFormula_G);
+                             END;
+                              }
+
+      { 8053007;2;Field     ;
+                  Name=N› Campagne;
+                  CaptionML=[ENU=Closing Date;
+                             FRA=N› campagne];
+                  SourceExpr=CampagneNo_G;
+                  TableRelation="CMC Campaign" }
+
+      { 8053003;2;Field     ;
+                  Name=Period Formula;
+                  CaptionML=[ENU=Period Formula;
+                             FRA=Formule de p'riode];
+                  SourceExpr=DateFormula_G;
+                  Visible=FALSE;
+                  Editable=IsEditable_G;
+                  OnValidate=VAR
+                               Text8053000_L@8053002 : TextConst 'ENU=Would you like to insert negative date formula;FRA=Veuillez ins'rer une formule de date n'gative';
+                             BEGIN
+                               Date_G := CALCDATE(DateFormula_G,PostingDate_G);
+                               IF Date_G > PostingDate_G THEN
+                                 ERROR(Text8053000_L);
+                             END;
+                              }
+
+      { 8053004;2;Field     ;
+                  Name=Max Capital;
+                  CaptionML=[ENU=Min Capital;
+                             FRA=Capital maximal];
+                  SourceExpr=MaxCapital_G;
+                  Visible=FALSE }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      ActionMsg_G@8053000 : 'Active To Actif Without activity,Active To Not Active,Active Without Activity To Active,Active Without Activity To Not Active,Not Active To Active';
+      DateFormula_G@8053001 : DateFormula;
+      MaxCapital_G@8053002 : Decimal;
+      CustEntry_G@8053003 : Record 21;
+      VendEntry_G@8053004 : Record 25;
+      PartTypeRec_G@8053005 : Record 8053351;
+      Date_G@8053007 : Date;
+      MbrJnlLine_G@8053008 : Record 8053356;
+      CapitalSetup_G@8053010 : Record 8053350;
+      PostingDate_G@8053011 : Date;
+      DocNo_G@8053012 : Code[20];
+      CurrTemplateName_G@8053013 : Code[10];
+      CurrWorksheetName_G@8053014 : Code[10];
+      MvtType_G@8053015 : Code[10];
+      NoSeries_G@8053016 : Codeunit 396;
+      Counter_G@8053018 : Integer;
+      CounterOK_G@8053017 : Integer;
+      NoOfRecords_G@8053019 : Integer;
+      Window_G@8053020 : Dialog;
+      Text8053000_G@8053022 : TextConst 'ENU=Processing...\\;FRA=Traitement...\\';
+      Text8053001_G@8053021 : TextConst 'ENU=Contact No.  #1##################;FRA=N› contact   #1##################';
+      LastLineNo_G@8053023 : Integer;
+      IsEditable_G@8053006 : Boolean INDATASET;
+      ArretDate_G@8053024 : Date;
+      Text60000_G@1000000000 : TextConst 'FRA=Seul le passage de "Actif" . "Non Actif" ou "Non Actif" . "Actif" est possible.';
+      CapitalSocial_G@1000000001 : Record 8087796;
+      CampagneNo_G@1000000002 : Code[10];
+      Text60001_G@1000000003 : TextConst 'FRA=L''agriculteur %1 possSde des parts mais n''a pas de calcul de capital social dans la campagne %2.\Souhaitez vous continuer ?';
+      Dialog_G@1000000004 : Dialog;
+      Text60002_G@1000000005 : TextConst 'FRA=Vous devez s'lectionner une campagne.';
+      CMCCampaign_G@1000000006 : Record 8052991;
+      Text60003_G@1000000008 : TextConst 'FRA=Nok %1';
+
+    PROCEDURE SetTemplAndWorksheet@2(TemplateName@1000 : Code[10];WorksheetName@1001 : Code[10]);
+    BEGIN
+      CurrTemplateName_G := TemplateName;
+      CurrWorksheetName_G := WorksheetName;
+    END;
+
+    PROCEDURE InsertJnlMember@8053010(Contact_P@8053000 : Record 5050;TxtDescription_P@1000000000 : Text[30]);
+    VAR
+      CapJnlBatch_L@8053001 : Record 8053355;
+    BEGIN
+      MbrJnlLine_G."Capital Journal Template" := CurrTemplateName_G;
+      MbrJnlLine_G."Capital Batch Name" := CurrWorksheetName_G;
+      MbrJnlLine_G."Line No." := LastLineNo_G+10000;
+      MbrJnlLine_G."Posting Date" := PostingDate_G;
+      MbrJnlLine_G."Movement Type" := MvtType_G;
+      MbrJnlLine_G."Action Message" := ActionMsg_G;
+      MbrJnlLine_G."Campaign No." := CampagneNo_G;
+      MbrJnlLine_G."Closing Date" := ArretDate_G;
+      IF DocNo_G ='' THEN
+        BEGIN
+         CapJnlBatch_L.GET(CurrTemplateName_G,CurrWorksheetName_G);
+         CapJnlBatch_L.TESTFIELD(CapJnlBatch_L."No. Series");
+         MbrJnlLine_G."Document No." := NoSeries_G.GetNextNo(CapJnlBatch_L."No. Series",PostingDate_G,FALSE);
+        END ELSE
+          MbrJnlLine_G."Document No." := DocNo_G;
+      MbrJnlLine_G."Account Type" := MbrJnlLine_G."Account Type"::Adh'rent;
+      MbrJnlLine_G."Account No." := Contact_P."No.";
+      MbrJnlLine_G.Description := Contact_P.Name;
+      MbrJnlLine_G."Posting Description" := STRSUBSTNO('%1 %2',Contact_P."No.",MbrJnlLine_G."Action Message");
+      MbrJnlLine_G."No. Series" := CapJnlBatch_L."No. Series";
+      IF CapJnlBatch_L."Posting No. Series" ='' THEN
+        MbrJnlLine_G."Posting No. Series" := CapJnlBatch_L."No. Series"
+      ELSE
+        MbrJnlLine_G."Posting No. Series" := CapJnlBatch_L."Posting No. Series";
+      MbrJnlLine_G."G/L Posting No. Series" := CapJnlBatch_L."G/L Posting No. Series";
+      LoadAmount(MbrJnlLine_G);
+      IF TxtDescription_P <> '' THEN BEGIN
+        MbrJnlLine_G."Accept Action Message" := FALSE;
+        MbrJnlLine_G.Description := TxtDescription_P;
+      END ELSE
+        MbrJnlLine_G."Accept Action Message" := TRUE;
+      MbrJnlLine_G.INSERT;
+      LastLineNo_G := LastLineNo_G+10000;
+    END;
+
+    PROCEDURE OpenWindow@5();
+    VAR
+      Indentation_L@1000 : Integer;
+      Text8053001_L@8053001 : TextConst 'ENU=Processing...\\;FRA=Traitement ...\\';
+      Text8053000_L@8053000 : TextConst 'ENU=Progress;FRA=Progression';
+    BEGIN
+      Counter_G := 0;
+      CounterOK_G := 0;
+      NoOfRecords_G := Contact.COUNT;
+      Indentation_L := STRLEN(Text8053000_L);
+
+      Window_G.OPEN(
+        Text8053001_L +
+        PADSTR(Text8053000_L,Indentation_L) + ' @1@@@@@@@@@@@@@\' +
+        PADSTR(Contact.FIELDCAPTION("No."),Indentation_L) + ' #2##########');
+    END;
+
+    PROCEDURE UpdateWindow@6();
+    BEGIN
+      Counter_G := Counter_G + 1;
+      Window_G.UPDATE(1,ROUND(Counter_G / NoOfRecords_G * 10000,1));
+      Window_G.UPDATE(2,Contact."No.");
+    END;
+
+    PROCEDURE CloseWindow@1();
+    BEGIN
+      Window_G.CLOSE;
+    END;
+
+    PROCEDURE LoadAmount@1000000003(VAR CapJnlLine_P@1000000000 : Record 8053356);
+    VAR
+      PartType_L@1000000005 : Record 8053351;
+      Int_L@1000000006 : Integer;
+    BEGIN
+      PartType_L.RESET;
+      PartType_L.SETFILTER("Member Filter",MbrJnlLine_G."Account No.");
+      PartType_L.SETFILTER("Date Filter",'%1..%2',0D,CMCCampaign_G."Ending Date");
+      Int_L := 0;
+      IF PartType_L.FIND('-') THEN REPEAT
+        Int_L += 1;
+        PartType_L.CALCFIELDS("Part Type Amount");
+        CASE Int_L OF
+        1: CapJnlLine_P."Base 1" := PartType_L."Part Type Amount";
+        2: CapJnlLine_P."Base 2" := PartType_L."Part Type Amount";
+        3: CapJnlLine_P."Base 3" := PartType_L."Part Type Amount";
+        4: CapJnlLine_P."Base 4" := PartType_L."Part Type Amount";
+        5: CapJnlLine_P."Base 5" := PartType_L."Part Type Amount";
+        // --> 20211005-WI00-ADV01.01.00-SP3574-MRU01
+        6: CapJnlLine_P."Base 6" := PartType_L."Part Type Amount";
+        7: CapJnlLine_P."Base 7" := PartType_L."Part Type Amount";
+        8: CapJnlLine_P."Base 8" := PartType_L."Part Type Amount";
+        9: CapJnlLine_P."Base 9" := PartType_L."Part Type Amount";
+        10: CapJnlLine_P."Base 10" := PartType_L."Part Type Amount";
+        // <-- 20211005-WI00-ADV01.01.00-SP3574-MRU01
+        END;
+      UNTIL PartType_L.NEXT = 0;
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20130314-FINA09-CMC02.02.00-WSA01 : CREATEOBJ
+      20130410-FINA09-CMC02.02.00-WSA01 : ADDCODE (Date formula Editable)
+      20130410-FINA09-CMC02.02.00-WSA02 : ADDCODE (Contr"le du champ formule date)
+      20130410-FINA09-CMC02.02.00-BRA01 : ADDCODE (Exclure les 'critures de capital des 'critures fournisseurs)
+                                          MODCODE (formule de date toujours Active)
+      20130418-FINA09-CMC02.02.00-BRA01 : MODCODE (Capital Min --> Capital Max) PBM 315
+                                          MODVIEW (Filtre coop annul') PBM 318
+                                          ADDCODE (Calcul sur la base de la date d'arr^t') PBM 317
+      20130418-FINA09-CMC02.02.00-BRA01 : MODVIEW (Filtre coop remis)
+      20130617-FINA09-CMC02.02.00-BRA01 : MODCODE (Filtre sur le capital >0)
+      20130715-FINA09-CMC02.02.00-WSA01 : MODCODE (Traitement capital maximal)
+      20130716-FINA09-CMC02.02.00-WSA01 : MODCODE (Action msg en anglais (PBM 637))
+      20141212-FINA09-CMC02.02.00-2639-BRA01 : BUGFIXED ('Oui' ou lieu du True)
+      20171003-WI00-3299-ADV01.01.00-JCD : MODCODE (refonte totale du report)
+      20211005-WI00-ADV01.01.00-SP3574-MRU01 : ADDCODE (Gestion 5 ristournes suppl'mentaires)
+      // <-- 3LI END
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

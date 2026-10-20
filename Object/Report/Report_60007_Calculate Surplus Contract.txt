@@ -1,0 +1,904 @@
+OBJECT Report 60007 Calculate Surplus Contract
+{
+  OBJECT-PROPERTIES
+  {
+    Date=20/04/15;
+    Heure=00:00:00;
+    Liste versions=TER01.01.00;
+  }
+  PROPERTIES
+  {
+    CaptionML=[ENU=Calculate Surplus Contract;
+               FRA=Calculer exc'dent contrat];
+    ProcessingOnly=Oui;
+    OnPreReport=BEGIN
+                  //IF NOT ValidateSurplusContract_G THEN BEGIN
+                    IF (StartingDate_G = 0D) OR (EndingDate_G = 0D) THEN
+                      ERROR(STRSUBSTNO(Text60000,Text60001));
+
+                    //IF (SpeciesFilter_G = '') THEN
+                    //  ERROR(STRSUBSTNO(Text60000,Text60003));
+
+                    //IF (VendorFilter_G = '') THEN
+                    //  ERROR(STRSUBSTNO(Text60000,Text60005));
+                  //END;
+                END;
+
+  }
+  DATAITEMS
+  {
+    { PROPERTIES
+      {
+        DataItemTable=Table8052995;
+        DataItemTableView=SORTING(Receipt Type,No.)
+                          WHERE(Receipt Type=FILTER(Receipt|Resumption),
+                                Canceled=CONST(Non));
+        OnPreDataItem=VAR
+                        SurplusContract_L@60000 : Record 60021;
+                      BEGIN
+                        //IF ValidateSurplusContract_G THEN
+                        //  CurrReport.BREAK;
+
+                        SurplusContract_G.RESET;
+                        // --> 20141007-CER07-TER01.01.00-RMZ01
+                        // Before
+                        SurplusContract_G.DELETEALL;
+                        // After
+                        // Deleting the lines that already as a contract
+                        {
+                        SurplusContract_G.SETRANGE("Is Header",FALSE);
+                        IF SurplusContract_G.FINDFIRST THEN
+                          REPEAT
+                            CLEAR(PostedReceiptsLine_G);
+                            PostedReceiptsLine_G.SETRANGE("Receipt Type",SurplusContract_G."Receipt Type");
+                            PostedReceiptsLine_G.SETRANGE("No.",SurplusContract_G."Receipt No.");
+                            PostedReceiptsLine_G.SETRANGE("Line No.",SurplusContract_G."Receipt Line No.");
+                            IF (PostedReceiptsLine_G.FINDFIRST) AND (PostedReceiptsLine_G."Contract No." <> '') THEN BEGIN
+                              SurplusContract_G.DELETE;
+                            END;
+                          UNTIL SurplusContract_G.NEXT = 0;
+
+                        // Now checking, after the delete, if the header as lines
+                        SurplusContract_G.RESET;
+                        SurplusContract_G.SETRANGE("Is Header",TRUE);
+                        IF SurplusContract_G.FINDFIRST THEN
+                          REPEAT
+                            CLEAR(SurplusContract_L);
+                            SurplusContract_L.SETRANGE("Vendor No.",SurplusContract_G."Vendor No.");
+                            SurplusContract_L.SETRANGE("Item No.",SurplusContract_G."Item No.");
+                            SurplusContract_L.SETRANGE("Is Header",FALSE);
+                            IF NOT SurplusContract_L.FINDFIRST THEN
+                              SurplusContract_G.DELETE;
+                          UNTIL SurplusContract_G.NEXT = 0;
+                        }
+                        // <-- 20141007-CER07-TER01.01.00-RMZ01
+
+                        SurplusContractPrice_G.RESET;
+                        SurplusContractPrice_G.DELETEALL;
+
+                        SETRANGE("Posting Date",StartingDate_G,EndingDate_G);
+                        IF (SpeciesFilter_G <> '') THEN
+                          SETFILTER("Species Code",STRSUBSTNO('%1',SpeciesFilter_G))
+                        ELSE
+                          SETRANGE("Species Code");
+
+                        IF (ItemFilter_G <> '') THEN
+                          SETFILTER("Item No.",STRSUBSTNO('%1',ItemFilter_G))
+                        ELSE
+                          SETRANGE("Item No.");
+
+                        IF (VendorFilter_G <> '') THEN
+                          SETFILTER("Vendor No.",STRSUBSTNO('%1',VendorFilter_G))
+                        ELSE
+                          SETRANGE("Vendor No.");
+
+                        IF (ReceiptFilter_G <> '') THEN
+                          SETFILTER("No.",STRSUBSTNO('%1',ReceiptFilter_G))
+                        ELSE
+                          SETRANGE("No.");
+
+                        // --> 20141007-CER07-TER01.01.00-RMZ01
+                        IF CampaignNo_G <> '' THEN
+                          "CMC Posted Receipts".SETRANGE("Campaign No.",CampaignNo_G);
+
+                        IF RegionCode_G <> '' THEN
+                          "CMC Posted Receipts".SETRANGE("Region Code",RegionCode_G);
+                        // <-- 20141007-CER07-TER01.01.00-RMZ01
+                      END;
+
+        OnAfterGetRecord=VAR
+                           Vendor_L@60000 : Record 23;
+                           SalespersonPurchaser_L@60001 : Record 13;
+                           Item_L@60003 : Record 27;
+                           InFilter_L@60002 : Boolean;
+                         BEGIN
+                           IF NOT ("Posting Date" IN [StartingDate_G..EndingDate_G]) THEN
+                             CurrReport.SKIP;
+
+                           IF (SalesPersonPurchaserFilter_G <> '') THEN BEGIN
+                             Vendor_L.GET("Vendor No.");
+                             InFilter_L := FALSE;
+
+                             SalespersonPurchaser_L.RESET;
+                             SalespersonPurchaser_L.SETFILTER(Code,STRSUBSTNO('%1',SalesPersonPurchaserFilter_G));
+                             IF SalespersonPurchaser_L.FIND('-') THEN
+                               REPEAT
+                                 IF (Vendor_L."Purchaser Code" = SalesPersonPurchaserFilter_G) THEN
+                                   InFilter_L := TRUE;
+                               UNTIL (SalespersonPurchaser_L.NEXT = 0) OR InFilter_L;
+
+                             IF NOT InFilter_L THEN
+                               CurrReport.SKIP;
+
+                           //  IF (Vendor_L."Purchaser Code" <> SalesPersonPurchaserFilter_G) THEN
+                           //    CurrReport.SKIP;
+                           END;
+
+                           IF ("Contract No." <> '') THEN
+                             CurrReport.SKIP;
+
+                           IF NOT Calibration THEN
+                             CreateSurplusContract("CMC Posted Receipts")
+                           ELSE BEGIN
+                             IF NOT (ItemFilter_G = '') THEN
+                               InFilter_L := FALSE;
+
+                             Item_L.RESET;
+                             Item_L.SETFILTER("No.",STRSUBSTNO('%1',ItemFilter_G));
+                             IF Item_L.FIND('-') THEN
+                               REPEAT
+                                 IF "Item No." = Item_L."No." THEN
+                                   InFilter_L := TRUE;
+                               UNTIL (Item_L.NEXT = 0) OR InFilter_L;
+
+                             IF InFilter_L THEN
+                               CreateSurplusContract("CMC Posted Receipts");
+
+
+                           //  IF ("Item No." = ItemFilter_G) THEN
+                           //    CreateSurplusContract("CMC Posted Receipts");
+                           END;
+                         END;
+
+      }
+      SECTIONS
+      {
+      }
+       }
+    { PROPERTIES
+      {
+        DataItemTable=Table60021;
+        DataItemTableView=SORTING(Vendor No.,Item No.,Receipt No.,Receipt Line No.)
+                          WHERE(Include on Contract=CONST(Oui));
+        OnPreDataItem=BEGIN
+                        IF NOT ValidateSurplusContract_G THEN
+                          CurrReport.BREAK;
+                      END;
+
+        OnAfterGetRecord=VAR
+                           RemainingQty_L@60000 : Decimal;
+                         BEGIN
+                           CMCSetup_G.GET;
+
+                           CollectionContract_G.INIT;
+                           CollectionContract_G."No." := '';
+                           CollectionContract_G.Type := CollectionContract_G.Type::Contract;
+                           IF "Due Date" = 0D THEN
+                             CollectionContract_G.VALIDATE("Contract Type",CMCSetup_G."Default Contract Type")
+                           ELSE
+                             CollectionContract_G.VALIDATE("Contract Type",CMCSetup_G."Deposit Release Contract Type");
+                           CollectionContract_G.VALIDATE("Vendor No.","Vendor No.");
+                           Item_G.GET("Item No.");
+                           CollectionContract_G.VALIDATE("Species Code",Item_G."Species Code");
+                           CollectionContract_G.VALIDATE("Item No.","Item No.");
+                           CollectionContract_G."Ship Starting Date" := "Creation Date";
+                           CollectionContract_G."Ship Ending Date" := WORKDATE;
+                           IF "Due Date" <> 0D THEN BEGIN
+                             CollectionContract_G."Due Date" := "Due Date";
+                           END;
+                           CollectionContract_G."Unit Price" := "Surplus Contract".Price;
+                           CollectionContract_G.INSERT(TRUE);
+
+                           CollectionContract_G.CALCFIELDS("Qty On Post. Recept Line","Quantity Received");
+
+                           PostedReceipts_G.GET("Receipt Type","Receipt No.");
+                           CMCStatusMgt_G.OpenPostedReceipt(PostedReceipts_G);
+
+                           PostedReceiptsLine_G.RESET;
+                           PostedReceiptsLine_G.SETRANGE("Receipt Type",PostedReceipts_G."Receipt Type");
+                           PostedReceiptsLine_G.SETRANGE("No.",PostedReceipts_G."No.");
+                           IF PostedReceiptsLine_G.FIND('-') THEN
+                             REPEAT
+                               PostedReceiptsLine_G.VALIDATE("Contract No.",CollectionContract_G."No.");
+                               PostedReceiptsLine_G.MODIFY;
+                             UNTIL PostedReceiptsLine_G.NEXT = 0;
+
+                           CMCStatusMgt_G.ReleasePostedReceipt(PostedReceipts_G);
+
+                           CollectionContract_G.Status := CollectionContract_G.Status::Finished;
+
+                           {
+                           CASE "Receipt Type" OF
+                             // RESUMPTION
+                             "Receipt Type"::Resumption: BEGIN
+                               CMCStatusMgt_G.OpenPostedReceipt(PostedReceipts_G);
+
+                               PostedReceiptsLine_G.RESET;
+                               PostedReceiptsLine_G.SETRANGE("Receipt Type",PostedReceipts_G."Receipt Type");
+                               PostedReceiptsLine_G.SETRANGE("No.",PostedReceipts_G."No.");
+                               IF PostedReceiptsLine_G.FIND('-') THEN
+                                 REPEAT
+                                   PostedReceiptsLine_G.VALIDATE("Contract No.",CollectionContract_G."No.");
+                                   PostedReceiptsLine_G.MODIFY;
+                                 UNTIL PostedReceiptsLine_G.NEXT = 0;
+
+                               CMCStatusMgt_G.ReleasePostedReceipt(PostedReceipts_G);
+                             END;
+
+                             // RECEIPT
+                             "Receipt Type"::Receipt: BEGIN
+                               CMCStatusMgt_G.OpenPostedReceipt(PostedReceipts_G);
+
+                               PostedReceiptsLine_G.RESET;
+                               PostedReceiptsLine_G.SETRANGE("Receipt Type",PostedReceipts_G."Receipt Type");
+                               PostedReceiptsLine_G.SETRANGE("No.",PostedReceipts_G."No.");
+                               IF PostedReceiptsLine_G.FIND('-') THEN
+                                 REPEAT
+                                   IF ((PostedReceiptsLine_G.Quantity + (PostedReceiptsLine_G.Quantity *
+                                       (CollectionContract_G."Threshold Percentage" / 100))) <=
+                                     (CollectionContract_G.Quantity - CollectionContract_G."Qty On Post. Recept Line"))
+                                   THEN BEGIN
+                                     PostedReceiptsLine_G.VALIDATE("Contract No.",CollectionContract_G."No.");
+                                     PostedReceiptsLine_G.MODIFY;
+                                   END ELSE BEGIN
+
+                                   END;
+                                 UNTIL PostedReceiptsLine_G.NEXT = 0;
+
+                               CMCStatusMgt_G.ReleasePostedReceipt(PostedReceipts_G);
+                             END;
+                           END;
+                           }
+                         END;
+
+      }
+      SECTIONS
+      {
+        { PROPERTIES
+          {
+            SectionType=Header;
+            PrintOnEveryPage=Oui;
+            SectionWidth=18150;
+            SectionHeight=1692;
+          }
+          CONTROLS
+          {
+            { 60000;TextBox     ;15900;846  ;2250 ;423  ;HorzAlign=Right;
+                                                         SourceExpr=USERID;
+                                                         DataSetFieldName=USERID }
+            { 60001;TextBox     ;17700;423  ;450  ;423  ;CaptionML=FRA=Page;
+                                                         SourceExpr=CurrReport.PAGENO;
+                                                         DataSetFieldName=CurrReport_PAGENO }
+            { 60016;Label       ;16950;423  ;750  ;423  ;ParentControl=60001;
+                                                         DataSetFieldName=CurrReport_PAGENOCaption }
+            { 60017;Label       ;2250 ;846  ;12600;846  ;HorzAlign=Center;
+                                                         FontSize=14;
+                                                         FontBold=Oui;
+                                                         CaptionML=[ENU=Calculate Surplus Contract;
+                                                                    FRA=Calculer exc'dent contrat];
+                                                         DataSetFieldName=Calculate_Surplus_ContractCaption }
+            { 60018;TextBox     ;15000;0    ;3150 ;423  ;HorzAlign=Right;
+                                                         SourceExpr=FORMAT(TODAY,0,4);
+                                                         DataSetFieldName=FORMAT_TODAY_0_4_ }
+            { 60019;TextBox     ;0    ;0    ;7500 ;423  ;SourceExpr=COMPANYNAME;
+                                                         DataSetFieldName=COMPANYNAME }
+          }
+           }
+        { PROPERTIES
+          {
+            SectionType=Header;
+            PrintOnEveryPage=Oui;
+            SectionWidth=18150;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+            { 60003;Label       ;2100 ;0    ;1950 ;846  ;ParentControl=60002;
+                                                         VertAlign=Bottom;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui;
+                                                         DataSetFieldName=Surplus_Contract__Vendor_No__Caption }
+            { 60005;Label       ;5850 ;0    ;1950 ;846  ;ParentControl=60004;
+                                                         VertAlign=Bottom;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui;
+                                                         DataSetFieldName=Surplus_Contract__Item_No__Caption }
+            { 60007;Label       ;11250;0    ;1950 ;846  ;ParentControl=60006;
+                                                         VertAlign=Bottom;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui;
+                                                         DataSetFieldName=Surplus_Contract__Receipt_No__Caption }
+            { 60015;Label       ;13350;0    ;1800 ;846  ;ParentControl=60014;
+                                                         HorzAlign=Right;
+                                                         VertAlign=Bottom;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui;
+                                                         DataSetFieldName=Surplus_Contract_QuantityCaption }
+            { 60035;Label       ;0    ;0    ;1950 ;846  ;ParentControl=60034;
+                                                         VertAlign=Bottom;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui;
+                                                         DataSetFieldName=CollectionContract_G__No___Control60034Caption }
+            { 60021;Label       ;7950 ;0    ;1500 ;846  ;ParentControl=60020;
+                                                         VertAlign=Bottom;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui;
+                                                         DataSetFieldName=CollectionContract_G__Ship_Starting_Date__Control60020Caption }
+            { 60023;Label       ;9600 ;0    ;1500 ;846  ;ParentControl=60022;
+                                                         VertAlign=Bottom;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui;
+                                                         DataSetFieldName=CollectionContract_G__Ship_Ending_Date__Control60022Caption }
+            { 60009;Label       ;4200 ;0    ;1500 ;846  ;ParentControl=60008;
+                                                         VertAlign=Bottom;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui;
+                                                         DataSetFieldName=CollectionContract_G__Species_Code_Caption }
+            { 60011;Label       ;15300;0    ;1800 ;846  ;ParentControl=60010;
+                                                         VertAlign=Bottom;
+                                                         FontBold=Oui;
+                                                         MultiLine=Oui;
+                                                         DataSetFieldName=CollectionContract_G_Status_Control60010Caption }
+          }
+           }
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=18150;
+            SectionHeight=423;
+            OnPreSection=BEGIN
+                           CurrReport.SHOWOUTPUT(ISSERVICETIER);
+                         END;
+
+          }
+          CONTROLS
+          {
+            { 60012;TextBox     ;2700 ;0    ;300  ;423  ;Visible=Non;
+                                                         ForeColor=65535;
+                                                         SourceExpr="Receipt No.";
+                                                         DataSetFieldName=Receipt_No__ }
+            { 60013;TextBox     ;3150 ;0    ;300  ;423  ;Visible=Non;
+                                                         ForeColor=65535;
+                                                         SourceExpr=Quantity;
+                                                         DataSetFieldName=Quantity }
+            { 60024;TextBox     ;2250 ;0    ;300  ;423  ;Visible=Non;
+                                                         ForeColor=65535;
+                                                         CaptionML=[ENU=To Date;
+                                                                    FRA=Date fin];
+                                                         SourceExpr=CollectionContract_G."Ship Ending Date";
+                                                         DataSetFieldName=CollectionContract_G__Ship_Ending_Date_ }
+            { 60025;TextBox     ;3600 ;0    ;300  ;423  ;Visible=Non;
+                                                         ForeColor=65535;
+                                                         CaptionML=[ENU=Status;
+                                                                    PTG=Statut];
+                                                         SourceExpr=CollectionContract_G.Status;
+                                                         DataSetFieldName=CollectionContract_G_Status }
+            { 60026;TextBox     ;1800 ;0    ;300  ;423  ;Visible=Non;
+                                                         ForeColor=65535;
+                                                         CaptionML=[ENU=From Date;
+                                                                    FRA=Date d'but];
+                                                         SourceExpr=CollectionContract_G."Ship Starting Date";
+                                                         DataSetFieldName=CollectionContract_G__Ship_Starting_Date_ }
+            { 60027;TextBox     ;1350 ;0    ;300  ;423  ;Visible=Non;
+                                                         ForeColor=65535;
+                                                         SourceExpr="Item No.";
+                                                         DataSetFieldName=Item_No__ }
+            { 60028;TextBox     ;900  ;0    ;300  ;423  ;Visible=Non;
+                                                         ForeColor=65535;
+                                                         CaptionML=[ENU=Species;
+                                                                    FRA=EspSce];
+                                                         SourceExpr=CollectionContract_G."Species Code";
+                                                         DataSetFieldName=CollectionContract_G_Species_Code_ }
+            { 60029;TextBox     ;450  ;0    ;300  ;423  ;Visible=Non;
+                                                         ForeColor=65535;
+                                                         SourceExpr="Vendor No.";
+                                                         DataSetFieldName=Vendor_No__ }
+            { 60030;TextBox     ;0    ;0    ;300  ;423  ;Visible=Non;
+                                                         ForeColor=65535;
+                                                         CaptionML=[ENU=Contract No.;
+                                                                    FRA=Contrat];
+                                                         SourceExpr=CollectionContract_G."No.";
+                                                         DataSetFieldName=CollectionContract_G__No__ }
+          }
+           }
+        { PROPERTIES
+          {
+            SectionType=Body;
+            SectionWidth=18150;
+            SectionHeight=423;
+          }
+          CONTROLS
+          {
+            { 60002;TextBox     ;2100 ;0    ;1950 ;423  ;SourceExpr="Vendor No.";
+                                                         DataSetFieldName=Surplus_Contract__Vendor_No__ }
+            { 60004;TextBox     ;5850 ;0    ;1950 ;423  ;SourceExpr="Item No.";
+                                                         DataSetFieldName=Surplus_Contract__Item_No__ }
+            { 60006;TextBox     ;11250;0    ;1950 ;423  ;SourceExpr="Receipt No.";
+                                                         DataSetFieldName=Surplus_Contract__Receipt_No__ }
+            { 60014;TextBox     ;13350;0    ;1800 ;423  ;SourceExpr=Quantity;
+                                                         DataSetFieldName=Surplus_Contract_Quantity }
+            { 60034;TextBox     ;0    ;0    ;1950 ;423  ;CaptionML=[ENU=Contract No.;
+                                                                    FRA=Contrat];
+                                                         SourceExpr=CollectionContract_G."No.";
+                                                         DataSetFieldName=CollectionContract_G__No___Control60034 }
+            { 60020;TextBox     ;7950 ;0    ;1500 ;423  ;CaptionML=[ENU=From Date;
+                                                                    FRA=Date d'but];
+                                                         SourceExpr=CollectionContract_G."Ship Starting Date";
+                                                         DataSetFieldName=CollectionContract_G__Ship_Starting_Date__Control60020 }
+            { 60022;TextBox     ;9600 ;0    ;1500 ;423  ;CaptionML=[ENU=To Date;
+                                                                    FRA=Date fin];
+                                                         SourceExpr=CollectionContract_G."Ship Ending Date";
+                                                         DataSetFieldName=CollectionContract_G__Ship_Ending_Date__Control60022 }
+            { 60008;TextBox     ;4200 ;0    ;1500 ;423  ;CaptionML=[ENU=Species;
+                                                                    FRA=EspSce];
+                                                         SourceExpr=CollectionContract_G."Species Code";
+                                                         DataSetFieldName=CollectionContract_G__Species_Code_ }
+            { 60010;TextBox     ;15300;0    ;1800 ;423  ;CaptionML=[ENU=Status;
+                                                                    PTG=Statut];
+                                                         SourceExpr=CollectionContract_G.Status;
+                                                         DataSetFieldName=CollectionContract_G_Status_Control60010 }
+          }
+           }
+        { PROPERTIES
+          {
+            SectionType=Footer;
+            SectionWidth=18150;
+            SectionHeight=846;
+          }
+          CONTROLS
+          {
+          }
+           }
+      }
+       }
+  }
+  REQUESTFORM
+  {
+    PROPERTIES
+    {
+      Width=6810;
+      Height=3740;
+    }
+    CONTROLS
+    {
+      { 60000;TextBox     ;3410 ;0    ;1700 ;440  ;Name=StartingDate;
+                                                   CaptionML=[ENU=Starting Date;
+                                                              FRA=Date d'but];
+                                                   SourceExpr=StartingDate_G }
+      { 60001;Label       ;0    ;0    ;3300 ;440  ;ParentControl=60000 }
+      { 60002;TextBox     ;3410 ;550  ;1700 ;440  ;Name=EndingDate;
+                                                   CaptionML=[ENU=Ending Date;
+                                                              FRA=Date fin];
+                                                   SourceExpr=EndingDate_G }
+      { 60003;Label       ;0    ;550  ;3300 ;440  ;ParentControl=60002 }
+      { 60004;TextBox     ;3410 ;1100 ;2550 ;440  ;Name=SpeciesFilter;
+                                                   ValidateTableRelation=Non;
+                                                   CaptionML=[ENU=Species Filter;
+                                                              FRA=filtre espSce];
+                                                   SourceExpr=SpeciesFilter_G;
+                                                   TableRelation="CMC Species" }
+      { 60005;Label       ;0    ;1100 ;3300 ;440  ;ParentControl=60004 }
+      { 60006;TextBox     ;3410 ;1650 ;3400 ;440  ;Name=ItemFilter;
+                                                   ValidateTableRelation=Non;
+                                                   CaptionML=[ENU=Item Filter;
+                                                              FRA=Filtre article];
+                                                   SourceExpr=ItemFilter_G;
+                                                   TableRelation=Item }
+      { 60007;Label       ;0    ;1650 ;3300 ;440  ;ParentControl=60006 }
+      { 60008;TextBox     ;3410 ;2200 ;3400 ;440  ;Name=VendorFilter;
+                                                   ValidateTableRelation=Non;
+                                                   CaptionML=[ENU=Vendor Filter;
+                                                              FRA=Filtre fournisseur];
+                                                   SourceExpr=VendorFilter_G;
+                                                   TableRelation=Vendor }
+      { 60009;Label       ;0    ;2200 ;3300 ;440  ;ParentControl=60008 }
+      { 60010;TextBox     ;3410 ;2750 ;3400 ;440  ;Name=ReceiptFilter;
+                                                   ValidateTableRelation=Non;
+                                                   CaptionML=[ENU=Validated Receipts Filter;
+                                                              FRA=Filtre bons de r'ceptions valid's];
+                                                   SourceExpr=ReceiptFilter_G;
+                                                   TableRelation="CMC Posted Receipts".No. WHERE (Receipt Type=FILTER(Receipt|Resumption)) }
+      { 60011;Label       ;0    ;2750 ;3300 ;440  ;ParentControl=60010 }
+      { 60012;TextBox     ;3410 ;3300 ;2550 ;440  ;Name=SalesPersonPurchaserFilter;
+                                                   ValidateTableRelation=Non;
+                                                   CaptionML=[ENU=Agent (TC) Filter;
+                                                              FRA=Filtre Agent (TC)];
+                                                   SourceExpr=SalesPersonPurchaserFilter_G;
+                                                   TableRelation=Salesperson/Purchaser }
+      { 60013;Label       ;0    ;3300 ;3300 ;440  ;ParentControl=60012 }
+    }
+  }
+  REQUESTPAGE
+  {
+    PROPERTIES
+    {
+      SaveValues=Oui;
+    }
+    CONTROLS
+    {
+      { 60000;   ;Container ;
+                  ContainerType=ContentArea }
+
+      { 60001;1  ;Group     ;
+                  Name=Options;
+                  CaptionML=[ENU=Options;
+                             FRA=Options];
+                  GroupType=Group }
+
+      { 60002;2  ;Field     ;
+                  Name=StartingDate;
+                  CaptionML=[ENU=Starting Date;
+                             FRA=Date d'but];
+                  SourceExpr=StartingDate_G }
+
+      { 60003;2  ;Field     ;
+                  Name=EndingDate;
+                  CaptionML=[ENU=Ending Date;
+                             FRA=Date fin];
+                  SourceExpr=EndingDate_G }
+
+      { 60004;2  ;Field     ;
+                  Name=SpeciesFilter;
+                  CaptionML=[ENU=Species Filter;
+                             FRA=filtre espSce];
+                  SourceExpr=SpeciesFilter_G;
+                  TableRelation="CMC Species" }
+
+      { 60005;2  ;Field     ;
+                  Name=ItemFilter;
+                  CaptionML=[ENU=Item Filter;
+                             FRA=Filtre article];
+                  SourceExpr=ItemFilter_G;
+                  TableRelation=Item }
+
+      { 60006;2  ;Field     ;
+                  Name=VendorFilter;
+                  CaptionML=[ENU=Vendor Filter;
+                             FRA=Filtre fournisseur];
+                  SourceExpr=VendorFilter_G;
+                  TableRelation=Vendor }
+
+      { 60007;2  ;Field     ;
+                  Name=ReceiptFilter;
+                  CaptionML=[ENU=Validated Receipts Filter;
+                             FRA=Filtre bons de r'ceptions valid's];
+                  SourceExpr=ReceiptFilter_G;
+                  TableRelation="CMC Posted Receipts".No. WHERE (Receipt Type=FILTER(Receipt|Resumption)) }
+
+      { 60008;2  ;Field     ;
+                  Name=SalesPersonPurchaserFilter;
+                  CaptionML=[ENU=Agent (TC) Filter;
+                             FRA=Filtre Agent (TC)];
+                  SourceExpr=SalesPersonPurchaserFilter_G;
+                  TableRelation=Salesperson/Purchaser }
+
+      { 60009;2  ;Field     ;
+                  Name=CampaignFilter;
+                  CaptionML=[ENU=Campaign No.;
+                             FRA=N› campagne];
+                  SourceExpr=CampaignNo_G;
+                  TableRelation="CMC Campaign" }
+
+      { 60010;2  ;Field     ;
+                  Name=RegionFilter;
+                  CaptionML=[ENU=Region Code;
+                             FRA=Code r'gion];
+                  SourceExpr=RegionCode_G;
+                  TableRelation="CMC Region" }
+
+    }
+  }
+  CODE
+  {
+    VAR
+      SurplusContractPrice_G@60007 : Record 60020;
+      SurplusContract_G@60008 : Record 60021;
+      CMCSetup_G@60019 : Record 8052982;
+      CollectionContract_G@60018 : Record 8052983;
+      Item_G@60020 : Record 27;
+      PostedReceipts_G@60021 : Record 8052995;
+      PostedReceiptsLine_G@60023 : Record 8053104;
+      SpeciesSetup_G@60024 : Record 8053323;
+      CMCStatusMgt_G@60022 : Codeunit 8052985;
+      StartingDate_G@60000 : Date;
+      EndingDate_G@60001 : Date;
+      SpeciesFilter_G@60002 : Text[150];
+      ItemFilter_G@60003 : Text[150];
+      VendorFilter_G@60004 : Text[150];
+      ReceiptFilter_G@60005 : Text[150];
+      SalesPersonPurchaserFilter_G@60006 : Text[150];
+      Text60000@60009 : TextConst 'ENU=The field %1 cannot be empty;FRA=Le champ %1 ne peut ^tre vide';
+      Text60001@60010 : TextConst 'ENU=Date;FRA=Date';
+      Text60002@60011 : TextConst 'ENU=Ending Date;FRA=Date fin';
+      Text60003@60012 : TextConst 'ENU=Species Filter;FRA=Filtre espScie';
+      Text60004@60013 : TextConst 'ENU=Item Filter;FRA=Filtre article';
+      Text60005@60014 : TextConst 'ENU=Vendor Filter;FRA=Filtre fournisseur';
+      Text60006@60015 : TextConst 'ENU=Validated Receipts Filter;FRA=Filtre bons de r'ceptions valid's';
+      Text60007@60016 : TextConst 'ENU=Agent (TC) Filter;FRA=Filtre Agent (TC)';
+      ValidateSurplusContract_G@60017 : Boolean;
+      CampaignNo_G@60025 : Code[20];
+      RegionCode_G@60026 : Code[20];
+      Text60008@1000000000 : TextConst 'ENU=Check the setup cause the document %1 and the line %2 as no item;FRA=Veuillez v'rifier le param'trage des articles pour l''espSce de la ligne %2 du bon %1';
+
+    PROCEDURE CreateSurplusContract@60002(VAR CMCPostedReceiptsVar_P@60000 : Record 8052995);
+    VAR
+      PostedReceiptsLine_L@60002 : Record 8053104;
+      PostedReceiptAnalysis_L@60003 : Record 8052996;
+      AnalysisCharacteristic_L@60004 : Record 8053092;
+      SpeciesAnalysis_L@60005 : Record 8052989;
+      LineNo_L@60001 : Integer;
+      i_L@60006 : Integer;
+      VendorNo_L@60007 : Code[20];
+      ItemNo_L@60008 : Code[20];
+      PostedReceipts_L@60009 : Record 8052995;
+    BEGIN
+      SurplusContract_G.RESET;
+      IF SurplusContract_G.FINDLAST THEN
+        LineNo_L := SurplusContract_G."Line No.";
+
+      //LineNo_L += 10000;
+
+      PostedReceiptsLine_L.RESET;
+      PostedReceiptsLine_L.SETRANGE("Receipt Type",CMCPostedReceiptsVar_P."Receipt Type");
+      PostedReceiptsLine_L.SETRANGE("No.",CMCPostedReceiptsVar_P."No.");
+      PostedReceiptsLine_L.SETRANGE("Canceled Line",FALSE);
+      PostedReceiptsLine_L.SETRANGE(Invoiced,FALSE);
+      PostedReceiptsLine_L.SETFILTER("Contract No.",'%1','');
+      IF PostedReceiptsLine_L.FINDFIRST THEN BEGIN
+        REPEAT
+          LineNo_L += 10000;
+
+          IF PostedReceiptsLine_L."Distributed Vendor No." <> '' THEN
+            VendorNo_L := PostedReceiptsLine_L."Distributed Vendor No."
+          ELSE BEGIN
+            IF PostedReceiptsLine_L."Vendor No." <> '' THEN
+              VendorNo_L := PostedReceiptsLine_L."Vendor No."
+              ELSE
+                VendorNo_L := CMCPostedReceiptsVar_P."Vendor No.";
+          END;
+
+          IF SpeciesSetup_G.GET(CMCPostedReceiptsVar_P."Species Code")THEN BEGIN
+            IF (PostedReceiptsLine_L."Product Type" = PostedReceiptsLine_L."Product Type"::" ") OR
+               (PostedReceiptsLine_L."Product Type" = PostedReceiptsLine_L."Product Type"::"Brut Product")
+             THEN
+              ItemNo_L := CMCPostedReceiptsVar_P."Item No.";
+            IF PostedReceiptsLine_L."Product Type" = PostedReceiptsLine_L."Product Type"::"Rich Product" THEN
+              ItemNo_L := SpeciesSetup_G."Rich Product";
+            IF PostedReceiptsLine_L."Product Type" = PostedReceiptsLine_L."Product Type"::"Poor Product" THEN
+              ItemNo_L := SpeciesSetup_G."Poor Product";
+            IF PostedReceiptsLine_L."Product Type" = PostedReceiptsLine_L."Product Type"::"Declassed Product" THEN
+              ItemNo_L := SpeciesSetup_G."Declassed Product";
+          END
+          ELSE
+            ItemNo_L := CMCPostedReceiptsVar_P."Item No.";
+
+          // --> 20141015-CER07-TER01.01.00-RMZ01
+          IF ItemNo_L = '' THEN
+            ERROR(STRSUBSTNO(Text60008,PostedReceiptsLine_L."No.",PostedReceiptsLine_L."Line No."));
+          // <-- 20141015-CER07-TER01.01.00-RMZ01
+          CLEAR(SurplusContract_G);
+          SurplusContract_G.SETRANGE("Vendor No.",VendorNo_L);
+          SurplusContract_G.SETRANGE("Item No.",ItemNo_L);
+          SurplusContract_G.SETRANGE("Is Header",TRUE);
+          IF NOT SurplusContract_G.FINDFIRST THEN BEGIN
+            CLEAR(SurplusContract_G);
+            SurplusContract_G.INIT;
+            SurplusContract_G."Line No." := LineNo_L;
+            SurplusContract_G."Vendor No." := VendorNo_L;
+            SurplusContract_G."Item No." := ItemNo_L;
+            SurplusContract_G."Is Header" := TRUE;
+            SurplusContract_G.INSERT;
+            LineNo_L += 10000;
+          END;
+
+          // --> 20141007-CER07-TER01.01.00-RMZ01
+          CLEAR(SurplusContract_G);
+          SurplusContract_G.SETRANGE("Vendor No.",VendorNo_L);
+          SurplusContract_G.SETRANGE("Item No.",ItemNo_L);
+          SurplusContract_G.SETRANGE("Receipt Type",PostedReceiptsLine_L."Receipt Type");
+          SurplusContract_G.SETRANGE("Receipt No.",PostedReceiptsLine_L."No.");
+          SurplusContract_G.SETRANGE("Receipt Line No.",PostedReceiptsLine_L."Line No.");
+          IF NOT SurplusContract_G.FINDSET(FALSE,FALSE) THEN BEGIN
+          // <-- 20141007-CER07-TER01.01.00-RMZ01
+            SurplusContract_G.INIT;
+            SurplusContract_G."Line No." := LineNo_L;
+            SurplusContract_G."Vendor No." := VendorNo_L;
+            SurplusContract_G."Item No." := ItemNo_L;
+            SurplusContract_G."Receipt Type" :=  PostedReceiptsLine_L."Receipt Type";
+            SurplusContract_G."Receipt No." := PostedReceiptsLine_L."No.";
+            SurplusContract_G."Receipt Line No." := PostedReceiptsLine_L."Line No.";
+            SurplusContract_G."Commercial Region" := PostedReceiptsLine_L."Region Code";
+            SurplusContract_G."Shptiment Date" := PostedReceiptsLine_L."Shipment Date";
+      // --> 20150114-CER07-TER01.01.00-ENS01
+            PostedReceipts_L.GET(PostedReceiptsLine_L."Receipt Type",PostedReceiptsLine_L."No.");
+            SurplusContract_G."Posting date" := PostedReceipts_L."Posting Date";
+      // <-- 20150114-CER07-TER01.01.00-ENS01
+            SurplusContract_G.Quantity := PostedReceiptsLine_L.Quantity;
+
+            // --> 20150420-CER11-TER01.01.00-370-BSI01
+            SurplusContract_G."Campaign No." := PostedReceipts_L."Campaign No.";
+            SurplusContract_G."Species Code" := PostedReceipts_L."Species Code";
+            // <-- 20150420-CER11-TER01.01.00-370-BSI01
+
+
+            PostedReceiptAnalysis_L.RESET;
+            PostedReceiptAnalysis_L.SETRANGE("Receipt Type",CMCPostedReceiptsVar_P."Receipt Type");
+            PostedReceiptAnalysis_L.SETRANGE("Receipt No.",CMCPostedReceiptsVar_P."No.");
+
+            IF PostedReceiptAnalysis_L.FIND('-') THEN BEGIN
+              REPEAT
+                SurplusContract_G."Missing Mandatory Analysis" := FALSE;
+                IF AnalysisCharacteristic_L.GET(PostedReceiptAnalysis_L."Analysis Code") THEN BEGIN
+      // --> 20150114-CER07-TER01.01.00-ENS01
+      // BEFORE
+      //            CASE AnalysisCharacteristic_L."Analyse Code Indentifiant" OF
+      //              'BR': ;
+      //              'CB': SurplusContract_G.Calibration := PostedReceiptAnalysis_L.Value;
+      //              'CA': ;
+      //              'O' : ;
+      //              'H' : SurplusContract_G.Humidity := PostedReceiptAnalysis_L.Value;
+      //              'I' : SurplusContract_G.Impurity := PostedReceiptAnalysis_L.Value;
+      //              'PR': SurplusContract_G.Protein := PostedReceiptAnalysis_L.Value;
+      //              'PS': SurplusContract_G.PS := PostedReceiptAnalysis_L.Value;
+      //            END;
+      // AFTER
+                  CASE AnalysisCharacteristic_L."Order in Surplus Contract List" OF
+                    1: SurplusContract_G."Analysis 1" := PostedReceiptAnalysis_L.Value;
+                    2: SurplusContract_G."Analysis 2" := PostedReceiptAnalysis_L.Value;
+                    3: SurplusContract_G."Analysis 3" := PostedReceiptAnalysis_L.Value;
+                    4: SurplusContract_G."Analysis 4" := PostedReceiptAnalysis_L.Value;
+                    5: SurplusContract_G."Analysis 5" := PostedReceiptAnalysis_L.Value;
+                    6: SurplusContract_G."Analysis 6" := PostedReceiptAnalysis_L.Value;
+                    7: SurplusContract_G."Analysis 7" := PostedReceiptAnalysis_L.Value;
+                    8: SurplusContract_G."Analysis 8" := PostedReceiptAnalysis_L.Value;
+                    9: SurplusContract_G."Analysis 9" := PostedReceiptAnalysis_L.Value;
+                    10: SurplusContract_G."Analysis 10" := PostedReceiptAnalysis_L.Value;
+                    11: SurplusContract_G."Analysis 11" := PostedReceiptAnalysis_L.Value;
+                    12: SurplusContract_G."Analysis 12" := PostedReceiptAnalysis_L.Value;
+                    13: SurplusContract_G."Analysis 13" := PostedReceiptAnalysis_L.Value;
+                    14: SurplusContract_G."Analysis 14" := PostedReceiptAnalysis_L.Value;
+                    15: SurplusContract_G."Analysis 15" := PostedReceiptAnalysis_L.Value;
+                    16: SurplusContract_G."Analysis 16" := PostedReceiptAnalysis_L.Value;
+                    17: SurplusContract_G."Analysis 17" := PostedReceiptAnalysis_L.Value;
+                    18: SurplusContract_G."Analysis 18" := PostedReceiptAnalysis_L.Value;
+                    19: SurplusContract_G."Analysis 19" := PostedReceiptAnalysis_L.Value;
+                    20: SurplusContract_G."Analysis 20" := PostedReceiptAnalysis_L.Value;
+                    21: SurplusContract_G."Analysis 21" := PostedReceiptAnalysis_L.Value;
+                    22: SurplusContract_G."Analysis 22" := PostedReceiptAnalysis_L.Value;
+                    23: SurplusContract_G."Analysis 23" := PostedReceiptAnalysis_L.Value;
+                    24: SurplusContract_G."Analysis 24" := PostedReceiptAnalysis_L.Value;
+                    25: SurplusContract_G."Analysis 25" := PostedReceiptAnalysis_L.Value;
+                  END;
+      // <-- 20150114-CER07-TER01.01.00-ENS01
+
+                  IF SpeciesAnalysis_L.GET(
+                      SpeciesAnalysis_L."Input/Output"::"Input/Output",
+                      CMCPostedReceiptsVar_P."Species Code",PostedReceiptAnalysis_L."Analysis Code") AND
+                    SpeciesAnalysis_L."Contract Mandatory" AND (PostedReceiptAnalysis_L.Value = 0)
+                  THEN
+                    SurplusContract_G."Missing Mandatory Analysis" := TRUE;
+                END;
+              UNTIL PostedReceiptAnalysis_L.NEXT = 0;
+            END;
+
+            //SurplusContract_G."Include on Contract" := FALSE
+            //SurplusContract_G.Price := 0;
+            //SurplusContract_G."Due Date" := 0D;
+            SurplusContract_G.INSERT(TRUE);
+          END;
+
+          // --> 20141007-CER07-TER01.01.00-RMZ01
+          IF SurplusContract_G."Item No." <> '' THEN BEGIN
+            CLEAR(SurplusContractPrice_G);
+            SurplusContractPrice_G.SETRANGE("Item code",SurplusContract_G."Item No.");
+            IF NOT SurplusContractPrice_G.FINDFIRST THEN BEGIN
+              CLEAR(SurplusContractPrice_G);
+              SurplusContractPrice_G.VALIDATE("Item code",SurplusContract_G."Item No.");
+              SurplusContractPrice_G.INSERT;
+            END;
+          END;
+          // <-- 20141007-CER07-TER01.01.00-RMZ01
+
+        UNTIL PostedReceiptsLine_L.NEXT = 0;
+      END;
+      // ---------------------------------------------------------------------------------------------------
+      {
+      SurplusContract_G.INIT;
+      SurplusContract_G."Line No." := LineNo_L;
+      SurplusContract_G."Vendor No." := CMCPostedReceiptsVar_P."Vendor No.";
+      SurplusContract_G."Item No." := CMCPostedReceiptsVar_P."Item No.";
+      SurplusContract_G."Receipt Type" :=  CMCPostedReceiptsVar_P."Receipt Type";
+      SurplusContract_G."Receipt No." := CMCPostedReceiptsVar_P."No.";
+
+      PostedReceiptsLine_L.RESET;
+      PostedReceiptsLine_L.SETRANGE("Receipt Type",CMCPostedReceiptsVar_P."Receipt Type");
+      PostedReceiptsLine_L.SETRANGE("No.",CMCPostedReceiptsVar_P."No.");
+      SurplusContract_G."Receipt Line No." := PostedReceiptsLine_L.COUNT;
+
+      SurplusContract_G."Commercial Region" := CMCPostedReceiptsVar_P."Region Code";
+      SurplusContract_G."Shptiment Date" := CMCPostedReceiptsVar_P."Shipment Date";
+
+      IF PostedReceiptsLine_L.FIND('-') THEN
+        REPEAT
+          SurplusContract_G.Quantity += PostedReceiptsLine_L.Quantity;
+        UNTIL PostedReceiptsLine_L.NEXT = 0;
+
+      PostedReceiptAnalysis_L.RESET;
+      PostedReceiptAnalysis_L.SETRANGE("Receipt Type",CMCPostedReceiptsVar_P."Receipt Type");
+      PostedReceiptAnalysis_L.SETRANGE("Receipt No.",CMCPostedReceiptsVar_P."No.");
+      IF PostedReceiptAnalysis_L.FIND('-') THEN
+        REPEAT
+          IF AnalysisCharacteristic_L.GET(PostedReceiptAnalysis_L."Analysis Code") THEN BEGIN
+            CASE AnalysisCharacteristic_L."Analyse Code Indentifiant" OF
+              'BR': ;
+              'CB': SurplusContract_G.Calibration := PostedReceiptAnalysis_L.Value;
+              'CA': ;
+              'O' : ;
+              'H' : SurplusContract_G.Humidity := PostedReceiptAnalysis_L.Value;
+              'I' : SurplusContract_G.Impurity := PostedReceiptAnalysis_L.Value;
+              'PR': SurplusContract_G.Protein := PostedReceiptAnalysis_L.Value;
+              'PS': SurplusContract_G.PS := PostedReceiptAnalysis_L.Value;
+            END;
+
+            IF SpeciesAnalysis_L.GET(
+                SpeciesAnalysis_L."Input/Output"::"Input/Output",
+                CMCPostedReceiptsVar_P."Species Code",PostedReceiptAnalysis_L."Analysis Code") AND
+              SpeciesAnalysis_L."Contract Mandatory"
+            THEN
+              SurplusContract_G."Missing Mandatory Analysis" := TRUE;
+          END;
+          {
+          CASE PostedReceiptAnalysis_L."Analysis Code" OF
+            'HUMIDITE': SurplusContract_G.Humidity := PostedReceiptAnalysis_L.Value;
+            'PS': SurplusContract_G.PS := PostedReceiptAnalysis_L.Value;
+            'PROTEINE': SurplusContract_G.Protein := PostedReceiptAnalysis_L.Value;
+            'CALIBRAGE': SurplusContract_G.Calibration := PostedReceiptAnalysis_L.Value;
+            'IMPURETE': SurplusContract_G.Impurity := PostedReceiptAnalysis_L.Value;
+          END;
+          }
+        UNTIL PostedReceiptAnalysis_L.NEXT = 0;
+
+      {
+      SurplusContract_G."Include on Contract" := FALSE
+      SurplusContract_G.Price := 0;
+      SurplusContract_G."Due Date" := 0D;
+      }
+
+      SurplusContract_G.INSERT;
+      }
+    END;
+
+    PROCEDURE SetValidateSurplusContract@60000(ValidateContract@60000 : Boolean);
+    BEGIN
+      ValidateSurplusContract_G := ValidateContract;
+    END;
+
+    BEGIN
+    {
+      20140911-CER07-TER01.01.00-ENS01 : ADDREPORT
+      20140923-CER07-TER01.01.00-ENS01 : CHANGES
+      20141007-CER07-TER01.01.00-RMZ01 : ADDCODE(CMC Posted Receipts - OnPreDataItem,2 field on the Request page,
+              CreateSurplusContract)
+      20141015-CER07-TER01.01.00-RMZ01 : ADDCODE (CreateSurplusContract)
+      20141016-CER07-TER01.01.00-RMZ01 : ADDCODE (CMC Posted Receipts - OnPreDataItem)
+      20141022-CER07-TER01.01.00-RMZ01 : DELCODE (CMC Posted Receipts - OnPreDataItem,CMC Posted Receipts - OnAfterGetRecord)
+      20150114-CER07-TER01.01.00-ENS01 : ADDCODE ("CreateSurplusContract")
+      20150420-CER11-TER01.01.00-370-BSI01 : ADDCODE (Alimentation des champs ("Species Code","Campaign No.");
+    }
+    END.
+  }
+  RDLDATA
+  {
+  }
+}
+

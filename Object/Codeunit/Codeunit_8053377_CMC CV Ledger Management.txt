@@ -1,0 +1,1756 @@
+OBJECT Codeunit 8053377 CMC CV Ledger Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=26/05/16;
+    Heure=00:00:00;
+    Liste versions=CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    Permissions=TableData 21=rim,
+                TableData 25=rim;
+    OnRun=VAR
+            recContact_L@8053000 : Record 5050;
+            CVLedgerEntry_L@1000000000 : Record 8053380;
+          BEGIN
+            IF CONFIRM(Text8053001,FALSE) THEN BEGIN
+              InitCVLedgerEntries;
+
+            // --> 20150317-FINA13-CMC02.02.00-FHS01
+              recContact_L.RESET;
+              IF recContact_L.FIND('-') THEN BEGIN
+                REPEAT
+                  RefreshCVLetter3(recContact_L."No.");
+                  COMMIT;
+                UNTIL recContact_L.NEXT = 0;
+              END;
+            END;
+            // <-- 20150317-FINA13-CMC02.02.00-FHS01
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      Text8053000@8053000 : TextConst 'ENU=Do you really want to copy the quality standards of campaign %1 for item %2 ?;FRA=Total';
+      CurrentLetter_G@1000000001 : Text[10];
+      Text8053001@8053001 : TextConst 'FRA=Attention ! Ce traitement supprime et reg'nSre les 'critures clients / fournisseurs. Voulez-vous vraiment le lancer ?';
+      cuGLEntryApplication_G@1000000002 : Codeunit 10842;
+
+    PROCEDURE UpdateProgBalance@1000000002(VAR CVLedgerEntry_P@1000000000 : Record 8053380);
+    VAR
+      ProgBalance_L@1000000001 : Decimal;
+      ProgAmount_L@1000000002 : Decimal;
+      Contact_L@1000000003 : Record 5050;
+      CMCProgBal_L@1000000004 : Record 8053385;
+    BEGIN
+      WITH CVLedgerEntry_P DO BEGIN
+        IF NOT Contact_L.GET(GETFILTER("Contact No.")) THEN
+          EXIT;
+        ProgBalance_L := 0;
+        ProgAmount_L := 0;
+        IF FIND('-') THEN
+          REPEAT
+            CVLedgerEntry_P.CALCFIELDS("Remaining Amt. (LCY)");
+            CVLedgerEntry_P.CALCFIELDS("Amount (LCY)");
+            ProgBalance_L := ProgBalance_L + CVLedgerEntry_P."Remaining Amt. (LCY)";
+            ProgAmount_L := ProgAmount_L + CVLedgerEntry_P."Amount (LCY)";
+            IF NOT CMCProgBal_L.GET(CMCProgBal_L."Entry Type"::"CV Entry",CVLedgerEntry_P."Entry No.") THEN BEGIN
+              CMCProgBal_L.INIT;
+              CMCProgBal_L."Entry Type" := CMCProgBal_L."Entry Type"::"CV Entry";
+              CMCProgBal_L."Entry No." := CVLedgerEntry_P."Entry No.";
+              CMCProgBal_L.INSERT;
+            END;
+            CMCProgBal_L.Amount := ProgAmount_L;
+            CMCProgBal_L."Remaining Amount" := ProgBalance_L;
+            CMCProgBal_L.MODIFY;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE UpdateProgBalanceTmp@1000000010(VAR CVLedgerEntry_P@1000000000 : Record 8053020);
+    VAR
+      ProgBalance_L@1000000001 : Decimal;
+      ProgAmount_L@1000000002 : Decimal;
+      Contact_L@1000000003 : Record 5050;
+      CMCProgBal_L@1000000004 : Record 8053385;
+    BEGIN
+      WITH CVLedgerEntry_P DO BEGIN
+        ProgBalance_L := 0;
+        ProgAmount_L := 0;
+        IF FIND('-') THEN
+          REPEAT
+            ProgBalance_L := ProgBalance_L + CVLedgerEntry_P."Remaining Amt. (LCY)";
+            ProgAmount_L := ProgAmount_L + CVLedgerEntry_P."Amount (LCY)";
+            IF NOT CMCProgBal_L.GET(CMCProgBal_L."Entry Type"::"CV Entry Tmp",CVLedgerEntry_P."Entry No.") THEN BEGIN
+              CMCProgBal_L.INIT;
+              CMCProgBal_L."Entry Type" := CMCProgBal_L."Entry Type"::"CV Entry Tmp";
+              CMCProgBal_L."Entry No." := CVLedgerEntry_P."Entry No.";
+              CMCProgBal_L.INSERT;
+            END;
+            CMCProgBal_L.Amount := ProgAmount_L;
+            CMCProgBal_L."Remaining Amount" := ProgBalance_L;
+            CMCProgBal_L.MODIFY;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE GetCustVendBankFromContact@8053002(ContactNo_P@8053002 : Code[20];Which_P@8053001 : 'Customer,Vendor,Bank') : Code[20];
+    VAR
+      Contact_L@8053000 : Record 5050;
+    BEGIN
+      // --> 20150618-FINA13-CMC02.02.00-2965-DRN01
+      IF Contact_L.GET(ContactNo_P) THEN BEGIN
+        CASE Which_P OF
+          Which_P::Customer :
+            EXIT(Contact_L."Customer No.");
+          Which_P::Vendor :
+            EXIT(Contact_L."Vendor No.");
+          Which_P::Bank :
+            EXIT(Contact_L."Bank Account No.");
+        END;
+      END ELSE
+        EXIT('');
+      // <-- 20150618-FINA13-CMC02.02.00-2965-DRN01
+    END;
+
+    PROCEDURE CreateCVFromCustLedgerEntry@8053007(CustLedgerEntry_P@8053001 : Record 21);
+    VAR
+      CVLedgerEntry_L@8053000 : Record 8053380;
+      VendLedgerEntry_L@8053002 : Record 25;
+      CustPostingGroup_L@8053003 : Record 92;
+      CVLedgerEntry2_L@1000000000 : Record 8053380;
+    BEGIN
+      WITH CVLedgerEntry_L DO BEGIN
+        INIT;
+        "Customer / Vendor" := CVLedgerEntry_L."Customer / Vendor"::Customer;
+        "Entry No." := CustLedgerEntry_P."Entry No.";
+        "Cust./Vend. No." := CustLedgerEntry_P."Customer No.";
+        "Posting Date" := CustLedgerEntry_P."Posting Date";
+        "Document Type" := CustLedgerEntry_P."Document Type";
+        "Document No." := CustLedgerEntry_P."Document No.";
+        Description := CustLedgerEntry_P.Description;
+        "Currency Code" := CustLedgerEntry_P."Currency Code";
+        "On Hold" := CustLedgerEntry_P."On Hold";
+        Open := CustLedgerEntry_P.Open;
+        "Due Date" := CustLedgerEntry_P."Due Date";
+        Positive := CustLedgerEntry_P.Positive;
+        "Last Issued Reminder Level" := CustLedgerEntry_P."Last Issued Reminder Level";
+        Letter := CustLedgerEntry_P.Letter;
+        "Setting Off" := CustLedgerEntry_P."Setting Off";
+        "Contact No." := GetContNoFromCustVentNo("Cust./Vend. No.",0);
+        "Global Dimension 1 Code" := CustLedgerEntry_P."Global Dimension 1 Code";
+        "Global Dimension 2 Code" := CustLedgerEntry_P."Global Dimension 2 Code";
+        "Source Code" := CustLedgerEntry_P."Source Code";
+        "Document Date" := CustLedgerEntry_P."Document Date";
+        "External Document No." := CustLedgerEntry_P."External Document No.";
+        "Applies-to ID" := '';
+        "Cust./Vend. Posting Group" := CustLedgerEntry_P."Customer Posting Group";
+        IF CustPostingGroup_L.GET(CustLedgerEntry_P."Customer Posting Group") THEN
+          "GLAccountNo." := CustPostingGroup_L."Receivables Account";
+        "Same G/L Acc. Set Off" := CustLedgerEntry_P."Same G/L Acc. Set Off";
+        "Transaction No." := CustLedgerEntry_P."Transaction No.";
+
+        "Payment Method Code" := CustLedgerEntry_P."Payment Method Code";
+        "Setting Off not Allowed" := CustLedgerEntry_P."Setting Off not Allowed";
+        "Activity Code" := CustLedgerEntry_P."Activity Code";
+
+        "Prog. Date Time" := MakeCVLedgerProgDateTime(CVLedgerEntry_L);
+        "Prog. Date Time Filter" := STRSUBSTNO('<=%1',"Prog. Date Time");
+        // --> 20150309-FINA13-CMC02.02.00-FHS01
+        "Closed by Entry No." := 0;
+        "Changed To Letter" := TRUE;
+        "Original Closed by Entry No." := CustLedgerEntry_P."Closed by Entry No.";
+        // <-- 20150309-FINA13-CMC02.02.00-FHS01
+        IF NOT INSERT THEN BEGIN
+          // --> 20150309-FINA13-CMC02.02.00-FHS01
+          CVLedgerEntry2_L.GET(CVLedgerEntry_L."Customer / Vendor", CVLedgerEntry_L."Entry No.");
+          CVLedgerEntry_L."CV Entry Letter" := CVLedgerEntry2_L."CV Entry Letter";
+          // <-- 20150309-FINA13-CMC02.02.00-FHS01
+          MODIFY;
+        END;
+      END;
+    END;
+
+    PROCEDURE CreateDetCVFromCustLedgerEntry@8053000(DetCustLedgerEntry_P@8053001 : Record 379);
+    VAR
+      DetCVLedgerEntry_L@8053000 : Record 8053381;
+      CustPostingGroup_L@8053002 : Record 92;
+    BEGIN
+      WITH DetCVLedgerEntry_L DO BEGIN
+        INIT;
+        "Customer / Vendor" := DetCVLedgerEntry_L."Customer / Vendor"::Customer;
+        "Entry No." := DetCustLedgerEntry_P."Entry No.";
+        "CV Ledger Entry No." := DetCustLedgerEntry_P."Cust. Ledger Entry No.";
+        "Entry Type" := DetCustLedgerEntry_P."Entry Type";
+        "Posting Date" := DetCustLedgerEntry_P."Posting Date";
+        "Document Type" := DetCustLedgerEntry_P."Document Type";
+        "Document No." := DetCustLedgerEntry_P."Document No.";
+        Amount := DetCustLedgerEntry_P.Amount;
+        "Amount (LCY)" := DetCustLedgerEntry_P."Amount (LCY)";
+        "Debit Amount" := DetCustLedgerEntry_P."Debit Amount";
+        "Credit Amount" := DetCustLedgerEntry_P."Credit Amount";
+        "Debit Amount (LCY)" := DetCustLedgerEntry_P."Debit Amount (LCY)";
+        "Credit Amount (LCY)" := DetCustLedgerEntry_P."Credit Amount (LCY)";
+        "Cust./Vend. No." := DetCustLedgerEntry_P."Customer No.";
+        "Currency Code" := DetCustLedgerEntry_P."Currency Code";
+        "Cust./Vend. Posting Group" := DetCustLedgerEntry_P."Customer Posting Group";
+        IF CustPostingGroup_L.GET(DetCustLedgerEntry_P."Customer Posting Group") THEN
+          "GLAccountNo." := CustPostingGroup_L."Receivables Account";
+        "Initial Entry Due Date" := DetCustLedgerEntry_P."Initial Entry Due Date";
+        "Contact No." := GetContNoFromCustVentNo("Cust./Vend. No.",0);
+        "Prog. Date Time" := GetCVLedgerProgDateTime(DetCVLedgerEntry_L);
+        IF NOT INSERT THEN
+          MODIFY;
+
+        IF "Entry Type" = "Entry Type"::"Initial Entry" THEN
+          UpdateCollBalance2(DetCVLedgerEntry_L);
+      END;
+    END;
+
+    PROCEDURE CreateCVFromVendLedgerEntry@8053004(VendLedgerEntry_P@8053001 : Record 25);
+    VAR
+      CVLedgerEntry_L@8053000 : Record 8053380;
+      VendPostingGroup_L@8053002 : Record 93;
+      CVLedgerEntry2_L@1000000000 : Record 8053380;
+    BEGIN
+      WITH CVLedgerEntry_L DO BEGIN
+        INIT;
+        "Customer / Vendor" := CVLedgerEntry_L."Customer / Vendor"::Vendor;
+        "Entry No." := VendLedgerEntry_P."Entry No.";
+        "Cust./Vend. No." := VendLedgerEntry_P."Vendor No.";
+        "Posting Date" := VendLedgerEntry_P."Posting Date";
+        "Document Type" := VendLedgerEntry_P."Document Type";
+        "Document No." := VendLedgerEntry_P."Document No.";
+        Description := VendLedgerEntry_P.Description;
+        "Currency Code" := VendLedgerEntry_P."Currency Code";
+        "On Hold" := VendLedgerEntry_P."On Hold";
+        Open := VendLedgerEntry_P.Open;
+        "Due Date" := VendLedgerEntry_P."Due Date";
+        Positive := VendLedgerEntry_P.Positive;
+        Letter := VendLedgerEntry_P.Letter;
+        "Setting Off" := VendLedgerEntry_P."Setting Off";
+        "Contact No." := GetContNoFromCustVentNo("Cust./Vend. No.",1);
+        "Global Dimension 1 Code" := VendLedgerEntry_P."Global Dimension 1 Code";
+        "Global Dimension 2 Code" := VendLedgerEntry_P."Global Dimension 2 Code";
+        "Source Code" := VendLedgerEntry_P."Source Code";
+        "Document Date" := VendLedgerEntry_P."Document Date";
+        "External Document No." := VendLedgerEntry_P."External Document No.";
+        "Applies-to ID" := '';
+        "Cust./Vend. Posting Group" := VendLedgerEntry_P."Vendor Posting Group";
+        IF VendPostingGroup_L.GET(VendLedgerEntry_P."Vendor Posting Group") THEN
+          "GLAccountNo." := VendPostingGroup_L."Payables Account";
+        "Same G/L Acc. Set Off" := VendLedgerEntry_P."Same G/L Acc. Set Off";
+        "Transaction No." := VendLedgerEntry_P."Transaction No.";
+
+        "Payment Method Code" := VendLedgerEntry_P."Payment Method Code";
+        "Setting Off not Allowed" := VendLedgerEntry_P."Setting Off not Allowed";
+        "Activity Code" := VendLedgerEntry_P."Activity Code";
+
+        "Prog. Date Time" := MakeCVLedgerProgDateTime(CVLedgerEntry_L);
+        "Prog. Date Time Filter" := STRSUBSTNO('<=%1',"Prog. Date Time");
+        // --> 20150309-FINA13-CMC02.02.00-FHS01
+        "Closed by Entry No." := 0;
+        "Changed To Letter" := TRUE;
+        "Original Closed by Entry No." := VendLedgerEntry_P."Closed by Entry No.";
+        // <-- 20150309-FINA13-CMC02.02.00-FHS01
+
+        IF "Document Type" = "Document Type"::"Finance Charge Memo" THEN
+          IF Positive = FALSE THEN
+            "Document Type" := "Document Type"::"Cred. Finance Charge Memo";
+
+        IF NOT INSERT THEN BEGIN
+          // --> 20150309-FINA13-CMC02.02.00-FHS01
+          CVLedgerEntry2_L.GET(CVLedgerEntry_L."Customer / Vendor", CVLedgerEntry_L."Entry No.");
+          CVLedgerEntry_L."CV Entry Letter" := CVLedgerEntry2_L."CV Entry Letter";
+          // <-- 20150309-FINA13-CMC02.02.00-FHS01
+          MODIFY;
+        END;
+      END;
+    END;
+
+    PROCEDURE CreateDetCVFromVendLedgerEntry@8053006(DetVendLedgerEntry_P@8053001 : Record 380);
+    VAR
+      DetCVLedgerEntry_L@8053000 : Record 8053381;
+      VendPostingGroup_L@8053002 : Record 93;
+    BEGIN
+      WITH DetCVLedgerEntry_L DO BEGIN
+        INIT;
+        "Customer / Vendor" := DetCVLedgerEntry_L."Customer / Vendor"::Vendor;
+        "Entry No." := DetVendLedgerEntry_P."Entry No.";
+        "CV Ledger Entry No." := DetVendLedgerEntry_P."Vendor Ledger Entry No.";
+        "Entry Type" := DetVendLedgerEntry_P."Entry Type";
+        "Posting Date" := DetVendLedgerEntry_P."Posting Date";
+        "Document Type" := DetVendLedgerEntry_P."Document Type";
+        "Document No." := DetVendLedgerEntry_P."Document No.";
+        Amount := DetVendLedgerEntry_P.Amount;
+        "Amount (LCY)" := DetVendLedgerEntry_P."Amount (LCY)";
+        "Debit Amount" := DetVendLedgerEntry_P."Debit Amount";
+        "Credit Amount" := DetVendLedgerEntry_P."Credit Amount";
+        "Debit Amount (LCY)" := DetVendLedgerEntry_P."Debit Amount (LCY)";
+        "Credit Amount (LCY)" := DetVendLedgerEntry_P."Credit Amount (LCY)";
+        "Cust./Vend. No." := DetVendLedgerEntry_P."Vendor No.";
+        "Currency Code" := DetVendLedgerEntry_P."Currency Code";
+        "Cust./Vend. Posting Group" := DetVendLedgerEntry_P."Vendor Posting Group";
+        IF VendPostingGroup_L.GET(DetVendLedgerEntry_P."Vendor Posting Group") THEN
+          "GLAccountNo." := VendPostingGroup_L."Payables Account";
+        "Initial Entry Due Date" := DetVendLedgerEntry_P."Initial Entry Due Date";
+        "Contact No." := GetContNoFromCustVentNo("Cust./Vend. No.",1);
+        "Prog. Date Time" := GetCVLedgerProgDateTime(DetCVLedgerEntry_L);
+
+        IF DetVendLedgerEntry_P."Document Type" = DetVendLedgerEntry_P."Document Type"::"Finance Charge Memo" THEN
+          IF DetVendLedgerEntry_P.Positive = FALSE THEN
+            "Document Type" := "Document Type"::"Cred. Finance Charge Memo";
+
+        IF NOT INSERT THEN
+          MODIFY;
+
+        IF "Entry Type" = "Entry Type"::"Initial Entry" THEN
+          UpdateCollBalance2(DetCVLedgerEntry_L);
+
+      END;
+    END;
+
+    PROCEDURE GetContNoFromCustVentNo@8053001(CustVendNo_P@8053000 : Code[20];Which_P@8053001 : 'Customer,Vendor,Bank') : Code[20];
+    VAR
+      ContactBusRel_L@8053004 : Record 5054;
+      Customer_L@8053003 : Record 18;
+      Vendor_L@8053002 : Record 23;
+    BEGIN
+      ContactBusRel_L.RESET;
+      ContactBusRel_L.SETCURRENTKEY("Link to Table","No.");
+      ContactBusRel_L.SETRANGE("Link to Table",Which_P + 1);
+      ContactBusRel_L.SETRANGE("No.",CustVendNo_P);
+      // --> 20150504-FINA13-CMC02.02.00-2965-FHS01
+      //BEFORE
+      //IF ContactBusRel_L.FINDSET THEN
+      //AFTER
+      IF ContactBusRel_L.FINDFIRST THEN
+      // <-- 20150504-FINA13-CMC02.02.00-2965-FHS01
+        EXIT(ContactBusRel_L."Contact No.")
+      ELSE
+        EXIT('');
+    END;
+
+    PROCEDURE MakeCVLedgerProgDateTime@8053009(CVLedgerEntry_P@8053000 : Record 8053380) : DateTime;
+    VAR
+      CVLedgerEntry_L@8053001 : Record 8053380;
+    BEGIN
+      CVLedgerEntry_L.RESET;
+      CVLedgerEntry_L.SETRANGE("Contact No.",CVLedgerEntry_P."Contact No.");
+      CVLedgerEntry_L.SETRANGE("Posting Date",CVLedgerEntry_P."Posting Date");
+      IF NOT CVLedgerEntry_L.FINDLAST THEN
+        EXIT(CREATEDATETIME(CVLedgerEntry_P."Posting Date",0T))
+      ELSE
+        EXIT(CVLedgerEntry_L."Prog. Date Time" + 60000);
+    END;
+
+    PROCEDURE GetCVLedgerProgDateTime@8053003(DetCVLedgerEntry_P@8053003 : Record 8053381) : DateTime;
+    VAR
+      CVLedgerEntry_L@8053000 : Record 8053380;
+    BEGIN
+      CVLedgerEntry_L.GET(DetCVLedgerEntry_P."Customer / Vendor",DetCVLedgerEntry_P."CV Ledger Entry No.");
+      EXIT(CVLedgerEntry_L."Prog. Date Time");
+    END;
+
+    PROCEDURE UpdateCollBalance2@8053005(DetCVLedgEntry_P@8053001 : Record 8053381);
+    VAR
+      GLAccount_L@8053002 : Record 15;
+      CVCollBalance_L@8053000 : Record 8053382;
+    BEGIN
+      IF NOT CVCollBalance_L.GET(DetCVLedgEntry_P."Cust./Vend. No.",DetCVLedgEntry_P."GLAccountNo.") THEN BEGIN
+        CVCollBalance_L.INIT;
+        CVCollBalance_L."Contact No." := DetCVLedgEntry_P."Cust./Vend. No.";
+        CVCollBalance_L."G/L Account No." := DetCVLedgEntry_P."GLAccountNo.";
+
+        IF GLAccount_L.GET(CVCollBalance_L."G/L Account No.") THEN
+          CVCollBalance_L.Description := GLAccount_L.Name;
+
+        CVCollBalance_L.INSERT;
+      END;
+    END;
+
+    PROCEDURE InitCVLedgerEntries@8053010();
+    VAR
+      CVCollBalance_L@8053000 : Record 8053382;
+      CVLedgerEntry_L@8053005 : Record 8053380;
+      CVDetLedgerEntry_L@8053006 : Record 8053381;
+      CustLedgerEntry_L@8053001 : Record 21;
+      VendLedgerEntry_L@8053002 : Record 25;
+      DetCustLedgerEntry_L@8053003 : Record 379;
+      DetVendLedgerEntry_L@8053004 : Record 380;
+    BEGIN
+      CVCollBalance_L.RESET;
+      CVCollBalance_L.DELETEALL;
+
+      CVLedgerEntry_L.RESET;
+      CVLedgerEntry_L.DELETEALL;
+
+      CVDetLedgerEntry_L.RESET;
+      CVDetLedgerEntry_L.DELETEALL;
+
+      CustLedgerEntry_L.RESET;
+      IF CustLedgerEntry_L.FINDSET THEN
+        REPEAT
+          CreateCVFromCustLedgerEntry(CustLedgerEntry_L);
+        UNTIL CustLedgerEntry_L.NEXT = 0;
+
+      DetCustLedgerEntry_L.RESET;
+      IF DetCustLedgerEntry_L.FINDSET THEN
+        REPEAT
+          CreateDetCVFromCustLedgerEntry(DetCustLedgerEntry_L);
+        UNTIL DetCustLedgerEntry_L.NEXT = 0;
+
+      VendLedgerEntry_L.RESET;
+      IF VendLedgerEntry_L.FINDSET THEN
+        REPEAT
+          CreateCVFromVendLedgerEntry(VendLedgerEntry_L);
+        UNTIL VendLedgerEntry_L.NEXT = 0;
+
+      DetVendLedgerEntry_L.RESET;
+      IF DetVendLedgerEntry_L.FINDSET THEN
+        REPEAT
+          CreateDetCVFromVendLedgerEntry(DetVendLedgerEntry_L);
+        UNTIL DetVendLedgerEntry_L.NEXT = 0;
+    END;
+
+    PROCEDURE RefreshCVLetter2@8053012(ContactNo_P@8053001 : Code[20]);
+    VAR
+      CVLedgerEntry_L@8053000 : Record 8053380;
+      recLedgerEntryTmp_L@1000000005 : ARRAY [6] OF TEMPORARY Record 8053380;
+      Letter_L@8053004 : Text[30];
+      recCustLedgerEntry_L@1000000002 : Record 21;
+      recVendorLedgerEntry_L@1000000001 : Record 25;
+    BEGIN
+      //Neutralisation
+      EXIT;
+
+      CVLedgerEntry_L.RESET;
+      CVLedgerEntry_L.SETCURRENTKEY("Contact No.","Posting Date");
+      CVLedgerEntry_L.SETRANGE("Contact No.",ContactNo_P);
+      CVLedgerEntry_L.MODIFYALL("CV Entry Letter", '');
+
+      IF CVLedgerEntry_L.FINDSET(FALSE,FALSE) THEN BEGIN
+        REPEAT
+          recLedgerEntryTmp_L[1] := CVLedgerEntry_L;
+          CASE CVLedgerEntry_L."Customer / Vendor" OF
+            CVLedgerEntry_L."Customer / Vendor"::Customer:
+            BEGIN
+              recCustLedgerEntry_L.GET(CVLedgerEntry_L."Entry No.");
+              recLedgerEntryTmp_L[1].Letter:=recCustLedgerEntry_L.Letter;
+            END;
+            CVLedgerEntry_L."Customer / Vendor"::Vendor:
+            BEGIN
+              recVendorLedgerEntry_L.GET(CVLedgerEntry_L."Entry No.");
+              recLedgerEntryTmp_L[1].Letter:=recVendorLedgerEntry_L.Letter;
+            END;
+          END;
+          recLedgerEntryTmp_L[1].INSERT;
+        UNTIL CVLedgerEntry_L.NEXT = 0;
+      END;
+
+      Letter_L:='AAA';
+
+      recLedgerEntryTmp_L[1].RESET;
+      recLedgerEntryTmp_L[1].SETCURRENTKEY("Customer / Vendor","Cust./Vend. No.",Letter);
+      recLedgerEntryTmp_L[1].SETRANGE("Customer / Vendor",recLedgerEntryTmp_L[1]."Customer / Vendor"::Customer);
+      recLedgerEntryTmp_L[1].SETRANGE("Cust./Vend. No.",ContactNo_P);
+      recLedgerEntryTmp_L[1].SETFILTER(Letter,'<>%1','');
+      IF recLedgerEntryTmp_L[1].FINDSET(FALSE,FALSE) THEN
+        REPEAT
+          IF recLedgerEntryTmp_L[1]."CV Entry Letter"='' THEN BEGIN
+            recLedgerEntryTmp_L[1].SETRANGE(Letter,recLedgerEntryTmp_L[1].Letter);
+            recLedgerEntryTmp_L[1].SETRANGE("Setting Off",TRUE);
+            IF recLedgerEntryTmp_L[1].ISEMPTY THEN BEGIN // pas de compensation
+              recLedgerEntryTmp_L[1].SETRANGE("Setting Off");
+              recLedgerEntryTmp_L[1].MODIFYALL("CV Entry Letter",Letter_L);
+              recLedgerEntryTmp_L[1].FINDLAST;
+              recLedgerEntryTmp_L[1].SETFILTER(Letter,'<>%1','');
+            END ELSE BEGIN // compensation exsitante
+              recLedgerEntryTmp_L[1].FINDSET(FALSE,FALSE);
+              REPEAT  // pour chaque ecr compens client
+                recLedgerEntryTmp_L[2].RESET; // on cherche la compensation four
+                recLedgerEntryTmp_L[2].SETRANGE("Customer / Vendor",recLedgerEntryTmp_L[2]."Customer / Vendor"::Vendor);
+                recLedgerEntryTmp_L[2].SETRANGE("Cust./Vend. No.",ContactNo_P);
+                recLedgerEntryTmp_L[2].SETRANGE("Transaction No.",recLedgerEntryTmp_L[1]."Transaction No.");
+                recLedgerEntryTmp_L[2].SETRANGE("Setting Off" ,TRUE);
+                IF recLedgerEntryTmp_L[2].FINDSET(FALSE,FALSE) THEN // il existe des ecr compensation fournisseur
+                  REPEAT   // maj des 'critures lettr'es avec la compensation four
+                    recLedgerEntryTmp_L[3].SETCURRENTKEY("Customer / Vendor","Cust./Vend. No.",Letter);
+                    recLedgerEntryTmp_L[3].SETRANGE("Customer / Vendor",recLedgerEntryTmp_L[3]."Customer / Vendor"::Vendor);
+                    recLedgerEntryTmp_L[3].SETRANGE("Cust./Vend. No.",ContactNo_P);
+                    recLedgerEntryTmp_L[3].SETRANGE(Letter,recLedgerEntryTmp_L[2].Letter);
+                    IF recLedgerEntryTmp_L[3].FINDSET THEN
+                      REPEAT
+                        recLedgerEntryTmp_L[3]."CV Entry Letter":=Letter_L;
+                        recLedgerEntryTmp_L[3].MODIFY;
+                        IF (recLedgerEntryTmp_L[3]."Setting Off") AND (recLedgerEntryTmp_L[3]."Entry No."<>
+                          recLedgerEntryTmp_L[2]."Entry No.")
+                        THEN BEGIN
+                          recLedgerEntryTmp_L[4].RESET;
+                          recLedgerEntryTmp_L[4].SETRANGE("Customer / Vendor",recLedgerEntryTmp_L[4]."Customer / Vendor"::Customer);
+                          recLedgerEntryTmp_L[4].SETRANGE("Cust./Vend. No.",ContactNo_P);
+                          recLedgerEntryTmp_L[4].SETRANGE("Transaction No.",recLedgerEntryTmp_L[3]."Transaction No."-1);
+                          recLedgerEntryTmp_L[4].SETRANGE("Document No.",recLedgerEntryTmp_L[3]."Document No." );
+                          IF recLedgerEntryTmp_L[3].FINDSET THEN BEGIN
+                            recLedgerEntryTmp_L[4].SETRANGE("Transaction No.");
+                            recLedgerEntryTmp_L[4].SETRANGE("Document No.");
+                            recLedgerEntryTmp_L[4].SETRANGE(Letter,recLedgerEntryTmp_L[4].Letter);
+                            recLedgerEntryTmp_L[4].MODIFYALL("CV Entry Letter",Letter_L);
+                          END;
+                        END;
+                      UNTIL recLedgerEntryTmp_L[3].NEXT=0;
+                  UNTIL recLedgerEntryTmp_L[2].NEXT=0
+                ELSE BEGIN // 2› methode
+                  recLedgerEntryTmp_L[2].SETRANGE("Transaction No.",recLedgerEntryTmp_L[1]."Transaction No." + 1);
+                  recLedgerEntryTmp_L[2].SETRANGE("Document No.",recLedgerEntryTmp_L[1]."Document No.");
+                  IF recLedgerEntryTmp_L[2].FINDSET(FALSE,FALSE) THEN
+                    REPEAT
+                      recLedgerEntryTmp_L[3].RESET;
+                      recLedgerEntryTmp_L[3].SETCURRENTKEY("Customer / Vendor","Cust./Vend. No.",Letter);
+                      recLedgerEntryTmp_L[3].SETRANGE("Customer / Vendor",recLedgerEntryTmp_L[3]."Customer / Vendor"::Vendor);
+                      recLedgerEntryTmp_L[3].SETRANGE("Cust./Vend. No.",ContactNo_P);
+                      recLedgerEntryTmp_L[3].SETRANGE(Letter,recLedgerEntryTmp_L[2].Letter);
+                      IF recLedgerEntryTmp_L[3].FINDSET(FALSE,FALSE) THEN
+                        REPEAT
+                          recLedgerEntryTmp_L[3]."CV Entry Letter":=Letter_L;
+                          recLedgerEntryTmp_L[3].MODIFY;
+                          IF (recLedgerEntryTmp_L[3]."Setting Off") AND (recLedgerEntryTmp_L[3]."Entry No."<>
+                            recLedgerEntryTmp_L[2]."Entry No.")
+                          THEN BEGIN
+                            recLedgerEntryTmp_L[4].RESET;
+                            recLedgerEntryTmp_L[4].SETRANGE("Customer / Vendor",recLedgerEntryTmp_L[4]."Customer / Vendor"::Customer);
+                            recLedgerEntryTmp_L[4].SETRANGE("Cust./Vend. No.",ContactNo_P);
+                            recLedgerEntryTmp_L[4].SETRANGE("Transaction No.",recLedgerEntryTmp_L[3]."Transaction No."-1);
+                            recLedgerEntryTmp_L[4].SETRANGE("Document No.",recLedgerEntryTmp_L[3]."Document No." );
+                            IF recLedgerEntryTmp_L[4].FINDSET(FALSE,FALSE) THEN
+                              REPEAT
+                                recLedgerEntryTmp_L[5].RESET;
+                                recLedgerEntryTmp_L[5].SETCURRENTKEY("Customer / Vendor","Cust./Vend. No.",Letter);
+                                recLedgerEntryTmp_L[5].SETRANGE("Customer / Vendor",
+                                  recLedgerEntryTmp_L[3]."Customer / Vendor"::Customer);
+                                recLedgerEntryTmp_L[5].SETRANGE("Cust./Vend. No.",ContactNo_P);
+                                recLedgerEntryTmp_L[5].SETRANGE(Letter,recLedgerEntryTmp_L[4].Letter);
+                                IF recLedgerEntryTmp_L[5].FINDSET(FALSE,FALSE) THEN
+                                  REPEAT
+                                    recLedgerEntryTmp_L[5]."CV Entry Letter":=Letter_L;
+                                    recLedgerEntryTmp_L[5].MODIFY;
+                                    IF (recLedgerEntryTmp_L[5]."Setting Off") AND
+                                      (recLedgerEntryTmp_L[5]."Entry No."<>recLedgerEntryTmp_L[4]."Entry No.")
+                                    THEN BEGIN
+                                      recLedgerEntryTmp_L[6].RESET;
+                                      recLedgerEntryTmp_L[6].SETRANGE("Customer / Vendor",
+                                        recLedgerEntryTmp_L[4]."Customer / Vendor"::Vendor);
+                                      recLedgerEntryTmp_L[6].SETRANGE("Cust./Vend. No.",ContactNo_P);
+                                      recLedgerEntryTmp_L[6].SETRANGE("Transaction No.",recLedgerEntryTmp_L[5]."Transaction No."+1);
+                                      recLedgerEntryTmp_L[6].SETRANGE("Document No.",recLedgerEntryTmp_L[5]."Document No." );
+                                      IF recLedgerEntryTmp_L[6].FINDSET(FALSE,FALSE) THEN BEGIN
+                                        recLedgerEntryTmp_L[6].SETRANGE("Transaction No.");
+                                        recLedgerEntryTmp_L[6].SETRANGE("Document No.");
+                                        recLedgerEntryTmp_L[6].SETRANGE(Letter,recLedgerEntryTmp_L[6].Letter);
+                                        recLedgerEntryTmp_L[6].MODIFYALL("CV Entry Letter",Letter_L);
+                                      END;
+                                    END;
+                                  UNTIL recLedgerEntryTmp_L[5].NEXT=0;
+                              UNTIL recLedgerEntryTmp_L[4].NEXT=0;
+                          END;
+                        UNTIL recLedgerEntryTmp_L[3].NEXT=0;
+                    UNTIL recLedgerEntryTmp_L[2].NEXT=0;
+                END;
+              UNTIL recLedgerEntryTmp_L[1].NEXT=0; //dernier ecr compen client
+              recLedgerEntryTmp_L[1].SETRANGE("Setting Off");
+              recLedgerEntryTmp_L[1].MODIFYALL("CV Entry Letter",Letter_L); // maj des ecr compen client
+              recLedgerEntryTmp_L[1].SETRANGE("Setting Off");
+              recLedgerEntryTmp_L[1].FINDLAST;
+              recLedgerEntryTmp_L[1].SETFILTER(Letter,'<>%1','');
+            END;
+          cuGLEntryApplication_G.NextLetter(Letter_L);
+          END;
+        UNTIL recLedgerEntryTmp_L[1].NEXT=0;
+
+      //Remplissage des 'criture fournisseur non lettr' pour l'instant et ayant une lettre normalement
+      recLedgerEntryTmp_L[1].RESET;
+      recLedgerEntryTmp_L[1].SETCURRENTKEY("Customer / Vendor","Cust./Vend. No.",Letter);
+      recLedgerEntryTmp_L[1].SETRANGE("Customer / Vendor",recLedgerEntryTmp_L[1]."Customer / Vendor"::Vendor);
+      recLedgerEntryTmp_L[1].SETRANGE("Cust./Vend. No.",ContactNo_P);
+      recLedgerEntryTmp_L[1].SETFILTER(Letter,'<>%1','');
+      recLedgerEntryTmp_L[1].SETRANGE("CV Entry Letter",'');
+      IF recLedgerEntryTmp_L[1].FINDFIRST THEN
+        REPEAT
+          recLedgerEntryTmp_L[1].SETRANGE(Letter,recLedgerEntryTmp_L[1].Letter);
+          recLedgerEntryTmp_L[1].MODIFYALL("CV Entry Letter",Letter_L);
+          cuGLEntryApplication_G.NextLetter(Letter_L);
+          recLedgerEntryTmp_L[1].SETFILTER(Letter, '>%1', recLedgerEntryTmp_L[1].Letter);
+          recLedgerEntryTmp_L[1].SETRANGE("CV Entry Letter",'');
+        UNTIL NOT recLedgerEntryTmp_L[1].FINDFIRST;
+
+      //Ecriture du r'sultat dans la base
+      recLedgerEntryTmp_L[1].RESET;
+      IF recLedgerEntryTmp_L[1].FINDSET(FALSE, FALSE) THEN BEGIN
+        REPEAT
+          CVLedgerEntry_L := recLedgerEntryTmp_L[1];
+          CVLedgerEntry_L.MODIFY;
+        UNTIL recLedgerEntryTmp_L[1].NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE UpdateCVFromCustLedgerEntry@1000000005(CustLedgerEntry_P@8053001 : Record 21);
+    VAR
+      CVLedgerEntry_L@8053000 : Record 8053380;
+      VendLedgerEntry_L@8053002 : Record 25;
+      CustPostingGroup_L@8053003 : Record 92;
+      CVDtldCustLedgEntry_L@8053004 : Record 8053381;
+    BEGIN
+      WITH CVLedgerEntry_L DO BEGIN
+        IF GET(CVLedgerEntry_L."Customer / Vendor"::Customer,CustLedgerEntry_P."Entry No.") THEN BEGIN
+          "On Hold" := CustLedgerEntry_P."On Hold";
+          "Due Date" := CustLedgerEntry_P."Due Date";
+          "Payment Method Code" := CustLedgerEntry_P."Payment Method Code";
+          "Setting Off not Allowed" := CustLedgerEntry_P."Setting Off not Allowed";
+          MODIFY;
+          CVDtldCustLedgEntry_L.SETCURRENTKEY("CV Ledger Entry No.");
+          CVDtldCustLedgEntry_L.SETRANGE("CV Ledger Entry No.","Entry No.");
+          CVDtldCustLedgEntry_L.MODIFYALL("Initial Entry Due Date","Due Date");
+        END;
+      END;
+    END;
+
+    PROCEDURE UpdateCVFromVendLedgerEntry@1000000004(VendLedgerEntry_P@8053001 : Record 25);
+    VAR
+      CVLedgerEntry_L@8053000 : Record 8053380;
+      VendPostingGroup_L@8053002 : Record 93;
+      CVDtldCustLedgEntry_L@8053003 : Record 8053381;
+    BEGIN
+      WITH CVLedgerEntry_L DO BEGIN
+        IF GET(CVLedgerEntry_L."Customer / Vendor"::Vendor,VendLedgerEntry_P."Entry No.") THEN BEGIN
+          "On Hold" := VendLedgerEntry_P."On Hold";
+          "Due Date" := VendLedgerEntry_P."Due Date";
+          "Payment Method Code" := VendLedgerEntry_P."Payment Method Code";
+          "Setting Off not Allowed" := VendLedgerEntry_P."Setting Off not Allowed";
+          MODIFY;
+          CVDtldCustLedgEntry_L.SETCURRENTKEY("CV Ledger Entry No.");
+          CVDtldCustLedgEntry_L.SETRANGE("CV Ledger Entry No.","Entry No.");
+          CVDtldCustLedgEntry_L.MODIFYALL("Initial Entry Due Date","Due Date");
+        END;
+      END;
+    END;
+
+    PROCEDURE UpdateCustProgBalance@1000000000(VAR CLedgerEntry_P@1000000000 : Record 21);
+    VAR
+      ProgBalance_L@1000000001 : Decimal;
+      ProgAmount_L@1000000002 : Decimal;
+      Customer_L@1000000004 : Record 18;
+      CMCProgBal_L@1000000003 : Record 8053385;
+    BEGIN
+      WITH CLedgerEntry_P DO BEGIN
+        IF NOT Customer_L.GET(GETFILTER("Customer No.")) THEN
+          EXIT;
+        ProgBalance_L := 0;
+        ProgAmount_L := 0;
+        IF FIND('-') THEN
+          REPEAT
+            CLedgerEntry_P.CALCFIELDS("Remaining Amt. (LCY)");
+            CLedgerEntry_P.CALCFIELDS("Amount (LCY)");
+            ProgBalance_L := ProgBalance_L + CLedgerEntry_P."Remaining Amt. (LCY)";
+            ProgAmount_L := ProgAmount_L + CLedgerEntry_P."Amount (LCY)";
+            IF NOT CMCProgBal_L.GET(CMCProgBal_L."Entry Type"::"Customer Entry",CLedgerEntry_P."Entry No.") THEN BEGIN
+              CMCProgBal_L.INIT;
+              CMCProgBal_L."Entry Type" := CMCProgBal_L."Entry Type"::"Customer Entry";
+              CMCProgBal_L."Entry No." := CLedgerEntry_P."Entry No.";
+              CMCProgBal_L.INSERT;
+            END;
+            CMCProgBal_L.Amount := ProgAmount_L;
+            CMCProgBal_L."Remaining Amount" := ProgBalance_L;
+            CMCProgBal_L.MODIFY;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE UpdateVendProgBalance@1000000001(VAR VLedgerEntry_P@1000000000 : Record 25);
+    VAR
+      ProgBalance_L@1000000001 : Decimal;
+      ProgAmount_L@1000000002 : Decimal;
+      Vendor_L@1000000003 : Record 23;
+      CMCProgBal_L@1000000004 : Record 8053385;
+    BEGIN
+      WITH VLedgerEntry_P DO BEGIN
+        IF NOT Vendor_L.GET(GETFILTER("Vendor No.")) THEN
+          EXIT;
+        ProgBalance_L := 0;
+        ProgAmount_L := 0;
+        IF FIND('-') THEN
+          REPEAT
+            VLedgerEntry_P.CALCFIELDS("Remaining Amt. (LCY)");
+            VLedgerEntry_P.CALCFIELDS("Amount (LCY)");
+            ProgBalance_L := ProgBalance_L + VLedgerEntry_P."Remaining Amt. (LCY)";
+            ProgAmount_L := ProgAmount_L + VLedgerEntry_P."Amount (LCY)";
+            IF NOT CMCProgBal_L.GET(CMCProgBal_L."Entry Type"::"Vendor Entry",VLedgerEntry_P."Entry No.") THEN BEGIN
+              CMCProgBal_L.INIT;
+              CMCProgBal_L."Entry Type" := CMCProgBal_L."Entry Type"::"Vendor Entry";
+              CMCProgBal_L."Entry No." := VLedgerEntry_P."Entry No.";
+              CMCProgBal_L.INSERT;
+            END;
+            CMCProgBal_L.Amount := ProgAmount_L;
+            CMCProgBal_L."Remaining Amount" := ProgBalance_L;
+            CMCProgBal_L.MODIFY;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE UpdateGLProgBalance@1000000003(VAR GLEntry_P@1000000000 : Record 17);
+    VAR
+      ProgBalance_L@1000000001 : Decimal;
+      ProgAmount_L@1000000002 : Decimal;
+      CMCProgBal_L@1000000003 : Record 8053385;
+      GLAccount_L@1000000004 : Record 15;
+    BEGIN
+      WITH GLEntry_P DO BEGIN
+        IF NOT GLAccount_L.GET(GETFILTER("G/L Account No.")) THEN
+          EXIT;
+        ProgAmount_L := 0;
+        IF FIND('-') THEN
+          REPEAT
+            ProgAmount_L := ProgAmount_L + GLEntry_P.Amount;
+            IF NOT CMCProgBal_L.GET(CMCProgBal_L."Entry Type"::"G/L Entry",GLEntry_P."Entry No.") THEN BEGIN
+              CMCProgBal_L.INIT;
+              CMCProgBal_L."Entry Type" := CMCProgBal_L."Entry Type"::"G/L Entry";
+              CMCProgBal_L."Entry No." := GLEntry_P."Entry No.";
+              CMCProgBal_L.INSERT;
+            END;
+            CMCProgBal_L.Amount := ProgAmount_L;
+            CMCProgBal_L.MODIFY;
+          UNTIL NEXT = 0;
+      END;
+    END;
+
+    PROCEDURE RefreshCVLetter3@8053011(ContactNo_P@8053001 : Code[20]);
+    VAR
+      CVLedgerEntry_L@8053000 : Record 8053380;
+      CVLedgerEntry2_L@8053002 : Record 8053380;
+      recLedgerEntryTmp_L@1000000005 : ARRAY [8] OF TEMPORARY Record 8053380;
+      Letter_L@8053004 : Text[30];
+      recCustLedgerEntry_L@1000000002 : Record 21;
+      recVendorLedgerEntry_L@1000000001 : Record 25;
+      LetterUsed_L@8053003 : Boolean;
+      LetterUsed2_L@1000000000 : Boolean;
+      Letter2_L@1000000003 : Text[30];
+      InitialLetter_L@1000000004 : Text[30];
+      recCustDetTmp_L@1000000008 : TEMPORARY Record 379;
+      recVendDetTmp_L@1000000009 : TEMPORARY Record 380;
+      recContact_L@8053005 : Record 5050;
+    BEGIN
+      // --> 20150624-FINA13-CMC02.02.00-3035-FHS01
+      IF recContact_L.GET(ContactNo_P) THEN
+        IF recContact_L."Contact Type" <> recContact_L."Contact Type"::Farm THEN
+          EXIT;
+      // <-- 20150624-FINA13-CMC02.02.00-3035-FHS01
+      // --> 20150309-FINA13-CMC02.02.00-FHS01
+      // --> 20150616-FINA13-CMC02.02.00-3035-FHS01
+      recLedgerEntryTmp_L[1].RESET;
+      recLedgerEntryTmp_L[1].DELETEALL;
+      // <-- 20150616-FINA13-CMC02.02.00-3035-FHS01
+      //Recherche toutes les 'critures devant ^tre de nouveau lettr'es
+      CVLedgerEntry_L.RESET;
+      CVLedgerEntry_L.SETCURRENTKEY("Contact No.","Changed To Letter", "CV Entry Letter");
+      CVLedgerEntry_L.SETRANGE("Contact No.", ContactNo_P);
+      CVLedgerEntry_L.SETRANGE("Changed To Letter", TRUE);
+      CVLedgerEntry_L.SETFILTER("CV Entry Letter", '<>%1', '');
+      IF CVLedgerEntry_L.FINDSET(FALSE, FALSE) THEN
+        REPEAT
+          // --> 20150624-FINA13-CMC02.02.00-3035-FHS01
+          IF NOT(recLedgerEntryTmp_L[1].GET(CVLedgerEntry_L."Customer / Vendor", CVLedgerEntry_L."Entry No.")) THEN BEGIN
+          // <-- 20150624-FINA13-CMC02.02.00-3035-FHS01
+            CVLedgerEntry2_L.RESET;
+            CVLedgerEntry2_L.SETCURRENTKEY("Contact No.", "CV Entry Letter");
+            CVLedgerEntry2_L.SETRANGE("Contact No.", ContactNo_P);
+            CVLedgerEntry2_L.SETRANGE("CV Entry Letter", CVLedgerEntry_L."CV Entry Letter");
+            IF CVLedgerEntry2_L.FINDSET(FALSE, FALSE) THEN
+              REPEAT
+                // --> 20150616-FINA13-CMC02.02.00-3035-FHS01
+                //BEFORE
+                //recLedgerEntryTmp_L[1] := CVLedgerEntry2_L;
+                //IF recLedgerEntryTmp_L[1].INSERT THEN ;
+                //AFTER
+                AddLedger(recLedgerEntryTmp_L[1], CVLedgerEntry2_L, recCustDetTmp_L, recVendDetTmp_L);
+                // <-- 20150616-FINA13-CMC02.02.00-3035-FHS01
+              UNTIL CVLedgerEntry2_L.NEXT = 0;
+          // --> 20150624-FINA13-CMC02.02.00-3035-FHS01
+          END;
+          // <-- 20150624-FINA13-CMC02.02.00-3035-FHS01
+        UNTIL CVLedgerEntry_L.NEXT = 0;
+
+      //R'cup'ration de toutes les 'critures pas lettr'es
+      CVLedgerEntry_L.RESET;
+      CVLedgerEntry_L.SETCURRENTKEY("Contact No.", "CV Entry Letter");
+      CVLedgerEntry_L.SETRANGE("Contact No.", ContactNo_P);
+      CVLedgerEntry_L.SETRANGE("CV Entry Letter", '');
+      IF CVLedgerEntry_L.FINDSET(FALSE, FALSE) THEN
+        REPEAT
+          // --> 20150624-FINA13-CMC02.02.00-3035-FHS01
+          IF NOT(recLedgerEntryTmp_L[1].GET(CVLedgerEntry_L."Customer / Vendor", CVLedgerEntry_L."Entry No.")) THEN
+          // <-- 20150624-FINA13-CMC02.02.00-3035-FHS01
+            // --> 20150616-FINA13-CMC02.02.00-3035-FHS01
+            //BEFORE
+            //recLedgerEntryTmp_L[1] := CVLedgerEntry_L;
+            //IF recLedgerEntryTmp_L[1].INSERT THEN ;
+            //AFTER
+            AddLedger(recLedgerEntryTmp_L[1], CVLedgerEntry_L, recCustDetTmp_L, recVendDetTmp_L);
+            // <-- 20150616-FINA13-CMC02.02.00-3035-FHS01
+        UNTIL CVLedgerEntry_L.NEXT = 0;
+
+      //R'cup'ration des 'critures 'tant lettr'es avec un doc ayant eu une compensation non lettr'e
+      recLedgerEntryTmp_L[1].RESET;
+      recLedgerEntryTmp_L[1].SETRANGE("Setting Off", TRUE);
+      IF recLedgerEntryTmp_L[1].FINDSET(FALSE, FALSE) THEN
+        REPEAT
+          CVLedgerEntry_L.RESET;
+          // --> 20150616-FINA13-CMC02.02.00-3035-FHS01
+          CVLedgerEntry_L.SETCURRENTKEY("Contact No.");
+          CVLedgerEntry_L.SETRANGE("Contact No.", ContactNo_P);
+          // <-- 20150616-FINA13-CMC02.02.00-3035-FHS01
+          CVLedgerEntry_L.SETRANGE("Document No.", recLedgerEntryTmp_L[1]."Document No.");
+          IF CVLedgerEntry_L.FINDSET(FALSE, FALSE) THEN
+            REPEAT
+              IF NOT(recLedgerEntryTmp_L[2].GET(CVLedgerEntry_L."Customer / Vendor", CVLedgerEntry_L."Entry No.")) THEN BEGIN
+                // --> 20150616-FINA13-CMC02.02.00-3035-FHS01
+                //BEFORE
+                //recLedgerEntryTmp_L[2] := CVLedgerEntry_L;
+                //IF recLedgerEntryTmp_L[2].INSERT THEN ;
+                //AFTER
+                AddLedger(recLedgerEntryTmp_L[2], CVLedgerEntry_L, recCustDetTmp_L, recVendDetTmp_L);
+                // <-- 20150616-FINA13-CMC02.02.00-3035-FHS01
+              END;
+            UNTIL CVLedgerEntry_L.NEXT = 0;
+        UNTIL recLedgerEntryTmp_L[1].NEXT = 0;
+
+      //R'cup'ration des 'critures 'tant lettr'es avec une ligne a relettrer
+      recLedgerEntryTmp_L[1].RESET;
+      IF recLedgerEntryTmp_L[1].FINDSET(FALSE, FALSE) THEN
+        REPEAT
+          CVLedgerEntry_L.RESET;
+          CVLedgerEntry_L.SETCURRENTKEY("Contact No.","Original Closed by Entry No.");
+          CVLedgerEntry_L.SETRANGE("Contact No.", ContactNo_P);
+          CVLedgerEntry_L.SETRANGE("Original Closed by Entry No.", recLedgerEntryTmp_L[1]."Entry No.");
+          CVLedgerEntry_L.SETRANGE("Customer / Vendor", recLedgerEntryTmp_L[1]."Customer / Vendor");
+          IF CVLedgerEntry_L.FINDSET(FALSE, FALSE) THEN
+            REPEAT
+              IF NOT(recLedgerEntryTmp_L[2].GET(CVLedgerEntry_L."Customer / Vendor", CVLedgerEntry_L."Entry No.")) THEN BEGIN
+                // --> 20150616-FINA13-CMC02.02.00-3035-FHS01
+                //BEFORE
+                //recLedgerEntryTmp_L[2] := CVLedgerEntry_L;
+                //IF recLedgerEntryTmp_L[2].INSERT THEN ;
+                //AFTER
+                AddLedger(recLedgerEntryTmp_L[2], CVLedgerEntry_L, recCustDetTmp_L, recVendDetTmp_L);
+                // <-- 20150616-FINA13-CMC02.02.00-3035-FHS01
+              END;
+            UNTIL CVLedgerEntry_L.NEXT = 0;
+        UNTIL recLedgerEntryTmp_L[1].NEXT = 0;
+
+      // --> 20150724-FINA13-ADV01.01.00-1891-FHS01
+      recLedgerEntryTmp_L[1].RESET;
+      recLedgerEntryTmp_L[1].SETCURRENTKEY("Contact No.", "CV Entry Letter");
+      recLedgerEntryTmp_L[1].SETFILTER("CV Entry Letter", '<>%1', '');
+      IF recLedgerEntryTmp_L[1].FINDSET(FALSE, FALSE) THEN
+        REPEAT
+          CVLedgerEntry_L.RESET;
+          CVLedgerEntry_L.SETCURRENTKEY("Contact No.", "CV Entry Letter");
+          CVLedgerEntry_L.SETRANGE("Contact No.", ContactNo_P);
+          CVLedgerEntry_L.SETRANGE("CV Entry Letter", recLedgerEntryTmp_L[1]."CV Entry Letter");
+          IF CVLedgerEntry_L.FINDSET(FALSE, FALSE) THEN
+            REPEAT
+              IF NOT(recLedgerEntryTmp_L[2].GET(CVLedgerEntry_L."Customer / Vendor", CVLedgerEntry_L."Entry No.")) THEN
+                AddLedger(recLedgerEntryTmp_L[2], CVLedgerEntry_L, recCustDetTmp_L, recVendDetTmp_L);
+            UNTIL CVLedgerEntry_L.NEXT = 0;
+        UNTIL recLedgerEntryTmp_L[1].NEXT = 0;
+      // <-- 20150724-FINA13-ADV01.01.00-1891-FHS01
+
+      //Toutes les 'critures trouv'es
+      recLedgerEntryTmp_L[1].RESET;
+      recLedgerEntryTmp_L[1].MODIFYALL("CV Entry Letter", '');
+      recLedgerEntryTmp_L[1].MODIFYALL("Closed by Entry No.", 0);
+      recLedgerEntryTmp_L[1].MODIFYALL("Closed by Entry Type", 0);
+
+      Letter_L:='AAA';
+      SearchNextLetter(Letter_L, ContactNo_P, recLedgerEntryTmp_L);
+      // --> 20150616-FINA13-CMC02.02.00-3035-FHS01
+      InitialLetter_L := Letter_L;
+      // <-- 20150616-FINA13-CMC02.02.00-3035-FHS01
+      LetterUsed_L := FALSE;
+
+      //Recherche 'critures de compensation client
+      recLedgerEntryTmp_L[1].RESET;
+      recLedgerEntryTmp_L[1].SETRANGE("CV Entry Letter", '');
+      recLedgerEntryTmp_L[1].SETRANGE("Customer / Vendor", recLedgerEntryTmp_L[1]."Customer / Vendor"::Customer);
+      recLedgerEntryTmp_L[1].SETRANGE("Setting Off", TRUE);
+      IF recLedgerEntryTmp_L[1].FINDSET(FALSE, FALSE) THEN
+        REPEAT
+          LetterUsed_L := FALSE;
+          IF recLedgerEntryTmp_L[2].GET(recLedgerEntryTmp_L[1]."Customer / Vendor", recLedgerEntryTmp_L[1]."Entry No.") THEN BEGIN
+            IF recLedgerEntryTmp_L[2]."CV Entry Letter" = '' THEN BEGIN
+              //L''criture n'est pas encore mise . jour.
+
+              //Recherche des 'critures sur le document de compensation
+              recLedgerEntryTmp_L[2].RESET;
+              //recLedgerEntryTmp_L[2].SETRANGE("Document Type", recLedgerEntryTmp_L[1]."Document Type");
+              recLedgerEntryTmp_L[2].SETRANGE("Document No.", recLedgerEntryTmp_L[1]."Document No.");
+              recLedgerEntryTmp_L[2].SETRANGE("CV Entry Letter", '');
+              IF NOT(recLedgerEntryTmp_L[2].ISEMPTY) THEN BEGIN
+                //document de compensation : toutes les 'critures sont lettr'es ensembles
+                // --> 20150608-FINA13-CMC02.02.00-3035-FHS01
+                //BEFORE
+                //LetterAll(recLedgerEntryTmp_L, 2, 1, Letter_L, LetterUsed_L);
+                //AFTER
+                SearchAlreadyLettred(recLedgerEntryTmp_L, 8, 1, Letter_L, Letter2_L);
+                LetterAll(recLedgerEntryTmp_L, 2, 1, Letter2_L, LetterUsed_L);
+                IF Letter_L <> Letter2_L THEN BEGIN
+                  LetterUsed_L := FALSE;
+                END;
+                // <-- 20150608-FINA13-CMC02.02.00-3035-FHS01
+              END ELSE BEGIN
+                //Parcours de toutes les 'critures de compensation client
+                //Recherche transaction sur fournisseur
+                IF SearchTransactionNo(recLedgerEntryTmp_L, recLedgerEntryTmp_L[1]."Transaction No.", 2,
+                  recLedgerEntryTmp_L[1]."Document No.", FALSE, TRUE)
+                THEN BEGIN
+                  REPEAT
+                    // maj des 'critures lettr'es avec la compensation fournisseur de type TERNOVEO
+                    IF SearchLettrage(recLedgerEntryTmp_L, 3, 2) THEN
+                      REPEAT
+                        LetterOne(recLedgerEntryTmp_L, 3, 1, Letter_L, LetterUsed_L);
+                        IF (recLedgerEntryTmp_L[3]."Setting Off") AND (recLedgerEntryTmp_L[3]."Entry No."<>
+                          recLedgerEntryTmp_L[2]."Entry No.")
+                        THEN BEGIN
+                          IF SearchTransactionNo(recLedgerEntryTmp_L, recLedgerEntryTmp_L[3]."Transaction No." - 1, 4,
+                            recLedgerEntryTmp_L[3]."Document No.", TRUE, FALSE)
+                          THEN BEGIN
+                            recLedgerEntryTmp_L[4].SETRANGE("Transaction No.");
+                            recLedgerEntryTmp_L[4].SETRANGE("Document No.");
+                            // --> 20150608-FINA13-CMC02.02.00-3035-FHS01
+                            //BEFORE
+                            //LetterAll(recLedgerEntryTmp_L, 4, 1, Letter_L, LetterUsed_L)
+                            //AFTER
+                            SearchAlreadyLettred(recLedgerEntryTmp_L, 8, 1, Letter_L, Letter2_L);
+                            LetterAll(recLedgerEntryTmp_L, 4, 1, Letter2_L, LetterUsed_L);
+                            IF Letter_L <> Letter2_L THEN BEGIN
+                              LetterUsed_L := FALSE;
+                            END;
+                            // <-- 20150608-FINA13-CMC02.02.00-3035-FHS01
+                          END;
+                        END;
+                      UNTIL recLedgerEntryTmp_L[3].NEXT=0;
+                  UNTIL recLedgerEntryTmp_L[2].NEXT=0;
+                END ELSE BEGIN
+                  //Compensation standard
+                  //Recherche transaction + 1 sur fournisseur
+                  IF SearchTransactionNo(recLedgerEntryTmp_L, recLedgerEntryTmp_L[1]."Transaction No." + 1, 2,
+                    recLedgerEntryTmp_L[1]."Document No.", FALSE, FALSE)
+                  THEN
+                    REPEAT   // maj des 'critures lettr'es avec la compensation fournisseur
+                      IF SearchLettrage(recLedgerEntryTmp_L, 3, 2) THEN
+                        REPEAT
+                          LetterOne(recLedgerEntryTmp_L, 3, 1, Letter_L, LetterUsed_L);
+                          IF (recLedgerEntryTmp_L[3]."Setting Off") AND (recLedgerEntryTmp_L[3]."Entry No."<>
+                            recLedgerEntryTmp_L[2]."Entry No.")
+                          THEN BEGIN
+                            //Recherche transaction - 1 sur client
+                            IF SearchTransactionNo(recLedgerEntryTmp_L, recLedgerEntryTmp_L[3]."Transaction No." - 1, 4,
+                              recLedgerEntryTmp_L[3]."Document No.", TRUE, FALSE)
+                            THEN
+                              REPEAT
+                                IF SearchLettrage(recLedgerEntryTmp_L, 5, 4) THEN
+                                  REPEAT
+                                    LetterOne(recLedgerEntryTmp_L, 5, 1, Letter_L, LetterUsed_L);
+                                    IF (recLedgerEntryTmp_L[5]."Setting Off") AND
+                                      (recLedgerEntryTmp_L[5]."Entry No." <> recLedgerEntryTmp_L[4]."Entry No.")
+                                    THEN BEGIN
+                                      IF SearchTransactionNo(recLedgerEntryTmp_L, recLedgerEntryTmp_L[5]."Transaction No."+1, 6,
+                                        recLedgerEntryTmp_L[5]."Document No.", FALSE, FALSE)
+                                      THEN BEGIN
+                                        IF SearchLettrage(recLedgerEntryTmp_L, 7, 6) THEN
+                                          // --> 20150608-FINA13-CMC02.02.00-3035-FHS01
+                                          //BEFORE
+                                          //LetterAll(recLedgerEntryTmp_L, 7, 1, Letter_L, LetterUsed_L);
+                                          //AFTER
+                                          SearchAlreadyLettred(recLedgerEntryTmp_L, 8, 1, Letter_L, Letter2_L);
+                                          LetterAll(recLedgerEntryTmp_L, 7, 1, Letter2_L, LetterUsed_L);
+                                          IF Letter_L <> Letter2_L THEN BEGIN
+                                            LetterUsed_L := FALSE;
+                                          END;
+                                          // <-- 20150608-FINA13-CMC02.02.00-3035-FHS01
+                                      END;
+                                    END;
+                                UNTIL recLedgerEntryTmp_L[5].NEXT=0;
+                              UNTIL recLedgerEntryTmp_L[4].NEXT=0;
+                          END;
+                        UNTIL recLedgerEntryTmp_L[3].NEXT=0;
+                    UNTIL recLedgerEntryTmp_L[2].NEXT=0;
+                END;
+              END;
+              IF LetterUsed_L = TRUE THEN BEGIN
+                cuGLEntryApplication_G.NextLetter(Letter_L);
+                SearchNextLetter(Letter_L, ContactNo_P, recLedgerEntryTmp_L);
+                LetterUsed_L := FALSE;
+              END;
+            END;
+          END;
+        UNTIL recLedgerEntryTmp_L[1].NEXT=0;
+
+      //Recherche 'critures de compensation fournisseur
+      recLedgerEntryTmp_L[1].RESET;
+      recLedgerEntryTmp_L[1].SETRANGE("CV Entry Letter", '');
+      recLedgerEntryTmp_L[1].SETRANGE("Customer / Vendor", recLedgerEntryTmp_L[1]."Customer / Vendor"::Vendor);
+      recLedgerEntryTmp_L[1].SETRANGE("Setting Off", TRUE);
+      IF recLedgerEntryTmp_L[1].FINDSET(FALSE, FALSE) THEN
+        REPEAT
+          LetterUsed_L := FALSE;
+          //Recherche des 'critures sur le document de compensation
+          recLedgerEntryTmp_L[2].RESET;
+          recLedgerEntryTmp_L[2].SETRANGE("Document No.", recLedgerEntryTmp_L[1]."Document No.");
+          recLedgerEntryTmp_L[2].SETRANGE("CV Entry Letter", '');
+          IF NOT(recLedgerEntryTmp_L[2].ISEMPTY) THEN BEGIN
+            //document de compensation : toutes les 'critures sont lettr'es ensembles
+            // --> 20150608-FINA13-CMC02.02.00-3035-FHS01
+            //BEFORE
+            //LetterAll(recLedgerEntryTmp_L, 2, 1, Letter_L, LetterUsed_L)
+            //AFTER
+            SearchAlreadyLettred(recLedgerEntryTmp_L, 8, 1, Letter_L, Letter2_L);
+            LetterAll(recLedgerEntryTmp_L, 2, 1, Letter2_L, LetterUsed_L);
+            IF Letter_L <> Letter2_L THEN BEGIN
+              LetterUsed_L := FALSE;
+            END;
+            // <-- 20150608-FINA13-CMC02.02.00-3035-FHS01
+          END;
+          IF LetterUsed_L = TRUE THEN BEGIN
+            cuGLEntryApplication_G.NextLetter(Letter_L);
+            SearchNextLetter(Letter_L, ContactNo_P, recLedgerEntryTmp_L);
+            LetterUsed_L := FALSE;
+          END;
+        UNTIL recLedgerEntryTmp_L[1].NEXT=0;
+
+      //Recherche 'critures lettrant la compensation
+      recLedgerEntryTmp_L[1].RESET;
+      recLedgerEntryTmp_L[1].SETFILTER("CV Entry Letter", '<>%1', '');
+      //recLedgerEntryTmp_L[1].SETRANGE("Customer / Vendor", recLedgerEntryTmp_L[1]."Customer / Vendor"::Vendor);
+      recLedgerEntryTmp_L[1].SETRANGE("Setting Off", TRUE);
+      IF recLedgerEntryTmp_L[1].FINDSET(FALSE, FALSE) THEN
+        REPEAT
+          LetterUsed_L := FALSE;
+          //Recherche des 'critures sur le document de compensation
+          recLedgerEntryTmp_L[2].RESET;
+          recLedgerEntryTmp_L[2].SETRANGE("Customer / Vendor", recLedgerEntryTmp_L[1]."Customer / Vendor");
+          recLedgerEntryTmp_L[2].SETRANGE("Entry No.", recLedgerEntryTmp_L[1]."Original Closed by Entry No.");
+          recLedgerEntryTmp_L[2].SETRANGE("CV Entry Letter", '');
+          // --> 20150616-FINA13-CMC02.02.00-3035-FHS01
+          //BEFORE
+          //IF NOT(recLedgerEntryTmp_L[2].ISEMPTY) THEN BEGIN
+          //AFTER
+          IF recLedgerEntryTmp_L[2].FINDFIRST THEN BEGIN
+          // <-- 20150616-FINA13-CMC02.02.00-3035-FHS01
+            //document de compensation : toutes les 'critures sont lettr'es ensembles
+            // --> 20150616-FINA13-CMC02.02.00-3035-FHS01
+            //BEFORE
+            //LetterAll(recLedgerEntryTmp_L, 2, 1, Letter_L, LetterUsed_L);
+            //AFTER
+            recLedgerEntryTmp_L[3].COPYFILTERS(recLedgerEntryTmp_L[2]);
+            LetterAll(recLedgerEntryTmp_L, 3, 1, Letter_L, LetterUsed_L);
+            // <-- 20150616-FINA13-CMC02.02.00-3035-FHS01
+            // --> 20150608-FINA13-CMC02.02.00-3035-FHS01
+            recLedgerEntryTmp_L[2].GET(recLedgerEntryTmp_L[2]."Customer / Vendor", recLedgerEntryTmp_L[2]."Entry No.");
+            recLedgerEntryTmp_L[3].RESET;
+            recLedgerEntryTmp_L[3].SETRANGE("Customer / Vendor", recLedgerEntryTmp_L[2]."Customer / Vendor");
+            recLedgerEntryTmp_L[3].SETRANGE("Entry No.", recLedgerEntryTmp_L[2]."Original Closed by Entry No.");
+            recLedgerEntryTmp_L[3].SETFILTER("CV Entry Letter", '<>%1&<>%2', '', recLedgerEntryTmp_L[2]."CV Entry Letter");
+            // --> 20150616-FINA13-CMC02.02.00-3035-FHS01
+            //BEFORE
+            //IF recLedgerEntryTmp_L[3].FINDFIRST THEN BEGIN
+            //AFTER
+            IF recLedgerEntryTmp_L[3].FINDSET(FALSE, FALSE) THEN BEGIN
+            // <-- 20150616-FINA13-CMC02.02.00-3035-FHS01
+              //Lettrage des 2 compensations ensemble
+              Letter_L := recLedgerEntryTmp_L[3]."CV Entry Letter";
+              LetterUsed_L := FALSE;
+              recLedgerEntryTmp_L[3].RESET;
+              recLedgerEntryTmp_L[3].SETRANGE("CV Entry Letter", Letter_L);
+              recLedgerEntryTmp_L[3].MODIFYALL("CV Entry Letter", recLedgerEntryTmp_L[2]."CV Entry Letter");
+            END;
+            // <-- 20150608-FINA13-CMC02.02.00-3035-FHS01
+          END;
+          IF LetterUsed_L = TRUE THEN BEGIN
+            cuGLEntryApplication_G.NextLetter(Letter_L);
+            SearchNextLetter(Letter_L, ContactNo_P, recLedgerEntryTmp_L);
+            LetterUsed_L := FALSE;
+          END;
+        UNTIL recLedgerEntryTmp_L[1].NEXT=0;
+
+      // --> 20150728-FINA13-ADV01.01.00-1891-FHS01
+      SearchNextLetter(Letter_L, ContactNo_P, recLedgerEntryTmp_L);
+      // <-- 20150728-FINA13-ADV01.01.00-1891-FHS01
+
+      //Parcours des 'critures restantes . lettrer
+      recLedgerEntryTmp_L[1].RESET;
+      recLedgerEntryTmp_L[1].SETRANGE("CV Entry Letter", '');
+      IF recLedgerEntryTmp_L[1].FINDSET(FALSE, FALSE) THEN
+        REPEAT
+          IF recLedgerEntryTmp_L[1]."CV Entry Letter" = '' THEN BEGIN
+            //Recherche si lettrage original existe
+            IF recLedgerEntryTmp_L[1]."Original Closed by Entry No." <> 0 THEN BEGIN
+              IF recLedgerEntryTmp_L[2].GET(recLedgerEntryTmp_L[1]."Customer / Vendor",
+                recLedgerEntryTmp_L[1]."Original Closed by Entry No.")
+              THEN BEGIN
+                IF recLedgerEntryTmp_L[2]."CV Entry Letter" = '' THEN BEGIN
+                  //Lettrage ensemble
+                  LetterOne(recLedgerEntryTmp_L, 1, 2, Letter_L, LetterUsed_L);
+                  LetterOne(recLedgerEntryTmp_L, 2, 1, Letter_L, LetterUsed_L);
+                END ELSE BEGIN
+                  LetterOne(recLedgerEntryTmp_L, 1, 2, recLedgerEntryTmp_L[2]."CV Entry Letter", LetterUsed_L);
+                END;
+                //Recherche de celles qui sont initialement lettr'es avec celle trouv'e
+                recLedgerEntryTmp_L[2].RESET;
+                recLedgerEntryTmp_L[2].SETCURRENTKEY("Contact No.", "CV Entry Letter", "Customer / Vendor", "Entry No.");
+                recLedgerEntryTmp_L[2].SETRANGE("Contact No.", ContactNo_P);
+                recLedgerEntryTmp_L[2].SETRANGE("CV Entry Letter", '');
+                // --> 20150728-FINA13-ADV01.01.00-1891-FHS01
+                recLedgerEntryTmp_L[2].SETRANGE("Customer / Vendor", recLedgerEntryTmp_L[1]."Customer / Vendor");
+                // <-- 20150728-FINA13-ADV01.01.00-1891-FHS01
+                recLedgerEntryTmp_L[2].SETRANGE("Original Closed by Entry No.", recLedgerEntryTmp_L[1]."Original Closed by Entry No.");
+                LetterAll(recLedgerEntryTmp_L, 2, 1, Letter_L, LetterUsed_L);
+              END;
+              IF recLedgerEntryTmp_L[3].GET(recLedgerEntryTmp_L[1]."Customer / Vendor",
+                recLedgerEntryTmp_L[1]."Original Closed by Entry No.")
+              THEN BEGIN
+                IF recLedgerEntryTmp_L[3]."CV Entry Letter" = '' THEN
+                  LetterOne(recLedgerEntryTmp_L, 3, 1, Letter_L, LetterUsed_L);
+              END;
+            // --> 20150608-FINA13-CMC02.02.00-3035-FHS01
+            END ELSE BEGIN
+              //Cas des 'critures restantes 'tant lettrer par une autre 'criture
+              recLedgerEntryTmp_L[2].RESET;
+              recLedgerEntryTmp_L[2].SETCURRENTKEY("Contact No.", "Original Closed by Entry No.", "Customer / Vendor", "Entry No.");
+              recLedgerEntryTmp_L[2].SETRANGE("Contact No.", ContactNo_P);
+              recLedgerEntryTmp_L[2].SETRANGE("Original Closed by Entry No.", recLedgerEntryTmp_L[1]."Entry No.");
+              recLedgerEntryTmp_L[2].SETRANGE("Customer / Vendor", recLedgerEntryTmp_L[1]."Customer / Vendor");
+              recLedgerEntryTmp_L[2].SETFILTER("CV Entry Letter", '<>%1', '');
+              IF recLedgerEntryTmp_L[2].FINDFIRST THEN
+                LetterOne(recLedgerEntryTmp_L, 1, 2, recLedgerEntryTmp_L[2]."CV Entry Letter", LetterUsed2_L);
+            // <-- 20150608-FINA13-CMC02.02.00-3035-FHS01
+            END;
+            IF LetterUsed_L = TRUE THEN BEGIN
+              //Recherche prochaine lettre si lettre utilis'e
+              cuGLEntryApplication_G.NextLetter(Letter_L);
+              SearchNextLetter(Letter_L, ContactNo_P, recLedgerEntryTmp_L);
+              LetterUsed_L := FALSE;
+            END;
+          END;
+        UNTIL recLedgerEntryTmp_L[1].NEXT = 0;
+
+      // --> 20150608-FINA13-CMC02.02.00-3035-FHS01
+      //BEFORE
+      {
+      IF LetterUsed_L = TRUE THEN BEGIN
+        cuGLEntryApplication_G.NextLetter(Letter_L);
+        SearchNextLetter(Letter_L, ContactNo_P, recLedgerEntryTmp_L);
+        LetterUsed_L := FALSE;
+      END;
+      }
+      //AFTER
+      // <-- 20150608-FINA13-CMC02.02.00-3035-FHS01
+      // --> 20150616-FINA13-CMC02.02.00-3035-FHS01
+      //Recherche 'critures lettrant la compensation
+      recLedgerEntryTmp_L[1].RESET;
+      recLedgerEntryTmp_L[1].SETFILTER("CV Entry Letter", '<>%1', '');
+      recLedgerEntryTmp_L[1].SETFILTER("Original Closed by Entry No.", '<>0');
+      IF recLedgerEntryTmp_L[1].FINDSET(FALSE, FALSE) THEN
+        REPEAT
+          IF recLedgerEntryTmp_L[2].GET(recLedgerEntryTmp_L[1]."Customer / Vendor",
+            recLedgerEntryTmp_L[1]."Original Closed by Entry No.")
+          THEN BEGIN
+            IF (recLedgerEntryTmp_L[2]."CV Entry Letter" <> '') AND (recLedgerEntryTmp_L[2]."CV Entry Letter" <>
+              recLedgerEntryTmp_L[1]."CV Entry Letter")
+            THEN BEGIN
+              FusionLetter(recLedgerEntryTmp_L, 3, 1, 2);
+            END;
+          END;
+        UNTIL recLedgerEntryTmp_L[1].NEXT=0;
+
+      //Recherche des liens de lettrage cach's
+      recCustDetTmp_L.RESET;
+      IF recCustDetTmp_L.FINDSET(FALSE, FALSE) THEN
+        REPEAT
+          // --> 20150622-FINA13-CMC02.02.00-3035-FHS01
+          //BEFORE
+          {
+          recLedgerEntryTmp_L[1].GET(recLedgerEntryTmp_L[1]."Customer / Vendor"::Customer, recCustDetTmp_L."Cust. Ledger Entry No.");
+          recLedgerEntryTmp_L[2].GET(recLedgerEntryTmp_L[1]."Customer / Vendor"::Customer,
+            recCustDetTmp_L."Applied Cust. Ledger Entry No.");
+          }
+          //AFTER
+          IF recLedgerEntryTmp_L[1].GET(recLedgerEntryTmp_L[1]."Customer / Vendor"::Customer, recCustDetTmp_L."Cust. Ledger Entry No.")
+          THEN
+            // --> 20150710-FINA13-CMC02.02.00-1891-FHS01
+            IF recLedgerEntryTmp_L[1]."CV Entry Letter" <> '' THEN BEGIN
+            // <-- 20150710-FINA13-CMC02.02.00-1891-FHS01
+              IF recLedgerEntryTmp_L[2].GET(recLedgerEntryTmp_L[1]."Customer / Vendor"::Customer,
+                recCustDetTmp_L."Applied Cust. Ledger Entry No.")
+              THEN
+                // --> 20150710-FINA13-CMC02.02.00-1891-FHS01
+                IF recLedgerEntryTmp_L[2]."CV Entry Letter" <> '' THEN BEGIN
+                // <-- 20150710-FINA13-CMC02.02.00-1891-FHS01
+            // <-- 20150622-FINA13-CMC02.02.00-3035-FHS01
+                  IF recLedgerEntryTmp_L[1]."CV Entry Letter" <> recLedgerEntryTmp_L[2]."CV Entry Letter" THEN
+                    FusionLetter(recLedgerEntryTmp_L, 3, 1, 2);
+                END ELSE BEGIN
+                  LetterOne(recLedgerEntryTmp_L, 2, 1, recLedgerEntryTmp_L[1]."CV Entry Letter", LetterUsed2_L);
+                END;
+            // --> 20150724-FINA13-ADV01.01.00-1891-FHS01
+            END ELSE BEGIN
+              IF recLedgerEntryTmp_L[2].GET(recLedgerEntryTmp_L[1]."Customer / Vendor"::Customer,
+                recCustDetTmp_L."Applied Cust. Ledger Entry No.")
+              THEN
+                IF recLedgerEntryTmp_L[2]."CV Entry Letter" <> '' THEN
+                  LetterOne(recLedgerEntryTmp_L, 1, 2, recLedgerEntryTmp_L[2]."CV Entry Letter", LetterUsed2_L);
+            END;
+            // <-- 20150724-FINA13-ADV01.01.00-1891-FHS01
+        UNTIL recCustDetTmp_L.NEXT = 0;
+
+      recVendDetTmp_L.RESET;
+      IF recVendDetTmp_L.FINDSET(FALSE, FALSE) THEN
+        REPEAT
+          // --> 20150622-FINA13-CMC02.02.00-3035-FHS01
+          //BEFORE
+          {
+          recLedgerEntryTmp_L[1].GET(recLedgerEntryTmp_L[1]."Customer / Vendor"::Vendor, recVendDetTmp_L."Vendor Ledger Entry No.");
+          recLedgerEntryTmp_L[2].GET(recLedgerEntryTmp_L[1]."Customer / Vendor"::Vendor,
+            recVendDetTmp_L."Applied Vend. Ledger Entry No.");
+          }
+          //AFTER
+          IF recLedgerEntryTmp_L[1].GET(recLedgerEntryTmp_L[1]."Customer / Vendor"::Vendor, recVendDetTmp_L."Vendor Ledger Entry No.")
+          THEN
+            // --> 20150710-FINA13-CMC02.02.00-1891-FHS01
+            IF recLedgerEntryTmp_L[1]."CV Entry Letter" <> '' THEN BEGIN
+            // <-- 20150710-FINA13-CMC02.02.00-1891-FHS01
+              IF recLedgerEntryTmp_L[2].GET(recLedgerEntryTmp_L[1]."Customer / Vendor"::Vendor,
+                recVendDetTmp_L."Applied Vend. Ledger Entry No.")
+              THEN
+            // <-- 20150622-FINA13-CMC02.02.00-3035-FHS01
+                // --> 20150710-FINA13-CMC02.02.00-1891-FHS01
+                IF recLedgerEntryTmp_L[2]."CV Entry Letter" <> '' THEN
+                // <-- 20150710-FINA13-CMC02.02.00-1891-FHS01
+                  IF recLedgerEntryTmp_L[1]."CV Entry Letter" <> recLedgerEntryTmp_L[2]."CV Entry Letter" THEN
+                    FusionLetter(recLedgerEntryTmp_L, 3, 1, 2);
+            // --> 20150724-FINA13-ADV01.01.00-1891-FHS01
+            END ELSE BEGIN
+              IF recLedgerEntryTmp_L[2].GET(recLedgerEntryTmp_L[1]."Customer / Vendor"::Vendor,
+                recVendDetTmp_L."Applied Vend. Ledger Entry No.")
+              THEN
+                IF recLedgerEntryTmp_L[2]."CV Entry Letter" <> '' THEN
+                  LetterOne(recLedgerEntryTmp_L, 1, 2, recLedgerEntryTmp_L[2]."CV Entry Letter", LetterUsed2_L);
+            END;
+            // <-- 20150724-FINA13-ADV01.01.00-1891-FHS01
+        UNTIL recVendDetTmp_L.NEXT = 0;
+      // <-- 20150616-FINA13-CMC02.02.00-3035-FHS01
+
+      //Ecriture du r'sultat dans la base
+      // --> 20150616-FINA13-CMC02.02.00-3035-FHS01
+      Letter_L := InitialLetter_L;
+      // <-- 20150616-FINA13-CMC02.02.00-3035-FHS01
+      recLedgerEntryTmp_L[1].RESET;
+      // --> 20150616-FINA13-CMC02.02.00-3035-FHS01
+      recLedgerEntryTmp_L[1].SETCURRENTKEY("Contact No.", "CV Entry Letter");
+      // <-- 20150616-FINA13-CMC02.02.00-3035-FHS01
+      IF recLedgerEntryTmp_L[1].FINDSET(FALSE, FALSE) THEN BEGIN
+        REPEAT
+          CVLedgerEntry_L := recLedgerEntryTmp_L[1];
+          // --> 20150616-FINA13-CMC02.02.00-3035-FHS01
+          IF recLedgerEntryTmp_L[1]."CV Entry Letter" <> '' THEN BEGIN
+            // Si nouvelle lettre, on passe . la suivante
+            IF Letter_L <> recLedgerEntryTmp_L[1]."CV Entry Letter" THEN
+              cuGLEntryApplication_G.NextLetter(InitialLetter_L);
+
+            //Changement de la lettre par la nouvelle
+            IF (InitialLetter_L <> recLedgerEntryTmp_L[1]."CV Entry Letter") THEN
+              CVLedgerEntry_L."CV Entry Letter" := InitialLetter_L;
+
+            //Sauvegarde de la lettre en cours
+            Letter_L := recLedgerEntryTmp_L[1]."CV Entry Letter";
+          END;
+          // <-- 20150616-FINA13-CMC02.02.00-3035-FHS01
+          CVLedgerEntry_L.MODIFY;
+        UNTIL recLedgerEntryTmp_L[1].NEXT = 0;
+      END;
+      // <-- 20150309-FINA13-CMC02.02.00-FHS01
+    END;
+
+    PROCEDURE SearchTransactionNo@8053013(VAR recLedgerEntryTmp_P@8053000 : ARRAY [7] OF TEMPORARY Record 8053380;TransactionNo_P@8053001 : Integer;Index_P@8053002 : Integer;DocumentNo_P@8053003 : Code[20];Customer_P@8053005 : Boolean;Compensation_P@8053006 : Boolean) : Boolean;
+    BEGIN
+      // --> 20150309-FINA13-CMC02.02.00-FHS01
+      recLedgerEntryTmp_P[Index_P].RESET;
+      IF Customer_P = TRUE THEN
+        recLedgerEntryTmp_P[Index_P].SETRANGE("Customer / Vendor",recLedgerEntryTmp_P[Index_P]."Customer / Vendor"::Customer)
+      ELSE
+        recLedgerEntryTmp_P[Index_P].SETRANGE("Customer / Vendor",recLedgerEntryTmp_P[Index_P]."Customer / Vendor"::Vendor);
+      recLedgerEntryTmp_P[Index_P].SETRANGE("Transaction No.",TransactionNo_P);
+      recLedgerEntryTmp_P[Index_P].SETRANGE("Document No.", DocumentNo_P);
+      IF Compensation_P = TRUE THEN
+        recLedgerEntryTmp_P[Index_P].SETRANGE("Setting Off", TRUE);
+      EXIT(recLedgerEntryTmp_P[Index_P].FINDSET(FALSE,FALSE));
+      // <-- 20150309-FINA13-CMC02.02.00-FHS01
+    END;
+
+    PROCEDURE AddLedger@1000000007(VAR recLedgerEntryTmp_P@1000000000 : TEMPORARY Record 8053380;recLedgerEntry_P@1000000001 : Record 8053380;VAR recCustDetTmp_P@1000000002 : TEMPORARY Record 379;VAR recVendDetTmp_P@1000000003 : TEMPORARY Record 380);
+    VAR
+      recCustDet_L@1000000005 : Record 379;
+      recVendDet_L@1000000004 : Record 380;
+    BEGIN
+      // --> 20150616-FINA13-CMC02.02.00-3035-FHS01
+      recLedgerEntryTmp_P := recLedgerEntry_P;
+      IF recLedgerEntryTmp_P.INSERT THEN ;
+      IF recLedgerEntry_P."Customer / Vendor" = recLedgerEntry_P."Customer / Vendor"::Customer THEN BEGIN
+        recCustDet_L.RESET;
+        // --> 20150624-FINA13-CMC02.02.00-3035-FHS01
+        recCustDet_L.SETCURRENTKEY("Cust. Ledger Entry No.","Entry Type");
+        // <-- 20150624-FINA13-CMC02.02.00-3035-FHS01
+        recCustDet_L.SETRANGE("Cust. Ledger Entry No.", recLedgerEntry_P."Entry No.");
+        recCustDet_L.SETRANGE("Entry Type", recCustDet_L."Entry Type"::Application);
+        recCustDet_L.SETRANGE(Unapplied, FALSE);
+        IF recCustDet_L.FINDSET(FALSE, FALSE) THEN
+          REPEAT
+            recCustDetTmp_P := recCustDet_L;
+            IF recCustDetTmp_P.INSERT THEN ;
+            // --> 20150724-FINA13-ADV01.01.00-1891-FHS01
+            IF NOT(recLedgerEntryTmp_P.GET(recLedgerEntryTmp_P."Customer / Vendor"::Customer,
+              recCustDet_L."Applied Cust. Ledger Entry No."))
+            THEN
+              IF recLedgerEntry_P.GET(recLedgerEntryTmp_P."Customer / Vendor"::Customer,
+                recCustDet_L."Applied Cust. Ledger Entry No.")
+              THEN BEGIN
+                AddLedger(recLedgerEntryTmp_P, recLedgerEntry_P, recCustDetTmp_P, recVendDetTmp_P);
+              END;
+            // <-- 20150724-FINA13-ADV01.01.00-1891-FHS01
+          UNTIL recCustDet_L.NEXT = 0;
+      END ELSE BEGIN
+        recVendDet_L.RESET;
+        // --> 20150624-FINA13-CMC02.02.00-3035-FHS01
+        recVendDet_L.SETCURRENTKEY("Vendor Ledger Entry No.","Entry Type");
+        // <-- 20150624-FINA13-CMC02.02.00-3035-FHS01
+        recVendDet_L.SETRANGE("Vendor Ledger Entry No.", recLedgerEntry_P."Entry No.");
+        recVendDet_L.SETRANGE("Entry Type", recVendDet_L."Entry Type"::Application);
+        recVendDet_L.SETRANGE(Unapplied, FALSE);
+        IF recVendDet_L.FINDSET(FALSE, FALSE) THEN
+          REPEAT
+            recVendDetTmp_P := recVendDet_L;
+            IF recVendDetTmp_P.INSERT THEN ;
+            // --> 20150724-FINA13-ADV01.01.00-1891-FHS01
+            IF NOT(recLedgerEntryTmp_P.GET(recLedgerEntryTmp_P."Customer / Vendor"::Vendor,
+              recVendDet_L."Applied Vend. Ledger Entry No."))
+            THEN
+              IF recLedgerEntry_P.GET(recLedgerEntryTmp_P."Customer / Vendor"::Vendor,
+                recVendDet_L."Applied Vend. Ledger Entry No.")
+              THEN BEGIN
+                AddLedger(recLedgerEntryTmp_P, recLedgerEntry_P, recCustDetTmp_P, recVendDetTmp_P);
+              END;
+            // <-- 20150724-FINA13-ADV01.01.00-1891-FHS01
+          UNTIL recVendDet_L.NEXT = 0;
+      END;
+      // <-- 20150616-FINA13-CMC02.02.00-3035-FHS01
+    END;
+
+    PROCEDURE LetterAll@8053029(VAR recLedgerEntryTmp_P@8053006 : ARRAY [8] OF TEMPORARY Record 8053380;IndexToModify_P@8053004 : Integer;IndexSource_P@8053000 : Integer;Letter_P@8053001 : Text[30];VAR UseLetter_P@8053002 : Boolean);
+    VAR
+      Letter_L@8053003 : Text[30];
+    BEGIN
+      // --> 20150309-FINA13-CMC02.02.00-FHS01
+      IF recLedgerEntryTmp_P[IndexSource_P]."CV Entry Letter" = '' THEN BEGIN
+        UseLetter_P := TRUE;
+        Letter_L := Letter_P
+      END ELSE
+        Letter_L := recLedgerEntryTmp_P[IndexSource_P]."CV Entry Letter";
+      //Lettrage
+      IF recLedgerEntryTmp_P[IndexToModify_P].FINDSET(FALSE, FALSE) THEN
+        REPEAT
+          recLedgerEntryTmp_P[8].GET(recLedgerEntryTmp_P[IndexToModify_P]."Customer / Vendor",
+            recLedgerEntryTmp_P[IndexToModify_P]."Entry No.");
+          recLedgerEntryTmp_P[8]."Changed To Letter" := FALSE;
+          recLedgerEntryTmp_P[8]."CV Entry Letter" := Letter_L;
+          IF (recLedgerEntryTmp_P[IndexToModify_P]."Customer / Vendor" <> recLedgerEntryTmp_P[IndexSource_P]."Customer / Vendor") OR
+            (recLedgerEntryTmp_P[IndexToModify_P]."Entry No." <> recLedgerEntryTmp_P[IndexSource_P]."Entry No.")
+          THEN BEGIN
+            //Mise . jour du lettrage sur tous sauf l''criture originale
+            recLedgerEntryTmp_P[8]."Closed by Entry Type" := recLedgerEntryTmp_P[IndexSource_P]."Customer / Vendor";
+            recLedgerEntryTmp_P[8]."Closed by Entry No." := recLedgerEntryTmp_P[IndexSource_P]."Entry No.";
+            recLedgerEntryTmp_P[8]."CV Entry Letter" := Letter_L;
+            recLedgerEntryTmp_P[8]."Changed To Letter" := FALSE;
+          END;
+          recLedgerEntryTmp_P[8].MODIFY;
+        UNTIL recLedgerEntryTmp_P[IndexToModify_P].NEXT = 0;
+
+      //Mise . jour du lettrage sur l''criture originale
+      recLedgerEntryTmp_P[IndexToModify_P].RESET;
+      recLedgerEntryTmp_P[IndexToModify_P].SETRANGE("Closed by Entry Type", recLedgerEntryTmp_P[IndexSource_P]."Customer / Vendor");
+      recLedgerEntryTmp_P[IndexToModify_P].SETRANGE("Closed by Entry No.", recLedgerEntryTmp_P[IndexSource_P]."Entry No.");
+      IF recLedgerEntryTmp_P[IndexToModify_P].FINDFIRST THEN BEGIN
+        recLedgerEntryTmp_P[8].GET(recLedgerEntryTmp_P[IndexSource_P]."Customer / Vendor",
+          recLedgerEntryTmp_P[IndexSource_P]."Entry No.");
+        recLedgerEntryTmp_P[8]."Closed by Entry Type" := recLedgerEntryTmp_P[IndexToModify_P]."Customer / Vendor";
+        recLedgerEntryTmp_P[8]."Closed by Entry No." := recLedgerEntryTmp_P[IndexToModify_P]."Entry No.";
+        recLedgerEntryTmp_P[8]."CV Entry Letter" := Letter_L;
+        recLedgerEntryTmp_P[8]."Changed To Letter" := FALSE;
+        recLedgerEntryTmp_P[8].MODIFY;
+      END;
+      // <-- 20150309-FINA13-CMC02.02.00-FHS01
+    END;
+
+    PROCEDURE LetterOne@8053030(VAR recLedgerEntryTmp_P@8053004 : ARRAY [8] OF TEMPORARY Record 8053380;IndexToModify_P@8053003 : Integer;IndexSource_P@8053002 : Integer;Letter_P@8053001 : Text[30];VAR UseLetter_P@8053000 : Boolean);
+    BEGIN
+      // --> 20150309-FINA13-CMC02.02.00-FHS01
+      //Lettrage
+      IF recLedgerEntryTmp_P[IndexSource_P]."CV Entry Letter" = '' THEN BEGIN
+        UseLetter_P := TRUE;
+        recLedgerEntryTmp_P[IndexToModify_P]."CV Entry Letter" := Letter_P
+      END ELSE
+        recLedgerEntryTmp_P[IndexToModify_P]."CV Entry Letter" := recLedgerEntryTmp_P[IndexSource_P]."CV Entry Letter";
+      // --> 20150710-FINA13-CMC02.02.00-1891-FHS01
+      //BEFORE
+      //recLedgerEntryTmp_P[IndexToModify_P]."Closed by Entry Type" := recLedgerEntryTmp_P[IndexSource_P]."Closed by Entry Type";
+      //recLedgerEntryTmp_P[IndexToModify_P]."Closed by Entry No." := recLedgerEntryTmp_P[IndexSource_P]."Closed by Entry No.";
+      //AFTER
+      recLedgerEntryTmp_P[IndexToModify_P]."Closed by Entry Type" := recLedgerEntryTmp_P[IndexSource_P]."Customer / Vendor";
+      recLedgerEntryTmp_P[IndexToModify_P]."Closed by Entry No." := recLedgerEntryTmp_P[IndexSource_P]."Entry No.";
+      // <-- 20150710-FINA13-CMC02.02.00-1891-FHS01
+      recLedgerEntryTmp_P[IndexToModify_P]."Changed To Letter" := FALSE;
+      recLedgerEntryTmp_P[IndexToModify_P].MODIFY;
+      // <-- 20150309-FINA13-CMC02.02.00-FHS01
+    END;
+
+    PROCEDURE FusionLetter@1000000011(VAR recLedgerEntryTmp_P@8053006 : ARRAY [8] OF TEMPORARY Record 8053380;IndexWrite_P@1000000001 : Integer;IndexFrom_P@1000000000 : Integer;IndexTo_P@1000000002 : Integer);
+    VAR
+      Letter_L@8053003 : Text[30];
+    BEGIN
+      // --> 20150616-FINA13-CMC02.02.00-3035-FHS01
+      IF recLedgerEntryTmp_P[IndexFrom_P]."Closed by Entry No." = 0 THEN BEGIN
+        recLedgerEntryTmp_P[IndexFrom_P]."Closed by Entry Type" := recLedgerEntryTmp_P[IndexTo_P]."Customer / Vendor";
+        recLedgerEntryTmp_P[IndexFrom_P]."Closed by Entry No." := recLedgerEntryTmp_P[IndexTo_P]."Entry No.";
+        // --> 20150710-FINA13-CMC02.02.00-1891-FHS01
+        recLedgerEntryTmp_P[IndexFrom_P]."Changed To Letter" := FALSE;
+        // <-- 20150710-FINA13-CMC02.02.00-1891-FHS01
+        recLedgerEntryTmp_P[IndexFrom_P].MODIFY;
+      END;
+
+      recLedgerEntryTmp_P[IndexWrite_P].RESET;
+      recLedgerEntryTmp_P[IndexWrite_P].SETRANGE("CV Entry Letter", recLedgerEntryTmp_P[IndexFrom_P]."CV Entry Letter");
+      // --> 20150710-FINA13-CMC02.02.00-1891-FHS01
+      recLedgerEntryTmp_P[IndexWrite_P].MODIFYALL("Changed To Letter", FALSE);
+      // <-- 20150710-FINA13-CMC02.02.00-1891-FHS01
+      recLedgerEntryTmp_P[IndexWrite_P].MODIFYALL("CV Entry Letter", recLedgerEntryTmp_P[IndexTo_P]."CV Entry Letter");
+      // <-- 20150616-FINA13-CMC02.02.00-3035-FHS01
+      // --> 20150710-FINA13-CMC02.02.00-1891-FHS01
+      recLedgerEntryTmp_P[IndexWrite_P].SETRANGE("Closed by Entry No.", 0);
+      recLedgerEntryTmp_P[IndexWrite_P].MODIFYALL("Closed by Entry Type", recLedgerEntryTmp_P[IndexTo_P]."Customer / Vendor");
+      recLedgerEntryTmp_P[IndexWrite_P].MODIFYALL("Closed by Entry No.", recLedgerEntryTmp_P[IndexTo_P]."Entry No.");
+      // --> 20150710-FINA13-CMC02.02.00-1891-FHS01
+    END;
+
+    PROCEDURE SearchLettrage@8053042(VAR recLedgerEntryTmp_P@8053002 : ARRAY [8] OF TEMPORARY Record 8053380;IndexToSearch_P@8053001 : Integer;IndexSource_P@8053000 : Integer) : Boolean;
+    BEGIN
+      // --> 20150309-FINA13-CMC02.02.00-FHS01
+      recLedgerEntryTmp_P[IndexToSearch_P].RESET;
+      recLedgerEntryTmp_P[IndexToSearch_P].SETCURRENTKEY("Contact No.", "Original Closed by Entry No.", "Customer / Vendor",
+        "Entry No.");
+      recLedgerEntryTmp_P[IndexToSearch_P].SETRANGE("Contact No.", recLedgerEntryTmp_P[IndexSource_P]."Contact No.");
+      recLedgerEntryTmp_P[IndexToSearch_P].SETRANGE("Original Closed by Entry No.", recLedgerEntryTmp_P[IndexSource_P]."Entry No.");
+      recLedgerEntryTmp_P[IndexToSearch_P].SETRANGE("Customer / Vendor", recLedgerEntryTmp_P[IndexSource_P]."Customer / Vendor");
+      IF recLedgerEntryTmp_P[IndexToSearch_P].FINDSET(FALSE, FALSE) THEN
+        REPEAT
+          //Mark toutes les 'critures ferm'es par l''criture source
+          recLedgerEntryTmp_P[IndexToSearch_P].MARK(TRUE);
+        UNTIL recLedgerEntryTmp_P[IndexToSearch_P].NEXT = 0;
+
+      IF recLedgerEntryTmp_P[IndexSource_P]."Original Closed by Entry No." <> 0 THEN BEGIN
+        recLedgerEntryTmp_P[IndexToSearch_P].SETRANGE("Entry No.", recLedgerEntryTmp_P[IndexSource_P]."Original Closed by Entry No.");
+        IF recLedgerEntryTmp_P[IndexToSearch_P].FINDFIRST THEN BEGIN
+          //Mark l''criture ayant ferm' l''criture source
+          recLedgerEntryTmp_P[IndexToSearch_P].MARK(TRUE);
+          recLedgerEntryTmp_P[IndexToSearch_P].SETRANGE("Entry No.");
+          recLedgerEntryTmp_P[IndexToSearch_P].SETRANGE("Original Closed by Entry No.", recLedgerEntryTmp_P[IndexToSearch_P]."Entry No."
+      );
+          IF recLedgerEntryTmp_P[IndexToSearch_P].FINDSET(FALSE, FALSE) THEN
+            REPEAT
+              //Mark toutes les 'criture ayant 't' ferm'es par l''criture ayant ferm'e l''criture source
+              recLedgerEntryTmp_P[IndexToSearch_P].MARK(TRUE);
+            UNTIL recLedgerEntryTmp_P[IndexToSearch_P].NEXT = 0;
+        END;
+      END;
+      recLedgerEntryTmp_P[IndexToSearch_P].MARKEDONLY(TRUE);
+      EXIT(recLedgerEntryTmp_P[IndexToSearch_P].FINDSET(FALSE, FALSE));
+      // <-- 20150309-FINA13-CMC02.02.00-FHS01
+    END;
+
+    PROCEDURE SearchNextLetter@8053016(VAR LetterVar_P@8053001 : Text[30];ContactNo_P@1000000000 : Code[20];VAR recLedgerEntryTmp_P@8053000 : ARRAY [8] OF TEMPORARY Record 8053380);
+    VAR
+      CVLedgerEntry_L@8053002 : Record 8053380;
+      CVok_L@1000000001 : Boolean;
+      TMPok_L@1000000002 : Boolean;
+    BEGIN
+      // --> 20150309-FINA13-CMC02.02.00-FHS01
+      //Algo permettant de combler les trous dans le lettrage
+      // --> 20150728-FINA13-ADV01.01.00-1891-FHS01
+      //BEFORE
+      {
+      CVLedgerEntry_L.RESET;
+      CVLedgerEntry_L.SETCURRENTKEY("Contact No.", "CV Entry Letter", "Customer / Vendor");
+      CVLedgerEntry_L.SETRANGE("Contact No.", ContactNo_P);
+      CVLedgerEntry_L.SETFILTER("CV Entry Letter", '%1..', LetterVar_P);
+      IF NOT(CVLedgerEntry_L.ISEMPTY) THEN
+        REPEAT
+          IF CVLedgerEntry_L.FINDFIRST THEN
+            // --> 20150608-FINA13-CMC02.02.00-3035-FHS01
+            //BEFORE
+            //IF recLedgerEntryTmp_P[1].GET(CVLedgerEntry_L."Customer / Vendor", CVLedgerEntry_L."Entry No.") THEN
+            //AFTER
+            IF recLedgerEntryTmp_P[8].GET(CVLedgerEntry_L."Customer / Vendor", CVLedgerEntry_L."Entry No.") THEN
+            // <-- 20150608-FINA13-CMC02.02.00-3035-FHS01
+              EXIT;
+          cuGLEntryApplication_G.NextLetter(LetterVar_P);
+          CVLedgerEntry_L.SETFILTER("CV Entry Letter", '%1..', LetterVar_P);
+        UNTIL CVLedgerEntry_L.ISEMPTY;
+      // <-- 20150309-FINA13-CMC02.02.00-FHS01
+      }
+      //AFTER
+      CVok_L := FALSE;
+      TMPok_L := FALSE;
+      CVLedgerEntry_L.RESET;
+      CVLedgerEntry_L.SETCURRENTKEY("Contact No.", "CV Entry Letter");
+      CVLedgerEntry_L.SETRANGE("Contact No.", ContactNo_P);
+      recLedgerEntryTmp_P[8].RESET;
+      recLedgerEntryTmp_P[8].SETCURRENTKEY("Contact No.", "CV Entry Letter");
+      recLedgerEntryTmp_P[8].SETRANGE("Contact No.", ContactNo_P);
+      REPEAT
+        CVLedgerEntry_L.SETFILTER("CV Entry Letter", '%1..', LetterVar_P);
+        IF CVLedgerEntry_L.ISEMPTY THEN
+          CVok_L := TRUE
+        ELSE
+          CVok_L := FALSE;
+        recLedgerEntryTmp_P[8].SETFILTER("CV Entry Letter", '%1..', LetterVar_P);
+        IF recLedgerEntryTmp_P[8].ISEMPTY THEN
+          TMPok_L := TRUE
+        ELSE
+          TMPok_L := FALSE;
+        IF (CVok_L = FALSE) OR (TMPok_L = FALSE) THEN
+          cuGLEntryApplication_G.NextLetter(LetterVar_P);
+      UNTIL (CVok_L = TRUE) AND (TMPok_L = TRUE)
+      // <-- 20150728-FINA13-ADV01.01.00-1891-FHS01
+    END;
+
+    PROCEDURE Vide@8053014(ContactNo_P@8053000 : Code[20]);
+    VAR
+      recLedgerEntry_L@8053001 : Record 8053380;
+    BEGIN
+      // --> 20150309-FINA13-CMC02.02.00-FHS01
+      recLedgerEntry_L.RESET;
+      recLedgerEntry_L.SETRANGE("Cust./Vend. No.", ContactNo_P);
+      recLedgerEntry_L.MODIFYALL("CV Entry Letter", '');
+      recLedgerEntry_L.MODIFYALL("Closed by Entry No.", 0);
+      recLedgerEntry_L.MODIFYALL("Closed by Entry Type", 0);
+      recLedgerEntry_L.MODIFYALL("Changed To Letter", TRUE);
+      // <-- 20150309-FINA13-CMC02.02.00-FHS01
+    END;
+
+    PROCEDURE InitCVLedgerEntriesCont@1000000006(ContactNo_P@1000000000 : Code[20]);
+    VAR
+      CVCollBalance_L@1000000007 : Record 8053382;
+      CVLedgerEntry_L@1000000006 : Record 8053380;
+      CVDetLedgerEntry_L@1000000005 : Record 8053381;
+      CustLedgerEntry_L@1000000004 : Record 21;
+      VendLedgerEntry_L@1000000003 : Record 25;
+      DetCustLedgerEntry_L@1000000002 : Record 379;
+      DetVendLedgerEntry_L@1000000001 : Record 380;
+    BEGIN
+      // --> 20150429-FINA13-CMC02.02.00-2773-BDN01
+      IF NOT CONFIRM(Text8053001,FALSE) THEN
+        EXIT;
+
+      //Delete informations
+      CVCollBalance_L.RESET;
+      CVCollBalance_L.SETRANGE("Contact No.",ContactNo_P);
+      CVCollBalance_L.DELETEALL;
+
+      CVLedgerEntry_L.RESET;
+      CVLedgerEntry_L.SETCURRENTKEY("Contact No.");
+      CVLedgerEntry_L.SETRANGE("Contact No.",ContactNo_P);
+      CVLedgerEntry_L.DELETEALL;
+
+      CVDetLedgerEntry_L.RESET;
+      CVDetLedgerEntry_L.SETCURRENTKEY("Contact No.");
+      CVDetLedgerEntry_L.SETRANGE("Contact No.",ContactNo_P);
+      CVDetLedgerEntry_L.DELETEALL;
+
+      //Recreate informations
+      CustLedgerEntry_L.RESET;
+      CustLedgerEntry_L.SETCURRENTKEY("Customer No.");
+      // --> 20150618-FINA13-CMC02.02.00-2965-DRN01
+      //BEFORE
+      //CustLedgerEntry_L.SETRANGE("Customer No.",GetCustVentNoFromContNo(ContactNo_P,0));
+      //AFTER
+      CustLedgerEntry_L.SETRANGE("Customer No.",GetCustVendBankFromContact(ContactNo_P,0));
+      // <-- 20150618-FINA13-CMC02.02.00-2965-DRN01
+      IF CustLedgerEntry_L.FINDSET THEN
+        REPEAT
+          CreateCVFromCustLedgerEntry(CustLedgerEntry_L);
+        UNTIL CustLedgerEntry_L.NEXT = 0;
+
+      DetCustLedgerEntry_L.RESET;
+      DetCustLedgerEntry_L.SETCURRENTKEY("Customer No.");
+      // --> 20150618-FINA13-CMC02.02.00-2965-DRN01
+      //BEFORE
+      //DetCustLedgerEntry_L.SETRANGE("Customer No.",GetCustVentNoFromContNo(ContactNo_P,0));
+      //AFTER
+      DetCustLedgerEntry_L.SETRANGE("Customer No.",GetCustVendBankFromContact(ContactNo_P,0));
+      // <-- 20150618-FINA13-CMC02.02.00-2965-DRN01
+      IF DetCustLedgerEntry_L.FINDSET THEN
+        REPEAT
+          CreateDetCVFromCustLedgerEntry(DetCustLedgerEntry_L);
+        UNTIL DetCustLedgerEntry_L.NEXT = 0;
+
+      VendLedgerEntry_L.RESET;
+      VendLedgerEntry_L.SETCURRENTKEY("Vendor No.");
+      // --> 20150618-FINA13-CMC02.02.00-2965-DRN01
+      //BEFORE
+      //VendLedgerEntry_L.SETRANGE("Vendor No.",GetCustVentNoFromContNo(ContactNo_P,1));
+      //AFTER
+      VendLedgerEntry_L.SETRANGE("Vendor No.",GetCustVendBankFromContact(ContactNo_P,1));
+      // <-- 20150618-FINA13-CMC02.02.00-2965-DRN01
+      IF VendLedgerEntry_L.FINDSET THEN
+        REPEAT
+          CreateCVFromVendLedgerEntry(VendLedgerEntry_L);
+        UNTIL VendLedgerEntry_L.NEXT = 0;
+
+      DetVendLedgerEntry_L.RESET;
+      DetVendLedgerEntry_L.SETCURRENTKEY("Vendor No.");
+      // --> 20150618-FINA13-CMC02.02.00-2965-DRN01
+      //BEFORE
+      //DetVendLedgerEntry_L.SETRANGE("Vendor No.",GetCustVentNoFromContNo(ContactNo_P,1));
+      //AFTER
+      DetVendLedgerEntry_L.SETRANGE("Vendor No.",GetCustVendBankFromContact(ContactNo_P,1));
+      // <-- 20150618-FINA13-CMC02.02.00-2965-DRN01
+      IF DetVendLedgerEntry_L.FINDSET THEN
+        REPEAT
+          CreateDetCVFromVendLedgerEntry(DetVendLedgerEntry_L);
+        UNTIL DetVendLedgerEntry_L.NEXT = 0;
+
+      //Recreate apply informations
+      RefreshCVLetter3(ContactNo_P);
+    END;
+
+    PROCEDURE SearchAlreadyLettred@1000000009(VAR recLedgerEntryTmp_P@1000000004 : ARRAY [8] OF TEMPORARY Record 8053380;IndexToSearch_P@1000000003 : Integer;IndexSource_P@1000000002 : Integer;Letter_P@1000000001 : Text[30];VAR FinalLetter_P@1000000000 : Text[30]);
+    BEGIN
+      // --> 20150608-FINA13-CMC02.02.00-3035-FHS01
+      recLedgerEntryTmp_P[IndexToSearch_P].RESET;
+      recLedgerEntryTmp_P[IndexToSearch_P].SETCURRENTKEY("Contact No.","Original Closed by Entry No.","Customer / Vendor");
+      recLedgerEntryTmp_P[IndexToSearch_P].SETRANGE("Contact No.", recLedgerEntryTmp_P[IndexSource_P]."Contact No.");
+      recLedgerEntryTmp_P[IndexToSearch_P].SETRANGE("Original Closed by Entry No.", recLedgerEntryTmp_P[IndexSource_P]."Entry No.");
+      recLedgerEntryTmp_P[IndexToSearch_P].SETRANGE("Customer / Vendor", recLedgerEntryTmp_P[IndexSource_P]."Customer / Vendor");
+      recLedgerEntryTmp_P[IndexToSearch_P].SETFILTER("CV Entry Letter", '<>%1', '');
+      IF recLedgerEntryTmp_P[IndexToSearch_P].FINDFIRST THEN BEGIN
+        FinalLetter_P := recLedgerEntryTmp_P[IndexToSearch_P]."CV Entry Letter";
+      END ELSE BEGIN
+        FinalLetter_P := Letter_P;
+      END;
+      // <-- 20150608-FINA13-CMC02.02.00-3035-FHS01
+    END;
+
+    PROCEDURE GetContactFromCustVendBank@1000000008(CustVendBankNo_P@8053002 : Code[20];Which_P@8053001 : 'Customer,Vendor,Bank') : Code[20];
+    VAR
+      Contact_L@8053000 : Record 5050;
+    BEGIN
+      // --> 20151116-FINA13-ADV01.01.00-2474-SDE01
+      Contact_L.RESET;
+      Contact_L.SETRANGE(Type,Contact_L.Type::Company);
+
+      CASE Which_P OF
+        Which_P::Customer :
+          BEGIN
+          Contact_L.SETRANGE("Customer No.",CustVendBankNo_P);
+          IF Contact_L.FINDFIRST THEN
+            EXIT(Contact_L."No.");
+          END;
+        Which_P::Vendor :
+          BEGIN
+          Contact_L.SETRANGE("Vendor No.",CustVendBankNo_P);
+          IF Contact_L.FINDFIRST THEN
+            EXIT(Contact_L."No.");
+          END;
+        Which_P::Bank :
+          BEGIN
+          Contact_L.SETRANGE("Bank Account No.",CustVendBankNo_P);
+          IF Contact_L.FINDFIRST THEN
+            EXIT(Contact_L."No.");
+          END;
+      END;
+      // <-- 20151116-FINA13-ADV01.01.00-2474-SDE01
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+      20131014-FINA13-CMC02.02.00-FE0C1 : ADDOBJECT (Nouvelle table).
+      20131222-FINA13-CMC02.02.00-1382-FEC01 : ADDFUNC (GetCustVentNoFromContNo).
+      20131222-FINA13-CMC02.02.00-1382-FEC02 : ADDFUNC (CreateCVFromCustLedgerEntry).
+      20131222-FINA13-CMC02.02.00-1382-FEC03 : ADDFUNC (CreateDetCVFromCustLedgerEntry).
+      20131222-FINA13-CMC02.02.00-1382-FEC04 : ADDFUNC (CreateCVFromVendLedgerEntry).
+      20131222-FINA13-CMC02.02.00-1382-FEC05 : ADDFUNC (CreateDetCVFromVendLedgerEntry).
+      20131222-FINA13-CMC02.02.00-1382-FEC06 : ADDFUNC (GetContNoFromCustVentNo).
+      20131222-FINA13-CMC02.02.00-1382-FEC07 : ADDFUNC (MakeCVLedgerProgDateTime).
+      20131222-FINA13-CMC02.02.00-1382-FEC08 : ADDFUNC (GetCVLedgerProgDateTime).
+      20131222-FINA13-CMC02.02.00-1382-FEC09 : ADDFUNC (UpdateCollBalance2).
+      20131222-FINA13-CMC02.02.00-1382-FEC10 : ADDFUNC (InitCVLedgerEntries).
+      20131222-FINA13-CMC02.02.00-1382-FEC11 : ADDTEXT (Text8053001).
+      20131222-FINA13-CMC02.02.00-1382-FEC12 : ADDCODE.
+      20140124-FINA13-CMC02.02.00-1589-FEC01 : MODCODE.
+      20140124-FINA13-CMC02.02.00-1589-FEC02 : ADDCODE.
+      20140124-FINA13-CMC02.02.00-1589-FEC03 : ADDCODE.
+      20140124-FINA13-CMC02.02.00-1589-FEC04 : ADDFUNC (RefreshCVLetter).
+      20140314-FINA13-CMC02.02.00-1589-BDN01 : MODCODE (No filter on G/L Account at Refresh Letter)
+      20140321-FINA13-CMC02.02.00-1589-BDN01 : MODCODE.
+      20140321-FINA13-CMC02.02.00-1589-BDN01 : ADDFUNC (RefreshCVLetter,MajLetter).
+      20140324-FINA13-CMC02.02.00-1589-BDN01 : ADDFUNC (UpdateCVFromCustLedgerEntry,UpdateCVFromVendLedgerEntry)
+      20140331-FINA13-CMC02.02.00-1924-BDN01 : MODCODE.
+      20140414-Cer42/001-CMC02.02.00-FHS01 : MODCODE (la fonction de recherche du client revoie le client et non le contact)
+      20140516-FINA13-CMC02.02.00-DRN01 : Refactoring -> Supression des fonctions obsolStes
+      20140520-FINA13-CMC02.02.00-2129-BDN01 : ADDCODE (Update Due date in detailed entries)
+      20140527-FINA13-CMC02.02.00-1382-SDE01 : ADDCODE (GetCustVendoNoFromContactNo)
+      20140613-FINA13-CMC02.02.00-1246-BDN01 : ADDFUNC (UpdateCustProgBalance,UpdateVendProgBalance).
+      20140619-FINA13-CMC02.02.00-1246-BDN01 : MODPROP (Modify permission on T21 and T25)
+      20140701-FINA18/001-CMC02.02.00-2259-FEC01 : MODFIELD(Document Type, add Cred. Finance Charge Memo).
+      20140701-FINA18/001-CMC02.02.00-2259-FEC02 : MODFIELD(Document Type, add Cred. Finance Charge Memo).
+      20140728-FINA13-CMC02.02.00-1589-BDN01 : MODCODE (Modify RefreshCVLetter2)
+      20140730-FINA13-CMC02.02.00-2404-BDN01 : ADDCODE (Calculate "Prog. Amount (LCY)")
+      20141003-FINA13-CMC02.02.00-2404-SDE01 : Optimisaton
+      20141007-FINA13-CMC02.02.00-2404-DRN01 : Locktable sur T8053380 Fct UpdateProgBalance
+      20141031-FINA13-CMC02.02.00-2404-FHS01 : Optimisation
+      20141113-FINA13-CMC02.02.00-2612-BDN01 : MODCODE (Correction Calc "Prog. Amount (LCY)")
+      20150209-Wi00-CMC02.02.00-2752-BDN01 : ADDFUNC (UpdateGLProgBalance)
+      20150209-Wi00-CMC02.02.00-2752-BDN01 : MODFUNC (UpdateCustProgBalance)
+      20150209-Wi00-CMC02.02.00-2752-BDN01 : MODFUNC (UpdateVendProgBalance)
+      20150209-Wi00-CMC02.02.00-2752-BDN01 : MODFUNC (UpdateProgBalance)
+      20150309-FINA13-CMC02.02.00-FHS01 : ADDCODE (Nouvelle m'thode de lettrage)
+      20150317-FINA13-CMC02.02.00-FHS01 : ADDCODE (Ajoute le recalcul des lettres aux lancement du CU)
+      20150429-FINA13-CMC02.02.00-2773-BDN01 : ADDFUNC (InitCVLedgerEntriesCont)
+      20150504-FINA13-CMC02.02.00-2965-FHS01 : MODCODE (Optimisation)
+      20150608-FINA13-CMC02.02.00-3035-FHS01 : MODCODE (Ajoute un cas de lettrage en cas de paiement)
+      20150616-FINA13-CMC02.02.00-3035-FHS01 : MODCODE (Corrige plusieurs cas de lettrage)
+      20150618-FINA13-CMC02.02.00-2965-DRN01 : MODCODE (Optimisation -> unification des 3 fonctions de recherche du client/fournisseur
+                                                        . partir du N› contact. La recherche s'effectue directement sur le contact au lien
+                                                        d'utiliser la relation d'affaire contact)
+      20150622-FINA13-CMC02.02.00-3035-FHS01 : MODCODE (Corrige la nouvelle maniSre de lettrer)
+      20150624-FINA13-CMC02.02.00-3035-FHS01 : MODCODE (Optimisation)
+      20150710-FINA13-CMC02.02.00-1891-FHS01 : MODCODE (Corrige probleme de lettrage si plusieurs ecritures de llettrage principale)
+      20150724-FINA13-ADV01.01.00-1891-FHS01 : MODCODE (Corrige un nouveau problSme de lettrage)
+      20150728-FINA13-ADV01.01.00-1891-FHS01 : MODCODE (Corrige un lettrage en trop)
+      20151116-FINA13-ADV01.01.00-2474-SDE01 : ADDFUNC (GetContactFromCustVendBank)
+      20160526-FINA13-ADV01.01.00-1905-BDN01 : ADDFUNC (UpdateProgBalanceTmp)
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+

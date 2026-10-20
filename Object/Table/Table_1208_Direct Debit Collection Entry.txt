@@ -1,0 +1,351 @@
+OBJECT Table 1208 Direct Debit Collection Entry
+{
+  OBJECT-PROPERTIES
+  {
+    Date=17/08/15;
+    Heure=00:00:00;
+    Liste versions=TFS288071,CMC02.02.00;
+  }
+  PROPERTIES
+  {
+    DataCaptionFields=Customer No.,Transaction ID;
+    OnInsert=VAR
+               DirectDebitCollectionEntry@1000 : Record 1208;
+             BEGIN
+               IF "Entry No." = 0 THEN BEGIN
+                 DirectDebitCollectionEntry.SETRANGE("Direct Debit Collection No.","Direct Debit Collection No.");
+                 LOCKTABLE;
+                 IF DirectDebitCollectionEntry.FINDLAST THEN;
+                 "Entry No." := DirectDebitCollectionEntry."Entry No." + 1;
+               END;
+             END;
+
+    OnModify=BEGIN
+               TESTFIELD(Status,Status::New);
+               CALCFIELDS("Direct Debit Collection Status");
+               TESTFIELD("Direct Debit Collection Status","Direct Debit Collection Status"::New);
+             END;
+
+    OnDelete=BEGIN
+               DeletePaymentFileErrors;
+             END;
+
+    CaptionML=[ENU=Direct Debit Collection Entry;
+               FRA=?criture recouvrement pr'lSvement];
+    LookupFormID=Form1208;
+    DrillDownFormID=Form1208;
+  }
+  FIELDS
+  {
+    { 1   ;   ;Direct Debit Collection No.;Integer;TableRelation="Direct Debit Collection";
+                                                   CaptionML=[ENU=Direct Debit Collection No.;
+                                                              FRA=N› recouvrement pr'lSvement] }
+    { 2   ;   ;Entry No.           ;Integer       ;CaptionML=[ENU=Entry No.;
+                                                              FRA=N› s'quence] }
+    { 3   ;   ;Customer No.        ;Code20        ;TableRelation=Customer;
+                                                   OnValidate=BEGIN
+                                                                IF xRec."Customer No." <> '' THEN
+                                                                  TESTFIELD(Status,Status::New);
+                                                              END;
+
+                                                   CaptionML=[ENU=Customer No.;
+                                                              FRA=N› client] }
+    { 4   ;   ;Applies-to Entry No.;Integer       ;TableRelation="Cust. Ledger Entry" WHERE (Customer No.=FIELD(Customer No.),
+                                                                                             Open=CONST(Oui));
+                                                   OnValidate=VAR
+                                                                CustLedgerEntry@1000 : Record 21;
+                                                                DirectDebitCollection@1001 : Record 1207;
+                                                              BEGIN
+                                                                IF xRec."Applies-to Entry No." <> "Applies-to Entry No." THEN BEGIN
+                                                                  TESTFIELD("Customer No.");
+                                                                  CustLedgerEntry.GET("Applies-to Entry No.");
+                                                                  CustLedgerEntry.TESTFIELD("Customer No.","Customer No.");
+                                                                  CustLedgerEntry.TESTFIELD(Open);
+                                                                  // --> 20150806-WI00-ADV01.01.00-2136-JCD01 Suppression du contr"le sur les types de documents export' pour le SEPA
+                                                                  {
+                                                                  IF NOT (CustLedgerEntry."Document Type" IN
+                                                                          [CustLedgerEntry."Document Type"::Invoice,
+                                                                           CustLedgerEntry."Document Type"::"Finance Charge Memo",
+                                                                           // --> 20150107-WI00-CMC02.02.00-2684-BRA01
+                                                                           //BEFORE
+                                                                           //CustLedgerEntry."Document Type"::Reminder])
+                                                                           //AFTER
+                                                                           CustLedgerEntry."Document Type"::Reminder,
+                                                                           CustLedgerEntry."Document Type"::"Credit Memo"])
+                                                                           // <-- 20150107-WI00-CMC02.02.00-2684-BRA01
+                                                                  THEN
+                                                                    ERROR(DocTypeErr);
+                                                                  }
+                                                                  // <-- 20150806-WI00-ADV01.01.00-2136-JCD01
+
+                                                                  CustLedgerEntry.CALCFIELDS("Remaining Amount");
+                                                                  // --> 20150107-WI00-CMC02.02.00-2684-BRA01
+                                                                  //BEFORE
+                                                                  //IF CustLedgerEntry."Remaining Amount" <= 0 THEN
+                                                                  //  ERROR(AmountMustBePositiveErr);
+                                                                  // <-- 20150107-WI00-CMC02.02.00-2684-BRA01
+
+                                                                  "Transfer Date" := CustLedgerEntry."Due Date";
+                                                                  "Currency Code" := CustLedgerEntry."Currency Code";
+                                                                  "Transfer Amount" := CustLedgerEntry."Remaining Amount" - GetAmountInActiveCollections;
+                                                                  VALIDATE("Mandate ID",CustLedgerEntry."Direct Debit Mandate ID");
+                                                                  DirectDebitCollection.GET("Direct Debit Collection No.");
+                                                                  "Transaction ID" := STRSUBSTNO('%1/%2',DirectDebitCollection.Identifier,"Entry No.");
+                                                                END;
+                                                              END;
+
+                                                   CaptionML=[ENU=Applies-to Entry No.;
+                                                              FRA=N› s'quence lettrage] }
+    { 5   ;   ;Transfer Date       ;Date          ;CaptionML=[ENU=Transfer Date;
+                                                              FRA=Date transfert] }
+    { 6   ;   ;Currency Code       ;Code10        ;TableRelation=Currency;
+                                                   CaptionML=[ENU=Currency Code;
+                                                              FRA=Code devise];
+                                                   Editable=Non }
+    { 7   ;   ;Transfer Amount     ;Decimal       ;OnValidate=VAR
+                                                                CustLedgEntry@1000 : Record 21;
+                                                              BEGIN
+                                                                IF "Transfer Amount" <= 0 THEN
+                                                                  ERROR(AmountMustBePositiveErr);
+
+                                                                // --> 20140902-WI00-CMC02.02.00-2406-BRA01
+                                                                //BEFORE
+                                                                {
+                                                                // --> 20140603-WI00-CMC02.02.00-2184-AKH01
+                                                                // BEFORE
+                                                                //TESTFIELD("Applies-to Entry No.");
+                                                                //CustLedgEntry.GET("Applies-to Entry No.");
+                                                                //AFTER
+                                                                IF CustLedgEntry.GET("Applies-to Entry No.") THEN  BEGIN
+                                                                // <-- 20140603-WI00-CMC02.02.00-2184-AKH01
+                                                                  CustLedgEntry.CALCFIELDS("Remaining Amount");
+                                                                  IF "Transfer Amount" > CustLedgEntry."Remaining Amount" - GetAmountInActiveCollections THEN
+                                                                    ERROR(LargerThanRemainingErr,CustLedgEntry."Remaining Amount",CustLedgEntry."Currency Code");
+                                                                // --> 20140603-WI00-CMC02.02.00-2184-AKH01
+                                                                END;
+                                                                // <-- 20140603-WI00-CMC02.02.00-2184-AKH01
+                                                                }
+                                                                // <-- 20140902-WI00-CMC02.02.00-2406-BRA01
+                                                              END;
+
+                                                   CaptionML=[ENU=Transfer Amount;
+                                                              FRA=Montant transfert] }
+    { 8   ;   ;Transaction ID      ;Text35        ;CaptionML=[ENU=Transaction ID;
+                                                              FRA=ID transaction];
+                                                   Editable=Non }
+    { 9   ;   ;Sequence Type       ;Option        ;CaptionML=[ENU=Sequence Type;
+                                                              FRA=Type de paiement];
+                                                   OptionCaptionML=[ENU=One Off,First,Recurring,Last;
+                                                                    FRA=Ponctuel,Premier,R'current,Dernier];
+                                                   OptionString=One Off,First,Recurring,Last;
+                                                   Editable=Non }
+    { 10  ;   ;Status              ;Option        ;CaptionML=[ENU=Status;
+                                                              FRA=Statut];
+                                                   OptionCaptionML=[ENU=New,File Created,Rejected,Posted;
+                                                                    FRA=Nouveau,Fichier cr'',Rejet',Valid'];
+                                                   OptionString=New,File Created,Rejected,Posted;
+                                                   Editable=Non }
+    { 11  ;   ;Mandate ID          ;Text35        ;TableRelation="SEPA Direct Debit Mandate".ID WHERE (Customer No.=FIELD(Customer No.));
+                                                   OnValidate=VAR
+                                                                SEPADirectDebitMandate@1000 : Record 1230;
+                                                              BEGIN
+                                                                IF "Mandate ID" = '' THEN
+                                                                  EXIT;
+                                                                SEPADirectDebitMandate.GET("Mandate ID");
+                                                                "Sequence Type" := SEPADirectDebitMandate.GetSequenceType;
+                                                              END;
+
+                                                   CaptionML=[ENU=Mandate ID;
+                                                              FRA=ID mandat] }
+    { 12  ;   ;Mandate Type of Payment;Option     ;FieldClass=FlowField;
+                                                   CalcFormula=Lookup("SEPA Direct Debit Mandate"."Type of Payment" WHERE (ID=FIELD(Mandate ID)));
+                                                   CaptionML=[ENU=Mandate Type of Payment;
+                                                              FRA=Type de paiement mandat];
+                                                   OptionCaptionML=[ENU=One Off,Recurrent;
+                                                                    FRA=Ponctuel,R'current];
+                                                   OptionString=One Off,Recurrent;
+                                                   Editable=Non }
+    { 13  ;   ;Customer Name       ;Text50        ;FieldClass=FlowField;
+                                                   CalcFormula=Lookup(Customer.Name WHERE (No.=FIELD(Customer No.)));
+                                                   CaptionML=[ENU=Customer Name;
+                                                              FRA=Nom du d'biteur];
+                                                   Editable=Non }
+    { 14  ;   ;Applies-to Entry Document No.;Code20;
+                                                   FieldClass=FlowField;
+                                                   CalcFormula=Lookup("Cust. Ledger Entry"."Document No." WHERE (Entry No.=FIELD(Applies-to Entry No.)));
+                                                   CaptionML=[ENU=Applies-to Entry Document No.;
+                                                              FRA=N› document 'criture lettrage];
+                                                   Editable=Non }
+    { 15  ;   ;Applies-to Entry Description;Text50;FieldClass=FlowField;
+                                                   CalcFormula=Lookup("Cust. Ledger Entry".Description WHERE (Entry No.=FIELD(Applies-to Entry No.)));
+                                                   CaptionML=[ENU=Applies-to Entry Description;
+                                                              FRA=Description 'criture lettrage];
+                                                   Editable=Non }
+    { 16  ;   ;Applies-to Entry Posting Date;Date ;FieldClass=FlowField;
+                                                   CalcFormula=Lookup("Cust. Ledger Entry"."Posting Date" WHERE (Entry No.=FIELD(Applies-to Entry No.)));
+                                                   CaptionML=[ENU=Applies-to Entry Posting Date;
+                                                              FRA=Date comptabilisation 'criture lettrage];
+                                                   Editable=Non }
+    { 17  ;   ;Applies-to Entry Currency Code;Code10;
+                                                   FieldClass=FlowField;
+                                                   CalcFormula=Lookup("Cust. Ledger Entry"."Currency Code" WHERE (Entry No.=FIELD(Applies-to Entry No.)));
+                                                   TableRelation=Currency;
+                                                   CaptionML=[ENU=Applies-to Entry Currency Code;
+                                                              FRA=Code devise 'criture lettrage];
+                                                   Editable=Non }
+    { 18  ;   ;Applies-to Entry Amount;Decimal    ;FieldClass=FlowField;
+                                                   CalcFormula=Sum("Detailed Cust. Ledg. Entry".Amount WHERE (Cust. Ledger Entry No.=FIELD(Applies-to Entry No.),
+                                                                                                              Entry Type=FILTER(Initial Entry|Unrealized Loss|Unrealized Gain|Realized Loss|Realized Gain|Payment Discount|'Payment Discount (VAT Excl.)'|'Payment Discount (VAT Adjustment)'|Payment Tolerance|Payment Discount Tolerance|'Payment Tolerance (VAT Excl.)'|'Payment Tolerance (VAT Adjustment)'|'Payment Discount Tolerance (VAT Excl.)'|'Payment Discount Tolerance (VAT Adjustment)')));
+                                                   CaptionML=[ENU=Applies-to Entry Amount;
+                                                              FRA=Montant 'criture lettrage];
+                                                   Editable=Non;
+                                                   AutoFormatType=1;
+                                                   AutoFormatExpr="Currency Code" }
+    { 19  ;   ;Applies-to Entry Rem. Amount;Decimal;
+                                                   FieldClass=FlowField;
+                                                   CalcFormula=Sum("Detailed Cust. Ledg. Entry".Amount WHERE (Cust. Ledger Entry No.=FIELD(Applies-to Entry No.)));
+                                                   CaptionML=[ENU=Applies-to Entry Rem. Amount;
+                                                              FRA=Montant ouvert 'criture lettrage];
+                                                   Editable=Non;
+                                                   AutoFormatType=1;
+                                                   AutoFormatExpr="Currency Code" }
+    { 20  ;   ;Applies-to Entry Open;Boolean      ;FieldClass=FlowField;
+                                                   CalcFormula=Lookup("Cust. Ledger Entry".Open WHERE (Entry No.=FIELD(Applies-to Entry No.)));
+                                                   CaptionML=[ENU=Applies-to Entry Open;
+                                                              FRA=S'quence lettrage ouverte];
+                                                   Editable=Non }
+    { 21  ;   ;Direct Debit Collection Status;Option;
+                                                   FieldClass=FlowField;
+                                                   CalcFormula=Lookup("Direct Debit Collection".Status WHERE (No.=FIELD(Direct Debit Collection No.)));
+                                                   CaptionML=[ENU=Direct Debit Collection Status;
+                                                              FRA=Statut recouvrement pr'lSvement];
+                                                   OptionCaptionML=[ENU=New,Canceled,File Created,Posted,Closed;
+                                                                    FRA=Nouveau,Annul',Fichier cr'',Valid',Cl"tur'];
+                                                   OptionString=New,Canceled,File Created,Posted,Closed }
+    { 8053000;;Due Date            ;Date          ;CaptionML=[ENU=Due Date;
+                                                              FRA=Date d''ch'ance];
+                                                   Description=WI00-CMC02.02.00-2204 }
+    { 8053001;;Reference           ;Text30        ;CaptionML=[ENU=Reference;
+                                                              FRA=Mention];
+                                                   Description=WI00-CMC02.02.00-2546 }
+  }
+  KEYS
+  {
+    {    ;Direct Debit Collection No.,Entry No.   ;Clustered=Oui }
+    {    ;Applies-to Entry No.,Status              }
+  }
+  FIELDGROUPS
+  {
+  }
+  CODE
+  {
+    VAR
+      DocTypeErr@1000 : TextConst 'ENU=The customer ledger entry must be of type Invoice, Finance Charge Memo, or Reminder.;FRA=L'''criture comptable client doit ^tre de type Facture, Facture d''int'r^ts ou Relance.';
+      AmountMustBePositiveErr@1001 : TextConst 'ENU=The amount must be positive.;FRA=Le montant doit ^tre positif.';
+      LargerThanRemainingErr@1002 : TextConst 'ENU=You cannot collect an amount that is larger than the remaining amount for the invoice (%1 %2) that is not on other collection entries.;FRA=Vous ne pouvez pas collecter un montant plus 'lev' que le montant restant pour la facture (%1 %2) ne se trouvant pas sur d''autres 'critures collection.';
+      RejectQst@1003 : TextConst 'ENU=Do you want to reject this collection entry?;FRA=Souhaitez-vous rejeter cette 'criture collection˜?';
+
+    PROCEDURE CreateNew@3(DirectDebitCollectionNo@1000 : Integer;CustLedgerEntry@1001 : Record 21);
+    BEGIN
+      "Direct Debit Collection No." := DirectDebitCollectionNo;
+      SETRANGE("Direct Debit Collection No.",DirectDebitCollectionNo);
+      LOCKTABLE;
+      IF FINDLAST THEN;
+      "Entry No." += 1;
+      INIT;
+      VALIDATE("Customer No.",CustLedgerEntry."Customer No.");
+      VALIDATE("Applies-to Entry No.",CustLedgerEntry."Entry No.");
+      INSERT;
+      CODEUNIT.RUN(CODEUNIT::"SEPA DD-Check Line",Rec);
+    END;
+
+    PROCEDURE DeletePaymentFileErrors@61();
+    VAR
+      GenJnlLine@1001 : Record 81;
+    BEGIN
+      TransferPKToGenJnlLine(GenJnlLine);
+      GenJnlLine.DeletePaymentFileErrors;
+    END;
+
+    PROCEDURE HasPaymentFileErrors@5() : Boolean;
+    VAR
+      GenJnlLine@1001 : Record 81;
+    BEGIN
+      TransferPKToGenJnlLine(GenJnlLine);
+      EXIT(GenJnlLine.HasPaymentFileErrors);
+    END;
+
+    PROCEDURE ExportSEPA@2();
+    BEGIN
+      CODEUNIT.RUN(CODEUNIT::"SEPA DD-Export File",Rec);
+    END;
+
+    PROCEDURE InsertPaymentFileError@64(Text@1001 : Text[1024]);
+    VAR
+      GenJnlLine@1002 : Record 81;
+    BEGIN
+      TransferPKToGenJnlLine(GenJnlLine);
+      GenJnlLine.InsertPaymentFileError(Text);
+    END;
+
+    PROCEDURE Reject@1();
+    VAR
+      SEPADirectDebitMandate@1000 : Record 1230;
+    BEGIN
+      TESTFIELD(Status,Status::"File Created");
+      IF NOT CONFIRM(RejectQst) THEN
+        EXIT;
+      Status := Status::Rejected;
+      MODIFY;
+      IF "Mandate ID" = '' THEN
+        EXIT;
+      SEPADirectDebitMandate.GET("Mandate ID");
+      SEPADirectDebitMandate.RollBackSequenceType;
+    END;
+
+    PROCEDURE TransferPKToGenJnlLine@4(VAR GenJnlLine@1000 : Record 81);
+    VAR
+      DirectDebitCollection@1120000 : Record 1207;
+    BEGIN
+      IF DirectDebitCollection.GET("Direct Debit Collection No.") THEN
+        DirectDebitCollection.SetErrorLink(GenJnlLine);
+      GenJnlLine."Line No." := "Entry No.";
+    END;
+
+    LOCAL PROCEDURE GetAmountInActiveCollections@6() : Decimal;
+    VAR
+      DirectDebitCollectionEntry@1001 : Record 1208;
+      AmountAlreadyInCollection@1000 : Decimal;
+    BEGIN
+      IF "Applies-to Entry No." = 0 THEN
+        EXIT(0);
+
+      DirectDebitCollectionEntry.SETRANGE("Applies-to Entry No.","Applies-to Entry No.");
+      DirectDebitCollectionEntry.SETFILTER(Status,'%1|%2',Status::New,Status::"File Created");
+      IF DirectDebitCollectionEntry.FINDSET THEN
+        REPEAT
+          IF (DirectDebitCollectionEntry."Direct Debit Collection No." <> "Direct Debit Collection No.") OR
+             (DirectDebitCollectionEntry."Entry No." <> "Entry No.")
+          THEN
+            AmountAlreadyInCollection += DirectDebitCollectionEntry."Transfer Amount";
+        UNTIL DirectDebitCollectionEntry.NEXT = 0;
+      EXIT(AmountAlreadyInCollection);
+    END;
+
+    BEGIN
+    {
+      // --> 3LI BEGIN
+
+      20140603-WI00-CMC02.02.00-2184-AKH01 : MODCODE (g'n'rer un fichier de pr'lSvement sans lettrage associ')
+      20140625-WI00-CMC02.02.00-2204-AKH01 : ADDCTRL ("Due Date")
+      20140902-WI00-CMC02.02.00-2406-BRA01 : MODCODE (Autoriser le multi lettrage)
+      20141022-WI00-CMC02.02.00-2546-BRA01 : ADDFIEFLD(REFERENCE)
+      20150107-WI00-CMC02.02.00-2684-BRA01 : MODCODE (Autoriser les avoirs en lettrage pour pr'lSvements)
+      20150806-WI00-ADV01.01.00-2136-JCD01 : MODCODE (Autoriser tous les types de lettrages pour pr'lSvements
+                                             + lien dans champ "Applies-to Entry No.")
+      // <-- 3LI END
+    }
+    END.
+  }
+}
+
